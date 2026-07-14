@@ -1,0 +1,69 @@
+[project]
+name = "gdr"
+version = "0.1.0"
+description = "GDB helper framework for debugging RTOS-based embedded firmware"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "gdr contributors" }]
+keywords = ["gdb", "rtos", "rt-thread", "embedded", "debug"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Debuggers",
+]
+
+# Runtime: GDB Python API only, no external dependencies.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/simon/gdr"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gdr", "rtthread"]
+
+# ---------------------------------------------------------------------------
+# Dev dependencies (uv sync --group dev)
+# ---------------------------------------------------------------------------
+[dependency-groups]
+dev = [
+    "ruff>=0.11",
+    "pytest>=8",
+    "pre-commit>=3.6",
+    "pexpect>=4.9",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff: linter + formatter (drop-in replacement for black)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+extend-exclude = [
+    "tests/fixtures",
+]
+
+[tool.ruff.lint]
+# PEP8 + common-sense rules. E/W = pycodestyle, F = pyflakes, I = isort,
+# UP = pyupgrade, B = bugbear, SIM = simplify.
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",  # line length handled by formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gdr", "rtthread"]
+
+[tool.ruff.format]
+# black-compatible defaults.
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra"

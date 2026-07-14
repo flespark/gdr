@@ -1,0 +1,44 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# Ruff
+.ruff_cache/
+
+# mypy
+.mypy_cache/
+
+# Test firmware artifacts (QEMU builds, ELF binaries)
+tests/fixtures/**/*.elf
+tests/fixtures/**/*.bin
+tests/fixtures/**/*.map
+tests/fixtures/**/Build/
+tests/fixtures/**/rtthread.bin
+
+# IDE
+.cursor/
+.idea/
+.vscode/
+
+# OS
+.DS_Store
