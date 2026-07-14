@@ -317,4 +317,5 @@ def register_commands(kl: KernelLayout) -> None:
         raise RuntimeError("not running inside GDB")
 
     _RtThreadCmd()
-    info("rtthread commands registered")
+    gdb.execute("alias rtt = rtthread")
+    info("rtthread commands registered (alias: rtt)")
