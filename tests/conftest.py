@@ -134,8 +134,6 @@ class GdbSession:
     def start(self):
         """Spawn GDB, connect to QEMU, source gdr.py."""
         env = os.environ.copy()
-        env["GDR_RTOS"] = "rtthread"
-        env["GDR_VERSION"] = "4.0"
         env["PYTHONPATH"] = str(self._gdr_root)
 
         self._proc = pexpect.spawn(
@@ -155,8 +153,9 @@ class GdbSession:
         self.run("set architecture arm")
         self.run(f"file {self._elf_path}")
         self.run(f"target remote :{self._gdb_port}")
-        # Source gdr.py — this may take a moment (config probe, layout build)
-        self.run(f"source {self._gdr_root / 'gdr.py'}", timeout=20)
+        self.run(f"source {self._gdr_root / 'gdr.py'}")
+        self.run("rtthread threads")
+        self.run("gdr rtthread 4.0.5", timeout=20)
 
     def stop(self):
         """Quit GDB and clean up."""

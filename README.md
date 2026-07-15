@@ -32,10 +32,13 @@ closed-loop verification.
 ## Quick start
 
 ```gdb
-(gdb) source gdr.py --rtos rtthread --version 4.0
-[gdr] setting up RT-Thread v4.0...
+(gdb) source gdr.py
+(gdb) gdr rtthread 4.0.5
+warning: target RT-Thread version not exported; cannot verify --version
+[gdr] setting up RT-Thread v4.0.5...
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
 [gdr]   layout: 10 structs, 2 list hooks
+[gdr] rtthread commands registered (alias: rtt)
 [gdr] RT-Thread support ready. Type 'rtthread help' for commands.
 
 (gdb) rtthread threads
@@ -56,12 +59,6 @@ closed-loop verification.
 
 Single-object inspection is delegated to convenience functions + GDB
 expressions, not dedicated commands.
-
-## Verification Matrix
-
-RT-Thread support is closed-loop verified with the QEMU `qemu-vexpress-a9`
-BSP on these tags: `v4.0.0`, `v4.0.1`, `v4.0.2`, `v4.0.3`, `v4.0.4`,
-`v4.0.5`, `v4.1.0`, `v4.1.1`.
 
 ## Convenience functions
 

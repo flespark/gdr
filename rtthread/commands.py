@@ -48,6 +48,7 @@ from rtthread.layout import (
 
 # Module-level layout reference, set by register_commands()
 _kl: KernelLayout | None = None
+_registered = False
 
 # Human-readable names for object type codes
 _TYPE_NAMES: dict[int, str] = {
@@ -88,7 +89,7 @@ def _addr_str(addr: int) -> str:
 def _cmd_threads() -> None:
     """List all threads in a table."""
     if _kl is None:
-        print("warning: layout not initialised")
+        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
         return
     rows = []
     current = get_current_thread()
@@ -122,7 +123,7 @@ def _cmd_threads() -> None:
 def _cmd_semaphores() -> None:
     """List all semaphores in a table."""
     if _kl is None:
-        print("warning: layout not initialised")
+        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
         return
     sl = _kl.structs.get("struct rt_semaphore")
     if sl is None:
@@ -139,7 +140,7 @@ def _cmd_semaphores() -> None:
 def _cmd_timers() -> None:
     """List all timers in a table."""
     if _kl is None:
-        print("warning: layout not initialised")
+        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
         return
     from gdr.kernel import iter_timers
 
@@ -176,7 +177,7 @@ def _cmd_objects(arg: str) -> None:
             If empty, lists counts of all enabled types.
     """
     if _kl is None:
-        warn("layout not initialised")
+        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
         return
 
     if arg.strip():
@@ -219,7 +220,7 @@ def _parse_type_name(name: str) -> int | None:
 def _cmd_system() -> None:
     """Print system summary: tick, current thread, object counts, heap."""
     if _kl is None:
-        warn("layout not initialised")
+        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
         return
 
     tick = get_tick()
@@ -327,9 +328,20 @@ def register_commands(kl: KernelLayout) -> None:
     global _kl
     _kl = kl
 
+    register_command_shell()
+    info("rtthread commands registered (alias: rtt)")
+
+
+def register_command_shell() -> None:
+    """Register the ``rtthread`` command shell before layouts are initialised."""
+    global _registered
+
     if gdb is None:
         raise RuntimeError("not running inside GDB")
 
+    if _registered:
+        return
+
     _RtThreadCmd()
     gdb.execute("alias rtt = rtthread")
-    info("rtthread commands registered (alias: rtt)")
+    _registered = True

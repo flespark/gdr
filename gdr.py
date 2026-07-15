@@ -3,7 +3,8 @@
 
 Usage in GDB::
 
-    (gdb) source gdr.py --rtos rtthread --version 4.0
+    (gdb) source gdr.py
+    (gdb) gdr rtthread 4.0.5
     (gdb) rtthread threads
     (gdb) p *$gdr_thread("main")
 
@@ -16,6 +17,7 @@ functions and aggregate commands.  No RTOS auto-detection is performed.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 
 try:
@@ -28,21 +30,23 @@ from gdr.printers import register_printers
 
 
 def _parse_args() -> dict[str, str]:
-    """Parse ``--rtos`` and ``--version`` from argv or environment variables.
+    """Parse ``--rtos`` and ``--version`` from supported startup inputs.
 
     GDB's ``source`` command does not pass command-line arguments to the
-    sourced script.  Therefore we support two mechanisms:
+    sourced script.  Therefore we support three mechanisms:
 
-    1. **Environment variables** ``GDR_RTOS`` and ``GDR_VERSION`` — the
-       primary mechanism for both pytest-driven tests and GDB ``source``.
-    2. **sys.argv** — kept for CLI usage outside GDB.
+    1. **Environment variables** ``GDR_RTOS`` and ``GDR_VERSION`` — fallback
+       for non-interactive launchers.
+    2. **GDB inferior args** via ``set args --rtos ... --version ...`` — the
+       main interactive GDB path.
+    3. **sys.argv** — kept for CLI usage outside GDB.
 
     Returns:
         Dict with keys ``"rtos"`` and ``"version"``.
     """
     args: dict[str, str] = {}
 
-    # Environment variables (primary mechanism)
+    # Environment variables (fallback mechanism)
     env_rtos = os.environ.get("GDR_RTOS", "")
     env_version = os.environ.get("GDR_VERSION", "")
     if env_rtos:
@@ -50,8 +54,44 @@ def _parse_args() -> dict[str, str]:
     if env_version:
         args["version"] = env_version
 
+    # GDB inferior args (common interactive path):
+    #   (gdb) set args --rtos rtthread --version 4.0.5
+    #   (gdb) source gdr.py
+    if gdb is not None:
+        gdb_args = _gdb_inferior_args()
+        args.update(_parse_argv(gdb_args))
+
     # sys.argv overrides (secondary mechanism)
     argv = sys.argv[1:] if len(sys.argv) > 1 else []
+    args.update(_parse_argv(argv))
+    return args
+
+
+def _gdb_inferior_args() -> list[str]:
+    """Return args configured by GDB's ``set args`` command."""
+    if gdb is None:
+        return []
+    try:
+        output = gdb.execute("show args", to_string=True)
+    except gdb.error:
+        return []
+
+    marker = ' is "'
+    start = output.find(marker)
+    if start < 0:
+        return []
+    value = output[start + len(marker) :].rstrip()
+    if value.endswith('".'):
+        value = value[:-2]
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return []
+
+
+def _parse_argv(argv: list[str]) -> dict[str, str]:
+    """Parse GDR options from an argv-style list."""
+    args: dict[str, str] = {}
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -77,29 +117,73 @@ def _print_usage() -> None:
 GDR — GDB helper for RTOS debugging
 
 Usage:
-    source gdr.py --rtos <name> --version <ver>
+    source gdr.py
+    gdr <rtos> <version>
+
+Automation alternatives:
+    set args --rtos <name> --version <ver>; source gdr.py
+    GDR_RTOS=<name> GDR_VERSION=<ver> gdb ... -ex 'source gdr.py'
 
 Options:
     --rtos <name>      RTOS name (currently: rtthread)
-    --version <ver>    Major version (e.g. 4.0)
+    --version <ver>    RTOS version (e.g. 4.0.5)
     --help             Show this help
 
 Examples:
-    source gdr.py --rtos rtthread --version 4.0
+    source gdr.py
+    gdr rtthread 4.0.5
 """
     )
+
+
+def _parse_init_args(argv: list[str]) -> dict[str, str]:
+    """Parse arguments accepted by the interactive ``gdr`` command."""
+    if argv and argv[0] == "init":
+        argv = argv[1:]
+    if len(argv) == 2 and not argv[0].startswith("-"):
+        return {"rtos": argv[0], "version": argv[1]}
+    return _parse_argv(argv)
+
+
+_GdbCommandBase = gdb.Command if gdb is not None else object
+
+
+class GdrCommand(_GdbCommandBase):  # type: ignore[misc]
+    """Interactive GDR bootstrap command."""
+
+    def __init__(self) -> None:
+        if gdb is None:
+            return
+        super().__init__("gdr", gdb.COMMAND_USER)
+
+    def invoke(self, argument: str, from_tty: bool) -> None:  # noqa: ARG002
+        argv = shlex.split(argument)
+        if not argv or argv[0] in ("help", "--help", "-h"):
+            _print_usage()
+            return
+
+        args = _parse_init_args(argv)
+        rtos = args.get("rtos", "")
+        version = args.get("version", "")
+        if not rtos or not version:
+            warn("usage: gdr <rtos> <version>")
+            _print_usage()
+            return
+        _setup_rtos(rtos, version)
 
 
 def _setup_rtthread(version: str) -> None:
     """Initialise RT-Thread support: probe config, build layout, register all.
 
     Args:
-        version: Major version string (e.g. ``"4.0"``).
+        version: Full RT-Thread version string (e.g. ``"4.0.5"``).
     """
     from rtthread.adapter import register_adapter
     from rtthread.commands import register_commands
     from rtthread.layout import build_layouts, detect_config
+    from rtthread.version import check_version
 
+    check_version(version)
     info(f"setting up RT-Thread v{version}...")
     cfg = detect_config()
     info(
@@ -122,7 +206,7 @@ def _setup_rtos(rtos: str, version: str) -> None:
 
     Args:
         rtos: RTOS name (e.g. ``"rtthread"``).
-        version: Major version string.
+        version: Full RTOS version string.
     """
     if rtos == "rtthread":
         _setup_rtthread(version)
@@ -138,18 +222,21 @@ def initialize() -> None:
         print("GDR must be sourced inside GDB.", file=sys.stderr)
         raise SystemExit(1)
 
+    GdrCommand()
+    from rtthread.commands import register_command_shell
+
+    register_command_shell()
     args = _parse_args()
     rtos = args.get("rtos", "")
     version = args.get("version", "")
 
-    if not rtos:
-        warn("--rtos not specified")
+    if not rtos and not version:
+        info("GDR loaded. Run `gdr rtthread 4.0.5` to initialise RT-Thread support.")
+        return
+    if not rtos or not version:
+        warn("both --rtos and --version are required for automatic initialisation")
         _print_usage()
-        raise SystemExit(1)
-    if not version:
-        warn("--version not specified")
-        _print_usage()
-        raise SystemExit(1)
+        return
 
     _setup_rtos(rtos, version)
 

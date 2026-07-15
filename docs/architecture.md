@@ -53,8 +53,10 @@ duplicating what `rust-gdb` / `gdb` already display well.
 Previous versions attempted to detect the RTOS and parse its version string
 from symbols, then match struct patterns. This was fragile (failed on
 attach, failed across remote configs) and duplicated logic. Users now
-specify `--rtos rtthread --version 4.0`; only the *major* version is
-needed because minor versions rarely change structs.
+specify the RTOS and exact version, for example
+`--rtos rtthread --version 4.0.5`. The RT-Thread adapter validates the
+supported 4.x.x range, while layout differences are still handled by probing
+target symbols and DWARF rather than branching on every patch version.
 
 ### Config features are probed, not specified
 
