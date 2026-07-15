@@ -28,10 +28,15 @@ import pytest
 
 # Paths
 GDR_ROOT = Path(__file__).resolve().parent.parent
+# Reason: prefer the in-repo fixture so local, CI, and any contributor see
+# the same ELF; the legacy ~/Source path is a fallback for the maintainer's
+# existing dev tree. CI overrides via GDR_ELF_PATH pointing at its build dir.
+_FIXTURE_ELF = GDR_ROOT / "tests" / "fixtures" / "rtthread_qemu.elf"
+_DEV_ELF = Path.home() / "Source/rt-thread/bsp/qemu-vexpress-a9/rtthread.elf"
 ELF_PATH = Path(
     os.environ.get(
         "GDR_ELF_PATH",
-        str(Path.home() / "Source/rt-thread/bsp/qemu-vexpress-a9/rtthread.elf"),
+        str(_FIXTURE_ELF) if _FIXTURE_ELF.exists() else str(_DEV_ELF),
     )
 )
 GDB_BIN = os.environ.get("GDR_GDB", "gdb")

@@ -1,0 +1,123 @@
+diff --git a/bsp/qemu-vexpress-a9/applications/main.c b/bsp/qemu-vexpress-a9/applications/main.c
+index e8ef5165..f9acfa07 100644
+--- a/bsp/qemu-vexpress-a9/applications/main.c
++++ b/bsp/qemu-vexpress-a9/applications/main.c
+@@ -1,20 +1,109 @@
+ /*
+- * Copyright (c) 2006-2020, RT-Thread Development Team
++ * GDR test fixture: creates known kernel objects for QEMU smoke tests.
+  *
+- * SPDX-License-Identifier: Apache-2.0
++ * When the system reaches the idle loop, the following objects exist:
++ * - Threads: "main" (finishes quickly), "worker1", "worker2", "worker3"
++ * - Semaphores: "test_sem" (value=1)
++ * - Mutexes: "test_mutex" (held by worker1)
++ * - Timers: "test_timer" (periodic, 100 ticks)
+  *
+- * Change Logs:
+- * Date           Author       Notes
+- * 2020/12/31     Bernard      Add license info
++ * The GDB test suite stops at rt_thread_idle_excute and asserts these
++ * objects are visible via $gdr_thread(), rtthread threads, etc.
+  */
+ 
+-#include <stdint.h>
+-#include <stdio.h>
+-#include <stdlib.h>
++#include <rtthread.h>
++
++#define THREAD_STACK_SIZE 1024
++#define THREAD_PRIORITY   20
++
++static struct rt_semaphore test_sem;
++static struct rt_mutex test_mutex;
++static struct rt_timer test_timer;
++
++static rt_uint8_t worker1_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker2_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker3_stack[THREAD_STACK_SIZE];
++
++static struct rt_thread worker1_thread;
++static struct rt_thread worker2_thread;
++static struct rt_thread worker3_thread;
++
++static volatile int worker1_running = 0;
++static volatile int worker2_running = 0;
++static volatile int worker3_running = 0;
++
++static void test_timer_timeout(void *parameter)
++{
++    (void)parameter;
++}
++
++static void worker1_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_mutex_take(&test_mutex, RT_WAITING_FOREVER);
++    worker1_running = 1;
++
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++static void worker2_entry(void *parameter)
++{
++    (void)parameter;
++
++    worker2_running = 1;
++
++    while (1)
++    {
++        rt_sem_take(&test_sem, RT_WAITING_FOREVER);
++        rt_thread_mdelay(50);
++    }
++}
++
++static void worker3_entry(void *parameter)
++{
++    (void)parameter;
++
++    worker3_running = 1;
++
++    while (1)
++    {
++        rt_thread_mdelay(200);
++    }
++}
+ 
+ int main(void)
+ {
+-    printf("hello rt-thread\n");
++    rt_kprintf("GDR test fixture starting...\n");
++
++    /* Create IPC objects */
++    rt_sem_init(&test_sem, "test_sem", 1, RT_IPC_FLAG_FIFO);
++    rt_mutex_init(&test_mutex, "test_mutex", RT_IPC_FLAG_FIFO);
++
++    /* Create timer (periodic, 100 ticks) */
++    rt_timer_init(&test_timer, "test_timer", test_timer_timeout, RT_NULL,
++                  100, RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
++    rt_timer_start(&test_timer);
++
++    /* Create worker threads */
++    rt_thread_init(&worker1_thread, "worker1", worker1_entry, RT_NULL,
++                   worker1_stack, sizeof(worker1_stack),
++                   THREAD_PRIORITY, 10);
++    rt_thread_init(&worker2_thread, "worker2", worker2_entry, RT_NULL,
++                   worker2_stack, sizeof(worker2_stack),
++                   THREAD_PRIORITY + 1, 10);
++    rt_thread_init(&worker3_thread, "worker3", worker3_entry, RT_NULL,
++                   worker3_stack, sizeof(worker3_stack),
++                   THREAD_PRIORITY + 2, 10);
++
++    rt_thread_startup(&worker1_thread);
++    rt_thread_startup(&worker2_thread);
++    rt_thread_startup(&worker3_thread);
++
++    rt_kprintf("GDR test fixture ready.\n");
+ 
+     return 0;
+ }

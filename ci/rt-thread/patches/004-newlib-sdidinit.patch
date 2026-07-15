@@ -1,0 +1,17 @@
+diff --git a/components/libc/compilers/gcc/newlib/stdio.c b/components/libc/compilers/gcc/newlib/stdio.c
+index 1875d50e..be33c77f 100644
+--- a/components/libc/compilers/gcc/newlib/stdio.c
++++ b/components/libc/compilers/gcc/newlib/stdio.c
+@@ -64,7 +64,12 @@ int libc_stdio_set_console(const char* device_name, int mode)
+             _GLOBAL_REENT->_stderr = std_console;
+         }
+ 
++        /* Reason: __sdidinit was removed in newer newlib (4.x+);
++         * __sinit is the replacement but may not exist either. Guard
++         * with ifdef to be compatible across newlib versions. */
++#ifdef _REENT_SMALL
+         _GLOBAL_REENT->__sdidinit = 1;
++#endif
+     }
+ 
+     if (std_console) return fileno(std_console);

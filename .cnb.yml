@@ -1,0 +1,114 @@
+# CNB pipeline for GDR.
+#
+# Two pipelines, each running on push to main and on PR:
+#  1. lint      — ruff check/format (fast, no QEMU)
+#  2. qemu-test — build RT-Thread test ELF + run pytest suite against a live
+#                 QEMU session
+#
+# The qemu-test pipeline uses `docker.build` with `ci/Dockerfile`; the resulting
+# image is cached by hash on the CNB artifact registry, so subsequent runs reuse
+# it. CNB's `pull_request` reads the configured pipeline from the *target*
+# branch's `.cnb.yml` (here: main) and checks out the pre-merged commit — so
+# defining both `push:` and `pull_request:` under `main:` is the canonical way
+# to gate every push and every PR.
+#
+# Arch: `cnb:arch:amd64` — vexpress-a9 is Cortex-A9 (32-bit ARM); we run
+# `qemu-system-arm` under TCG software emulation on amd64. An arm64 host gains
+# nothing here (vexpress-a9 != the host's arm64 ISA). amd64 is simplest.
+# Ref: https://docs.cnb.cool/zh/build/build-node.html
+
+main: # branch: main
+  push:
+    # ---------------------------------------------------------------
+    # lint: static checks. Uses python:3.12 because the CNB default image
+    # `cnbcool/default-build-env` only ships git/jq/rsync/curl — no pip.
+    # ---------------------------------------------------------------
+    - name: lint
+      docker:
+        image: python:3.12
+      stages:
+        - name: ruff check
+          script: |
+            pip install --quiet "ruff>=0.11"
+            ruff check .
+        - name: ruff format check
+          script: ruff format --check .
+
+    # ---------------------------------------------------------------
+    # qemu-test: build rt-thread ELF + run pytest suite against QEMU.
+    # ---------------------------------------------------------------
+    - name: qemu-test
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      docker:
+        # ci/Dockerfile pins qemu-system-arm + gdb-multiarch + arm-none-eabi-gcc
+        # + scons + uv. `by` lets CNB invalidate the cached image only when
+        # the Dockerfile changes; rebuilds are otherwise read from the
+        # artifact registry.
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+      volumes:
+        # Cache the RT-Thread clone + scons build outputs across runs.
+        # `copy-on-write` lets concurrent PR builds share the cache safely.
+        - /tmp/rt-thread-build:copy-on-write
+        - /root/.cache/uv:copy-on-write
+      env:
+        # Pin the RT-Thread ref so an upstream build break doesn't randomly
+        # fail our CI. Bump deliberately when the test fixture is updated
+        # against a newer RT-Thread release.
+        RT_THREAD_REF: v4.0.5
+        # Where build-rtt.sh leaves rtthread.elf; conftest picks it up.
+        GDR_ELF_PATH: /tmp/rt-thread-build/bsp/qemu-vexpress-a9/rtthread.elf
+        # Use gdb-multiarch (the container's GDB with ARM target support).
+        GDR_GDB: gdb-multiarch
+      stages:
+        - name: build rt-thread test ELF
+          script: |
+            bash ci/rt-thread/build-rtt.sh
+        - name: uv sync (dev deps)
+          script: uv sync --group dev
+        - name: pytest (QEMU closed-loop)
+          script: |
+            uv run pytest tests/ -v --tb=short
+
+  pull_request:
+    # Mirror of the push pipelines, for pre-merge feedback on PRs.
+    - name: lint
+      docker:
+        image: python:3.12
+      stages:
+        - name: ruff check
+          script: |
+            pip install --quiet "ruff>=0.11"
+            ruff check .
+        - name: ruff format check
+          script: ruff format --check .
+
+    - name: qemu-test
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+      volumes:
+        - /tmp/rt-thread-build:copy-on-write
+        - /root/.cache/uv:copy-on-write
+      env:
+        RT_THREAD_REF: v4.0.5
+        GDR_ELF_PATH: /tmp/rt-thread-build/bsp/qemu-vexpress-a9/rtthread.elf
+        GDR_GDB: gdb-multiarch
+      stages:
+        - name: build rt-thread test ELF
+          script: |
+            bash ci/rt-thread/build-rtt.sh
+        - name: uv sync (dev deps)
+          script: uv sync --group dev
+        - name: pytest (QEMU closed-loop)
+          script: |
+            uv run pytest tests/ -v --tb=short
