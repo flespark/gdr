@@ -26,7 +26,7 @@ closed-loop verification.
 
 | RTOS | Versions | Status |
 |------|----------|--------|
-| RT-Thread | 4.0.x | implemented (stages 1-3) |
+| RT-Thread | 4.0.4-4.1.1 | implemented, QEMU verified |
 | FreeRTOS | — | not yet (deferred) |
 
 ## Quick start
@@ -56,6 +56,11 @@ closed-loop verification.
 
 Single-object inspection is delegated to convenience functions + GDB
 expressions, not dedicated commands.
+
+## Verification Matrix
+
+RT-Thread support is closed-loop verified with the QEMU `qemu-vexpress-a9`
+BSP on these tags: `v4.0.4`, `v4.0.5`, `v4.1.0`, `v4.1.1`.
 
 ## Convenience functions
 

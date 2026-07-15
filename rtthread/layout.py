@@ -43,6 +43,7 @@ RT_OBJECT_CLASS_MEMHEAP = 0x07
 RT_OBJECT_CLASS_MEMPOOL = 0x08
 RT_OBJECT_CLASS_DEVICE = 0x09
 RT_OBJECT_CLASS_TIMER = 0x0A
+RT_OBJECT_CLASS_MEMORY = 0x0C
 
 # Timer flag bits (rtdef.h)
 RT_TIMER_FLAG_ACTIVATED = 0x1
@@ -69,6 +70,7 @@ OBJECT_TYPE_NAMES: dict[int, str] = {
     RT_OBJECT_CLASS_MEMPOOL: "MEMPOOL",
     RT_OBJECT_CLASS_DEVICE: "DEVICE",
     RT_OBJECT_CLASS_TIMER: "TIMER",
+    RT_OBJECT_CLASS_MEMORY: "MEMORY",
 }
 
 # Thread stat → display name (low 3 bits of rt_thread.stat).  Matches
@@ -118,6 +120,9 @@ class RtConfig:
     using_signals: bool = False
     using_lwp: bool = False
     using_cpu_usage: bool = False
+    using_memory_object: bool = False
+    thread_has_init_priority: bool = True
+    thread_has_pthread_data: bool = False
     heap_type: str = "none"  # "small_mem", "slab", "memheap", "none"
 
 
@@ -152,9 +157,14 @@ def detect_config() -> RtConfig:
     cfg.using_signals = symbol_exists("rt_signal_init")
     cfg.using_lwp = symbol_exists("lwp_pid_find")
 
-    # Reason: heap_type is probed by internal static symbols because all
-    # allocators share the same public API (rt_malloc/rt_free).
-    if symbol_exists("memusage"):
+    cfg.using_memory_object = lookup_type("struct rt_memory") is not None
+
+    # Reason: heap_type is probed by internal symbols first for 4.0.x, then by
+    # allocator entry points for 4.1.x where heap implementations are wrapped
+    # by struct rt_memory objects instead of exposed static globals.
+    if cfg.using_memory_object and symbol_exists("rt_smem_init"):
+        cfg.heap_type = "small_mem"
+    elif symbol_exists("memusage"):
         cfg.heap_type = "slab"
     elif symbol_exists("heap_end"):
         cfg.heap_type = "small_mem"
@@ -166,9 +176,10 @@ def detect_config() -> RtConfig:
     # CPU usage tracking adds a field to rt_thread; detect by type introspection
     rt_thread_type = lookup_type("struct rt_thread")
     if rt_thread_type is not None:
-        cfg.using_cpu_usage = any(
-            f.name == "duration_tick" for f in rt_thread_type.fields()
-        )
+        thread_fields = {f.name for f in rt_thread_type.fields()}
+        cfg.thread_has_init_priority = "init_priority" in thread_fields
+        cfg.thread_has_pthread_data = "pthread_data" in thread_fields
+        cfg.using_cpu_usage = any(f_name == "duration_tick" for f_name in thread_fields)
 
     return cfg
 
@@ -258,7 +269,8 @@ def build_thread_layout(cfg: RtConfig) -> StructLayout:
     f["current_priority"] = StructField(
         "current_priority", ("current_priority",), summary=True
     )
-    f["init_priority"] = StructField("init_priority", ("init_priority",))
+    if cfg.thread_has_init_priority:
+        f["init_priority"] = StructField("init_priority", ("init_priority",))
     f["number_mask"] = StructField("number_mask", ("number_mask",))
 
     # Ticks
@@ -277,6 +289,10 @@ def build_thread_layout(cfg: RtConfig) -> StructLayout:
     if cfg.using_cpu_usage:
         f["duration_tick"] = StructField(
             "duration_tick", ("duration_tick",), optional=True
+        )
+    if cfg.thread_has_pthread_data:
+        f["pthread_data"] = StructField(
+            "pthread_data", ("pthread_data",), kind="ptr", optional=True
         )
 
     return sl
@@ -409,6 +425,18 @@ def build_mempool_layout() -> StructLayout:
     return sl
 
 
+def build_memory_layout() -> StructLayout:
+    """Build ``rt_memory`` layout (RT-Thread 4.1.x heap object)."""
+    sl = StructLayout("struct rt_memory")
+    sl.fields.update(_object_fields(1))  # parent = rt_object
+    sl.fields["algorithm"] = StructField("algorithm", ("algorithm",), kind="string")
+    sl.fields["address"] = StructField("address", ("address",), kind="ptr")
+    sl.fields["total"] = StructField("total", ("total",), summary=True)
+    sl.fields["used"] = StructField("used", ("used",), summary=True)
+    sl.fields["max"] = StructField("max", ("max",), summary=True)
+    return sl
+
+
 def build_object_information_layout() -> StructLayout:
     """Build ``rt_object_information`` layout (COUPLED: rtdef.h)."""
     sl = StructLayout("struct rt_object_information")
@@ -448,6 +476,7 @@ _ALL_OBJECT_TYPES: list[ObjectTypeInfo] = [
     ObjectTypeInfo(RT_OBJECT_CLASS_MEMPOOL, "struct rt_mempool", ("parent", "list")),
     ObjectTypeInfo(RT_OBJECT_CLASS_DEVICE, "struct rt_device", ("parent", "list")),
     ObjectTypeInfo(RT_OBJECT_CLASS_TIMER, "struct rt_timer", ("parent", "list")),
+    ObjectTypeInfo(RT_OBJECT_CLASS_MEMORY, "struct rt_memory", ("parent", "list")),
 ]
 
 
@@ -462,6 +491,7 @@ def _build_object_types(cfg: RtConfig) -> dict[int, ObjectTypeInfo]:
         RT_OBJECT_CLASS_MEMHEAP: cfg.using_memheap,
         RT_OBJECT_CLASS_MEMPOOL: cfg.using_mempool,
         RT_OBJECT_CLASS_DEVICE: cfg.using_device,
+        RT_OBJECT_CLASS_MEMORY: cfg.using_memory_object,
     }
     result = {}
     for info in _ALL_OBJECT_TYPES:
@@ -536,6 +566,8 @@ def build_layouts(cfg: RtConfig) -> KernelLayout:
         kl.structs["struct rt_memheap"] = build_memheap_layout()
     if cfg.using_mempool:
         kl.structs["struct rt_mempool"] = build_mempool_layout()
+    if cfg.using_memory_object:
+        kl.structs["struct rt_memory"] = build_memory_layout()
 
     # List hooks
     kl.list_hooks = _build_list_hooks(cfg)

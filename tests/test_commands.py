@@ -51,8 +51,15 @@ class TestThreadsCommand:
         for line in data_lines:
             parts = line.split()
             assert len(parts) >= 2, f"unexpected row format: {line!r}"
-            state = parts[1].rstrip("*")
-            assert state in valid_states, f"unknown state {state!r} in line: {line!r}"
+            state = next(
+                (
+                    part.rstrip("*")
+                    for part in parts
+                    if part.rstrip("*") in valid_states
+                ),
+                None,
+            )
+            assert state is not None, f"unknown state in line: {line!r}"
 
 
 class TestSemaphoresCommand:

@@ -1,0 +1,13 @@
+diff --git a/bsp/qemu-vexpress-a9/rtconfig.h b/bsp/qemu-vexpress-a9/rtconfig.h
+index b6b049fff..53d3c13b3 100644
+--- a/bsp/qemu-vexpress-a9/rtconfig.h
++++ b/bsp/qemu-vexpress-a9/rtconfig.h
+@@ -160,7 +160,7 @@
+ #define RT_USING_POSIX_AIO
+ #define RT_USING_POSIX_DELAY
+ #define RT_USING_POSIX_CLOCK
+-#define RT_USING_PTHREADS
++/* #define RT_USING_PTHREADS */
+ #define PTHREAD_NUM_MAX 8
+ 
+ /* Interprocess Communication (IPC) */

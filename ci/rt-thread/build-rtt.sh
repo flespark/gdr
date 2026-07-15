@@ -4,7 +4,7 @@
 # Inputs (env):
 #   RT_THREAD_REPO  - rt-thread git URL or local path (default: upstream)
 #   RT_THREAD_REF   - ref to checkout (default: v4.0.5)
-#   PATCH_DIR       - directory of *.patch files to apply (default: this script's dir)
+#   PATCH_DIR       - directory of *.patch files to apply (overrides auto selection)
 #   BUILD_DIR        - working dir (default: /tmp/rt-thread-build)
 #   OUT_ELF          - destination for rtthread.elf (default: BUILD_DIR/rtthread.elf)
 #   CROSS_TOOL_PREFIX - arm-none-eabi- (default)
@@ -18,7 +18,7 @@ RT_THREAD_REF="${RT_THREAD_REF:-v4.0.5}"
 # patch glob silently fails — leaving patches unapplied and breaking
 # the build downstream.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PATCH_DIR="$(cd "${PATCH_DIR:-"$SCRIPT_DIR/patches"}" && pwd)"
+PATCH_ROOT="$SCRIPT_DIR/patches"
 BUILD_DIR="${BUILD_DIR:-/tmp/rt-thread-build}"
 OUT_ELF="${OUT_ELF:-$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf}"
 CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-arm-none-eabi-}"
@@ -29,7 +29,29 @@ RTOS_TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-$(dirname "$(command -v ${CROSS_TOOL
 # ≠ dangling изменений that would otherwise survive across CI reruns.
 echo "[gdr-ci] RT-Thread repo: $RT_THREAD_REPO@$RT_THREAD_REF"
 echo "[gdr-ci] build dir: $BUILD_DIR"
-echo "[gdr-ci] patch dir: $PATCH_DIR"
+
+PATCH_DIRS=()
+if [[ -n "${PATCH_DIR:-}" ]]; then
+    PATCH_DIRS+=("$(cd "$PATCH_DIR" && pwd)")
+else
+    case "$RT_THREAD_REF" in
+        v4.0.4|v4.0.5)
+            PATCH_DIRS+=("$PATCH_ROOT/4.0.4-4.0.5")
+            ;;
+        v4.1.0|v4.1.1|v4.1.0-beta|v4.1.1-beta|lts-v4.1.x|origin/lts-v4.1.x)
+            PATCH_DIRS+=("$PATCH_ROOT/4.1.x")
+            ;;
+        *)
+            echo "[gdr-ci] FAILED: no default patch set for RT_THREAD_REF=$RT_THREAD_REF" >&2
+            echo "[gdr-ci] set PATCH_DIR explicitly or add a versioned patch set" >&2
+            exit 1
+            ;;
+    esac
+fi
+echo "[gdr-ci] patch dirs:"
+for dir in "${PATCH_DIRS[@]}"; do
+    echo "  $dir"
+done
 
 if [[ -d "$BUILD_DIR/.git" ]]; then
     echo "[gdr-ci] existing clone found; reusing"
@@ -44,16 +66,27 @@ else
     cd "$BUILD_DIR"
 fi
 
-echo "[gdr-ci] applying patches from $PATCH_DIR"
+echo "[gdr-ci] applying patches"
 shopt -s nullglob
-patches=("$PATCH_DIR"/*.patch)
+patches=()
+for dir in "${PATCH_DIRS[@]}"; do
+    patches+=("$dir"/*.patch)
+done
 shopt -u nullglob
 if [[ ${#patches[@]} -eq 0 ]]; then
-    echo "[gdr-ci] FAILED: no .patch files found in $PATCH_DIR" >&2
+    echo "[gdr-ci] FAILED: no .patch files found" >&2
     exit 1
 fi
 for patch in "${patches[@]}"; do
     name="$(basename "$patch")"
+    if [[ "$RT_THREAD_REF" == v4.1.0* && "$name" == "003-warn-fix.patch" ]]; then
+        echo "  $name (skipped for $RT_THREAD_REF)"
+        continue
+    fi
+    if [[ "$RT_THREAD_REF" == lts-v4.1.x || "$RT_THREAD_REF" == origin/lts-v4.1.x ]] && [[ "$name" == "004-scons-deque-list.patch" ]]; then
+        echo "  $name (skipped for $RT_THREAD_REF)"
+        continue
+    fi
     echo "  $name"
     # Apply strictly: after `git reset --hard` above the tree is pristine,
     # so any failure here is a real conflict, not a "already applied".

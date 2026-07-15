@@ -56,23 +56,20 @@ main: # branch: main
         - /tmp/rt-thread-build:copy-on-write
         - /root/.cache/uv:copy-on-write
       env:
-        # Pin the RT-Thread ref so an upstream build break doesn't randomly
-        # fail our CI. Bump deliberately when the test fixture is updated
-        # against a newer RT-Thread release.
-        RT_THREAD_REF: v4.0.5
-        # Where build-rtt.sh leaves rtthread.elf; conftest picks it up.
-        GDR_ELF_PATH: /tmp/rt-thread-build/bsp/qemu-vexpress-a9/rtthread.elf
         # Use gdb-multiarch (the container's GDB with ARM target support).
         GDR_GDB: gdb-multiarch
       stages:
-        - name: build rt-thread test ELF
-          script: |
-            bash ci/rt-thread/build-rtt.sh
         - name: uv sync (dev deps)
           script: uv sync --group dev
-        - name: pytest (QEMU closed-loop)
+        - name: pytest matrix (QEMU closed-loop)
           script: |
-            uv run pytest tests/ -v --tb=short
+            for ref in v4.0.5 v4.1.1; do
+              export RT_THREAD_REF="$ref"
+              export BUILD_DIR="/tmp/rt-thread-build/$ref"
+              export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
+              bash ci/rt-thread/build-rtt.sh
+              uv run pytest tests/ -v --tb=short
+            done
 
   pull_request:
     # Mirror of the push pipelines, for pre-merge feedback on PRs.
@@ -100,15 +97,16 @@ main: # branch: main
         - /tmp/rt-thread-build:copy-on-write
         - /root/.cache/uv:copy-on-write
       env:
-        RT_THREAD_REF: v4.0.5
-        GDR_ELF_PATH: /tmp/rt-thread-build/bsp/qemu-vexpress-a9/rtthread.elf
         GDR_GDB: gdb-multiarch
       stages:
-        - name: build rt-thread test ELF
-          script: |
-            bash ci/rt-thread/build-rtt.sh
         - name: uv sync (dev deps)
           script: uv sync --group dev
-        - name: pytest (QEMU closed-loop)
+        - name: pytest matrix (QEMU closed-loop)
           script: |
-            uv run pytest tests/ -v --tb=short
+            for ref in v4.0.5 v4.1.1; do
+              export RT_THREAD_REF="$ref"
+              export BUILD_DIR="/tmp/rt-thread-build/$ref"
+              export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
+              bash ci/rt-thread/build-rtt.sh
+              uv run pytest tests/ -v --tb=short
+            done
