@@ -1,0 +1,12 @@
+diff --git a/include/rtlibc.h b/include/rtlibc.h
+index 9467b73b5..95cf7a548 100644
+--- a/include/rtlibc.h
++++ b/include/rtlibc.h
+@@ -18,7 +18,6 @@
+ #include "libc/libc_fcntl.h"
+ #include "libc/libc_ioctl.h"
+ #include "libc/libc_dirent.h"
+-#include "libc/libc_signal.h"
+ #include "libc/libc_fdset.h"
+ #include "libc/libc_limits.h"
+ #include "libc/libc_stdio.h"

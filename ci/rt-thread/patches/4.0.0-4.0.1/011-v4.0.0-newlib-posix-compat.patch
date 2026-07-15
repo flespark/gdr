@@ -1,0 +1,29 @@
+diff --git a/bsp/qemu-vexpress-a9/rtconfig.h b/bsp/qemu-vexpress-a9/rtconfig.h
+index 6b6cf1b7d..b6ffcbd7a 100644
+--- a/bsp/qemu-vexpress-a9/rtconfig.h
++++ b/bsp/qemu-vexpress-a9/rtconfig.h
+@@ -188,7 +188,7 @@
+ #define RT_USING_POSIX
+ #define RT_USING_POSIX_MMAP
+ #define RT_USING_POSIX_TERMIOS
+-#define RT_USING_POSIX_AIO
++/* #define RT_USING_POSIX_AIO */
+ /* RT_USING_MODULE is not set */
+ 
+ /* Network */
+diff --git a/components/libc/compilers/newlib/stdio.c b/components/libc/compilers/newlib/stdio.c
+index 17cac0a21..4a442c13d 100644
+--- a/components/libc/compilers/newlib/stdio.c
++++ b/components/libc/compilers/newlib/stdio.c
+@@ -64,7 +64,11 @@ int libc_stdio_set_console(const char* device_name, int mode)
+             _GLOBAL_REENT->_stderr = std_console;
+         }
+ 
++        /* Reason: __sdidinit was removed in newer newlib (4.x+). Guard it
++         * so this legacy fixture still builds with modern host toolchains. */
++#ifdef _REENT_SMALL
+         _GLOBAL_REENT->__sdidinit = 1;
++#endif
+     }
+ 
+     if (std_console) return fileno(std_console);

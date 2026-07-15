@@ -26,7 +26,7 @@ closed-loop verification.
 
 | RTOS | Versions | Status |
 |------|----------|--------|
-| RT-Thread | 4.0.4-4.1.1 | implemented, QEMU verified |
+| RT-Thread | 4.0.0-4.1.1 | implemented, QEMU verified |
 | FreeRTOS | — | not yet (deferred) |
 
 ## Quick start
@@ -60,7 +60,8 @@ expressions, not dedicated commands.
 ## Verification Matrix
 
 RT-Thread support is closed-loop verified with the QEMU `qemu-vexpress-a9`
-BSP on these tags: `v4.0.4`, `v4.0.5`, `v4.1.0`, `v4.1.1`.
+BSP on these tags: `v4.0.0`, `v4.0.1`, `v4.0.2`, `v4.0.3`, `v4.0.4`,
+`v4.0.5`, `v4.1.0`, `v4.1.1`.
 
 ## Convenience functions
 

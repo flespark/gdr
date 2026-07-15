@@ -63,7 +63,7 @@ main: # branch: main
           script: uv sync --group dev
         - name: pytest matrix (QEMU closed-loop)
           script: |
-            for ref in v4.0.5 v4.1.1; do
+            for ref in v4.0.0 v4.0.5 v4.1.1; do
               export RT_THREAD_REF="$ref"
               export BUILD_DIR="/tmp/rt-thread-build/$ref"
               export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
@@ -103,7 +103,7 @@ main: # branch: main
           script: uv sync --group dev
         - name: pytest matrix (QEMU closed-loop)
           script: |
-            for ref in v4.0.5 v4.1.1; do
+            for ref in v4.0.0 v4.0.5 v4.1.1; do
               export RT_THREAD_REF="$ref"
               export BUILD_DIR="/tmp/rt-thread-build/$ref"
               export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"

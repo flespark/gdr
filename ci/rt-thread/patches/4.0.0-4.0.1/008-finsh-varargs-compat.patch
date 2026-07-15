@@ -1,0 +1,13 @@
+diff --git a/components/finsh/finsh_ops.c b/components/finsh/finsh_ops.c
+index a11c99674..1f5e128cf 100644
+--- a/components/finsh/finsh_ops.c
++++ b/components/finsh/finsh_ops.c
+@@ -429,7 +429,7 @@ void OP_call()
+     unsigned int  parameters, i;
+ 
+     typedef unsigned long var_t;
+-    typedef var_t (*op_func)();
++    typedef var_t (*op_func)(...);
+     op_func f;
+     var_t   r;
+ 

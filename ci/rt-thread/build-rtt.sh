@@ -35,6 +35,15 @@ if [[ -n "${PATCH_DIR:-}" ]]; then
     PATCH_DIRS+=("$(cd "$PATCH_DIR" && pwd)")
 else
     case "$RT_THREAD_REF" in
+        v4.0.0|v4.0.1)
+            PATCH_DIRS+=("$PATCH_ROOT/4.0.0-4.0.1")
+            ;;
+        v4.0.2)
+            PATCH_DIRS+=("$PATCH_ROOT/4.0.2")
+            ;;
+        v4.0.3)
+            PATCH_DIRS+=("$PATCH_ROOT/4.0.3")
+            ;;
         v4.0.4|v4.0.5)
             PATCH_DIRS+=("$PATCH_ROOT/4.0.4-4.0.5")
             ;;
@@ -84,6 +93,18 @@ for patch in "${patches[@]}"; do
         continue
     fi
     if [[ "$RT_THREAD_REF" == lts-v4.1.x || "$RT_THREAD_REF" == origin/lts-v4.1.x ]] && [[ "$name" == "004-scons-deque-list.patch" ]]; then
+        echo "  $name (skipped for $RT_THREAD_REF)"
+        continue
+    fi
+    if [[ "$RT_THREAD_REF" == v4.0.0 && "$name" == "010-automac-python3-compat.patch" ]]; then
+        echo "  $name (skipped for $RT_THREAD_REF)"
+        continue
+    fi
+    if [[ "$RT_THREAD_REF" == v4.0.0 && "$name" == "009-newlib-posix-compat.patch" ]]; then
+        echo "  $name (skipped for $RT_THREAD_REF)"
+        continue
+    fi
+    if [[ "$RT_THREAD_REF" == v4.0.1 && "$name" == "011-v4.0.0-newlib-posix-compat.patch" ]]; then
         echo "  $name (skipped for $RT_THREAD_REF)"
         continue
     fi

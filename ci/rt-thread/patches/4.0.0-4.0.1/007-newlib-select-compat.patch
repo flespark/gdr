@@ -1,0 +1,15 @@
+diff --git a/components/net/sal_socket/include/dfs_net/sys_select/sys/select.h b/components/net/sal_socket/include/dfs_net/sys_select/sys/select.h
+index 3d0a65152..20899d664 100644
+--- a/components/net/sal_socket/include/dfs_net/sys_select/sys/select.h
++++ b/components/net/sal_socket/include/dfs_net/sys_select/sys/select.h
+@@ -11,6 +11,10 @@
+ #ifndef SELECT_H__
+ #define SELECT_H__
+ 
++#if defined(RT_USING_NEWLIB) && defined(__GNUC__)
++#include_next <sys/select.h>
++#endif
++
+ #include <dfs_select.h>
+ 
+ #endif

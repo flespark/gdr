@@ -159,7 +159,7 @@ def get_current_thread() -> gdb.Value | None:
 
 
 def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
-    """Iterate all active timers via the timer list hook.
+    """Iterate timers via active timer lists plus the object registry.
 
     Args:
         kl: Kernel layout with timer list hooks.
@@ -167,20 +167,33 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
     Yields:
         Dereferenced ``gdb.Value`` of ``struct rt_timer``.
     """
+    from rtthread.layout import RT_OBJECT_CLASS_TIMER
+
+    seen: set[int] = set()
+
     hook = kl.list_hooks.get("timer_list")
-    if hook is None:
-        return
-    head = eval_safe(hook.head_expr)
-    if head is None:
-        return
-    yield from iter_list(head, hook)
+    if hook is not None:
+        head = eval_safe(hook.head_expr)
+        if head is not None:
+            for timer in iter_list(head, hook):
+                seen.add(int(timer.address))
+                yield timer
 
     # Also iterate soft timer list if present
     soft_hook = kl.list_hooks.get("soft_timer_list")
     if soft_hook is not None:
         soft_head = eval_safe(soft_hook.head_expr)
         if soft_head is not None:
-            yield from iter_list(soft_head, soft_hook)
+            for timer in iter_list(soft_head, soft_hook):
+                seen.add(int(timer.address))
+                yield timer
+
+    # Reason: some RT-Thread 4.0.x builds register timers in the object
+    # container before they appear in the active timer lists at our breakpoint.
+    for timer in iter_objects(RT_OBJECT_CLASS_TIMER, kl):
+        addr = int(timer.address)
+        if addr not in seen:
+            yield timer
 
 
 def get_tick() -> int | None:

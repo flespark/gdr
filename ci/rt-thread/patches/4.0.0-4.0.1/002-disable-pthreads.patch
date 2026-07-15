@@ -1,0 +1,13 @@
+diff --git a/bsp/qemu-vexpress-a9/rtconfig.h b/bsp/qemu-vexpress-a9/rtconfig.h
+index 6b6cf1b7d..4893ef0ac 100644
+--- a/bsp/qemu-vexpress-a9/rtconfig.h
++++ b/bsp/qemu-vexpress-a9/rtconfig.h
+@@ -144,7 +144,7 @@
+ /* POSIX layer and C standard library */
+ 
+ #define RT_USING_LIBC
+-#define RT_USING_PTHREADS
++/* #define RT_USING_PTHREADS */
+ #define RT_USING_POSIX
+ #define RT_USING_POSIX_MMAP
+ #define RT_USING_POSIX_TERMIOS

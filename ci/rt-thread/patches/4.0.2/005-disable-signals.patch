@@ -1,0 +1,13 @@
+diff --git a/bsp/qemu-vexpress-a9/rtconfig.h b/bsp/qemu-vexpress-a9/rtconfig.h
+index 0e798fe2fc..e10ae7b50 100644
+--- a/bsp/qemu-vexpress-a9/rtconfig.h
++++ b/bsp/qemu-vexpress-a9/rtconfig.h
+@@ -31,7 +31,7 @@
+ #define RT_USING_EVENT
+ #define RT_USING_MAILBOX
+ #define RT_USING_MESSAGEQUEUE
+-#define RT_USING_SIGNALS
++/* #define RT_USING_SIGNALS */
+ 
+ /* Memory Management */
+ 
