@@ -29,6 +29,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-system-arm \
         gdb-multiarch \
         gcc-arm-none-eabi \
+        libnewlib-arm-none-eabi \
+        libnewlib-dev \
         binutils-arm-none-eabi \
         python3 \
         python3-pip \
