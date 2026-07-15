@@ -20,7 +20,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.gdb_bridge import read_cstring, read_int
-from gdr.layout import KernelLayout, StructLayout, read_field
+from gdr.layout import KernelLayout, StructField, StructLayout, read_field
 
 # Display name for each struct type (short tag for the folded output)
 _DISPLAY_NAMES: dict[str, str] = {
@@ -36,19 +36,20 @@ _DISPLAY_NAMES: dict[str, str] = {
 }
 
 
-def _format_field(value, kind: str) -> str:
-    """Format a ``gdb.Value`` for one-line display based on its kind hint.
+def _format_field(value, field: StructField) -> str:
+    """Format a ``gdb.Value`` for one-line display based on its field hint.
 
     Args:
         value: ``gdb.Value`` or ``None``.
-        kind: Field kind hint (``"string"``, ``"ptr"``, ``"enum"``,
-            ``"flags"``, or ``""`` for plain int).
+        field: ``StructField`` carrying ``kind`` and optional ``enum_map``.
 
     Returns:
         Human-readable string.  ``"N/A"`` for inaccessible values.
     """
     if value is None:
         return "N/A"
+
+    kind = field.kind
 
     if kind == "string":
         s = read_cstring(value)
@@ -77,12 +78,22 @@ def _format_field(value, kind: str) -> str:
         val = read_int(value)
         if val is None:
             return "N/A"
+        # Reason: RTOS state codes are the most frequent enum the user scans
+        # for; symbolic names ("READY") beat raw ints ("3") at a glance.
+        if field.enum_map is not None:
+            name = field.enum_map.get(val)
+            if name is not None:
+                return name
         return str(val)
 
     if kind == "flags":
         val = read_int(value)
         if val is None:
             return "N/A"
+        if field.enum_map is not None:
+            names = [n for bit, n in field.enum_map.items() if val & bit]
+            if names:
+                return "|".join(names)
         return hex(val)
 
     # Default: plain integer
@@ -111,7 +122,7 @@ class LayoutPrinter:
             if not field.summary:
                 continue
             value = read_field(self.val, self.layout, f_name)
-            formatted = _format_field(value, field.kind)
+            formatted = _format_field(value, field)
             parts.append(f"{f_name}={formatted}")
         return f"{self.display_name}({', '.join(parts)})"
 

@@ -55,6 +55,41 @@ RT_THREAD_STAT_MASK = 0x07
 # Timer skip-list level (rtdef.h default is 1)
 RT_TIMER_SKIP_LIST_LEVEL = 1
 
+# Object type code → display name (matches rt_object_class_type enum order).
+# Reason: re-using type codes as keys keeps a single source of truth; the
+# pretty-printer renders ``type=THREAD`` instead of ``type=1``.
+OBJECT_TYPE_NAMES: dict[int, str] = {
+    RT_OBJECT_CLASS_THREAD: "THREAD",
+    RT_OBJECT_CLASS_SEMAPHORE: "SEMAPHORE",
+    RT_OBJECT_CLASS_MUTEX: "MUTEX",
+    RT_OBJECT_CLASS_EVENT: "EVENT",
+    RT_OBJECT_CLASS_MAILBOX: "MAILBOX",
+    RT_OBJECT_CLASS_MESSAGEQUEUE: "MSGQUEUE",
+    RT_OBJECT_CLASS_MEMHEAP: "MEMHEAP",
+    RT_OBJECT_CLASS_MEMPOOL: "MEMPOOL",
+    RT_OBJECT_CLASS_DEVICE: "DEVICE",
+    RT_OBJECT_CLASS_TIMER: "TIMER",
+}
+
+# Thread stat → display name (low 3 bits of rt_thread.stat).  Matches
+# ThreadState in gdr.abstractions; duplicated here only to keep rtthread/
+# self-contained for the printer's enum_map (abstractions defines the IntEnum
+# with the same values).
+THREAD_STAT_NAMES: dict[int, str] = {
+    0x00: "INIT",
+    0x01: "READY",
+    0x02: "SUSPEND",
+    0x03: "RUNNING",
+    0x04: "CLOSE",
+}
+
+# Timer flag bits → display name (for ``flag`` field on rt_timer / rt_object).
+TIMER_FLAG_NAMES: dict[int, str] = {
+    RT_TIMER_FLAG_ACTIVATED: "ACTIVE",
+    RT_TIMER_FLAG_PERIODIC: "PERIODIC",
+    RT_TIMER_FLAG_SOFT_TIMER: "SOFT",
+}
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -157,7 +192,9 @@ def _object_fields(depth: int) -> dict[str, StructField]:
     p = ("parent",) * depth
     return {
         "name": StructField("name", (*p, "name"), kind="string", summary=True),
-        "type": StructField("type", (*p, "type"), kind="enum"),
+        "type": StructField(
+            "type", (*p, "type"), kind="enum", enum_map=OBJECT_TYPE_NAMES
+        ),
         "flag": StructField("flag", (*p, "flag"), kind="flags"),
         "list": StructField("list", (*p, "list"), kind="list"),
     }
@@ -201,7 +238,9 @@ def build_thread_layout(cfg: RtConfig) -> StructLayout:
 
     # Error and state
     f["error"] = StructField("error", ("error",))
-    f["stat"] = StructField("stat", ("stat",), kind="enum", summary=True)
+    f["stat"] = StructField(
+        "stat", ("stat",), kind="enum", summary=True, enum_map=THREAD_STAT_NAMES
+    )
 
     # SMP-conditional fields
     if cfg.smp:
@@ -247,6 +286,16 @@ def build_timer_layout() -> StructLayout:
     """Build ``rt_timer`` layout (COUPLED: rtdef.h struct rt_timer)."""
     sl = StructLayout("struct rt_timer")
     sl.fields.update(_object_fields(1))  # parent = rt_object
+    # Reason: ``flag`` is shared by all rt_object subclasses, but only the
+    # timer interpretation is meaningful here; override the field with a
+    # timer-specific bit map so the printer renders ``flag=ACTIVE|PERIODIC``.
+    sl.fields["flag"] = StructField(
+        "flag",
+        ("parent", "flag"),
+        kind="flags",
+        summary=True,
+        enum_map=TIMER_FLAG_NAMES,
+    )
     sl.fields["row"] = StructField(
         "row", ("row", 0), kind="list"
     )  # row[0] for skip-list level 1

@@ -10,6 +10,10 @@ that touches ``gdb.*`` outside a GDB session raises ``RuntimeError``.
 
 from __future__ import annotations
 
+import functools
+import os
+import traceback as _traceback
+
 try:
     import gdb
 except ImportError:
@@ -22,6 +26,17 @@ def _ensure_gdb() -> None:
     """Raise RuntimeError if not running inside GDB."""
     if gdb is None:
         raise RuntimeError("not running inside GDB")
+
+
+def is_debug() -> bool:
+    """True if ``GDR_DEBUG`` env var is set (enables verbose diagnostics).
+
+    Enables full Python tracebacks in :func:`format_exception` and surfaces
+    them through :func:`err` instead of a one-line message.  Mirrors GEF's
+    ``gef.debug`` setting but opt-in via environment so it works before GDB
+    has finished initialising.
+    """
+    return os.environ.get("GDR_DEBUG", "").lower() in ("1", "true", "yes")
 
 
 def lookup_symbol(name: str) -> gdb.Value | None:
@@ -141,7 +156,65 @@ def warn(msg: str) -> None:
     gdb.write(f"warning: {msg}\n", stream=gdb.STDERR)
 
 
+def err(msg: str) -> None:
+    """Print an error-prefixed message to GDB stderr.
+
+    Distinct from :func:`warn` in severity: ``warn`` is for recoverable
+    degradation (e.g. symbol not found), ``err`` is for a command that
+    failed outright.  Mirrors GEF's ``err()`` vs ``warn()`` distinction.
+    """
+    _ensure_gdb()
+    gdb.write(f"[gdr] error: {msg}\n", stream=gdb.STDERR)
+
+
 def info(msg: str) -> None:
     """Print an info-prefixed message to GDB stdout."""
     _ensure_gdb()
     gdb.write(f"[gdr] {msg}\n")
+
+
+def format_exception(e: BaseException) -> str:
+    """Format an exception with optional traceback for diagnostics.
+
+    Returns a one-line ``"Type: message"`` normally, or appends the full
+    Python traceback when :func:`is_debug` is true.  Inspired by GEF's
+    ``show_last_exception`` but trimmed for the RTOS use case (no GDB
+    command history, which is noisy over remote sessions).
+    """
+    lines = [f"{type(e).__name__}: {e}"]
+    if is_debug():
+        lines.append(_traceback.format_exc().rstrip())
+    return "\n".join(lines)
+
+
+def gdb_command_guard(func):
+    """Decorator for GDB command bodies: catch target/runtime errors.
+
+    RTOS debugging routinely hits ``gdb.error`` / ``gdb.MemoryError``
+    (target halted, unmapped memory, remote link dropped).  Without this
+    guard such errors bubble up as GDB "Python Exception" noise and abort
+    the rest of the command.  With it:
+
+    * ``gdb.error`` / ``gdb.MemoryError`` → :func:`warn` (recoverable).
+    * any other ``Exception`` → :func:`err`, with a full traceback only
+      when ``GDR_DEBUG`` is set (see :func:`is_debug`).
+
+    The wrapped function's return value is preserved on success and
+    discarded on error (commands are void-returning by convention).
+    """
+    target_errors: tuple[type[BaseException], ...] = ()
+    if gdb is not None:
+        target_errors = (gdb.error, gdb.MemoryError)
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except target_errors as e:
+            warn(f"{func.__name__}: {format_exception(e)}")
+            return None
+        except Exception as e:
+            err(f"{func.__name__}: {format_exception(e)}")
+            return None
+
+    return wrapper

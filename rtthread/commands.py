@@ -21,7 +21,14 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.abstractions import ThreadState
-from gdr.gdb_bridge import eval_safe, info, print_table, read_int, warn
+from gdr.gdb_bridge import (
+    eval_safe,
+    gdb_command_guard,
+    info,
+    print_table,
+    read_int,
+    warn,
+)
 from gdr.kernel import get_current_thread, get_tick, iter_objects, iter_threads
 from gdr.layout import KernelLayout
 from rtthread import adapter
@@ -75,6 +82,7 @@ def _addr_str(addr: int) -> str:
     return hex(addr) if addr else "0x0"
 
 
+@gdb_command_guard
 def _cmd_threads() -> None:
     """List all threads in a table."""
     if _kl is None:
@@ -108,6 +116,7 @@ def _cmd_threads() -> None:
     )
 
 
+@gdb_command_guard
 def _cmd_semaphores() -> None:
     """List all semaphores in a table."""
     if _kl is None:
@@ -124,6 +133,7 @@ def _cmd_semaphores() -> None:
     print_table(rows, ["Name", "Value", "Addr"])
 
 
+@gdb_command_guard
 def _cmd_timers() -> None:
     """List all timers in a table."""
     if _kl is None:
@@ -155,6 +165,7 @@ def _cmd_timers() -> None:
     )
 
 
+@gdb_command_guard
 def _cmd_objects(arg: str) -> None:
     """List kernel objects, optionally filtered by type name.
 
@@ -202,6 +213,7 @@ def _parse_type_name(name: str) -> int | None:
     return None
 
 
+@gdb_command_guard
 def _cmd_system() -> None:
     """Print system summary: tick, current thread, object counts, heap."""
     if _kl is None:
