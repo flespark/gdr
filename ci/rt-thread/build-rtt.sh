@@ -12,23 +12,32 @@ set -euo pipefail
 
 RT_THREAD_REPO="${RT_THREAD_REPO:-https://github.com/RT-Thread/rt-thread.git}"
 RT_THREAD_REF="${RT_THREAD_REF:-v4.0.5}"
-PATCH_DIR="${PATCH_DIR:-$(dirname "$0")/patches}"
+# Resolve paths to ABSOLUTE *before* any `cd` later in the script.
+# Reason: if PATCH_DIR is left relative to the repo root, it becomes
+# unresolvable after we `cd "$BUILD_DIR"` into the cloned tree, and the
+# patch glob silently fails — leaving patches unapplied and breaking
+# the build downstream.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCH_DIR="$(cd "${PATCH_DIR:-"$SCRIPT_DIR/patches"}" && pwd)"
 BUILD_DIR="${BUILD_DIR:-/tmp/rt-thread-build}"
 OUT_ELF="${OUT_ELF:-$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf}"
 CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-arm-none-eabi-}"
 # Default to the system cross-toolchain; detect leaf toolchain.
 RTOS_TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-$(dirname "$(command -v ${CROSS_TOOL_PREFIX}gcc || echo /usr/bin/${CROSS_TOOL_PREFIX}gcc)")}"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
+# Reason: always re-checkout the ref so we start from a pristine tree; the
+# ≠ dangling изменений that would otherwise survive across CI reruns.
 echo "[gdr-ci] RT-Thread repo: $RT_THREAD_REPO@$RT_THREAD_REF"
 echo "[gdr-ci] build dir: $BUILD_DIR"
+echo "[gdr-ci] patch dir: $PATCH_DIR"
 
 if [[ -d "$BUILD_DIR/.git" ]]; then
     echo "[gdr-ci] existing clone found; reusing"
     cd "$BUILD_DIR"
     git fetch --depth=1 origin "$RT_THREAD_REF"
     git checkout "$RT_THREAD_REF"
+    # Hard-reset so any leftovers from a previous (failed) patch run are gone.
+    git reset --hard "$RT_THREAD_REF" 2>/dev/null || true
 else
     mkdir -p "$BUILD_DIR"
     git clone --depth=1 --branch "$RT_THREAD_REF" "$RT_THREAD_REPO" "$BUILD_DIR"
@@ -36,15 +45,21 @@ else
 fi
 
 echo "[gdr-ci] applying patches from $PATCH_DIR"
-# Reset any previously applied patches so re-runs are idempotent.
-git checkout -- . 2>/dev/null || true
-for patch in "$PATCH_DIR"/*.patch; do
-    echo "  $(basename "$patch")"
-    if git apply --check --whitespace=fix "$patch" 2>/dev/null; then
-        git apply --whitespace=fix "$patch"
-    else
-        echo "    (already applied or conflicts; skipping — checkout was reset above)"
-        git apply --whitespace=nowarn --reject "$patch" || true
+shopt -s nullglob
+patches=("$PATCH_DIR"/*.patch)
+shopt -u nullglob
+if [[ ${#patches[@]} -eq 0 ]]; then
+    echo "[gdr-ci] FAILED: no .patch files found in $PATCH_DIR" >&2
+    exit 1
+fi
+for patch in "${patches[@]}"; do
+    name="$(basename "$patch")"
+    echo "  $name"
+    # Apply strictly: after `git reset --hard` above the tree is pristine,
+    # so any failure here is a real conflict, not a "already applied".
+    if ! git apply --whitespace=fix "$patch"; then
+        echo "[gdr-ci] FAILED: patch $name did not apply cleanly" >&2
+        exit 1
     fi
 done
 
