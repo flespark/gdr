@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gdb-multiarch \
         gcc-arm-none-eabi \
         libnewlib-arm-none-eabi \
-        libnewlib-dev \
+        libstdc++-arm-none-eabi-newlib \
         binutils-arm-none-eabi \
         python3 \
         python3-pip \
