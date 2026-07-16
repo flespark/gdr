@@ -1,0 +1,17 @@
+diff --git a/components/libc/posix/io/stdio/libc.c b/components/libc/posix/io/stdio/libc.c
+index 2b7fafce7f..8b4850cb0b 100644
+--- a/components/libc/posix/io/stdio/libc.c
++++ b/components/libc/posix/io/stdio/libc.c
+@@ -90,7 +90,12 @@ int libc_stdio_set_console(const char* device_name, int mode)
+             _GLOBAL_REENT->_stderr = std_console;
+         }
+ 
++        /* Reason: __sdidinit was removed in newer newlib (4.x+);
++         * guard this legacy field assignment so one fixture patch works
++         * with both older and newer host toolchains. */
++#ifdef _REENT_SMALL
+         _GLOBAL_REENT->__sdidinit = 1;
++#endif
+     }
+ 
+     if (std_console)

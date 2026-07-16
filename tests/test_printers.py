@@ -7,9 +7,18 @@ format ``TypeName(field=value, ...)`` with the expected summary fields.
 
 from __future__ import annotations
 
+import os
+
 # Symbolic thread state names (mirror gdr.abstractions.ThreadState).
 # The printer's enum_map must render the raw stat int as one of these.
 _THREAD_STATE_SYMBOLS = {"INIT", "READY", "SUSPEND", "RUNNING", "CLOSE"}
+_IS_RV64 = os.environ.get("GDR_QEMU_TARGET") == "rv64"
+MUTEX_NAME = os.environ.get(
+    "GDR_TEST_MUTEX_NAME", "test_mutex" if _IS_RV64 else "test_mut"
+)
+TIMER_NAME = os.environ.get(
+    "GDR_TEST_TIMER_NAME", "test_timer" if _IS_RV64 else "test_tim"
+)
 
 
 class TestPrinters:
@@ -57,20 +66,14 @@ class TestPrinters:
         assert "name=" in out, f"expected name= field, got:\n{out}"
 
     def test_mutex_folds(self, gdb_session):
-        """``p $gdr_object(0x03, "test_mut")`` prints ``Mutex(``.
-
-        Note: "test_mutex" is truncated to "test_mut" by RT_NAME_MAX=8.
-        """
-        out = gdb_session.run('p $gdr_object(0x03, "test_mut")')
+        """``p $gdr_object(0x03, mutex_name)`` prints ``Mutex(...)``."""
+        out = gdb_session.run(f'p $gdr_object(0x03, "{MUTEX_NAME}")')
         assert "Mutex(" in out, f"expected Mutex( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
 
     def test_timer_folds(self, gdb_session):
-        """``p $gdr_object(0x0a, "test_tim")`` prints ``Timer(...)``.
-
-        Note: "test_timer" is truncated to "test_tim" by RT_NAME_MAX=8.
-        """
-        out = gdb_session.run('p $gdr_object(0x0a, "test_tim")')
+        """``p $gdr_object(0x0a, timer_name)`` prints ``Timer(...)``."""
+        out = gdb_session.run(f'p $gdr_object(0x0a, "{TIMER_NAME}")')
         assert "Timer(" in out, f"expected Timer( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
 
@@ -81,7 +84,7 @@ class TestPrinters:
         so the fold must show ``ACTIVE`` and ``PERIODIC`` and ``SOFT`` rather
         than a bare ``0x7``.
         """
-        out = gdb_session.run('p $gdr_object(0x0a, "test_tim")')
+        out = gdb_session.run(f'p $gdr_object(0x0a, "{TIMER_NAME}")')
         assert "flag=" in out, f"expected flag= field, got:\n{out}"
         # test_timer is periodic + soft + activated per the fixture.
         for bit in ("ACTIVE", "PERIODIC", "SOFT"):

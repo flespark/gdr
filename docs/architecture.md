@@ -14,12 +14,12 @@ duplicating what `rust-gdb` / `gdb` already display well.
 
 ## Layering
 
-```
+```text
                      gdr.py  (entry: arg parse, bootstrap, register)
                         |
         +---------------+----------------+
         |                                |
-      gdr/  (RTOS-agnostic core)      rtthread/  (RT-Thread v4.0.x adapter)
+      gdr/  (RTOS-agnostic core)      rtthread/  (RT-Thread v4.x adapter)
         |                                |
    gdb_bridge.py                   layout.py
    layout.py                       adapter.py
@@ -103,7 +103,7 @@ when a field is renamed (the function returns the raw `gdb.Value`).
 ## Closed-loop verification
 
 GDB helpers degrade silently: the script runs but output is wrong. To
-guard against this, QEMU smoke tests boot an RT-Thread v4.0.x firmware
+guard against this, QEMU smoke tests boot an RT-Thread v4.x firmware
 that creates known threads/semaphores/mutexes/timers, and assert:
 
 - pretty-printers registered and fold correctly,
@@ -114,8 +114,9 @@ that creates known threads/semaphores/mutexes/timers, and assert:
 
 Tests use a **persistent GDB session** driven by `pexpect`:
 
-1. A session-scoped `QemuSession` starts QEMU with `-gdb tcp::1234`
-   (free-running, no `-S`) and waits for kernel objects to be created.
+1. A session-scoped `QemuSession` starts the selected QEMU profile with
+   `-gdb tcp::1234` (free-running, no `-S`) and waits for the fixture's
+   `GDR test fixture ready.` serial marker.
 2. A session-scoped `GdbSession` spawns one GDB process via `pexpect`,
    connects to QEMU, and runs `source gdr.py` **once**. All tests in the
    suite reuse this single GDB connection, keeping convenience
@@ -125,9 +126,27 @@ Tests use a **persistent GDB session** driven by `pexpect`:
    artifacts are stripped automatically.
 
 This approach (borrowed from `pytest-embedded-jtag`'s `Gdb` class) is
-preferred over spawning a fresh GDB batch process per test: it is
-faster (~12s for 22 tests vs minutes) and avoids registration-state
-loss between tests.
+preferred over spawning a fresh GDB batch process per test: it is faster
+and avoids registration-state loss between tests.
+
+### Target profiles
+
+`GDR_QEMU_TARGET` selects the profile while keeping all GDR assertions shared:
+
+| Target | QEMU startup | GDB symbols | Notes |
+|--------|--------------|-------------|-------|
+| `cortex-a9` | `qemu-system-arm -M vexpress-a9 -kernel rtthread.elf` | `rtthread.elf` | Uses the ARM BSP's SD image. |
+| `rv64` | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | M-Mode boot, no SD image, `set architecture riscv:rv64`. |
+
+The ELF and firmware image are deliberately separate for RV64: QEMU's M-Mode
+BSP boots the raw BIN, while GDB requires DWARF symbols from the ELF. The
+shared suite also asserts the target pointer width, so the RV64 profile must
+report `sizeof(void *) == 8`.
+
+The RV64 matrix covers RT-Thread v4.0.4, v4.0.5, v4.1.0, and v4.1.1. The BSP
+is `bsp/qemu-riscv-virt64` through v4.1.0 and is renamed to
+`bsp/qemu-virt64-riscv` in v4.1.1; each path has a separate platform-specific
+patch set.
 
 Layout changes must update the corresponding assertion, keeping the
 helper and the kernel struct in lockstep.

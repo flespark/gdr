@@ -10,7 +10,7 @@ pretty-printers, convenience functions and aggregate commands.
 
 ## Architecture (layered)
 
-```
+```text
 gdr.py                 entry point: parse args, load RTOS package, register
 gdr/                   RTOS-agnostic core
   gdb_bridge.py        GDB Python API wrappers (register, table, error guard)
@@ -18,20 +18,21 @@ gdr/                   RTOS-agnostic core
   printers.py          wrapper-type pretty-printer registration
   kernel.py            object navigation (global symbol -> object tree)
   abstractions.py      minimal ABCs (Thread/Semaphore/Mutex/Timer/Queue)
-rtthread/              RT-Thread v4.0.x adapter
+rtthread/              RT-Thread v4.x adapter
   layout.py            dataclass field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
   adapter.py           value→dataclass converters + gdb.Function convenience
                        functions ($gdr_thread, $gdr_threads, $gdr_object)
   commands.py          5 aggregate commands (threads/semaphores/timers/objects/system)
 tests/                 QEMU closed-loop verification (pexpect-driven)
-  conftest.py          QemuSession + GdbSession (persistent GDB via pexpect)
+  conftest.py          Cortex-A9/RV64 QEMU profiles + persistent GDB via pexpect
   test_commands.py     aggregate command output assertions
   test_functions.py    convenience function return-value assertions
   test_printers.py     pretty-printer fold-output assertions
 ```
 
 Key design principles (see `docs/architecture.md`):
+
 - **Navigation belongs to helpers; display belongs to GDB.** Convenience
   functions return `gdb.Value`; commands only aggregate/tabulate.
 - **No RTOS auto-detection.** User specifies `--rtos rtthread --version 4.0.5`.
@@ -78,6 +79,13 @@ replacement and the only formatter used.
 - Add `# Reason:` inline comments for non-obvious *why* decisions.
 - When a layout-sensitive struct field changes in `rtthread/layout.py`,
   add or update the corresponding test assertion in `tests/`.
+- QEMU fixture patches are grouped by platform first:
+  `ci/rt-thread/patches/cortex-a9/<version>/` and
+  `ci/rt-thread/patches/rv64/<version>/`. Do not share a patch across those
+  directories unless it applies cleanly to both BSP paths and toolchains.
+- RV64 uses `qemu-system-riscv64 -machine virt` and boots `rtthread.bin` as
+  BIOS; GDB reads the separate `rtthread.elf`. It is supported from RT-Thread
+  v4.0.4 onward; v4.1.1 renames its BSP to `qemu-virt64-riscv`.
 
 ## Workflow
 

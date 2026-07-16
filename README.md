@@ -1,5 +1,7 @@
 # GDR
 
+[![CNB Build](https://cnb.cool/flespark-2026/gdr/-/badge/git/latest/ci/status/push?branch=main)](https://cnb.cool/flespark-2026/gdr/-/build/logs)
+
 GDB helper framework for debugging RTOS-based embedded firmware.
 
 GDR runs inside the GDB Python interpreter and provides three layers of
@@ -19,14 +21,14 @@ debugging support, following the approach popularised by the Linux kernel
 ## Status
 
 Core implementation complete: GDB bridge, layout engine,
-pretty-printers, convenience functions and aggregate commands, QEMU
-closed-loop verification.
+pretty-printers, convenience functions, aggregate commands, and QEMU
+closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 
 ## Supported RTOS
 
 | RTOS | Versions | Status |
 |------|----------|--------|
-| RT-Thread | 4.0.0-4.1.1 | implemented, QEMU verified |
+| RT-Thread | 4.0.0-4.1.1 | implemented, Cortex-A9 and RV64 QEMU verified |
 | FreeRTOS | — | not yet (deferred) |
 
 ## Quick start
@@ -81,7 +83,7 @@ $1 = Mutex(name="lock1", value=0, hold=1, owner="main")
 $2 = Semaphore(name="sem1", value=3)
 
 (gdb) p thread
-$3 = Thread(name="worker", stat=2, current_priority=5)
+$3 = Thread(name="worker", stat=READY, current_priority=5)
 ```
 
 ## Configuration

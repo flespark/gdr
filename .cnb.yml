@@ -1,20 +1,19 @@
 # CNB pipeline for GDR.
 #
-# Two pipelines, each running on push to main and on PR:
+# Three pipelines, each running on push to main and on PR:
 #  1. lint      — ruff check/format (fast, no QEMU)
-#  2. qemu-test — build RT-Thread test ELF + run pytest suite against a live
-#                 QEMU session
+#  2. qemu-test-a9 — Cortex-A9 closed-loop test
+#  3. qemu-test-rv64 — RISC-V RV64 closed-loop test
 #
-# The qemu-test pipeline uses `docker.build` with `ci/Dockerfile`; the resulting
+# Both QEMU pipelines use `docker.build` with `ci/Dockerfile`; the resulting
 # image is cached by hash on the CNB artifact registry, so subsequent runs reuse
 # it. CNB's `pull_request` reads the configured pipeline from the *target*
 # branch's `.cnb.yml` (here: main) and checks out the pre-merged commit — so
 # defining both `push:` and `pull_request:` under `main:` is the canonical way
 # to gate every push and every PR.
 #
-# Arch: `cnb:arch:amd64` — vexpress-a9 is Cortex-A9 (32-bit ARM); we run
-# `qemu-system-arm` under TCG software emulation on amd64. An arm64 host gains
-# nothing here (vexpress-a9 != the host's arm64 ISA). amd64 is simplest.
+# Arch: `cnb:arch:amd64` runs both Cortex-A9 and RV64 QEMU targets under TCG.
+# An arm64 host gains nothing for either cross-ISA target, so amd64 is simplest.
 # Ref: https://docs.cnb.cool/zh/build/build-node.html
 
 main: # branch: main
@@ -34,10 +33,7 @@ main: # branch: main
         - name: ruff format check
           script: ruff format --check .
 
-    # ---------------------------------------------------------------
-    # qemu-test: build rt-thread ELF + run pytest suite against QEMU.
-    # ---------------------------------------------------------------
-    - name: qemu-test
+    - name: qemu-test-a9
       runner:
         tags: cnb:arch:amd64
         cpus: 4
@@ -65,8 +61,44 @@ main: # branch: main
           script: |
             for ref in v4.0.0 v4.0.5 v4.1.1; do
               export RT_THREAD_REF="$ref"
+              export GDR_RTTHREAD_VERSION="${ref#v}"
               export BUILD_DIR="/tmp/rt-thread-build/$ref"
               export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
+              bash ci/rt-thread/build-rtt.sh
+              uv run pytest tests/ -v --tb=short
+            done
+
+    - name: qemu-test-rv64
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+      volumes:
+        - /tmp/rt-thread-build:copy-on-write
+        - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        GDR_QEMU_TARGET: rv64
+      stages:
+        - name: uv sync (dev deps)
+          script: uv sync --group dev
+        - name: pytest RV64 matrix (QEMU closed-loop)
+          script: |
+            for ref in v4.0.4 v4.0.5 v4.1.0 v4.1.1; do
+              case "$ref" in
+                v4.1.1) bsp="bsp/qemu-virt64-riscv" ;;
+                *) bsp="bsp/qemu-riscv-virt64" ;;
+              esac
+              export RT_THREAD_TARGET="rv64"
+              export RT_THREAD_REF="$ref"
+              export GDR_RTTHREAD_VERSION="${ref#v}"
+              export BUILD_DIR="/tmp/rt-thread-build/rv64/$ref"
+              export GDR_ELF_PATH="$BUILD_DIR/$bsp/rtthread.elf"
+              export GDR_FIRMWARE_PATH="$BUILD_DIR/$bsp/rtthread.bin"
               bash ci/rt-thread/build-rtt.sh
               uv run pytest tests/ -v --tb=short
             done
@@ -84,7 +116,7 @@ main: # branch: main
         - name: ruff format check
           script: ruff format --check .
 
-    - name: qemu-test
+    - name: qemu-test-a9
       runner:
         tags: cnb:arch:amd64
         cpus: 4
@@ -105,8 +137,44 @@ main: # branch: main
           script: |
             for ref in v4.0.0 v4.0.5 v4.1.1; do
               export RT_THREAD_REF="$ref"
+              export GDR_RTTHREAD_VERSION="${ref#v}"
               export BUILD_DIR="/tmp/rt-thread-build/$ref"
               export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
+              bash ci/rt-thread/build-rtt.sh
+              uv run pytest tests/ -v --tb=short
+            done
+
+    - name: qemu-test-rv64
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+      volumes:
+        - /tmp/rt-thread-build:copy-on-write
+        - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        GDR_QEMU_TARGET: rv64
+      stages:
+        - name: uv sync (dev deps)
+          script: uv sync --group dev
+        - name: pytest RV64 matrix (QEMU closed-loop)
+          script: |
+            for ref in v4.0.4 v4.0.5 v4.1.0 v4.1.1; do
+              case "$ref" in
+                v4.1.1) bsp="bsp/qemu-virt64-riscv" ;;
+                *) bsp="bsp/qemu-riscv-virt64" ;;
+              esac
+              export RT_THREAD_TARGET="rv64"
+              export RT_THREAD_REF="$ref"
+              export GDR_RTTHREAD_VERSION="${ref#v}"
+              export BUILD_DIR="/tmp/rt-thread-build/rv64/$ref"
+              export GDR_ELF_PATH="$BUILD_DIR/$bsp/rtthread.elf"
+              export GDR_FIRMWARE_PATH="$BUILD_DIR/$bsp/rtthread.bin"
               bash ci/rt-thread/build-rtt.sh
               uv run pytest tests/ -v --tb=short
             done

@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Build the RT-Thread qemu-vexpress-a9 test fixture ELF for GDR CI.
+# Build an RT-Thread QEMU test fixture for GDR CI.
 #
 # Inputs (env):
 #   RT_THREAD_REPO  - rt-thread git URL or local path (default: upstream)
 #   RT_THREAD_REF   - ref to checkout (default: v4.0.5)
+#   RT_THREAD_TARGET - cortex-a9 or rv64 (default: cortex-a9)
+#   RT_THREAD_BSP   - BSP path override (default: selected from target + ref)
 #   PATCH_DIR       - directory of *.patch files to apply (overrides auto selection)
 #   BUILD_DIR        - working dir (default: /tmp/rt-thread-build)
-#   OUT_ELF          - destination for rtthread.elf (default: BUILD_DIR/rtthread.elf)
-#   CROSS_TOOL_PREFIX - arm-none-eabi- (default)
+#   OUT_ELF          - destination for rtthread.elf (default: BSP output)
+#   OUT_BIN          - destination for rtthread.bin (RV64 only; default: BSP output)
+#   CROSS_TOOL_PREFIX - toolchain prefix (selected from target by default)
 set -euo pipefail
 
 RT_THREAD_REPO="${RT_THREAD_REPO:-https://github.com/RT-Thread/rt-thread.git}"
 RT_THREAD_REF="${RT_THREAD_REF:-v4.0.5}"
+RT_THREAD_TARGET="${RT_THREAD_TARGET:-cortex-a9}"
 # Resolve paths to ABSOLUTE *before* any `cd` later in the script.
 # Reason: if PATCH_DIR is left relative to the repo root, it becomes
 # unresolvable after we `cd "$BUILD_DIR"` into the cloned tree, and the
@@ -20,42 +24,78 @@ RT_THREAD_REF="${RT_THREAD_REF:-v4.0.5}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_ROOT="$SCRIPT_DIR/patches"
 BUILD_DIR="${BUILD_DIR:-/tmp/rt-thread-build}"
-OUT_ELF="${OUT_ELF:-$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf}"
-CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-arm-none-eabi-}"
-# Default to the system cross-toolchain; detect leaf toolchain.
-RTOS_TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-$(dirname "$(command -v ${CROSS_TOOL_PREFIX}gcc || echo /usr/bin/${CROSS_TOOL_PREFIX}gcc)")}"
 
-# Reason: always re-checkout the ref so we start from a pristine tree; the
-# ≠ dangling изменений that would otherwise survive across CI reruns.
+case "$RT_THREAD_TARGET" in
+    cortex-a9)
+        BSP_DIR="${RT_THREAD_BSP:-bsp/qemu-vexpress-a9}"
+        CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-arm-none-eabi-}"
+        case "$RT_THREAD_REF" in
+            v4.0.0|v4.0.1)
+                PATCH_SET="4.0.0-4.0.1"
+                ;;
+            v4.0.2|v4.0.3)
+                PATCH_SET="${RT_THREAD_REF#v}"
+                ;;
+            v4.0.4|v4.0.5)
+                PATCH_SET="4.0.4-4.0.5"
+                ;;
+            v4.1.0|v4.1.1|v4.1.0-beta|v4.1.1-beta|lts-v4.1.x|origin/lts-v4.1.x)
+                PATCH_SET="4.1.x"
+                ;;
+            *)
+                echo "[gdr-ci] FAILED: no Cortex-A9 patch set for RT_THREAD_REF=$RT_THREAD_REF" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    rv64)
+        CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-riscv64-unknown-elf-}"
+        case "$RT_THREAD_REF" in
+            v4.0.4|v4.0.5)
+                BSP_DIR="${RT_THREAD_BSP:-bsp/qemu-riscv-virt64}"
+                PATCH_SET="4.0.4-4.0.5"
+                ;;
+            v4.1.0)
+                BSP_DIR="${RT_THREAD_BSP:-bsp/qemu-riscv-virt64}"
+                PATCH_SET="4.1.0"
+                ;;
+            v4.1.1)
+                BSP_DIR="${RT_THREAD_BSP:-bsp/qemu-virt64-riscv}"
+                PATCH_SET="4.1.1"
+                ;;
+            *)
+                echo "[gdr-ci] FAILED: RV64 QEMU BSP is available only for v4.0.4-v4.1.1" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        echo "[gdr-ci] FAILED: unknown RT_THREAD_TARGET=$RT_THREAD_TARGET" >&2
+        exit 1
+        ;;
+esac
+
+OUT_ELF="${OUT_ELF:-$BUILD_DIR/$BSP_DIR/rtthread.elf}"
+OUT_BIN="${OUT_BIN:-$BUILD_DIR/$BSP_DIR/rtthread.bin}"
+if [[ -z "${RTOS_TOOLCHAIN_PATH:-}" ]]; then
+    CROSS_GCC="$(command -v "${CROSS_TOOL_PREFIX}gcc" || true)"
+    if [[ -z "$CROSS_GCC" ]]; then
+        echo "[gdr-ci] FAILED: ${CROSS_TOOL_PREFIX}gcc is not on PATH" >&2
+        exit 1
+    fi
+    RTOS_TOOLCHAIN_PATH="$(dirname "$CROSS_GCC")"
+fi
+
+# Reason: always re-checkout the ref so stale changes do not survive CI reruns.
 echo "[gdr-ci] RT-Thread repo: $RT_THREAD_REPO@$RT_THREAD_REF"
+echo "[gdr-ci] target: $RT_THREAD_TARGET ($BSP_DIR)"
 echo "[gdr-ci] build dir: $BUILD_DIR"
 
 PATCH_DIRS=()
 if [[ -n "${PATCH_DIR:-}" ]]; then
     PATCH_DIRS+=("$(cd "$PATCH_DIR" && pwd)")
 else
-    case "$RT_THREAD_REF" in
-        v4.0.0|v4.0.1)
-            PATCH_DIRS+=("$PATCH_ROOT/4.0.0-4.0.1")
-            ;;
-        v4.0.2)
-            PATCH_DIRS+=("$PATCH_ROOT/4.0.2")
-            ;;
-        v4.0.3)
-            PATCH_DIRS+=("$PATCH_ROOT/4.0.3")
-            ;;
-        v4.0.4|v4.0.5)
-            PATCH_DIRS+=("$PATCH_ROOT/4.0.4-4.0.5")
-            ;;
-        v4.1.0|v4.1.1|v4.1.0-beta|v4.1.1-beta|lts-v4.1.x|origin/lts-v4.1.x)
-            PATCH_DIRS+=("$PATCH_ROOT/4.1.x")
-            ;;
-        *)
-            echo "[gdr-ci] FAILED: no default patch set for RT_THREAD_REF=$RT_THREAD_REF" >&2
-            echo "[gdr-ci] set PATCH_DIR explicitly or add a versioned patch set" >&2
-            exit 1
-            ;;
-    esac
+    PATCH_DIRS+=("$PATCH_ROOT/$RT_THREAD_TARGET/$PATCH_SET")
 fi
 echo "[gdr-ci] patch dirs:"
 for dir in "${PATCH_DIRS[@]}"; do
@@ -117,7 +157,7 @@ for patch in "${patches[@]}"; do
     fi
 done
 
-cd bsp/qemu-vexpress-a9
+cd "$BSP_DIR"
 
 # RT-Thread scons picks up RTT_EXEC_PATH for the toolchain, RTT_CC for compiler.
 # Use the host cross-toolchain instead of the env-managed one.
@@ -140,7 +180,7 @@ if [[ ! -f rtthread.elf ]]; then
 fi
 
 ELF_SIZE=$(du -h rtthread.elf | cut -f1)
-ELF_ABS="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
+ELF_ABS="$BUILD_DIR/$BSP_DIR/rtthread.elf"
 echo "[gdr-ci] build OK: rtthread.elf ($ELF_SIZE)"
 echo "[gdr-ci] OUT_ELF=$ELF_ABS"
 # Copy to caller-specified destination if OUT_ELF differs from the in-tree one.
@@ -148,5 +188,19 @@ if [[ "$OUT_ELF" != "$ELF_ABS" ]]; then
     mkdir -p "$(dirname "$OUT_ELF")"
     cp rtthread.elf "$OUT_ELF"
     echo "[gdr-ci] copied to $OUT_ELF"
+fi
+
+if [[ "$RT_THREAD_TARGET" == "rv64" ]]; then
+    if [[ ! -f rtthread.bin ]]; then
+        echo "[gdr-ci] FAILED: rtthread.bin not produced for RV64" >&2
+        exit 1
+    fi
+    BIN_ABS="$BUILD_DIR/$BSP_DIR/rtthread.bin"
+    echo "[gdr-ci] OUT_BIN=$BIN_ABS"
+    if [[ "$OUT_BIN" != "$BIN_ABS" ]]; then
+        mkdir -p "$(dirname "$OUT_BIN")"
+        cp rtthread.bin "$OUT_BIN"
+        echo "[gdr-ci] copied to $OUT_BIN"
+    fi
 fi
 echo "$ELF_ABS"

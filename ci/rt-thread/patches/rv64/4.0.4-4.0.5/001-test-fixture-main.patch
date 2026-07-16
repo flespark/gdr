@@ -1,0 +1,94 @@
+diff --git a/bsp/qemu-riscv-virt64/applications/main.c b/bsp/qemu-riscv-virt64/applications/main.c
+index 50d2de7a..f9acfa07 100644
+--- a/bsp/qemu-riscv-virt64/applications/main.c
++++ b/bsp/qemu-riscv-virt64/applications/main.c
+@@ -8,14 +8,85 @@
+  * 2021-05-20     bigmagic     first version
+  */
+ 
+ #include <rtthread.h>
+-#include <rthw.h>
+-#include <stdio.h>
+-#include <string.h>
++
++#define THREAD_STACK_SIZE 1024
++#define THREAD_PRIORITY   20
++
++static struct rt_semaphore test_sem;
++static struct rt_mutex test_mutex;
++static struct rt_timer test_timer;
++
++static rt_uint8_t worker1_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker2_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker3_stack[THREAD_STACK_SIZE];
++
++static struct rt_thread worker1_thread;
++static struct rt_thread worker2_thread;
++static struct rt_thread worker3_thread;
++
++static void test_timer_timeout(void *parameter)
++{
++    (void)parameter;
++}
++
++static void worker1_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_mutex_take(&test_mutex, RT_WAITING_FOREVER);
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++static void worker2_entry(void *parameter)
++{
++    (void)parameter;
++
++    while (1)
++    {
++        rt_sem_take(&test_sem, RT_WAITING_FOREVER);
++        rt_thread_mdelay(50);
++    }
++}
++
++static void worker3_entry(void *parameter)
++{
++    (void)parameter;
++
++    while (1)
++    {
++        rt_thread_mdelay(200);
++    }
++}
+ 
+ int main(void)
+ {
+-    printf("Hello RISC-V!\n");
++    rt_kprintf("GDR test fixture starting...\n");
++
++    rt_sem_init(&test_sem, "test_sem", 1, RT_IPC_FLAG_FIFO);
++    rt_mutex_init(&test_mutex, "test_mutex", RT_IPC_FLAG_FIFO);
++    rt_timer_init(&test_timer, "test_timer", test_timer_timeout, RT_NULL,
++                  100, RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
++    rt_timer_start(&test_timer);
++
++    rt_thread_init(&worker1_thread, "worker1", worker1_entry, RT_NULL,
++                   worker1_stack, sizeof(worker1_stack),
++                   THREAD_PRIORITY, 10);
++    rt_thread_init(&worker2_thread, "worker2", worker2_entry, RT_NULL,
++                   worker2_stack, sizeof(worker2_stack),
++                   THREAD_PRIORITY + 1, 10);
++    rt_thread_init(&worker3_thread, "worker3", worker3_entry, RT_NULL,
++                   worker3_stack, sizeof(worker3_stack),
++                   THREAD_PRIORITY + 2, 10);
++
++    rt_thread_startup(&worker1_thread);
++    rt_thread_startup(&worker2_thread);
++    rt_thread_startup(&worker3_thread);
++
++    rt_kprintf("GDR test fixture ready.\n");
+ 
+     return 0;
+ }

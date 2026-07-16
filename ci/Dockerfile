@@ -2,9 +2,9 @@
 #
 # Used by both local `docker run` and CNB `.cnb.yml` `docker.build`. Provides
 # generic tools reusable across RTOS adapters and target boards:
-#   - qemu-system-arm  (QEMU full-system emulation; vexpress-a9 today, mps2/other later)
-#   - gdb-multiarch    (GDB with Python scripting, ARM target support)
-#   - arm-none-eabi-*  (GCC cross-toolchain for ARM Cortex-A/M bare-metal builds)
+#   - qemu-system-arm + qemu-system-misc (Cortex-A9 and RISC-V RV64 emulation)
+#   - gdb-multiarch    (GDB with Python scripting and multi-ISA support)
+#   - arm-none-eabi-* + riscv64-unknown-elf-* (bare-metal cross-compilers)
 #   - python3 + uv     (Python deps + pytest/pexpect runner)
 #   - scons            (RT-Thread BSP build tool; kept here because it's
 #                       apt-installable and harmless for other RTOS paths)
@@ -21,17 +21,21 @@
 FROM debian:trixie-slim
 
 #----------------------------------------------------------------------
-# Toolchain: QEMU, GDB (multiarch so it can talk to ARM targets), and the
-# GCC arm-none-eabi cross-compiler used by the RT-Thread qemu-vexpress-a9
-# BSP.  We install `python3` and `pip` here too so `uv` can bootstrap.
+# Toolchain: QEMU, multiarch GDB, and the ARM/RV64 cross-compilers used by
+# the RT-Thread QEMU BSPs. We install `python3` and `pip` here too so `uv`
+# can bootstrap.
 #----------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-system-arm \
+        qemu-system-misc \
         gdb-multiarch \
         gcc-arm-none-eabi \
         libnewlib-arm-none-eabi \
         libstdc++-arm-none-eabi-newlib \
         binutils-arm-none-eabi \
+        gcc-riscv64-unknown-elf \
+        binutils-riscv64-unknown-elf \
+        picolibc-riscv64-unknown-elf \
         python3 \
         python3-pip \
         python3-venv \
@@ -62,8 +66,10 @@ WORKDIR /workspace
 
 # Sanity: print versions on container start so failures are diagnosable.
 CMD ["bash", "-lc", "echo qemu-system-arm:; qemu-system-arm --version | head -1; \
-                     echo gdb-multiarch:;   gdb-multiarch --version | head -1; \
-                     echo arm-none-eabi-gcc:; arm-none-eabi-gcc --version | head -1; \
-                     echo python3:;          python3 --version; \
+                      echo qemu-system-riscv64:; qemu-system-riscv64 --version | head -1; \
+                      echo gdb-multiarch:;   gdb-multiarch --version | head -1; \
+                      echo arm-none-eabi-gcc:; arm-none-eabi-gcc --version | head -1; \
+                      echo riscv64-unknown-elf-gcc:; riscv64-unknown-elf-gcc --version | head -1; \
+                      echo python3:;          python3 --version; \
                      echo uv:;               uv --version; \
                      echo scons:;            scons --version | head -3"]

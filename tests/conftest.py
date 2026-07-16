@@ -2,7 +2,8 @@
 
 Manages the QEMU + GDB + GDR lifecycle:
 
-1. Start QEMU with ``-gdb tcp::1234`` and free-running (no ``-S``).
+1. Start a target-specific QEMU profile with ``-gdb tcp::1234`` and
+   free-running (no ``-S``).
 2. Wait for the RT-Thread kernel to boot and create test objects.
 3. Spawn a persistent GDB process (via pexpect), connect to QEMU,
    source ``gdr.py`` once, and reuse across all tests.
@@ -40,12 +41,42 @@ ELF_PATH = Path(
     )
 )
 GDB_BIN = os.environ.get("GDR_GDB", "gdb")
-QEMU_BIN = os.environ.get("GDR_QEMU", "qemu-system-arm")
+RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
 
-# QEMU config
-QEMU_MACHINE = "vexpress-a9"
+_TARGET_PROFILES = {
+    "cortex-a9": {
+        "qemu": "qemu-system-arm",
+        "machine": "vexpress-a9",
+        "gdb_arch": "arm",
+        "firmware_option": "-kernel",
+        "qemu_args": (),
+        "needs_sd": True,
+    },
+    "rv64": {
+        "qemu": "qemu-system-riscv64",
+        "machine": "virt",
+        "gdb_arch": "riscv:rv64",
+        "firmware_option": "-bios",
+        "qemu_args": ("-cpu", "rv64", "-m", "256M"),
+        "needs_sd": False,
+    },
+}
+TARGET_NAME = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
+try:
+    TARGET = _TARGET_PROFILES[TARGET_NAME]
+except KeyError as exc:
+    raise RuntimeError(f"unknown GDR_QEMU_TARGET: {TARGET_NAME}") from exc
+
+QEMU_BIN = os.environ.get("GDR_QEMU", str(TARGET["qemu"]))
+QEMU_MACHINE = os.environ.get("GDR_QEMU_MACHINE", str(TARGET["machine"]))
+GDB_ARCH = os.environ.get("GDR_GDB_ARCH", str(TARGET["gdb_arch"]))
+FIRMWARE_PATH = Path(os.environ.get("GDR_FIRMWARE_PATH", str(ELF_PATH)))
+FIRMWARE_OPTION = str(TARGET["firmware_option"])
+QEMU_ARGS = tuple(str(arg) for arg in TARGET["qemu_args"])
+QEMU_NEEDS_SD = bool(TARGET["needs_sd"])
 GDB_PORT = 1234
-BOOT_WAIT = 4  # seconds for kernel to boot and create objects
+BOOT_WAIT = float(os.environ.get("GDR_BOOT_WAIT", "10"))
+READY_MARKER = "GDR test fixture ready."
 
 # GDB prompt regex — matches "(gdb) " at end of line
 _GDB_PROMPT = r"\(gdb\)\s*$"
@@ -55,7 +86,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
 def _check_tools():
-    """Verify QEMU, GDB, and ELF are available; skip tests if not."""
+    """Verify QEMU, GDB, symbols, and firmware are available; skip if not."""
     missing = []
     if not shutil.which(QEMU_BIN):
         missing.append(QEMU_BIN)
@@ -63,6 +94,8 @@ def _check_tools():
         missing.append(GDB_BIN)
     if not ELF_PATH.exists():
         missing.append(str(ELF_PATH))
+    if not FIRMWARE_PATH.exists():
+        missing.append(str(FIRMWARE_PATH))
     if missing:
         pytest.skip(f"missing tools/firmware: {', '.join(missing)}")
 
@@ -76,16 +109,15 @@ class QemuSession:
 
     def start(self):
         """Start QEMU free-running with GDB server."""
-        sd_img = Path("/tmp/gdr_sd.bin")
-        if not sd_img.exists():
-            sd_img.write_bytes(b"\0" * 1024 * 64)
+        self._serial_log.unlink(missing_ok=True)
 
         cmd = [
             QEMU_BIN,
             "-M",
             QEMU_MACHINE,
-            "-kernel",
-            str(ELF_PATH),
+            *QEMU_ARGS,
+            FIRMWARE_OPTION,
+            str(FIRMWARE_PATH),
             "-serial",
             f"file:{self._serial_log}",
             "-nographic",
@@ -93,16 +125,28 @@ class QemuSession:
             "none",
             "-gdb",
             f"tcp::{GDB_PORT}",
-            "-drive",
-            f"file={sd_img},format=raw,if=sd",
         ]
+        if QEMU_NEEDS_SD:
+            sd_img = Path("/tmp/gdr_sd.bin")
+            if not sd_img.exists():
+                sd_img.write_bytes(b"\0" * 1024 * 64)
+            cmd.extend(["-drive", f"file={sd_img},format=raw,if=sd"])
         self._qemu = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        time.sleep(BOOT_WAIT)
+        deadline = time.monotonic() + BOOT_WAIT
+        while time.monotonic() < deadline:
+            if self._qemu.poll() is not None:
+                raise RuntimeError(f"QEMU exited while booting: {cmd}")
+            if self._serial_log.exists() and READY_MARKER in self._serial_log.read_text(
+                errors="replace"
+            ):
+                return
+            time.sleep(0.1)
+        raise RuntimeError(f"QEMU did not emit {READY_MARKER!r} within {BOOT_WAIT}s")
 
     def stop(self):
         """Terminate the QEMU process."""
@@ -150,12 +194,12 @@ class GdbSession:
         # Connect to QEMU and load GDR
         self.run("set pagination off")
         self.run("set style enabled off")
-        self.run("set architecture arm")
+        self.run(f"set architecture {GDB_ARCH}")
         self.run(f"file {self._elf_path}")
         self.run(f"target remote :{self._gdb_port}")
         self.run(f"source {self._gdr_root / 'gdr.py'}")
         self.run("rtthread threads")
-        self.run("gdr rtthread 4.0.5", timeout=20)
+        self.run(f"gdr rtthread {RTTHREAD_VERSION}", timeout=20)
 
     def stop(self):
         """Quit GDB and clean up."""

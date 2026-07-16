@@ -6,7 +6,11 @@ repos:
     rev: v5.0.0
     hooks:
       - id: end-of-file-fixer
+        # patch context is byte-sensitive; preserve upstream whitespace exactly.
+        exclude: ^ci/rt-thread/patches/.*\.patch$
       - id: trailing-whitespace
+        # patch context is byte-sensitive; preserve upstream whitespace exactly.
+        exclude: ^ci/rt-thread/patches/.*\.patch$
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files

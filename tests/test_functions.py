@@ -7,6 +7,13 @@ functions are registered once and available across all tests.
 
 from __future__ import annotations
 
+import os
+
+_DEFAULT_POINTER_BYTES = "8" if os.environ.get("GDR_QEMU_TARGET") == "rv64" else "4"
+EXPECTED_POINTER_BYTES = int(
+    os.environ.get("GDR_EXPECT_POINTER_BYTES", _DEFAULT_POINTER_BYTES)
+)
+
 
 class TestConvenienceFunctions:
     """GDB convenience function ($gdr_*) correctness."""
@@ -33,6 +40,13 @@ class TestConvenienceFunctions:
         """``$gdr_thread("worker1").name`` contains "worker1"."""
         out = gdb_session.run('p $gdr_thread("worker1").name')
         assert "worker1" in out, f"expected name 'worker1', got:\n{out}"
+
+    def test_target_pointer_width(self, gdb_session):
+        """The connected firmware has the expected native pointer width."""
+        out = gdb_session.run("p sizeof(void *)")
+        assert f"= {EXPECTED_POINTER_BYTES}" in out, (
+            f"expected {EXPECTED_POINTER_BYTES}-byte pointers, got:\n{out}"
+        )
 
     def test_gdr_object_semaphore(self, gdb_session):
         """``$gdr_object(0x02, "test_sem")`` returns a non-null value."""
