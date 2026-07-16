@@ -70,6 +70,7 @@ class TestPrinters:
         out = gdb_session.run(f'p $gdr_object(0x03, "{MUTEX_NAME}")')
         assert "Mutex(" in out, f"expected Mutex( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
+        assert 'owner=\\"worker1\\"' in out, f"expected dereferenced owner, got:\n{out}"
 
     def test_timer_folds(self, gdb_session):
         """``p $gdr_object(0x0a, timer_name)`` prints ``Timer(...)``."""
