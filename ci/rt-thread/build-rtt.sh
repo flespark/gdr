@@ -11,6 +11,7 @@
 #   OUT_ELF          - destination for rtthread.elf (default: BSP output)
 #   OUT_BIN          - destination for rtthread.bin (RV64 only; default: BSP output)
 #   CROSS_TOOL_PREFIX - toolchain prefix (selected from target by default)
+#   RTOS_TOOLCHAIN_PATH - directory containing the selected compiler binaries
 set -euo pipefail
 
 RT_THREAD_REPO="${RT_THREAD_REPO:-https://github.com/RT-Thread/rt-thread.git}"
@@ -86,9 +87,26 @@ if [[ -z "${RTOS_TOOLCHAIN_PATH:-}" ]]; then
     RTOS_TOOLCHAIN_PATH="$(dirname "$CROSS_GCC")"
 fi
 
+CROSS_GCC="$RTOS_TOOLCHAIN_PATH/${CROSS_TOOL_PREFIX}gcc"
+if [[ ! -x "$CROSS_GCC" ]]; then
+    echo "[gdr-ci] FAILED: expected compiler not found: $CROSS_GCC" >&2
+    exit 1
+fi
+for tool in g++ ar objcopy objdump size; do
+    if [[ ! -x "$RTOS_TOOLCHAIN_PATH/${CROSS_TOOL_PREFIX}$tool" ]]; then
+        echo "[gdr-ci] FAILED: expected tool not found: ${CROSS_TOOL_PREFIX}$tool" >&2
+        exit 1
+    fi
+done
+if ! printf '#include <stdio.h>\n' | "$CROSS_GCC" -E -x c - >/dev/null; then
+    echo "[gdr-ci] FAILED: ${CROSS_TOOL_PREFIX}gcc cannot locate newlib stdio.h" >&2
+    exit 1
+fi
+
 # Reason: always re-checkout the ref so stale changes do not survive CI reruns.
 echo "[gdr-ci] RT-Thread repo: $RT_THREAD_REPO@$RT_THREAD_REF"
 echo "[gdr-ci] target: $RT_THREAD_TARGET ($BSP_DIR)"
+echo "[gdr-ci] toolchain: $CROSS_GCC"
 echo "[gdr-ci] build dir: $BUILD_DIR"
 
 PATCH_DIRS=()

@@ -4,10 +4,9 @@
 # generic tools reusable across RTOS adapters and target boards:
 #   - qemu-system-arm + qemu-system-misc (Cortex-A9 and RISC-V RV64 emulation)
 #   - gdb-multiarch    (GDB with Python scripting and multi-ISA support)
-#   - arm-none-eabi-* + riscv64-unknown-elf-* (bare-metal cross-compilers)
+#   - xPack GNU Arm + RISC-V GCC/newlib (bare-metal cross-compilers)
 #   - python3 + uv     (Python deps + pytest/pexpect runner)
-#   - scons            (RT-Thread BSP build tool; kept here because it's
-#                       apt-installable and harmless for other RTOS paths)
+#   - scons            (RT-Thread BSP build tool)
 #
 # Design principle: ONE base Dockerfile covers all RTOS × hardware combos
 # until a real dependency conflict appears (e.g. one RTOS needs python2,
@@ -21,55 +20,60 @@
 FROM debian:trixie-slim
 
 #----------------------------------------------------------------------
-# Toolchain: QEMU, multiarch GDB, and the ARM/RV64 cross-compilers used by
-# the RT-Thread QEMU BSPs. We install `python3` and `pip` here too so `uv`
-# can bootstrap.
+# Runtime tools. Host GCC and pip are unnecessary: RT-Thread uses the xPack
+# cross-compilers and SCons is installed in an isolated virtual environment.
 #----------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-system-arm \
         qemu-system-misc \
         gdb-multiarch \
-        gcc-arm-none-eabi \
-        libnewlib-arm-none-eabi \
-        libstdc++-arm-none-eabi-newlib \
-        binutils-arm-none-eabi \
-        gcc-riscv64-unknown-elf \
-        binutils-riscv64-unknown-elf \
-        picolibc-riscv64-unknown-elf \
         python3 \
-        python3-pip \
         python3-venv \
         git \
         curl \
         ca-certificates \
-        build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-#----------------------------------------------------------------------
-# uv: fast Python package installer used for `uv sync --group dev`.
-# Pinned to a recent stable; revisit on dependency change.
-#----------------------------------------------------------------------
-RUN curl -LsSf https://astral.sh/uv/0.5.11/install.sh | sh \
-    && ln -sf /root/.local/bin/uv /usr/local/bin/uv
-
-#----------------------------------------------------------------------
-# scons: RT-Thread build tool. Install via pip in an isolated venv to
-# avoid apt's older SCons and to keep this layer reproducible.
-#----------------------------------------------------------------------
-RUN python3 -m venv /opt/scons-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/0.5.11/install.sh | sh \
+    && ln -sf /root/.local/bin/uv /usr/local/bin/uv \
+    && python3 -m venv /opt/scons-venv \
     && /opt/scons-venv/bin/pip install --no-cache-dir "scons>=4.6,<5" \
     && ln -sf /opt/scons-venv/bin/scons /usr/local/bin/scons
+
+#----------------------------------------------------------------------
+# xPack GNU GCC/newlib toolchains. Archive hashes are from the corresponding
+# GitHub release assets and keep toolchain updates deliberate and reviewable.
+#----------------------------------------------------------------------
+ARG XPACK_ARM_VERSION=15.2.1-1.1
+ARG XPACK_ARM_SHA256=da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6
+ARG XPACK_RISCV_VERSION=15.2.0-1
+ARG XPACK_RISCV_SHA256=aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758
+# Reason: RT-Thread's RV64 BSP hard-codes the legacy riscv64-unknown-elf prefix.
+RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-linux-x64.tar.gz" \
+    && riscv_archive="xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-linux-x64.tar.gz" \
+    && curl --fail --location --retry 3 --output "/tmp/$arm_archive" \
+        "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v${XPACK_ARM_VERSION}/$arm_archive" \
+    && echo "${XPACK_ARM_SHA256}  /tmp/$arm_archive" | sha256sum --check - \
+    && curl --fail --location --retry 3 --output "/tmp/$riscv_archive" \
+        "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/$riscv_archive" \
+    && echo "${XPACK_RISCV_SHA256}  /tmp/$riscv_archive" | sha256sum --check - \
+    && tar --extract --gzip --file "/tmp/$arm_archive" --directory /opt \
+    && tar --extract --gzip --file "/tmp/$riscv_archive" --directory /opt \
+    && rm "/tmp/$arm_archive" "/tmp/$riscv_archive" \
+    && for tool in /opt/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}/bin/riscv-none-elf-*; do \
+        ln --symbolic --force "${tool##*/}" \
+            "/opt/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}/bin/riscv64-unknown-elf-${tool##*/riscv-none-elf-}"; \
+    done \
+    && arm_gcc="/opt/xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}/bin/arm-none-eabi-gcc" \
+    && riscv_gcc="/opt/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}/bin/riscv64-unknown-elf-gcc" \
+    && "$arm_gcc" --version | head -1 \
+    && "$riscv_gcc" --version | head -1 \
+    && printf '#include <stdio.h>\n' | "$arm_gcc" -E -x c - >/dev/null \
+    && printf '#include <stdio.h>\n' | "$riscv_gcc" -E -x c - >/dev/null
+
+ENV XPACK_ARM_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+    XPACK_RISCV_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
+    PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Default working directory; CNB mounts the repo at /root/workspace by
 # convention, but we leave WORKDIR generic so local `docker run -v` works.
 WORKDIR /workspace
-
-# Sanity: print versions on container start so failures are diagnosable.
-CMD ["bash", "-lc", "echo qemu-system-arm:; qemu-system-arm --version | head -1; \
-                      echo qemu-system-riscv64:; qemu-system-riscv64 --version | head -1; \
-                      echo gdb-multiarch:;   gdb-multiarch --version | head -1; \
-                      echo arm-none-eabi-gcc:; arm-none-eabi-gcc --version | head -1; \
-                      echo riscv64-unknown-elf-gcc:; riscv64-unknown-elf-gcc --version | head -1; \
-                      echo python3:;          python3 --version; \
-                     echo uv:;               uv --version; \
-                     echo scons:;            scons --version | head -3"]

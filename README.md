@@ -110,6 +110,15 @@ uv run ruff check . && uv run ruff format --check .
 uv run pytest tests/ -v      # requires QEMU + RT-Thread firmwar
 ```
 
+Run the same ARM and RV64 QEMU matrices as CNB in a local Podman machine:
+
+```bash
+ci/validate-podman.sh
+```
+
+The script builds `ci/Dockerfile` for `linux/amd64` and uses the pinned xPack
+toolchains. Start a Podman machine before running it.
+
 See `AGENTS.md` for the full contributor guide.
 
 ## Acknowledgements

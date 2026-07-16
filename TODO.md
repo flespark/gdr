@@ -36,15 +36,15 @@
 
 已交付的产物：
 
-- `ci/Dockerfile` — **通用基础镜像**（不挂任何特定 RTOS 名下）：qemu-system-arm
-  以及 gdb-multiarch + arm-none-eabi-gcc + scons + uv。所有 RTOS × 硬件平台组合
-  共用。前期单 Dockerfile 维护负担最小；CNB 不支持并行启动多个虚拟机，也
- 限制了多套工具链镜像并行运行的实际收益。
+- `ci/Dockerfile` — **通用基础镜像**（不挂任何特定 RTOS 名下）：QEMU、
+  gdb-multiarch、固定版本的 xPack ARM/RISC-V GCC/newlib、scons 与 uv。所有
+  RTOS × 硬件平台组合共用。前期单 Dockerfile 维护负担最小；CNB 不支持并行
+  启动多个虚拟机，也限制了多套工具链镜像并行运行的实际收益。
 - `ci/rt-thread/` — RT-Thread 专属资源（build 脚本 + patches）。RTOS 拆分在
   这一层，Dockerfile 不拆。
-- `ci/build-rtt.sh` — 幂等的 RT-Thread 编译脚本：clone v4.0.5 →
+- `ci/rt-thread/build-rtt.sh` — 幂等的 RT-Thread 编译脚本：clone v4.0.5 →
   应用补丁 → scons。本地端到端验证可跑通。
-- `ci/rt-thread-patches/*.patch` — 5 个补丁：
+- `ci/rt-thread/patches/<平台>/<版本>/*.patch` — 平台和版本隔离的补丁：
   - `001-test-fixture-main.patch` — 改造 main.c 生成 worker1/2/3 +
     test_sem + test_mutex + test_timer
   - `002-disable-pthreads.patch` / `003-warn-fix.patch` — 编译修复
@@ -52,8 +52,10 @@
   - `005-scons-deque-list.patch` — SCons 4.x deque 兼容
 - `.cnb.yml` — 两条流水线：
   - `lint`（push + PR）：ruff check/format，用平台默认镜像快速跑
-  - `qemu-test`（push + PR）：amd64 + cpus:4 + Dockerfile.ci 缓存 +
+  - `qemu-test`（push + PR）：amd64 + cpus:4 + Dockerfile 缓存 +
     scons 构建 ELF + pytest QEMU 闭环
+- `ci/validate-podman.sh` — 本地按 CNB 的 linux/amd64 镜像运行 ARM 与 RV64
+  两个 QEMU 矩阵。
 - `tests/conftest.py` — `ELF_PATH` 默认优先 `tests/fixtures/`，再回退
   `~/Source`；`GDR_ELF_PATH` 环境变量覆盖（CI 用）。
 - 删除 `ci/lint.yml` 与 `.github/` —— GitHub 侧不再跑流水线。

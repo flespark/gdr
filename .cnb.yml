@@ -38,8 +38,8 @@ main: # branch: main
         tags: cnb:arch:amd64
         cpus: 4
       docker:
-        # ci/Dockerfile pins qemu-system-arm + gdb-multiarch + arm-none-eabi-gcc
-        # + scons + uv. `by` lets CNB invalidate the cached image only when
+        # ci/Dockerfile pins QEMU, GDB, xPack ARM/RISC-V GCC/newlib, scons,
+        # and uv. `by` lets CNB invalidate the cached image only when
         # the Dockerfile changes; rebuilds are otherwise read from the
         # artifact registry.
         build:
@@ -54,19 +54,12 @@ main: # branch: main
       env:
         # Use gdb-multiarch (the container's GDB with ARM target support).
         GDR_GDB: gdb-multiarch
+        RT_THREAD_TARGET: cortex-a9
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        CROSS_TOOL_PREFIX: arm-none-eabi-
       stages:
-        - name: uv sync (dev deps)
-          script: uv sync --group dev
         - name: pytest matrix (QEMU closed-loop)
-          script: |
-            for ref in v4.0.0 v4.0.5 v4.1.1; do
-              export RT_THREAD_REF="$ref"
-              export GDR_RTTHREAD_VERSION="${ref#v}"
-              export BUILD_DIR="/tmp/rt-thread-build/$ref"
-              export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
-              bash ci/rt-thread/build-rtt.sh
-              uv run pytest tests/ -v --tb=short
-            done
+          script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
 
     - name: qemu-test-rv64
       runner:
@@ -83,25 +76,12 @@ main: # branch: main
       env:
         GDR_GDB: gdb-multiarch
         GDR_QEMU_TARGET: rv64
+        RT_THREAD_TARGET: rv64
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin
+        CROSS_TOOL_PREFIX: riscv64-unknown-elf-
       stages:
-        - name: uv sync (dev deps)
-          script: uv sync --group dev
         - name: pytest RV64 matrix (QEMU closed-loop)
-          script: |
-            for ref in v4.0.4 v4.0.5 v4.1.0 v4.1.1; do
-              case "$ref" in
-                v4.1.1) bsp="bsp/qemu-virt64-riscv" ;;
-                *) bsp="bsp/qemu-riscv-virt64" ;;
-              esac
-              export RT_THREAD_TARGET="rv64"
-              export RT_THREAD_REF="$ref"
-              export GDR_RTTHREAD_VERSION="${ref#v}"
-              export BUILD_DIR="/tmp/rt-thread-build/rv64/$ref"
-              export GDR_ELF_PATH="$BUILD_DIR/$bsp/rtthread.elf"
-              export GDR_FIRMWARE_PATH="$BUILD_DIR/$bsp/rtthread.bin"
-              bash ci/rt-thread/build-rtt.sh
-              uv run pytest tests/ -v --tb=short
-            done
+          script: bash ci/rt-thread/run-qemu-matrix.sh rv64
 
   pull_request:
     # Mirror of the push pipelines, for pre-merge feedback on PRs.
@@ -130,19 +110,12 @@ main: # branch: main
         - /root/.cache/uv:copy-on-write
       env:
         GDR_GDB: gdb-multiarch
+        RT_THREAD_TARGET: cortex-a9
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        CROSS_TOOL_PREFIX: arm-none-eabi-
       stages:
-        - name: uv sync (dev deps)
-          script: uv sync --group dev
         - name: pytest matrix (QEMU closed-loop)
-          script: |
-            for ref in v4.0.0 v4.0.5 v4.1.1; do
-              export RT_THREAD_REF="$ref"
-              export GDR_RTTHREAD_VERSION="${ref#v}"
-              export BUILD_DIR="/tmp/rt-thread-build/$ref"
-              export GDR_ELF_PATH="$BUILD_DIR/bsp/qemu-vexpress-a9/rtthread.elf"
-              bash ci/rt-thread/build-rtt.sh
-              uv run pytest tests/ -v --tb=short
-            done
+          script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
 
     - name: qemu-test-rv64
       runner:
@@ -159,22 +132,9 @@ main: # branch: main
       env:
         GDR_GDB: gdb-multiarch
         GDR_QEMU_TARGET: rv64
+        RT_THREAD_TARGET: rv64
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin
+        CROSS_TOOL_PREFIX: riscv64-unknown-elf-
       stages:
-        - name: uv sync (dev deps)
-          script: uv sync --group dev
         - name: pytest RV64 matrix (QEMU closed-loop)
-          script: |
-            for ref in v4.0.4 v4.0.5 v4.1.0 v4.1.1; do
-              case "$ref" in
-                v4.1.1) bsp="bsp/qemu-virt64-riscv" ;;
-                *) bsp="bsp/qemu-riscv-virt64" ;;
-              esac
-              export RT_THREAD_TARGET="rv64"
-              export RT_THREAD_REF="$ref"
-              export GDR_RTTHREAD_VERSION="${ref#v}"
-              export BUILD_DIR="/tmp/rt-thread-build/rv64/$ref"
-              export GDR_ELF_PATH="$BUILD_DIR/$bsp/rtthread.elf"
-              export GDR_FIRMWARE_PATH="$BUILD_DIR/$bsp/rtthread.bin"
-              bash ci/rt-thread/build-rtt.sh
-              uv run pytest tests/ -v --tb=short
-            done
+          script: bash ci/rt-thread/run-qemu-matrix.sh rv64
