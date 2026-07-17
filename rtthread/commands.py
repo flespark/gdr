@@ -111,12 +111,22 @@ def _cmd_threads() -> None:
                 _addr_str(thr.sp),
                 f"{thr.stack_size}" if thr.stack_size else "0",
                 str(thr.stack_used) if thr.stack_used is not None else "N/A",
+                str(thr.max_stack_used) if thr.max_stack_used is not None else "N/A",
                 _addr_str(thr.entry),
             ]
         )
     print_table(
         rows,
-        ["Name", "State", "Prio", "SP", "StkSize", "StkUsed", "Entry"],
+        [
+            "Name",
+            "State",
+            "Prio",
+            "SP",
+            "StkSize",
+            "StkUsed",
+            "MaxStkUsed",
+            "Entry",
+        ],
     )
 
 

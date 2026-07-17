@@ -174,7 +174,8 @@ RTOS 调试最关心栈溢出。当前只输出 SP/StkSize/Entry，加一列
 `StkUsed = stack_size - (sp - stack_addr)`。当保存的 SP 不在栈范围内时显示
 `N/A`，避免把损坏或过期的上下文误报为有效使用量。向上增长的架构使用
 `sp - stack_addr`；通过 `ARCH_CPU_STACK_GROWS_UPWARD` 宏或 RT-Thread 栈填充
-哨兵判断方向，未知时安全降级为 `N/A`。
+哨兵判断方向，未知时安全降级为 `N/A`。同时扫描 `'#'` 填充区，输出历史最大
+使用量 `MaxStkUsed`。
 
 ### 1.4 SMP 当前线程
 

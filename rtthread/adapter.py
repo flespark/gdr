@@ -68,21 +68,25 @@ def _get_addr(val: gdb.Value) -> int:
         return 0
 
 
-def _infer_stack_grows_up(stack_addr: int, stack_size: int) -> bool | None:
+def _infer_stack_grows_up(stack: bytes) -> bool | None:
     """Infer RT-Thread stack direction from its initialized boundary sentinels."""
-    if not stack_addr or not stack_size:
+    if not stack:
         return None
-    edge_size = min(stack_size, 16)
-    low_edge = read_bytes(stack_addr, edge_size)
-    high_edge = read_bytes(stack_addr + stack_size - edge_size, edge_size)
-    if low_edge is None or high_edge is None:
-        return None
+    edge_size = min(len(stack), 16)
     fill = bytes([RT_THREAD_STACK_FILL]) * edge_size
-    low_untouched = low_edge == fill
-    high_untouched = high_edge == fill
+    low_untouched = stack[:edge_size] == fill
+    high_untouched = stack[-edge_size:] == fill
     if low_untouched == high_untouched:
         return None
     return high_untouched
+
+
+def _max_stack_used(stack: bytes, stack_grows_up: bool | None) -> int | None:
+    """Return RT-Thread's fill-pattern high-water mark for a known direction."""
+    if stack_grows_up is None:
+        return None
+    fill = bytes([RT_THREAD_STACK_FILL])
+    return len(stack.rstrip(fill) if stack_grows_up else stack.lstrip(fill))
 
 
 def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
@@ -93,9 +97,11 @@ def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
     state = ThreadState.from_raw(stat_raw)
     stack_addr = read_int(read_field(val, sl, "stack_addr")) or 0
     stack_size = read_int(read_field(val, sl, "stack_size")) or 0
+    stack = read_bytes(stack_addr, stack_size) if stack_addr and stack_size else None
     stack_grows_up = layout.stack_grows_up
-    if stack_grows_up is None:
-        stack_grows_up = _infer_stack_grows_up(stack_addr, stack_size)
+    if stack_grows_up is None and stack is not None:
+        stack_grows_up = _infer_stack_grows_up(stack)
+    max_stack_used = _max_stack_used(stack, stack_grows_up) if stack else None
 
     return Thread(
         name=name,
@@ -108,6 +114,7 @@ def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
         stack_addr=stack_addr,
         stack_size=stack_size,
         stack_grows_up=stack_grows_up,
+        max_stack_used=max_stack_used,
         entry=read_int(read_field(val, sl, "entry")) or 0,
         error=read_int(read_field(val, sl, "error")) or 0,
         remaining_tick=read_int(read_field(val, sl, "remaining_tick")) or 0,

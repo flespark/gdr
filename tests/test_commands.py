@@ -24,9 +24,9 @@ class TestThreadsCommand:
             assert name in out, f"thread {name!r} not found in output:\n{out}"
 
     def test_has_table_headers(self, gdb_session):
-        """Output has Name, State, Prio, and StkUsed headers."""
+        """Output has Name, State, Prio, StkUsed, and MaxStkUsed headers."""
         out = gdb_session.run("rtthread threads")
-        for header in ["Name", "State", "Prio", "StkUsed"]:
+        for header in ["Name", "State", "Prio", "StkUsed", "MaxStkUsed"]:
             assert header in out, f"header {header!r} missing in output:\n{out}"
 
     def test_stack_used_matches_worker_stack_fields(self, gdb_session):
@@ -37,17 +37,22 @@ import gdb
 
 thread = gdb.parse_and_eval('$gdr_thread("worker1")')
 stack_used = int(thread["stack_size"]) - (int(thread["sp"]) - int(thread["stack_addr"]))
+stack = bytes(gdb.selected_inferior().read_memory(int(thread["stack_addr"]), int(thread["stack_size"])))
 print(f"stack_used={stack_used}")
+print(f"max_stack_used={len(stack.lstrip(b'#'))}")
 """
         )
-        match = re.search(r"stack_used=(\d+)", out)
-        assert match is not None, out
+        stack_used = re.search(r"stack_used=(\d+)", out)
+        max_stack_used = re.search(r"max_stack_used=(\d+)", out)
+        assert stack_used is not None, out
+        assert max_stack_used is not None, out
 
         out = gdb_session.run("rtthread threads")
         worker_row = next(
             line for line in out.splitlines() if line.lstrip().startswith("worker1")
         )
-        assert worker_row.split()[-2] == match.group(1), worker_row
+        assert worker_row.split()[-3] == stack_used.group(1), worker_row
+        assert worker_row.split()[-2] == max_stack_used.group(1), worker_row
 
     def test_thread_states_valid(self, gdb_session):
         """All thread states in the table are known values."""

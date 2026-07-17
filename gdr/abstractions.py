@@ -66,6 +66,7 @@ class Thread(KernelObject):
     stack_addr: int = 0
     stack_size: int = 0
     stack_grows_up: bool | None = None
+    max_stack_used: int | None = None
     entry: int = 0
     error: int = 0
     remaining_tick: int = 0
