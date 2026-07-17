@@ -1,7 +1,5 @@
 # GDR
 
-[![CNB Build](https://cnb.cool/flespark-2026/gdr/-/badge/git/latest/ci/status/push?branch=main)](https://cnb.cool/flespark-2026/gdr/-/build/logs)
-
 GDB helper framework for debugging RTOS-based embedded firmware.
 
 GDR runs inside the GDB Python interpreter and provides three layers of
@@ -123,5 +121,6 @@ See `AGENTS.md` for the full contributor guide.
 
 ## Acknowledgements
 
-Inspired by Linux kernel `scripts/gdb/` and the Asterinas GDB helper
-approach to non-invasive kernel debugging.
+- [GEF](https://github.com/hugsy/gef)
+- [Asterinas GDB helper](https://mp.weixin.qq.com/s/mntHv8Ax0SXcTksX1xiKxA)
+- [pytest-embedded](https://github.com/espressif/pytest-embedded)
