@@ -4,20 +4,19 @@
 Usage in GDB::
 
     (gdb) source gdr.py
-    (gdb) gdr rtthread 4.0.5
+    (gdb) gdr init rtthread 4.0.5
     (gdb) rtthread threads
     (gdb) p *$gdr_thread("main")
 
-This entry point parses the ``--rtos`` / ``--version`` arguments, loads the
-corresponding RTOS adapter package, probes kernel configuration by symbol
-presence, builds the layout, and registers pretty-printers, convenience
-functions and aggregate commands.  No RTOS auto-detection is performed.
+This entry point loads the requested RTOS adapter package, probes kernel
+configuration by symbol presence, builds the layout, and registers
+pretty-printers, convenience functions and aggregate commands.  No RTOS
+auto-detection is performed.
 """
 
 from __future__ import annotations
 
 import os
-import shlex
 import sys
 
 try:
@@ -30,23 +29,17 @@ from gdr.printers import register_printers
 
 
 def _parse_args() -> dict[str, str]:
-    """Parse ``--rtos`` and ``--version`` from supported startup inputs.
+    """Parse automatic initialisation arguments from the environment.
 
-    GDB's ``source`` command does not pass command-line arguments to the
-    sourced script.  Therefore we support three mechanisms:
-
-    1. **Environment variables** ``GDR_RTOS`` and ``GDR_VERSION`` — fallback
-       for non-interactive launchers.
-    2. **GDB inferior args** via ``set args --rtos ... --version ...`` — the
-       main interactive GDB path.
-    3. **sys.argv** — kept for CLI usage outside GDB.
+    ``GDR_RTOS`` and ``GDR_VERSION`` allow non-interactive launchers to source
+    GDR and initialise its RTOS adapter in one step.  Interactive sessions
+    use ``gdr init`` instead.
 
     Returns:
         Dict with keys ``"rtos"`` and ``"version"``.
     """
     args: dict[str, str] = {}
 
-    # Environment variables (fallback mechanism)
     env_rtos = os.environ.get("GDR_RTOS", "")
     env_version = os.environ.get("GDR_VERSION", "")
     if env_rtos:
@@ -54,59 +47,6 @@ def _parse_args() -> dict[str, str]:
     if env_version:
         args["version"] = env_version
 
-    # GDB inferior args (common interactive path):
-    #   (gdb) set args --rtos rtthread --version 4.0.5
-    #   (gdb) source gdr.py
-    if gdb is not None:
-        gdb_args = _gdb_inferior_args()
-        args.update(_parse_argv(gdb_args))
-
-    # sys.argv overrides (secondary mechanism)
-    argv = sys.argv[1:] if len(sys.argv) > 1 else []
-    args.update(_parse_argv(argv))
-    return args
-
-
-def _gdb_inferior_args() -> list[str]:
-    """Return args configured by GDB's ``set args`` command."""
-    if gdb is None:
-        return []
-    try:
-        output = gdb.execute("show args", to_string=True)
-    except gdb.error:
-        return []
-
-    marker = ' is "'
-    start = output.find(marker)
-    if start < 0:
-        return []
-    value = output[start + len(marker) :].rstrip()
-    if value.endswith('".'):
-        value = value[:-2]
-    try:
-        return shlex.split(value)
-    except ValueError:
-        return []
-
-
-def _parse_argv(argv: list[str]) -> dict[str, str]:
-    """Parse GDR options from an argv-style list."""
-    args: dict[str, str] = {}
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg in ("--rtos", "-r"):
-            i += 1
-            if i < len(argv):
-                args["rtos"] = argv[i]
-        elif arg in ("--version", "-v"):
-            i += 1
-            if i < len(argv):
-                args["version"] = argv[i]
-        elif arg in ("--help", "-h"):
-            _print_usage()
-            raise SystemExit(0)
-        i += 1
     return args
 
 
@@ -118,31 +58,16 @@ GDR — GDB helper for RTOS debugging
 
 Usage:
     source gdr.py
-    gdr <rtos> <version>
+    gdr init <rtos> <version>
 
-Automation alternatives:
-    set args --rtos <name> --version <ver>; source gdr.py
+Automation:
     GDR_RTOS=<name> GDR_VERSION=<ver> gdb ... -ex 'source gdr.py'
-
-Options:
-    --rtos <name>      RTOS name (currently: rtthread)
-    --version <ver>    RTOS version (e.g. 4.0.5)
-    --help             Show this help
 
 Examples:
     source gdr.py
-    gdr rtthread 4.0.5
+    gdr init rtthread 4.0.5
 """
     )
-
-
-def _parse_init_args(argv: list[str]) -> dict[str, str]:
-    """Parse arguments accepted by the interactive ``gdr`` command."""
-    if argv and argv[0] == "init":
-        argv = argv[1:]
-    if len(argv) == 2 and not argv[0].startswith("-"):
-        return {"rtos": argv[0], "version": argv[1]}
-    return _parse_argv(argv)
 
 
 _GdbCommandBase = gdb.Command if gdb is not None else object
@@ -157,19 +82,16 @@ class GdrCommand(_GdbCommandBase):  # type: ignore[misc]
         super().__init__("gdr", gdb.COMMAND_USER)
 
     def invoke(self, argument: str, from_tty: bool) -> None:  # noqa: ARG002
-        argv = shlex.split(argument)
+        argv = gdb.string_to_argv(argument)
         if not argv or argv[0] in ("help", "--help", "-h"):
             _print_usage()
             return
 
-        args = _parse_init_args(argv)
-        rtos = args.get("rtos", "")
-        version = args.get("version", "")
-        if not rtos or not version:
-            warn("usage: gdr <rtos> <version>")
+        if len(argv) != 3 or argv[0] != "init":
+            warn("usage: gdr init <rtos> <version>")
             _print_usage()
             return
-        _setup_rtos(rtos, version)
+        _setup_rtos(argv[1], argv[2])
 
 
 def _setup_rtthread(version: str) -> None:
@@ -231,10 +153,12 @@ def initialize() -> None:
     version = args.get("version", "")
 
     if not rtos and not version:
-        info("GDR loaded. Run `gdr rtthread 4.0.5` to initialise RT-Thread support.")
+        info(
+            "GDR loaded. Run `gdr init rtthread 4.0.5` to initialise RT-Thread support."
+        )
         return
     if not rtos or not version:
-        warn("both --rtos and --version are required for automatic initialisation")
+        warn("GDR_RTOS and GDR_VERSION are both required for automatic initialisation")
         _print_usage()
         return
 

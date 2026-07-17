@@ -54,7 +54,7 @@ Previous versions attempted to detect the RTOS and parse its version string
 from symbols, then match struct patterns. This was fragile (failed on
 attach, failed across remote configs) and duplicated logic. Users now
 specify the RTOS and exact version, for example
-`--rtos rtthread --version 4.0.5`. The RT-Thread adapter validates the
+`gdr init rtthread 4.0.5`. The RT-Thread adapter validates the
 supported 4.x.x range, while layout differences are still handled by probing
 target symbols and DWARF rather than branching on every patch version.
 

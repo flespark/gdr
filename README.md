@@ -33,7 +33,7 @@ closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 
 ```gdb
 (gdb) source gdr.py
-(gdb) gdr rtthread 4.0.5
+(gdb) gdr init rtthread 4.0.5
 warning: target RT-Thread version not exported; cannot verify --version
 [gdr] setting up RT-Thread v4.0.5...
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True

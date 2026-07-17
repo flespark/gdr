@@ -35,7 +35,7 @@ Key design principles (see `docs/architecture.md`):
 
 - **Navigation belongs to helpers; display belongs to GDB.** Convenience
   functions return `gdb.Value`; commands only aggregate/tabulate.
-- **No RTOS auto-detection.** User specifies `--rtos rtthread --version 4.0.5`.
+- **No RTOS auto-detection.** User specifies `gdr init rtthread 4.0.5`.
   Kernel config features (SMP, heap type, IPC components) are probed at
   runtime by symbol presence, which is far more reliable than guessing the
   RTOS or parsing version strings.

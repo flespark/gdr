@@ -199,7 +199,7 @@ class GdbSession:
         self.run(f"target remote :{self._gdb_port}")
         self.run(f"source {self._gdr_root / 'gdr.py'}")
         self.run("rtthread threads")
-        self.run(f"gdr rtthread {RTTHREAD_VERSION}", timeout=20)
+        self.run(f"gdr init rtthread {RTTHREAD_VERSION}", timeout=20)
 
     def stop(self):
         """Quit GDB and clean up."""

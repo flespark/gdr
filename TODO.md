@@ -147,23 +147,23 @@ Cortex-A9 上无法覆盖的地址、链表和 GDB `gdb.Value` 访问路径。
 
 ## P1 — 高收益改进
 
-### 1.1 read_cstring 跨页兜底
+### 1.1 read_cstring 跨页兜底（不实施）
 
 **文件**: `gdr/gdb_bridge.py`
 
-GEF `read_cstring` (`gef.py:12220`) 用 `length = min(addr | (PAGE_SIZE-1),
-max_len+1)` 让首次读取不出页，失败再逐页 walk。GDR 当前只传
-`length=max_len`，跨页或末页溢出易触发 `gdb.MemoryError`；RTOS 堆栈零散
-分布，这是真实问题。
+GEF 的实现面向 Linux 等 MMU 目标。GDR 调试的是裸机 RTOS，当前名称字段也
+是固定 `char[]` 而非跨页 `char*`；分页兜底没有实际收益，避免为不存在的场景
+增加复杂度。
 
-### 1.2 函数指针符号化
+### ✅ 1.2 函数指针符号化
 
-**文件**: `gdr/printers.py`
+**文件**: `gdr/gdb_bridge.py`, `gdr/printers.py`, `tests/test_printers.py`
 
 GEF `dereference_from` (`gef.py:9859`) 对 text 段指针自动 disasm。GDR
 `_format_field` 的 `kind="ptr"` 分支当 `deref["name"]` 失败时只回退
-`hex(addr)`。应尝试 `gdb.execute(f"info symbol {addr}", to_string=True)`
-把 `entry=0x08001234` 渲染为 `entry=<rt_thread_entry+4>`。
+`hex(addr)`。现通过 `lookup_symbol_at()` 集中封装 `gdb.execute` 与输出解析，
+把 `entry=0x08001234` 渲染为 `entry=<rt_thread_entry+4>`；无匹配符号时保持
+原始地址。
 
 ### 1.3 `rtthread threads` 增加 StkUsed 列
 
