@@ -78,6 +78,20 @@ class TestPrinters:
         assert "Timer(" in out, f"expected Timer( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
 
+    def test_function_pointer_symbolic(self, gdb_session):
+        """A function pointer is rendered as its symbol and offset."""
+        out = gdb_session.run_python(
+            """
+import gdb
+from gdr.printers import _format_field
+from gdr.layout import StructField
+
+entry = gdb.parse_and_eval('$gdr_thread("worker1").entry')
+print(_format_field(entry, StructField("entry", ("entry",), kind="ptr")))
+"""
+        )
+        assert "<" in out and ">" in out, f"expected symbolized pointer, got:\n{out}"
+
     def test_timer_flag_symbolic(self, gdb_session):
         """Timer ``flag`` field renders flag-bit names (ACTIVE/PERIODIC/SOFT).
 

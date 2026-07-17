@@ -19,7 +19,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import read_cstring, read_int
+from gdr.gdb_bridge import lookup_symbol_at, read_cstring, read_int
 from gdr.layout import KernelLayout, StructField, StructLayout, read_field
 
 # Display name for each struct type (short tag for the folded output)
@@ -72,6 +72,9 @@ def _format_field(value, field: StructField) -> str:
                 return f'"{name}"'
         except (gdb.error, gdb.MemoryError, IndexError, TypeError):
             pass
+        symbol = lookup_symbol_at(addr)
+        if symbol is not None:
+            return f"<{symbol}>"
         return hex(addr)
 
     if kind == "enum":

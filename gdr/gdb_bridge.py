@@ -55,6 +55,23 @@ def lookup_symbol(name: str) -> gdb.Value | None:
         return None
 
 
+def lookup_symbol_at(addr: int) -> str | None:
+    """Look up the symbol and offset at a target address.
+
+    Returns a display-ready ``"symbol+offset"`` string without enclosing
+    brackets, or ``None`` when no symbol covers ``addr``.
+    """
+    _ensure_gdb()
+    try:
+        symbol = gdb.execute(f"info symbol {addr:#x}", to_string=True).strip()
+    except gdb.error:
+        return None
+    if symbol.startswith("No symbol matches"):
+        return None
+    symbol = symbol.partition(" in section ")[0]
+    return symbol.replace(" + ", "+").replace(" - ", "-")
+
+
 def symbol_exists(name: str) -> bool:
     """Check whether a symbol is visible in the current target."""
     return lookup_symbol(name) is not None
