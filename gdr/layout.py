@@ -113,11 +113,14 @@ class KernelLayout:
         structs: Mapping of struct name to ``StructLayout``.
         list_hooks: Mapping of hook name to ``ListHook``.
         object_types: Mapping of type code to ``ObjectTypeInfo``.
+        stack_grows_up: Whether thread stacks grow toward higher addresses, or
+            ``None`` when the target direction cannot be determined.
     """
 
     structs: dict[str, StructLayout] = field(default_factory=dict)
     list_hooks: dict[str, ListHook] = field(default_factory=dict)
     object_types: dict[int, ObjectTypeInfo] = field(default_factory=dict)
+    stack_grows_up: bool | None = None
 
 
 # ---------------------------------------------------------------------------

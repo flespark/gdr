@@ -51,7 +51,7 @@ warning: target RT-Thread version not exported; cannot verify --version
 
 | Command | Description |
 |---------|-------------|
-| `rtthread threads` | List all threads (name/state/priority/sp/stack_size/entry) |
+| `rtthread threads` | List all threads (name/state/priority/sp/stack_size/stack_used/entry) |
 | `rtthread semaphores` | List semaphores (name/value/addr) |
 | `rtthread timers` | List timers (name/state/mode/type/ticks/callback) |
 | `rtthread objects [type]` | List kernel object counts, optionally filtered by type |

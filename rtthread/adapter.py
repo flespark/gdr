@@ -30,7 +30,7 @@ from gdr.abstractions import (
     ThreadState,
     Timer,
 )
-from gdr.gdb_bridge import read_cstring, read_int
+from gdr.gdb_bridge import read_bytes, read_cstring, read_int
 from gdr.kernel import find_object, find_thread, iter_threads
 from gdr.layout import KernelLayout, read_field
 
@@ -44,6 +44,7 @@ from rtthread.layout import (
     RT_OBJECT_CLASS_SEMAPHORE,
     RT_OBJECT_CLASS_THREAD,
     RT_OBJECT_CLASS_TIMER,
+    RT_THREAD_STACK_FILL,
     RT_TIMER_FLAG_ACTIVATED,
     RT_TIMER_FLAG_PERIODIC,
     RT_TIMER_FLAG_SOFT_TIMER,
@@ -67,12 +68,34 @@ def _get_addr(val: gdb.Value) -> int:
         return 0
 
 
+def _infer_stack_grows_up(stack_addr: int, stack_size: int) -> bool | None:
+    """Infer RT-Thread stack direction from its initialized boundary sentinels."""
+    if not stack_addr or not stack_size:
+        return None
+    edge_size = min(stack_size, 16)
+    low_edge = read_bytes(stack_addr, edge_size)
+    high_edge = read_bytes(stack_addr + stack_size - edge_size, edge_size)
+    if low_edge is None or high_edge is None:
+        return None
+    fill = bytes([RT_THREAD_STACK_FILL]) * edge_size
+    low_untouched = low_edge == fill
+    high_untouched = high_edge == fill
+    if low_untouched == high_untouched:
+        return None
+    return high_untouched
+
+
 def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
     """Convert a ``struct rt_thread`` gdb.Value to a ``Thread`` dataclass."""
     sl = layout.structs["struct rt_thread"]
     name = read_cstring(read_field(val, sl, "name")) or ""
     stat_raw = read_int(read_field(val, sl, "stat")) or 0
     state = ThreadState.from_raw(stat_raw)
+    stack_addr = read_int(read_field(val, sl, "stack_addr")) or 0
+    stack_size = read_int(read_field(val, sl, "stack_size")) or 0
+    stack_grows_up = layout.stack_grows_up
+    if stack_grows_up is None:
+        stack_grows_up = _infer_stack_grows_up(stack_addr, stack_size)
 
     return Thread(
         name=name,
@@ -82,8 +105,9 @@ def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
         current_priority=read_int(read_field(val, sl, "current_priority")) or 0,
         init_priority=read_int(read_field(val, sl, "init_priority")) or 0,
         sp=read_int(read_field(val, sl, "sp")) or 0,
-        stack_addr=read_int(read_field(val, sl, "stack_addr")) or 0,
-        stack_size=read_int(read_field(val, sl, "stack_size")) or 0,
+        stack_addr=stack_addr,
+        stack_size=stack_size,
+        stack_grows_up=stack_grows_up,
         entry=read_int(read_field(val, sl, "entry")) or 0,
         error=read_int(read_field(val, sl, "error")) or 0,
         remaining_tick=read_int(read_field(val, sl, "remaining_tick")) or 0,

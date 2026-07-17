@@ -55,6 +55,7 @@ RT_THREAD_STAT_MASK = 0x07
 
 # Timer skip-list level (rtdef.h default is 1)
 RT_TIMER_SKIP_LIST_LEVEL = 1
+RT_THREAD_STACK_FILL = ord("#")
 
 # Object type code → display name (matches rt_object_class_type enum order).
 # Reason: re-using type codes as keys keeps a single source of truth; the
@@ -124,6 +125,7 @@ class RtConfig:
     thread_has_init_priority: bool = True
     thread_has_pthread_data: bool = False
     heap_type: str = "none"  # "small_mem", "slab", "memheap", "none"
+    stack_grows_up: bool | None = None
 
 
 def detect_config() -> RtConfig:
@@ -140,7 +142,7 @@ def detect_config() -> RtConfig:
     Raises:
         RuntimeError: if not running inside GDB.
     """
-    from gdr.gdb_bridge import lookup_type, symbol_exists
+    from gdr.gdb_bridge import lookup_type, macro_defined, symbol_exists
 
     cfg = RtConfig()
 
@@ -156,6 +158,9 @@ def detect_config() -> RtConfig:
     cfg.using_device = symbol_exists("rt_device_register")
     cfg.using_signals = symbol_exists("rt_signal_init")
     cfg.using_lwp = symbol_exists("lwp_pid_find")
+    # Reason: absent macro debug information cannot prove a target stack grows
+    # downward. The adapter infers it from RT-Thread's stack-fill sentinels.
+    cfg.stack_grows_up = True if macro_defined("ARCH_CPU_STACK_GROWS_UPWARD") else None
 
     cfg.using_memory_object = lookup_type("struct rt_memory") is not None
 
@@ -545,7 +550,7 @@ def build_layouts(cfg: RtConfig) -> KernelLayout:
     Returns:
         ``KernelLayout`` with struct layouts, list hooks, and object types.
     """
-    kl = KernelLayout()
+    kl = KernelLayout(stack_grows_up=cfg.stack_grows_up)
 
     # Struct layouts
     kl.structs["struct rt_thread"] = build_thread_layout(cfg)

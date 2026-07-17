@@ -89,7 +89,7 @@ def _addr_str(addr: int) -> str:
 def _cmd_threads() -> None:
     """List all threads in a table."""
     if _kl is None:
-        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
+        warn("run `gdr init <rtos> <version>` to specify the RTOS and version first")
         return
     rows = []
     current = get_current_thread()
@@ -110,12 +110,13 @@ def _cmd_threads() -> None:
                 str(thr.current_priority),
                 _addr_str(thr.sp),
                 f"{thr.stack_size}" if thr.stack_size else "0",
+                str(thr.stack_used) if thr.stack_used is not None else "N/A",
                 _addr_str(thr.entry),
             ]
         )
     print_table(
         rows,
-        ["Name", "State", "Prio", "SP", "StkSize", "Entry"],
+        ["Name", "State", "Prio", "SP", "StkSize", "StkUsed", "Entry"],
     )
 
 
@@ -123,7 +124,7 @@ def _cmd_threads() -> None:
 def _cmd_semaphores() -> None:
     """List all semaphores in a table."""
     if _kl is None:
-        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
+        warn("run `gdr init <rtos> <version>` to specify the RTOS and version first")
         return
     sl = _kl.structs.get("struct rt_semaphore")
     if sl is None:
@@ -140,7 +141,7 @@ def _cmd_semaphores() -> None:
 def _cmd_timers() -> None:
     """List all timers in a table."""
     if _kl is None:
-        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
+        warn("run `gdr init <rtos> <version>` to specify the RTOS and version first")
         return
     from gdr.kernel import iter_timers
 
@@ -177,7 +178,7 @@ def _cmd_objects(arg: str) -> None:
             If empty, lists counts of all enabled types.
     """
     if _kl is None:
-        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
+        warn("run `gdr init <rtos> <version>` to specify the RTOS and version first")
         return
 
     if arg.strip():
@@ -220,7 +221,7 @@ def _parse_type_name(name: str) -> int | None:
 def _cmd_system() -> None:
     """Print system summary: tick, current thread, object counts, heap."""
     if _kl is None:
-        warn("run `gdr <rtos> <version>` to specify the RTOS and version first")
+        warn("run `gdr init <rtos> <version>` to specify the RTOS and version first")
         return
 
     tick = get_tick()

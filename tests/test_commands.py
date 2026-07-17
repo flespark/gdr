@@ -7,6 +7,8 @@ expected test-fixture objects.
 
 from __future__ import annotations
 
+import re
+
 
 class TestThreadsCommand:
     """``rtthread threads`` output."""
@@ -22,10 +24,30 @@ class TestThreadsCommand:
             assert name in out, f"thread {name!r} not found in output:\n{out}"
 
     def test_has_table_headers(self, gdb_session):
-        """Output has Name, State, Prio headers."""
+        """Output has Name, State, Prio, and StkUsed headers."""
         out = gdb_session.run("rtthread threads")
-        for header in ["Name", "State", "Prio"]:
+        for header in ["Name", "State", "Prio", "StkUsed"]:
             assert header in out, f"header {header!r} missing in output:\n{out}"
+
+    def test_stack_used_matches_worker_stack_fields(self, gdb_session):
+        """StkUsed equals ``stack_size - (sp - stack_addr)`` for worker1."""
+        out = gdb_session.run_python(
+            """
+import gdb
+
+thread = gdb.parse_and_eval('$gdr_thread("worker1")')
+stack_used = int(thread["stack_size"]) - (int(thread["sp"]) - int(thread["stack_addr"]))
+print(f"stack_used={stack_used}")
+"""
+        )
+        match = re.search(r"stack_used=(\d+)", out)
+        assert match is not None, out
+
+        out = gdb_session.run("rtthread threads")
+        worker_row = next(
+            line for line in out.splitlines() if line.lstrip().startswith("worker1")
+        )
+        assert worker_row.split()[-2] == match.group(1), worker_row
 
     def test_thread_states_valid(self, gdb_session):
         """All thread states in the table are known values."""

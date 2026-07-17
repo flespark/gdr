@@ -65,11 +65,28 @@ class Thread(KernelObject):
     sp: int = 0
     stack_addr: int = 0
     stack_size: int = 0
+    stack_grows_up: bool | None = None
     entry: int = 0
     error: int = 0
     remaining_tick: int = 0
     bind_cpu: int = -1
     oncpu: int = -1
+
+    @property
+    def stack_used(self) -> int | None:
+        """Return stack consumption when direction and saved SP are valid."""
+        if not self.stack_addr or not self.stack_size or not self.sp:
+            return None
+        if self.stack_grows_up is None:
+            return None
+        used = (
+            self.sp - self.stack_addr
+            if self.stack_grows_up
+            else self.stack_size - (self.sp - self.stack_addr)
+        )
+        # Reason: a corrupt or stale saved SP must not be presented as a valid
+        # stack measurement.
+        return used if 0 <= used <= self.stack_size else None
 
 
 @dataclass

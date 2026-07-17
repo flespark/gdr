@@ -72,6 +72,16 @@ def lookup_symbol_at(addr: int) -> str | None:
     return symbol.replace(" + ", "+").replace(" - ", "-")
 
 
+def macro_defined(name: str) -> bool:
+    """Return whether GDB debug information defines a C/C++ macro."""
+    _ensure_gdb()
+    try:
+        output = gdb.execute(f"info macro {name}", to_string=True)
+    except gdb.error:
+        return False
+    return "#define" in output
+
+
 def symbol_exists(name: str) -> bool:
     """Check whether a symbol is visible in the current target."""
     return lookup_symbol(name) is not None

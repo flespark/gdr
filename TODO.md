@@ -165,12 +165,16 @@ GEF `dereference_from` (`gef.py:9859`) 对 text 段指针自动 disasm。GDR
 把 `entry=0x08001234` 渲染为 `entry=<rt_thread_entry+4>`；无匹配符号时保持
 原始地址。
 
-### 1.3 `rtthread threads` 增加 StkUsed 列
+### ✅ 1.3 `rtthread threads` 增加 StkUsed 列
 
-**文件**: `rtthread/commands.py`, `gdr/abstractions.py`
+**文件**: `rtthread/commands.py`, `gdr/abstractions.py`,
+`tests/test_abstractions.py`, `tests/test_commands.py`
 
 RTOS 调试最关心栈溢出。当前只输出 SP/StkSize/Entry，加一列
-`StkUsed = stack_size - (sp - stack_addr)`。
+`StkUsed = stack_size - (sp - stack_addr)`。当保存的 SP 不在栈范围内时显示
+`N/A`，避免把损坏或过期的上下文误报为有效使用量。向上增长的架构使用
+`sp - stack_addr`；通过 `ARCH_CPU_STACK_GROWS_UPWARD` 宏或 RT-Thread 栈填充
+哨兵判断方向，未知时安全降级为 `N/A`。
 
 ### 1.4 SMP 当前线程
 
