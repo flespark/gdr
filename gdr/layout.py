@@ -14,6 +14,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from .gdb_bridge import warn
+
 try:
     import gdb
 except ImportError:
@@ -237,6 +239,7 @@ def iter_list(
         head_value: ``gdb.Value`` of the list head.
         hook: ``ListHook`` describing the container type and node path.
         max_count: Safety limit to prevent infinite loops on corrupted lists.
+            Emits a warning if traversal reaches the limit before the list head.
 
     Yields:
         Dereferenced ``gdb.Value`` of each container struct.
@@ -247,7 +250,21 @@ def iter_list(
         head_int = int(head_value.address)
         node = read_path(head_value, hook.next_path)
         count = 0
-        while node is not None and int(node) != head_int and count < max_count:
+        seen_addrs: set[int] = set()
+        while node is not None:
+            node_int = int(node)
+            if node_int == head_int:
+                return
+            if node_int in seen_addrs:
+                warn(
+                    f"list traversal stopped at repeated node {node_int:#x} "
+                    "(corrupted cycle)"
+                )
+                return
+            if count >= max_count:
+                warn(f"list traversal truncated after {max_count} nodes")
+                return
+            seen_addrs.add(node_int)
             yield container_of(node, hook.container_type, hook.node_path)
             node = read_path(node, hook.next_path)
             count += 1

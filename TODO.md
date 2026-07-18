@@ -201,12 +201,13 @@ GEF `@bufferize` (`gef.py:241`) 把一次命令的输出收进 StringIO 末尾 f
 `gdb.write()` 输出；空表路径同样遵守该约束。颜色和当前线程行高亮属于独立的
 展示策略，暂不引入配置或 ANSI 输出。
 
-### 1.6 iter_list 截断报警
+### ✅ 1.6 iter_list 截断报警
 
 **文件**: `gdr/layout.py`
 
 GEF 递归 deref 带 `seen_addrs` 循环检测。GDR `iter_list` 只靠
-`count < max_count` 默默截断；对环形但损坏的链表应 `warn(...)`。
+`count < max_count` 默默截断；现通过 `seen_addrs` 检测不经过头节点的损坏环并
+`warn(...)`，达到 `max_count` 且尚未回到头节点时同样报警。
 
 ### 1.7 register_printers 防重复注册
 
