@@ -1,6 +1,6 @@
 """Minimal kernel object abstractions.
 
-These are lightweight dataclasses (not ABCs) that the RTOS adapter populates
+These are lightweight dataclasses (not ABCs) that a platform adapter populates
 from ``gdb.Value`` objects.  Each implements ``to_dict()`` for table output.
 
 The design follows the Asterinas GDB helper principle: convenience functions
@@ -11,34 +11,6 @@ are only used internally by aggregate commands for tabulation.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from enum import IntEnum
-
-
-class ThreadState(IntEnum):
-    """RT-Thread thread stat values (low 3 bits of ``rt_thread.stat``)."""
-
-    UNKNOWN = -1
-    INIT = 0x00
-    READY = 0x01
-    SUSPEND = 0x02
-    RUNNING = 0x03
-    CLOSE = 0x04
-
-    @classmethod
-    def from_raw(cls, raw: int) -> ThreadState:
-        """Map a raw stat byte to a known state, masking non-state bits."""
-        try:
-            return cls(raw & 0x07)
-        except ValueError:
-            return cls.UNKNOWN
-
-
-class TimerState(IntEnum):
-    """Timer activation state (derived from ``rt_object.flag``)."""
-
-    UNKNOWN = -1
-    INACTIVE = 0x0
-    ACTIVE = 0x1
 
 
 @dataclass
@@ -59,7 +31,7 @@ class KernelObject:
 class Thread(KernelObject):
     """Thread object for table output."""
 
-    state: int = ThreadState.UNKNOWN
+    state: int = -1
     current_priority: int = 0
     init_priority: int = 0
     sp: int = 0

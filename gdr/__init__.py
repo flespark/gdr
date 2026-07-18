@@ -1,8 +1,8 @@
 """GDR core framework: GDB helper for debugging RTOS-based firmware.
 
-This package is RTOS-agnostic. Concrete RTOS support lives in sibling
-packages (e.g. ``rtthread``) which provide layout descriptions, adapters
-and commands on top of the abstractions defined here.
+This package is RTOS-agnostic. Concrete platform support lives in sibling
+packages that provide layout descriptions, adapters, and commands on top of
+the abstractions defined here.
 """
 
 __all__ = ["__version__"]

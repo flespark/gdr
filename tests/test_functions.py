@@ -56,7 +56,7 @@ class TestConvenienceFunctions:
         out = gdb_session.run_python(
             """
 import gdb
-from gdr.kernel import get_current_thread
+from rtthread.navigation import get_current_thread
 
 thread = gdb.parse_and_eval('$gdr_thread("worker1")')
 semaphore = gdb.parse_and_eval('$gdr_object(0x02, "test_sem")')

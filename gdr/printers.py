@@ -20,20 +20,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.gdb_bridge import lookup_symbol_at, read_cstring, read_int
-from gdr.layout import KernelLayout, StructField, StructLayout, read_field
-
-# Display name for each struct type (short tag for the folded output)
-_DISPLAY_NAMES: dict[str, str] = {
-    "struct rt_thread": "Thread",
-    "struct rt_timer": "Timer",
-    "struct rt_semaphore": "Semaphore",
-    "struct rt_mutex": "Mutex",
-    "struct rt_event": "Event",
-    "struct rt_mailbox": "Mailbox",
-    "struct rt_messagequeue": "MsgQueue",
-    "struct rt_memheap": "MemHeap",
-    "struct rt_mempool": "MemPool",
-}
+from gdr.layout import KernelLayout, StructField, StructLayout, read_field, read_path
 
 
 def _format_field(value, field: StructField) -> str:
@@ -61,17 +48,14 @@ def _format_field(value, field: StructField) -> str:
             return "N/A"
         if addr == 0:
             return "NULL"
-        # Reason: for pointers to structs with a name field (e.g. mutex.owner
-        # pointing to rt_thread), showing the name is far more useful than
-        # a raw address.
-        try:
-            deref = value.dereference()
-            name_val = deref["name"]
-            name = read_cstring(name_val)
-            if name:
-                return f'"{name}"'
-        except (gdb.error, gdb.MemoryError, IndexError, TypeError):
-            pass
+        if field.pointee_string_path is not None:
+            try:
+                pointee = read_path(value.dereference(), field.pointee_string_path)
+                text = read_cstring(pointee)
+                if text:
+                    return f'"{text}"'
+            except (gdb.error, gdb.MemoryError, IndexError, TypeError):
+                pass
         symbol = lookup_symbol_at(addr)
         if symbol is not None:
             return f"<{symbol}>"
@@ -81,8 +65,8 @@ def _format_field(value, field: StructField) -> str:
         val = read_int(value)
         if val is None:
             return "N/A"
-        # Reason: RTOS state codes are the most frequent enum the user scans
-        # for; symbolic names ("READY") beat raw ints ("3") at a glance.
+        # Reason: symbolic state names ("READY") beat raw ints ("3") at a
+        # glance when an adapter supplies an enum map.
         if field.enum_map is not None:
             name = field.enum_map.get(val)
             if name is not None:
@@ -116,7 +100,7 @@ class LayoutPrinter:
     def __init__(self, val: gdb.Value, layout: StructLayout):
         self.val = val
         self.layout = layout
-        self.display_name = _DISPLAY_NAMES.get(layout.struct_name, layout.struct_name)
+        self.display_name = layout.display_name or layout.struct_name
 
     def to_string(self) -> str:
         """Return the one-line folded representation."""

@@ -27,14 +27,10 @@ from gdr.abstractions import (
     Mutex,
     Semaphore,
     Thread,
-    ThreadState,
     Timer,
 )
 from gdr.gdb_bridge import read_bytes, read_cstring, read_int
-from gdr.kernel import find_object, find_thread, iter_threads
 from gdr.layout import KernelLayout, read_field
-
-# Type code imports (kept lazy to avoid GDB dependency at import time)
 from rtthread.layout import (
     RT_OBJECT_CLASS_EVENT,
     RT_OBJECT_CLASS_MAILBOX,
@@ -48,7 +44,9 @@ from rtthread.layout import (
     RT_TIMER_FLAG_ACTIVATED,
     RT_TIMER_FLAG_PERIODIC,
     RT_TIMER_FLAG_SOFT_TIMER,
+    ThreadState,
 )
+from rtthread.navigation import find_object, find_thread, iter_threads
 
 # Module-level reference set by register_adapter()
 _kl: KernelLayout | None = None

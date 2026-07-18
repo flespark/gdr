@@ -19,13 +19,12 @@ duplicating what `rust-gdb` / `gdb` already display well.
                         |
         +---------------+----------------+
         |                                |
-      gdr/  (RTOS-agnostic core)      rtthread/  (RT-Thread v4.x adapter)
-        |                                |
-   gdb_bridge.py                   layout.py
-   layout.py                       adapter.py
-   printers.py                     commands.py
-   kernel.py
-   abstractions.py
+       gdr/  (RTOS-agnostic core)      rtthread/  (RT-Thread v4.x adapter)
+         |                                |
+    gdb_bridge.py                   layout.py
+    layout.py                       navigation.py
+    printers.py                     adapter.py
+    abstractions.py                 commands.py
 ```
 
 ### `gdr/` — core
@@ -33,16 +32,16 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | Module | Responsibility |
 |--------|---------------|
 | `gdb_bridge.py` | Wraps the GDB Python API: command/function registration, table printing, safe eval, error guards. Keeps `gdb.*` calls in one place so the rest of the code is testable. |
-| `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). Knows nothing about RT-Thread. |
-| `printers.py` | Pretty-printer registration framework. Wrapper-type printers fold locks/atomics/threads into one-line summaries. |
-| `kernel.py` | Object navigation primitives: `find_thread`, `iter_threads`, `find_object`. Takes a `layouts` dict, never hardcodes field names. |
-| `abstractions.py` | Minimal ABCs (`Thread`, `Semaphore`, `Mutex`, `Timer`, `Queue`) with `to_dict()`. No unimplemented abstract methods. |
+| `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). It interprets adapter-supplied paths but contains no target type names, symbols, or list conventions. |
+| `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. |
+| `abstractions.py` | Neutral table-output dataclasses (`Thread`, `Semaphore`, `Mutex`, `Timer`, and related objects). They are not used to replace raw `gdb.Value` navigation results. |
 
 ### `rtthread/` — adapter
 
 | Module | Responsibility |
 |--------|---------------|
-| `layout.py` | **The only place that knows RT-Thread struct layouts.** Defines `RtConfig`, `detect_config()` (symbol-presence probing), and `build_layouts(config) -> dict[str, StructLayout]`. Handles config-conditional fields (SMP, heap manager, IPC toggles) via factory branches, not version-branched files. |
+| `layout.py` | **The only place that knows RT-Thread struct layouts.** Defines `RtConfig`, `detect_config()` (symbol-presence probing), and `build_layouts(config) -> KernelLayout`. Handles config-conditional fields (SMP, heap manager, IPC toggles) via factory branches, not version-branched files. |
+| `navigation.py` | RT-Thread object navigation: registry/current-thread/tick entry symbols, type codes, and timer traversal. Returns raw `gdb.Value` objects using the layouts supplied by `layout.py`. |
 | `adapter.py` | Value→dataclass converters (`value_to_thread`, `value_to_semaphore`, …) and `gdb.Function` subclasses (`$gdr_thread`, `$gdr_threads`, `$gdr_object`). The `_value_to_str()` helper handles GDB string literals whose `type.code` is `TYPE_CODE_ARRAY`, not `TYPE_CODE_STRING`. |
 | `commands.py` | The 5 aggregate commands. Argument parsing + table output only; no struct knowledge. |
 
@@ -69,7 +68,28 @@ Probing these by symbol presence (`rt_cpu_index`, `rt_smem_init`,
 reciting their `.config`. Probing falls back to safe defaults with a
 warning when a symbol is ambiguous.
 
-### Dataclass layout, not YAML schema
+### Wrapper types first, per adapter
+
+"Wrapper-first" is an adapter-level prioritisation rule, not a global list
+of types. An adapter should first identify values whose default GDB display
+is dominated by implementation detail before the logical value: wrappers,
+handles, synchronisation objects, references, or other frequently inspected
+implementation-heavy types. The relevant types depend on the RTOS, source
+language, toolchain, but printers already supplied by GDB. An adapter need
+not add a printer when native GDB output is already useful.
+
+The core does not identify wrapper types or prescribe their type names,
+labels, or field paths. `gdr.printers` renders only metadata supplied by the
+active adapter, letting each target improve `p`, `bt full`, `info locals`, and
+watchpoint output without leaking one RTOS's type taxonomy into another.
+
+"Wrapper-first" describes priority, not scope: it does not request another
+Python model around every kernel object. Convenience functions solve target-
+specific navigation and return raw `gdb.Value`; GDB expressions and
+pretty-printers remain responsible for inspection and presentation. Commands
+only aggregate collections that are awkward to express in GDB.
+
+### Adapter-owned dataclass layouts, not YAML schemas
 
 Considered an external YAML schema + loader. Rejected because:
 
@@ -81,16 +101,24 @@ Considered an external YAML schema + loader. Rejected because:
 - Python dataclasses handle config-conditional fields naturally via
   factory functions (`build_thread_layout(config)`) with no extra
   syntax or parser.
+- The adapter owns concrete type names, field paths, display labels, state
+  encodings, target symbols, and object-registry traversal. The core only
+  consumes generic layout metadata, so another RTOS can use different
+  wrappers and object types without changing `gdr/`.
 
 If a second RTOS (e.g. FreeRTOS) is added later, it gets its own
-`freertos/layout.py` module; the core `gdr/layout.py` stays generic.
+`freertos/` adapter package with its own layout and navigation modules; the
+core `gdr/` package stays generic.
 
 ### Coupling is explicit and localised
 
-All layout-sensitive knowledge lives in `rtthread/layout.py`. When an
-RT-Thread struct changes, that single file — plus its QEMU smoke test
-assertion — is the review surface. This mirrors the Asterinas
-`constants.py` + `COUPLED` annotation discipline.
+All RT-Thread coupling lives under `rtthread/`: `layout.py` owns field paths,
+type names, display metadata, and state encodings; `navigation.py` owns
+RT-Thread symbols and registry traversal. When an RT-Thread struct or entry
+point changes, those files — plus their QEMU smoke-test assertions — are the
+review surface. This mirrors the Asterinas `constants.py` + `COUPLED`
+annotation discipline. `gdr.py` is the intentional composition root that
+selects an adapter; modules inside `gdr/` never import or identify one.
 
 ### Commands only aggregate
 

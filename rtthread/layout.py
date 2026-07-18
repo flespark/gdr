@@ -20,6 +20,7 @@ Design notes
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 
 from gdr.layout import (
     KernelLayout,
@@ -57,6 +58,26 @@ RT_THREAD_STAT_MASK = 0x07
 RT_TIMER_SKIP_LIST_LEVEL = 1
 RT_THREAD_STACK_FILL = ord("#")
 
+
+class ThreadState(IntEnum):
+    """RT-Thread thread stat values (low bits of ``rt_thread.stat``)."""
+
+    UNKNOWN = -1
+    INIT = 0x00
+    READY = 0x01
+    SUSPEND = 0x02
+    RUNNING = 0x03
+    CLOSE = 0x04
+
+    @classmethod
+    def from_raw(cls, raw: int) -> ThreadState:
+        """Map a raw stat byte to a known state, masking non-state bits."""
+        try:
+            return cls(raw & RT_THREAD_STAT_MASK)
+        except ValueError:
+            return cls.UNKNOWN
+
+
 # Object type code → display name (matches rt_object_class_type enum order).
 # Reason: re-using type codes as keys keeps a single source of truth; the
 # pretty-printer renders ``type=THREAD`` instead of ``type=1``.
@@ -74,16 +95,13 @@ OBJECT_TYPE_NAMES: dict[int, str] = {
     RT_OBJECT_CLASS_MEMORY: "MEMORY",
 }
 
-# Thread stat → display name (low 3 bits of rt_thread.stat).  Matches
-# ThreadState in gdr.abstractions; duplicated here only to keep rtthread/
-# self-contained for the printer's enum_map (abstractions defines the IntEnum
-# with the same values).
+# Thread stat → display name (low 3 bits of rt_thread.stat).
 THREAD_STAT_NAMES: dict[int, str] = {
-    0x00: "INIT",
-    0x01: "READY",
-    0x02: "SUSPEND",
-    0x03: "RUNNING",
-    0x04: "CLOSE",
+    int(ThreadState.INIT): "INIT",
+    int(ThreadState.READY): "READY",
+    int(ThreadState.SUSPEND): "SUSPEND",
+    int(ThreadState.RUNNING): "RUNNING",
+    int(ThreadState.CLOSE): "CLOSE",
 }
 
 # Timer flag bits → display name (for ``flag`` field on rt_timer / rt_object).
@@ -236,7 +254,7 @@ def build_thread_layout(cfg: RtConfig) -> StructLayout:
     ``rt_thread`` flattens ``rt_object`` fields directly — no ``parent``
     embedding.  SMP adds ``bind_cpu`` / ``oncpu`` / lock-nest counters.
     """
-    sl = StructLayout("struct rt_thread")
+    sl = StructLayout("struct rt_thread", display_name="Thread")
     f = sl.fields
 
     # Flat rt_object fields (depth 0)
@@ -305,7 +323,7 @@ def build_thread_layout(cfg: RtConfig) -> StructLayout:
 
 def build_timer_layout() -> StructLayout:
     """Build ``rt_timer`` layout (COUPLED: rtdef.h struct rt_timer)."""
-    sl = StructLayout("struct rt_timer")
+    sl = StructLayout("struct rt_timer", display_name="Timer")
     sl.fields.update(_object_fields(1))  # parent = rt_object
     # Reason: ``flag`` is shared by all rt_object subclasses, but only the
     # timer interpretation is meaningful here; override the field with a
@@ -333,7 +351,7 @@ def build_timer_layout() -> StructLayout:
 
 def build_semaphore_layout() -> StructLayout:
     """Build ``rt_semaphore`` layout (COUPLED: rtdef.h struct rt_semaphore)."""
-    sl = StructLayout("struct rt_semaphore")
+    sl = StructLayout("struct rt_semaphore", display_name="Semaphore")
     sl.fields.update(_ipc_fields())  # parent.parent = rt_object
     sl.fields["value"] = StructField("value", ("value",), summary=True)
     sl.fields["reserved"] = StructField("reserved", ("reserved",))
@@ -342,20 +360,26 @@ def build_semaphore_layout() -> StructLayout:
 
 def build_mutex_layout() -> StructLayout:
     """Build ``rt_mutex`` layout (COUPLED: rtdef.h struct rt_mutex)."""
-    sl = StructLayout("struct rt_mutex")
+    sl = StructLayout("struct rt_mutex", display_name="Mutex")
     sl.fields.update(_ipc_fields())
     sl.fields["value"] = StructField("value", ("value",), summary=True)
     sl.fields["original_priority"] = StructField(
         "original_priority", ("original_priority",)
     )
     sl.fields["hold"] = StructField("hold", ("hold",), summary=True)
-    sl.fields["owner"] = StructField("owner", ("owner",), kind="ptr", summary=True)
+    sl.fields["owner"] = StructField(
+        "owner",
+        ("owner",),
+        kind="ptr",
+        summary=True,
+        pointee_string_path=("name",),
+    )
     return sl
 
 
 def build_event_layout() -> StructLayout:
     """Build ``rt_event`` layout (COUPLED: rtdef.h struct rt_event)."""
-    sl = StructLayout("struct rt_event")
+    sl = StructLayout("struct rt_event", display_name="Event")
     sl.fields.update(_ipc_fields())
     sl.fields["set"] = StructField("set", ("set",), summary=True)
     return sl
@@ -363,7 +387,7 @@ def build_event_layout() -> StructLayout:
 
 def build_mailbox_layout() -> StructLayout:
     """Build ``rt_mailbox`` layout (COUPLED: rtdef.h struct rt_mailbox)."""
-    sl = StructLayout("struct rt_mailbox")
+    sl = StructLayout("struct rt_mailbox", display_name="Mailbox")
     sl.fields.update(_ipc_fields())
     sl.fields["msg_pool"] = StructField("msg_pool", ("msg_pool",), kind="ptr")
     sl.fields["size"] = StructField("size", ("size",), summary=True)
@@ -378,7 +402,7 @@ def build_mailbox_layout() -> StructLayout:
 
 def build_messagequeue_layout() -> StructLayout:
     """Build ``rt_messagequeue`` layout (COUPLED: rtdef.h struct rt_messagequeue)."""
-    sl = StructLayout("struct rt_messagequeue")
+    sl = StructLayout("struct rt_messagequeue", display_name="MsgQueue")
     sl.fields.update(_ipc_fields())
     sl.fields["msg_pool"] = StructField("msg_pool", ("msg_pool",), kind="ptr")
     sl.fields["msg_size"] = StructField("msg_size", ("msg_size",))
@@ -401,7 +425,7 @@ def build_messagequeue_layout() -> StructLayout:
 
 def build_memheap_layout() -> StructLayout:
     """Build ``rt_memheap`` layout (COUPLED: rtdef.h struct rt_memheap)."""
-    sl = StructLayout("struct rt_memheap")
+    sl = StructLayout("struct rt_memheap", display_name="MemHeap")
     sl.fields.update(_object_fields(1))  # parent = rt_object
     sl.fields["start_addr"] = StructField("start_addr", ("start_addr",), kind="ptr")
     sl.fields["pool_size"] = StructField("pool_size", ("pool_size",), summary=True)
@@ -414,7 +438,7 @@ def build_memheap_layout() -> StructLayout:
 
 def build_mempool_layout() -> StructLayout:
     """Build ``rt_mempool`` layout (COUPLED: rtdef.h struct rt_mempool)."""
-    sl = StructLayout("struct rt_mempool")
+    sl = StructLayout("struct rt_mempool", display_name="MemPool")
     sl.fields.update(_object_fields(1))  # parent = rt_object
     sl.fields["start_address"] = StructField(
         "start_address", ("start_address",), kind="ptr"
@@ -451,37 +475,56 @@ def build_object_information_layout() -> StructLayout:
     return sl
 
 
+def object_information_layout(kl: KernelLayout) -> StructLayout | None:
+    """Return the RT-Thread object-registry layout from a kernel layout."""
+    return kl.structs.get("struct rt_object_information")
+
+
 # ---------------------------------------------------------------------------
 # Object type registry and list hooks
 # ---------------------------------------------------------------------------
 
-# Type code -> (struct_name, list_path) for container_of when iterating
-# the object container's object_list.  The list_path is the path from the
-# container struct to the rt_list_t member that links it into the container.
+# Type code -> (struct_name, list paths) for container_of when iterating the
+# object registry. The paths describe the embedded list node and its next link.
+_OBJECT_LIST_NEXT_PATH = ("next",)
+
+
+def _object_type(
+    type_code: int, struct_name: str, list_path: tuple[str | int, ...]
+) -> ObjectTypeInfo:
+    """Build object registry metadata for RT-Thread's intrusive lists."""
+    return ObjectTypeInfo(
+        type_code,
+        struct_name,
+        list_path,
+        next_path=_OBJECT_LIST_NEXT_PATH,
+    )
+
+
 _ALL_OBJECT_TYPES: list[ObjectTypeInfo] = [
-    ObjectTypeInfo(RT_OBJECT_CLASS_THREAD, "struct rt_thread", ("list",)),
-    ObjectTypeInfo(
+    _object_type(RT_OBJECT_CLASS_THREAD, "struct rt_thread", ("list",)),
+    _object_type(
         RT_OBJECT_CLASS_SEMAPHORE, "struct rt_semaphore", ("parent", "parent", "list")
     ),
-    ObjectTypeInfo(
+    _object_type(
         RT_OBJECT_CLASS_MUTEX, "struct rt_mutex", ("parent", "parent", "list")
     ),
-    ObjectTypeInfo(
+    _object_type(
         RT_OBJECT_CLASS_EVENT, "struct rt_event", ("parent", "parent", "list")
     ),
-    ObjectTypeInfo(
+    _object_type(
         RT_OBJECT_CLASS_MAILBOX, "struct rt_mailbox", ("parent", "parent", "list")
     ),
-    ObjectTypeInfo(
+    _object_type(
         RT_OBJECT_CLASS_MESSAGEQUEUE,
         "struct rt_messagequeue",
         ("parent", "parent", "list"),
     ),
-    ObjectTypeInfo(RT_OBJECT_CLASS_MEMHEAP, "struct rt_memheap", ("parent", "list")),
-    ObjectTypeInfo(RT_OBJECT_CLASS_MEMPOOL, "struct rt_mempool", ("parent", "list")),
-    ObjectTypeInfo(RT_OBJECT_CLASS_DEVICE, "struct rt_device", ("parent", "list")),
-    ObjectTypeInfo(RT_OBJECT_CLASS_TIMER, "struct rt_timer", ("parent", "list")),
-    ObjectTypeInfo(RT_OBJECT_CLASS_MEMORY, "struct rt_memory", ("parent", "list")),
+    _object_type(RT_OBJECT_CLASS_MEMHEAP, "struct rt_memheap", ("parent", "list")),
+    _object_type(RT_OBJECT_CLASS_MEMPOOL, "struct rt_mempool", ("parent", "list")),
+    _object_type(RT_OBJECT_CLASS_DEVICE, "struct rt_device", ("parent", "list")),
+    _object_type(RT_OBJECT_CLASS_TIMER, "struct rt_timer", ("parent", "list")),
+    _object_type(RT_OBJECT_CLASS_MEMORY, "struct rt_memory", ("parent", "list")),
 ]
 
 
@@ -504,6 +547,7 @@ def _build_object_types(cfg: RtConfig) -> dict[int, ObjectTypeInfo]:
             info.type_code,
             info.struct_name,
             info.list_path,
+            info.next_path,
             enabled=enabled_map.get(info.type_code, True),
         )
         result[info.type_code] = info_copy
@@ -519,6 +563,7 @@ def _build_list_hooks(cfg: RtConfig) -> dict[str, ListHook]:
         head_expr=f"_timer_list[{RT_TIMER_SKIP_LIST_LEVEL - 1}]",
         node_path=("row", RT_TIMER_SKIP_LIST_LEVEL - 1),
         container_type="struct rt_timer",
+        next_path=_OBJECT_LIST_NEXT_PATH,
     )
 
     # Soft timer list (only if soft timer is compiled in)
@@ -527,6 +572,7 @@ def _build_list_hooks(cfg: RtConfig) -> dict[str, ListHook]:
             head_expr=f"_soft_timer_list[{RT_TIMER_SKIP_LIST_LEVEL - 1}]",
             node_path=("row", RT_TIMER_SKIP_LIST_LEVEL - 1),
             container_type="struct rt_timer",
+            next_path=_OBJECT_LIST_NEXT_PATH,
         )
 
     return hooks
@@ -540,9 +586,9 @@ def _build_list_hooks(cfg: RtConfig) -> dict[str, ListHook]:
 def build_layouts(cfg: RtConfig) -> KernelLayout:
     """Assemble a complete ``KernelLayout`` from the probed configuration.
 
-    This is the main entry point for the RT-Thread adapter.  The resulting
-    ``KernelLayout`` is passed to ``gdr.kernel`` navigation functions and
-    ``gdr.printers`` for pretty-printer registration.
+    This is the main entry point for the RT-Thread adapter. The resulting
+    ``KernelLayout`` is passed to ``rtthread.navigation`` and
+    ``gdr.printers`` for traversal and pretty-printer registration.
 
     Args:
         cfg: Probed ``RtConfig`` from ``detect_config``.

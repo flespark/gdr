@@ -16,11 +16,11 @@ gdr/                   RTOS-agnostic core
   gdb_bridge.py        GDB Python API wrappers (register, table, error guard)
   layout.py            generic StructLayout dataclass + field/list accessors
   printers.py          wrapper-type pretty-printer registration
-  kernel.py            object navigation (global symbol -> object tree)
-  abstractions.py      minimal ABCs (Thread/Semaphore/Mutex/Timer/Queue)
+  abstractions.py      neutral table-output dataclasses
 rtthread/              RT-Thread v4.x adapter
   layout.py            dataclass field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
+  navigation.py        RT-Thread symbols and object navigation
   adapter.py           value→dataclass converters + gdb.Function convenience
                        functions ($gdr_thread, $gdr_threads, $gdr_object)
   commands.py          5 aggregate commands (threads/semaphores/timers/objects/system)
@@ -43,9 +43,10 @@ Key design principles (see `docs/architecture.md`):
   (SMP, heap manager, IPC toggles), not by version. A factory function
   `build_layouts(config)` assembles the right field set; small version
   deltas are handled with minimal conditional fields.
-- **Coupling is explicit.** Layout-sensitive knowledge lives only in
-  `rtthread/layout.py`. When RT-Thread structs change, that is the single
-  file to review.
+- **Coupling is explicit.** RT-Thread field layouts live in
+  `rtthread/layout.py`; RT-Thread symbols and traversal live in
+  `rtthread/navigation.py`. The `gdr/` core contains no RT-Thread-specific
+  names or behavior.
 
 ## Setup
 

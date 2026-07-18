@@ -1,8 +1,8 @@
 """Generic kernel struct layout descriptions and accessors.
 
 Defines dataclasses for describing kernel struct fields, linked-list hooks,
-and object-container mappings in a RTOS-agnostic way.  Concrete RTOS support
-packages (e.g. ``rtthread``) use these to build a ``KernelLayout`` at startup.
+and object-container mappings in an RTOS-agnostic way. Concrete platform
+adapters use these to build a ``KernelLayout`` at startup.
 
 The dataclasses are pure Python and importable without GDB.  The accessor
 functions (``read_field``, ``iter_list``, ``container_of``) require GDB and
@@ -45,6 +45,9 @@ class StructField:
             used by the pretty-printer when ``kind == "enum"``.  Renders
             ``stat=READY`` instead of ``stat=3``.  ``None`` falls back to
             the raw integer display.
+        pointee_string_path: Optional path to a C string in the dereferenced
+            value. This lets an adapter opt into useful pointer summaries
+            without teaching the generic printer a target's struct layout.
     """
 
     name: str
@@ -53,6 +56,7 @@ class StructField:
     kind: str = ""
     summary: bool = False
     enum_map: dict[int, str] | None = None
+    pointee_string_path: tuple[str | int, ...] | None = None
 
 
 @dataclass
@@ -60,12 +64,15 @@ class StructLayout:
     """Describes the layout of a kernel struct for GDB access.
 
     Attributes:
-        struct_name: GDB type name (e.g. ``"struct rt_thread"``).
+        struct_name: GDB type name (e.g. ``"struct kernel_thread"``).
         fields: Mapping of logical field name to ``StructField``.
+        display_name: Optional short label for folded output. The target
+            adapter supplies this label when the GDB type name is unsuitable.
     """
 
     struct_name: str
     fields: dict[str, StructField] = field(default_factory=dict)
+    display_name: str | None = None
 
     def add(self, f_name: str, path: tuple[str | int, ...], **kw) -> None:
         """Add a field with the given logical name and access path."""
@@ -74,18 +81,21 @@ class StructLayout:
 
 @dataclass
 class ListHook:
-    """Describes how to iterate a doubly-linked list (``rt_list_t`` style).
+    """Describes how to iterate an intrusive doubly-linked list.
 
     Attributes:
-        head_expr: GDB expression evaluating to the list head ``rt_list_t``.
-        node_path: Path from the container struct to its ``rt_list_t`` member
+        head_expr: GDB expression evaluating to the list head.
+        node_path: Path from the container struct to its embedded list node
             (used with ``container_of``).
         container_type: GDB type name to cast the container to.
+        next_path: Path from a list node to its next node. This is layout
+            metadata because intrusive-list implementations vary by target.
     """
 
     head_expr: str
     node_path: tuple[str | int, ...]
     container_type: str
+    next_path: tuple[str | int, ...]
 
 
 @dataclass
@@ -95,13 +105,15 @@ class ObjectTypeInfo:
     Attributes:
         type_code: Numeric object type (e.g. ``0x01`` for Thread).
         struct_name: GDB type name of the container struct.
-        list_path: Path from the container to its object-list ``rt_list_t``.
+        list_path: Path from the container to its object-registry list node.
+        next_path: Path from that list node to its next node.
         enabled: Whether this object type is present in the current config.
     """
 
     type_code: int
     struct_name: str
     list_path: tuple[str | int, ...]
+    next_path: tuple[str | int, ...]
     enabled: bool = True
 
 
@@ -132,7 +144,7 @@ def member_offset(type_name: str, path: tuple[str | int, ...]) -> int | None:
     """Calculate the byte offset of a (possibly nested) struct member.
 
     Args:
-        type_name: GDB type name (e.g. ``"struct rt_thread"``).
+        type_name: GDB type name.
         path: Member access path; string elements are field names,
             int elements are array indices.
 
@@ -171,10 +183,10 @@ def container_of(
 ) -> gdb.Value:
     """Recover the containing struct from an embedded list-node pointer.
 
-    Mirrors the C macro ``rt_container_of(ptr, type, member)``.
+    Mirrors the common C ``container_of(ptr, type, member)`` idiom.
 
     Args:
-        node_ptr: ``gdb.Value`` pointing to the ``rt_list_t`` node.
+        node_ptr: ``gdb.Value`` pointing to the embedded list node.
         container_type: GDB type name of the containing struct.
         member_path: Path from the container to the list-node member.
 
@@ -191,6 +203,17 @@ def container_of(
     return gdb.Value(addr).cast(ptr_type).dereference()
 
 
+def read_path(value: gdb.Value, path: tuple[str | int, ...]) -> gdb.Value | None:
+    """Read a nested field path from a ``gdb.Value`` safely."""
+    try:
+        current = value
+        for part in path:
+            current = current[part]
+        return current
+    except (gdb.error, gdb.MemoryError, IndexError):
+        return None
+
+
 def read_field(
     value: gdb.Value, layout: StructLayout, field_name: str
 ) -> gdb.Value | None:
@@ -202,13 +225,7 @@ def read_field(
     f = layout.fields.get(field_name)
     if f is None:
         return None
-    try:
-        current = value
-        for part in f.path:
-            current = current[part]
-        return current
-    except (gdb.error, gdb.MemoryError, IndexError):
-        return None
+    return read_path(value, f.path)
 
 
 def iter_list(
@@ -217,7 +234,7 @@ def iter_list(
     """Iterate a doubly-linked list, yielding container ``gdb.Value`` objects.
 
     Args:
-        head_value: ``gdb.Value`` of the list head ``rt_list_t``.
+        head_value: ``gdb.Value`` of the list head.
         hook: ``ListHook`` describing the container type and node path.
         max_count: Safety limit to prevent infinite loops on corrupted lists.
 
@@ -228,11 +245,11 @@ def iter_list(
         raise RuntimeError("not running inside GDB")
     try:
         head_int = int(head_value.address)
-        node = head_value["next"]
+        node = read_path(head_value, hook.next_path)
         count = 0
-        while int(node) != head_int and count < max_count:
+        while node is not None and int(node) != head_int and count < max_count:
             yield container_of(node, hook.container_type, hook.node_path)
-            node = node["next"]
+            node = read_path(node, hook.next_path)
             count += 1
     except (gdb.error, gdb.MemoryError):
         return

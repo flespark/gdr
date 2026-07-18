@@ -20,7 +20,6 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.abstractions import ThreadState
 from gdr.gdb_bridge import (
     eval_safe,
     gdb_command_guard,
@@ -29,7 +28,6 @@ from gdr.gdb_bridge import (
     read_int,
     warn,
 )
-from gdr.kernel import get_current_thread, get_tick, iter_objects, iter_threads
 from gdr.layout import KernelLayout
 from rtthread import adapter
 from rtthread.layout import (
@@ -44,6 +42,14 @@ from rtthread.layout import (
     RT_OBJECT_CLASS_SEMAPHORE,
     RT_OBJECT_CLASS_THREAD,
     RT_OBJECT_CLASS_TIMER,
+    ThreadState,
+)
+from rtthread.navigation import (
+    get_current_thread,
+    get_tick,
+    iter_objects,
+    iter_threads,
+    iter_timers,
 )
 
 # Module-level layout reference, set by register_commands()
@@ -153,8 +159,6 @@ def _cmd_timers() -> None:
     if _kl is None:
         warn("run `gdr init <rtos> <version>` to specify the RTOS and version first")
         return
-    from gdr.kernel import iter_timers
-
     rows = []
     for val in iter_timers(_kl):
         timer = adapter.value_to_timer(val, _kl)

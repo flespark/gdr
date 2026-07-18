@@ -88,7 +88,7 @@ def symbol_exists(name: str) -> bool:
 
 
 def lookup_type(name: str) -> gdb.Type | None:
-    """Look up a type by name (e.g. ``"struct rt_thread"``)."""
+    """Look up a type by its GDB name."""
     _ensure_gdb()
     try:
         return gdb.lookup_type(name)

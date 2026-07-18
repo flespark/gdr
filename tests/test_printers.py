@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-# Symbolic thread state names (mirror gdr.abstractions.ThreadState).
+# Symbolic thread state names (mirror rtthread.layout.ThreadState).
 # The printer's enum_map must render the raw stat int as one of these.
 _THREAD_STATE_SYMBOLS = {"INIT", "READY", "SUSPEND", "RUNNING", "CLOSE"}
 _IS_RV64 = os.environ.get("GDR_QEMU_TARGET") == "rv64"
