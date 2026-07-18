@@ -50,17 +50,13 @@ class TestConvenienceFunctions:
         resulting values with known fixture symbols catches pointer truncation,
         bad member offsets, and casts to the wrong struct type on RV64.
 
-        The test also exercises the direct ``rt_current_thread`` dereference,
-        which does not traverse an object list.
         """
         out = gdb_session.run_python(
             """
 import gdb
-from rtthread.navigation import get_current_thread
 
 thread = gdb.parse_and_eval('$gdr_thread("worker1")')
 semaphore = gdb.parse_and_eval('$gdr_object(0x02, "test_sem")')
-current = get_current_thread()
 print(f"thread_type={thread.type}")
 print(f"thread_tag={thread.type.strip_typedefs().tag}")
 print(f"thread_is_struct={thread.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
@@ -69,8 +65,6 @@ print(f"semaphore_type={semaphore.type}")
 print(f"semaphore_tag={semaphore.type.strip_typedefs().tag}")
 print(f"semaphore_is_struct={semaphore.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
 print(f"semaphore_address_matches={int(semaphore.address) == int(gdb.parse_and_eval('test_sem').address)}")
-print(f"current_found={current is not None}")
-print(f"current_address_matches={current is not None and int(current.address) == int(gdb.parse_and_eval('rt_current_thread'))}")
 """
         )
         assert "thread_tag=rt_thread" in out, out
@@ -79,11 +73,30 @@ print(f"current_address_matches={current is not None and int(current.address) ==
         assert "semaphore_tag=rt_semaphore" in out, out
         assert "semaphore_is_struct=True" in out, out
         assert "semaphore_address_matches=True" in out, out
-        # Reason: the Cortex-A9 fixture enables SMP, whose per-CPU current
-        # thread storage is a known limitation of get_current_thread().
-        if _IS_RV64:
-            assert "current_found=True" in out, out
-            assert "current_address_matches=True" in out, out
+
+    def test_current_thread_matches_selected_cpu(self, gdb_session):
+        """``get_current_thread`` follows RT-Thread's SMP per-CPU handle."""
+        expected_expr = (
+            "rt_current_thread"
+            if _IS_RV64
+            else "rt_cpu_index(rt_hw_cpu_id())->current_thread"
+        )
+        out = gdb_session.run_python(
+            f"""
+import gdb
+from rtthread.navigation import get_current_thread
+
+expected = gdb.parse_and_eval({expected_expr!r})
+current = get_current_thread()
+print(f"expected_non_null={{int(expected) != 0}}")
+print(f"current_found={{current is not None}}")
+print(f"current_matches_selected_cpu={{current is not None and int(current.address) == int(expected)}}")
+"""
+        )
+
+        assert "expected_non_null=True" in out, out
+        assert "current_found=True" in out, out
+        assert "current_matches_selected_cpu=True" in out, out
 
     def test_target_pointer_width(self, gdb_session):
         """The connected firmware has the expected native pointer width."""

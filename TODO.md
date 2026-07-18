@@ -177,13 +177,20 @@ RTOS 调试最关心栈溢出。当前只输出 SP/StkSize/Entry，加一列
 哨兵判断方向，未知时安全降级为 `N/A`。同时扫描 `'#'` 填充区，输出历史最大
 使用量 `MaxStkUsed`。
 
-### 1.4 SMP 当前线程
+### ✅ 1.4 SMP 当前线程
 
-**文件**: `gdr/kernel.py`
+**文件**: `rtthread/navigation.py`, `tests/test_functions.py`,
+`tests/test_rtthread_navigation.py`
 
-`get_current_thread` 只看 `rt_current_thread`；SMP 多核下这是 per-CPU
-变量。需识别 `rt_cpu_table` / 是否为数组形式，按 `rt_hw_cpu_id()` 选择
-正确核。**当前 SMP RTOS 调试会拿到错的"当前线程"。**
+RT-Thread 非 SMP 内核使用标量 `rt_current_thread`；SMP 内核把句柄放在
+当前 `struct rt_cpu` 的 `current_thread` 字段。实现优先使用 4.x 稳定的
+`rt_cpu_index(rt_hw_cpu_id())`，并兼容直接导出的 `rt_cpu_table`、
+`rt_cpus`（v4.0.0）和 `_cpus`（v4.0.5+）数组或指针表。
+
+这不能抽象成核心层的统一表结构：FreeRTOS SMP 使用
+`pxCurrentTCBs[core]`，Zephyr 使用 `_kernel.cpus[core].current`。各 RTOS
+适配器必须按自身的 CPU 选择和线程句柄组织实现导航。Cortex-A9 SMP 闭环测试
+断言 GDR 返回的线程与 `rt_cpu_index(rt_hw_cpu_id())->current_thread` 相同。
 
 ### 1.5 print_table 输出隔离
 

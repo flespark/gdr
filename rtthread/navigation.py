@@ -108,15 +108,90 @@ def find_thread(name: str, kl: KernelLayout) -> gdb.Value | None:
     return find_object(RT_OBJECT_CLASS_THREAD, name, kl)
 
 
-def get_current_thread() -> gdb.Value | None:
-    """Return the currently running RT-Thread thread, if available."""
-    ptr = lookup_symbol("rt_current_thread")
-    if ptr is None or int(ptr) == 0:
+def _dereference_thread(ptr: gdb.Value | None) -> gdb.Value | None:
+    """Dereference a non-null RT-Thread handle safely."""
+    if ptr is None:
         return None
     try:
+        if int(ptr) == 0:
+            return None
         return ptr.dereference()
-    except (gdb.error, gdb.MemoryError):
+    except (gdb.error, gdb.MemoryError, TypeError, ValueError):
         return None
+
+
+def _current_thread_from_cpu(cpu: gdb.Value | None) -> gdb.Value | None:
+    """Read ``current_thread`` from an RT-Thread per-CPU descriptor."""
+    if cpu is None:
+        return None
+    try:
+        if cpu.type.strip_typedefs().code == gdb.TYPE_CODE_PTR:
+            if int(cpu) == 0:
+                return None
+            cpu = cpu.dereference()
+        return _dereference_thread(cpu["current_thread"])
+    except (gdb.error, gdb.MemoryError, IndexError, TypeError, ValueError):
+        return None
+
+
+def _cpu_from_table(table: gdb.Value | None, cpu_id: int) -> gdb.Value | None:
+    """Return a per-CPU descriptor from an array or pointer table."""
+    if table is None:
+        return None
+    try:
+        table_type = table.type.strip_typedefs()
+        if table_type.code == gdb.TYPE_CODE_ARRAY:
+            return table[cpu_id]
+        if table_type.code == gdb.TYPE_CODE_PTR and int(table) != 0:
+            return table[cpu_id]
+    except (gdb.error, gdb.MemoryError, IndexError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _smp_current_thread() -> gdb.Value | None:
+    """Return the current thread for GDB's selected RT-Thread CPU."""
+    # Reason: some BSPs implement rt_hw_cpu_id() in assembly without DWARF
+    # return-type information, so GDB needs the explicit integer cast.
+    cpu_id_value = eval_safe("(int)rt_hw_cpu_id()")
+    if cpu_id_value is None:
+        return None
+    try:
+        cpu_id = int(cpu_id_value)
+    except (TypeError, ValueError):
+        return None
+    if cpu_id < 0:
+        return None
+
+    # Reason: rt_cpu_index() is the stable RT-Thread 4.x interface; backing
+    # storage changed from rt_cpus[] to _cpus[] between releases.
+    current = _dereference_thread(eval_safe(f"rt_cpu_index({cpu_id})->current_thread"))
+    if current is not None:
+        return current
+
+    # Reason: some RT-Thread branches expose the CPU table directly. GDB's
+    # indexing works for either a struct array or a pointer to its first entry.
+    for symbol in ("rt_cpu_table", "rt_cpus", "_cpus"):
+        cpu = _cpu_from_table(lookup_symbol(symbol), cpu_id)
+        current = _current_thread_from_cpu(cpu)
+        if current is not None:
+            return current
+    return None
+
+
+def get_current_thread() -> gdb.Value | None:
+    """Return the thread executing on GDB's selected RT-Thread CPU.
+
+    Non-SMP kernels expose the scalar ``rt_current_thread``. SMP kernels keep
+    the handle in the selected CPU's ``struct rt_cpu.current_thread``.
+    """
+    current = _dereference_thread(lookup_symbol("rt_current_thread"))
+    if current is not None:
+        return current
+
+    # Reason: FreeRTOS stores current handles in pxCurrentTCBs[] and Zephyr
+    # uses _kernel.cpus[].current; their layouts must stay in their adapters.
+    return _smp_current_thread()
 
 
 def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
