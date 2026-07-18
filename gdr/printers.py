@@ -22,6 +22,8 @@ except ImportError:
 from gdr.gdb_bridge import lookup_symbol_at, read_cstring, read_int
 from gdr.layout import KernelLayout, StructField, StructLayout, read_field, read_path
 
+_PRINTER_MARKER = "_gdr_layout_printer"
+
 
 def _format_field(value, field: StructField) -> str:
     """Format a ``gdb.Value`` for one-line display based on its field hint.
@@ -150,33 +152,30 @@ def _make_lookup_function(kl: KernelLayout):
 
 
 def register_printers(kl: KernelLayout) -> None:
-    """Register layout-driven pretty-printers with GDB.
+    """Register layout-driven pretty-printers with GDB once.
 
     Args:
         kl: Kernel layout with struct descriptions.
     """
     if gdb is None:
         raise RuntimeError("not running inside GDB")
+    # Reason: GDB retains global printer lookups across repeated `source gdr.py`.
+    if any(_is_gdr_printer(printer) for printer in gdb.pretty_printers):
+        return
     lookup_fn = _make_lookup_function(kl)
+    setattr(lookup_fn, _PRINTER_MARKER, True)
     gdb.pretty_printers.append(lookup_fn)
 
 
-def unregister_printers(kl: KernelLayout) -> None:
-    """Remove previously registered printers (for reload during development)."""
+def unregister_printers() -> None:
+    """Remove GDR printers for an explicit development reload."""
     if gdb is None:
         return
-    # Reason: matching by function identity is fragile after reload; instead
-    # we filter by checking the closure's type_map contents.
-    new_list = []
-    for fn in gdb.pretty_printers:
-        if hasattr(fn, "__closure__") and fn.__closure__:
-            for cell in fn.__closure__:
-                if isinstance(cell.cell_contents, KernelLayout) and (
-                    cell.cell_contents is kl
-                ):
-                    break
-            else:
-                new_list.append(fn)
-        else:
-            new_list.append(fn)
-    gdb.pretty_printers[:] = new_list
+    gdb.pretty_printers[:] = [
+        printer for printer in gdb.pretty_printers if not _is_gdr_printer(printer)
+    ]
+
+
+def _is_gdr_printer(printer: object) -> bool:
+    """Return whether a lookup function was created by GDR."""
+    return getattr(printer, _PRINTER_MARKER, False) is True

@@ -95,15 +95,22 @@ class GdrCommand(_GdbCommandBase):  # type: ignore[misc]
 
 
 def _setup_rtthread(version: str) -> None:
-    """Initialise RT-Thread support: probe config, build layout, register all.
+    """Initialise RT-Thread support once for the current GDB session.
 
     Args:
         version: Full RT-Thread version string (e.g. ``"4.0.5"``).
     """
     from rtthread.adapter import register_adapter
-    from rtthread.commands import register_commands
+    from rtthread.commands import is_initialized, register_commands
     from rtthread.layout import build_layouts, detect_config
     from rtthread.version import check_version
+
+    if is_initialized():
+        warn(
+            "RT-Thread support is already initialized; restart GDB before "
+            "selecting a different target or version"
+        )
+        return
 
     check_version(version)
     info(f"setting up RT-Thread v{version}...")

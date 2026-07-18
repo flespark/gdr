@@ -209,12 +209,15 @@ GEF 递归 deref 带 `seen_addrs` 循环检测。GDR `iter_list` 只靠
 `count < max_count` 默默截断；现通过 `seen_addrs` 检测不经过头节点的损坏环并
 `warn(...)`，达到 `max_count` 且尚未回到头节点时同样报警。
 
-### 1.7 register_printers 防重复注册
+### ✅ 1.7 注册接口防重入
 
-**文件**: `gdr/printers.py`
+**文件**: `gdr.py`, `gdr/printers.py`, `rtthread/adapter.py`,
+`rtthread/commands.py`, `tests/test_registration.py`
 
-`source gdr.py` 二次会重复注册打印机，输出双份。`register_printers`
-开头应先调用 `unregister_printers(kl)`。
+`gdr init` 是会话级一次性 RTOS 初始化，不是配置重载入口。打印机、便利函数与
+命令注册均保留首个布局，重复调用不改变状态；入口直接提示重启 GDB 后再选择其他
+目标或版本。打印机 lookup 使用标记防重入，显式开发期注销仍可移除全部 GDR
+打印机。
 
 ### 1.8 ArchInfo 轻量架构描述
 

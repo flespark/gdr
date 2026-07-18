@@ -335,14 +335,15 @@ if gdb is not None:
 
 
 def register_adapter(kl: KernelLayout) -> None:
-    """Register convenience functions and set the module-level layout ref.
+    """Register convenience functions and retain the first layout.
 
     Args:
         kl: Kernel layout built by ``rtthread.layout.build_layouts``.
     """
     global _kl
-    _kl = kl
 
+    if _kl is not None:
+        return
     if gdb is None:
         raise RuntimeError("not running inside GDB")
 
@@ -350,3 +351,4 @@ def register_adapter(kl: KernelLayout) -> None:
     GdrThreadFunction()
     GdrThreadsFunction()
     GdrObjectFunction()
+    _kl = kl

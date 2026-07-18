@@ -338,16 +338,23 @@ if gdb is not None:
 # ---------------------------------------------------------------------------
 
 
+def is_initialized() -> bool:
+    """Return whether RT-Thread commands have their initial layout."""
+    return _kl is not None
+
+
 def register_commands(kl: KernelLayout) -> None:
-    """Register the ``rtthread`` GDB command and set the layout reference.
+    """Register the ``rtthread`` GDB command and retain the first layout.
 
     Args:
         kl: Kernel layout built by ``rtthread.layout.build_layouts``.
     """
     global _kl
-    _kl = kl
 
+    if _kl is not None:
+        return
     register_command_shell()
+    _kl = kl
     info("rtthread commands registered (alias: rtt)")
 
 
