@@ -107,6 +107,11 @@ class TestSemaphoresCommand:
 class TestTimersCommand:
     """``rtthread timers`` output."""
 
+    def test_shows_kernel_tick(self, gdb_session):
+        """Output includes the current kernel tick before timer rows."""
+        out = gdb_session.run("rtthread timers")
+        assert "Kernel tick" in out
+
     def test_lists_test_timer(self, gdb_session):
         """Output contains test_timer (may be truncated to test_tim)."""
         out = gdb_session.run("rtthread timers")

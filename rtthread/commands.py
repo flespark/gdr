@@ -159,6 +159,10 @@ def _cmd_timers() -> None:
     if _kl is None:
         warn("run `gdr init <rtos> <version>` to specify the RTOS and version first")
         return
+
+    tick = get_tick()
+    info(f"Kernel tick: {tick if tick is not None else 'N/A'}")
+
     rows = []
     for val in iter_timers(_kl):
         timer = adapter.value_to_timer(val, _kl)
