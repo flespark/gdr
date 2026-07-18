@@ -63,7 +63,7 @@ RT-Thread kernels vary by *configuration* far more than by version:
 `RT_USING_SMP` adds `oncpu` to `rt_thread`; the heap manager
 (`small_mem` / `slab` / `memheap`) changes the heap data structures
 entirely; IPC components (`RT_USING_MUTEX`, etc.) may be absent.
-Probing these by symbol presence (`rt_cpu_index`, `rt_smem_init`,
+Probing these by symbol presence (`rt_cpu_index`, `rt_sem_init`,
 `rt_mutex_take`, ...) is reliable and cheap, and spares users from
 reciting their `.config`. Probing falls back to safe defaults with a
 warning when a symbol is ambiguous.

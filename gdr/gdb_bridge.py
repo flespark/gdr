@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import os
 import traceback as _traceback
+from io import StringIO
 
 try:
     import gdb
@@ -152,29 +153,33 @@ def read_bytes(addr: int, size: int) -> bytes | None:
 
 
 def print_table(rows: list[list[str]], headers: list[str]) -> None:
-    """Print a formatted ASCII table to GDB stdout.
+    """Print a formatted ASCII table to GDB stdout in one write.
 
     Args:
         rows: List of row lists; each row should have ``len(headers)`` cells.
         headers: Column header strings.
     """
+    _ensure_gdb()
+    output = StringIO()
     if not rows:
-        print("(empty)")
-        return
+        output.write("(empty)\n")
+    else:
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                if i < len(col_widths):
+                    col_widths[i] = max(col_widths[i], len(str(cell)))
 
-    col_widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            if i < len(col_widths):
-                col_widths[i] = max(col_widths[i], len(str(cell)))
+        fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+        output.write(f"{fmt.format(*headers)}\n")
+        output.write(f"{'  '.join('-' * w for w in col_widths)}\n")
+        for row in rows:
+            cells = [str(c) for c in row]
+            cells += [""] * (len(headers) - len(cells))
+            output.write(f"{fmt.format(*cells)}\n")
 
-    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
-    print(fmt.format(*headers))
-    print("  ".join("-" * w for w in col_widths))
-    for row in rows:
-        cells = [str(c) for c in row]
-        cells += [""] * (len(headers) - len(cells))
-        print(fmt.format(*cells))
+    # Reason: one write prevents asynchronous GDB output from splitting rows.
+    gdb.write(output.getvalue())
 
 
 def warn(msg: str) -> None:
