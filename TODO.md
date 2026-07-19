@@ -219,13 +219,16 @@ GEF 递归 deref 带 `seen_addrs` 循环检测。GDR `iter_list` 只靠
 目标或版本。打印机 lookup 使用标记防重入，显式开发期注销仍可移除全部 GDR
 打印机。
 
-### 1.8 ArchInfo 轻量架构描述
+### ✅ 1.8 ArchInfo 轻量架构描述
 
-**文件**: `gdr/gdb_bridge.py`
+**文件**: `gdr/gdb_bridge.py`, `tests/test_gdb_bridge.py`,
+`tests/test_functions.py`
 
 GEF `Architecture` 基类 + `__init_subclass__` 强制契约 (`gef.py:2624`)。
-GDR 不需要那么完备，但应加 `ArchInfo(ptrsize, endian)` helper 集中暴露
-给 `read_int`/`read_bytes`，处理 big-endian 远程调试目标。
+GDR 不需要那么完备，现提供不缓存的 `get_arch_info() -> ArchInfo | None`：从目标
+指针类型获得 `ptrsize`，从 GDB 已解析的 `show endian` 输出获得 `endian`，兼容旧
+GDB 的 `void` 类型回退。`read_int` 已由 GDB 按目标字节序解码；`read_bytes` 保留
+原始内存顺序，调用方需要解码原始整数时使用 `ArchInfo.endian`。
 
 ### 1.9 read_bytes inferior.is_valid() 前置检查
 

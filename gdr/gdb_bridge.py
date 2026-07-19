@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import os
 import traceback as _traceback
+from dataclasses import dataclass
 from io import StringIO
 
 try:
@@ -23,10 +24,55 @@ except ImportError:
 MAX_LIST_LEN = 4096
 
 
+@dataclass(frozen=True)
+class ArchInfo:
+    """Target architecture properties needed for raw memory decoding.
+
+    Attributes:
+        ptrsize: Pointer width in target bytes.
+        endian: Target byte order, either ``"little"`` or ``"big"``.
+    """
+
+    ptrsize: int
+    endian: str
+
+
 def _ensure_gdb() -> None:
     """Raise RuntimeError if not running inside GDB."""
     if gdb is None:
         raise RuntimeError("not running inside GDB")
+
+
+def get_arch_info() -> ArchInfo | None:
+    """Return a fresh pointer-width and byte-order snapshot for the target.
+
+    Returns ``None`` when GDB cannot resolve either property. The result is
+    intentionally not cached because reconnecting or changing GDB's target
+    architecture or endianness can invalidate it.
+    """
+    _ensure_gdb()
+    try:
+        ptrsize = gdb.selected_inferior().architecture().void_type().pointer().sizeof
+    except (AttributeError, TypeError, gdb.error):
+        try:
+            ptrsize = gdb.lookup_type("void").pointer().sizeof
+        except (AttributeError, TypeError, gdb.error):
+            return None
+
+    if not isinstance(ptrsize, int) or ptrsize <= 0:
+        return None
+
+    try:
+        endian_output = gdb.execute("show endian", to_string=True).lower()
+    except gdb.error:
+        return None
+
+    is_little_endian = "little endian" in endian_output
+    is_big_endian = "big endian" in endian_output
+    if is_little_endian == is_big_endian:
+        return None
+    endian = "little" if is_little_endian else "big"
+    return ArchInfo(ptrsize=ptrsize, endian=endian)
 
 
 def is_debug() -> bool:
@@ -107,7 +153,10 @@ def eval_safe(expr: str) -> gdb.Value | None:
 
 
 def read_int(value: gdb.Value | None) -> int | None:
-    """Convert a ``gdb.Value`` to ``int``, returning ``None`` on failure."""
+    """Convert a target-decoded ``gdb.Value`` to ``int`` safely.
+
+    GDB already applies the target byte order during ``gdb.Value`` conversion.
+    """
     if value is None:
         return None
     try:
@@ -143,7 +192,11 @@ def read_cstring(value: gdb.Value | None, max_len: int = 256) -> str | None:
 
 
 def read_bytes(addr: int, size: int) -> bytes | None:
-    """Read raw memory from the target inferior."""
+    """Read raw memory from the target inferior without byte reordering.
+
+    Callers decoding the returned bytes as an integer must use
+    :func:`get_arch_info` to select the target byte order.
+    """
     _ensure_gdb()
     try:
         inferior = gdb.selected_inferior()

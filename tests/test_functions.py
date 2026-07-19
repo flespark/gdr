@@ -105,6 +105,24 @@ print(f"current_matches_selected_cpu={{current is not None and int(current.addre
             f"expected {EXPECTED_POINTER_BYTES}-byte pointers, got:\n{out}"
         )
 
+    def test_arch_info_matches_the_connected_target(self, gdb_session):
+        """ArchInfo reports the target pointer width and resolved byte order."""
+        out = gdb_session.run_python(
+            """
+from gdr.gdb_bridge import get_arch_info
+
+arch = get_arch_info()
+print(f"arch_found={arch is not None}")
+if arch is not None:
+    print(f"ptrsize={arch.ptrsize}")
+    print(f"endian={arch.endian}")
+"""
+        )
+
+        assert "arch_found=True" in out, out
+        assert f"ptrsize={EXPECTED_POINTER_BYTES}" in out, out
+        assert "endian=little" in out, out
+
     def test_gdr_object_semaphore(self, gdb_session):
         """``$gdr_object(0x02, "test_sem")`` returns a non-null value."""
         out = gdb_session.run('p $gdr_object(0x02, "test_sem")')
