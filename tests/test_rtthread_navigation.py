@@ -56,3 +56,18 @@ def test_cpu_table_fallback_accepts_array_and_pointer_shapes(monkeypatch):
     assert navigation._cpu_from_table(array_table, 1) is array_entries[1]
     assert navigation._cpu_from_table(pointer_table, 1) is pointer_entries[1]
     assert navigation._cpu_from_table(None, 0) is None
+
+
+def test_find_thread_uses_the_active_layout_object_code(monkeypatch):
+    """3.1.0's thread code is resolved from the selected version profile."""
+    calls: list[tuple[int, str]] = []
+    layout = navigation.KernelLayout(object_codes={"thread": 0})
+
+    def find_object(type_code, name, _layout):
+        calls.append((type_code, name))
+        return "thread-value"
+
+    monkeypatch.setattr(navigation, "find_object", find_object)
+
+    assert navigation.find_thread("worker1", layout) == "thread-value"
+    assert calls == [(0, "worker1")]

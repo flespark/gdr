@@ -16,11 +16,12 @@ except ImportError:
 
 from gdr.gdb_bridge import eval_safe, lookup_symbol, read_cstring
 from gdr.layout import KernelLayout, ListHook, iter_list, read_field
-from rtthread.layout import (
-    RT_OBJECT_CLASS_THREAD,
-    RT_OBJECT_CLASS_TIMER,
-    object_information_layout,
-)
+from rtthread.layout import object_information_layout
+
+
+def _object_code(kl: KernelLayout, name: str) -> int | None:
+    """Return an active target's numeric code for a semantic object name."""
+    return kl.object_codes.get(name)
 
 
 def get_object_information(type_code: int, kl: KernelLayout) -> gdb.Value | None:
@@ -100,12 +101,15 @@ def find_object(type_code: int, name: str, kl: KernelLayout) -> gdb.Value | None
 
 def iter_threads(kl: KernelLayout) -> Iterator[gdb.Value]:
     """Iterate all RT-Thread thread objects."""
-    yield from iter_objects(RT_OBJECT_CLASS_THREAD, kl)
+    type_code = _object_code(kl, "thread")
+    if type_code is not None:
+        yield from iter_objects(type_code, kl)
 
 
 def find_thread(name: str, kl: KernelLayout) -> gdb.Value | None:
     """Find an RT-Thread thread by name."""
-    return find_object(RT_OBJECT_CLASS_THREAD, name, kl)
+    type_code = _object_code(kl, "thread")
+    return find_object(type_code, name, kl) if type_code is not None else None
 
 
 def _dereference_thread(ptr: gdb.Value | None) -> gdb.Value | None:
@@ -211,7 +215,10 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
 
     # Reason: some RT-Thread 4.0.x builds register timers in the object
     # container before they appear in active timer lists at our breakpoint.
-    for timer in iter_objects(RT_OBJECT_CLASS_TIMER, kl):
+    timer_type = _object_code(kl, "timer")
+    if timer_type is None:
+        return
+    for timer in iter_objects(timer_type, kl):
         address = int(timer.address)
         if address not in seen:
             yield timer

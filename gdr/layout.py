@@ -110,6 +110,7 @@ class ObjectTypeInfo:
         list_path: Path from the container to its object-registry list node.
         next_path: Path from that list node to its next node.
         enabled: Whether this object type is present in the current config.
+        name: Adapter-supplied human-readable object type name.
     """
 
     type_code: int
@@ -117,6 +118,7 @@ class ObjectTypeInfo:
     list_path: tuple[str | int, ...]
     next_path: tuple[str | int, ...]
     enabled: bool = True
+    name: str = ""
 
 
 @dataclass
@@ -127,6 +129,8 @@ class KernelLayout:
         structs: Mapping of struct name to ``StructLayout``.
         list_hooks: Mapping of hook name to ``ListHook``.
         object_types: Mapping of type code to ``ObjectTypeInfo``.
+        object_codes: Adapter-supplied mapping from stable semantic object
+            names to target-specific numeric type codes.
         stack_grows_up: Whether thread stacks grow toward higher addresses, or
             ``None`` when the target direction cannot be determined.
     """
@@ -134,6 +138,7 @@ class KernelLayout:
     structs: dict[str, StructLayout] = field(default_factory=dict)
     list_hooks: dict[str, ListHook] = field(default_factory=dict)
     object_types: dict[int, ObjectTypeInfo] = field(default_factory=dict)
+    object_codes: dict[str, int] = field(default_factory=dict)
     stack_grows_up: bool | None = None
 
 

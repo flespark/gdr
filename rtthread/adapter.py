@@ -32,14 +32,6 @@ from gdr.abstractions import (
 from gdr.gdb_bridge import read_bytes, read_cstring, read_int
 from gdr.layout import KernelLayout, read_field
 from rtthread.layout import (
-    RT_OBJECT_CLASS_EVENT,
-    RT_OBJECT_CLASS_MAILBOX,
-    RT_OBJECT_CLASS_MEMPOOL,
-    RT_OBJECT_CLASS_MESSAGEQUEUE,
-    RT_OBJECT_CLASS_MUTEX,
-    RT_OBJECT_CLASS_SEMAPHORE,
-    RT_OBJECT_CLASS_THREAD,
-    RT_OBJECT_CLASS_TIMER,
     RT_THREAD_STACK_FILL,
     RT_TIMER_FLAG_ACTIVATED,
     RT_TIMER_FLAG_PERIODIC,
@@ -50,6 +42,11 @@ from rtthread.navigation import find_object, find_thread, iter_threads
 
 # Module-level reference set by register_adapter()
 _kl: KernelLayout | None = None
+
+
+def _type_code(layout: KernelLayout, name: str) -> int:
+    """Return an active target's numeric code for a semantic object name."""
+    return layout.object_codes[name]
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +101,7 @@ def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
     return Thread(
         name=name,
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_THREAD,
+        type_code=_type_code(layout, "thread"),
         state=int(state),
         current_priority=read_int(read_field(val, sl, "current_priority")) or 0,
         init_priority=read_int(read_field(val, sl, "init_priority")) or 0,
@@ -127,7 +124,7 @@ def value_to_semaphore(val: gdb.Value, layout: KernelLayout) -> Semaphore:
     return Semaphore(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_SEMAPHORE,
+        type_code=_type_code(layout, "semaphore"),
         value=read_int(read_field(val, sl, "value")) or 0,
     )
 
@@ -146,7 +143,7 @@ def value_to_mutex(val: gdb.Value, layout: KernelLayout) -> Mutex:
     return Mutex(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_MUTEX,
+        type_code=_type_code(layout, "mutex"),
         value=read_int(read_field(val, sl, "value")) or 0,
         hold=read_int(read_field(val, sl, "hold")) or 0,
         owner=owner_name,
@@ -162,7 +159,7 @@ def value_to_timer(val: gdb.Value, layout: KernelLayout) -> Timer:
     return Timer(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_TIMER,
+        type_code=_type_code(layout, "timer"),
         active=bool(flag & RT_TIMER_FLAG_ACTIVATED),
         periodic=bool(flag & RT_TIMER_FLAG_PERIODIC),
         soft_timer=bool(flag & RT_TIMER_FLAG_SOFT_TIMER),
@@ -178,7 +175,7 @@ def value_to_event(val: gdb.Value, layout: KernelLayout) -> Event:
     return Event(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_EVENT,
+        type_code=_type_code(layout, "event"),
         set=read_int(read_field(val, sl, "set")) or 0,
     )
 
@@ -189,7 +186,7 @@ def value_to_mailbox(val: gdb.Value, layout: KernelLayout) -> Mailbox:
     return Mailbox(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_MAILBOX,
+        type_code=_type_code(layout, "mailbox"),
         size=read_int(read_field(val, sl, "size")) or 0,
         entry=read_int(read_field(val, sl, "entry")) or 0,
         in_offset=read_int(read_field(val, sl, "in_offset")) or 0,
@@ -205,7 +202,7 @@ def value_to_messagequeue(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
     return MessageQueue(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_MESSAGEQUEUE,
+        type_code=_type_code(layout, "msgqueue"),
         msg_size=read_int(read_field(val, sl, "msg_size")) or 0,
         max_msgs=read_int(read_field(val, sl, "max_msgs")) or 0,
         entry=read_int(read_field(val, sl, "entry")) or 0,
@@ -218,7 +215,7 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
     return MemoryPool(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=RT_OBJECT_CLASS_MEMPOOL,
+        type_code=_type_code(layout, "mempool"),
         block_size=read_int(read_field(val, sl, "block_size")) or 0,
         block_total_count=read_int(read_field(val, sl, "block_total_count")) or 0,
         block_free_count=read_int(read_field(val, sl, "block_free_count")) or 0,

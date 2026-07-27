@@ -26,7 +26,7 @@ closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 
 | RTOS | Versions | Status |
 |------|----------|--------|
-| RT-Thread | 4.0.0-4.1.1 | implemented, Cortex-A9 and RV64 QEMU verified |
+| RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
 | FreeRTOS | — | not yet (deferred) |
 
 ## Quick start
@@ -91,6 +91,10 @@ auto-detection** of the RTOS type or version (detection logic is fragile
 across attach/remote scenarios). Kernel *config features* (SMP, heap
 manager kind, enabled IPC components) are probed automatically by symbol
 presence at startup.
+
+RT-Thread 3.1.x is verified on the Cortex-A9 QEMU BSP only. The upstream
+QEMU RV64 BSP starts at RT-Thread 4.0.4, so RV64 verification covers 4.0.4
+through 4.1.1.
 
 ## Maintenance notes (COUPLED)
 

@@ -19,7 +19,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
                         |
         +---------------+----------------+
         |                                |
-       gdr/  (RTOS-agnostic core)      rtthread/  (RT-Thread v4.x adapter)
+       gdr/  (RTOS-agnostic core)      rtthread/  (RT-Thread 3.1.x/4.x adapter)
          |                                |
     gdb_bridge.py                   layout.py
     layout.py                       navigation.py
@@ -53,9 +53,14 @@ Previous versions attempted to detect the RTOS and parse its version string
 from symbols, then match struct patterns. This was fragile (failed on
 attach, failed across remote configs) and duplicated logic. Users now
 specify the RTOS and exact version, for example
-`gdr init rtthread 4.0.5`. The RT-Thread adapter validates the
-supported 4.x.x range, while layout differences are still handled by probing
-target symbols and DWARF rather than branching on every patch version.
+`gdr init rtthread 4.0.5`. The RT-Thread adapter validates the explicitly
+verified `3.1.0-3.1.5` and `4.0.0-4.1.1` intervals, while layout differences
+are still handled by probing target symbols and DWARF rather than branching on
+every patch version. The sole retained version-level layout branch is the
+RT-Thread 3.1.3 insertion of `Null = 0` in `rt_object_class_type`: it shifts
+every object type code, so the active `KernelLayout` owns the semantic-name to
+numeric-code mapping. RT-Thread 3.1 thread object flags are likewise mapped to
+their actual `flags` member.
 
 ### Config features are probed, not specified
 
@@ -131,7 +136,7 @@ when a field is renamed (the function returns the raw `gdb.Value`).
 ## Closed-loop verification
 
 GDB helpers degrade silently: the script runs but output is wrong. To
-guard against this, QEMU smoke tests boot an RT-Thread v4.x firmware
+guard against this, QEMU smoke tests boot RT-Thread firmware
 that creates known threads/semaphores/mutexes/timers, and assert:
 
 - pretty-printers registered and fold correctly,
@@ -178,3 +183,10 @@ patch set.
 
 Layout changes must update the corresponding assertion, keeping the
 helper and the kernel struct in lockstep.
+
+The Cortex-A9 matrix covers RT-Thread 3.1.0 through 3.1.5 as well as the 4.x
+representatives. It runs the complete suite at 3.1.0, 3.1.3, and 3.1.5, which
+cover the pre-`Null` object enum, the enum/`rt_semaphore` transition, and the
+final 3.1 layout. The remaining 3.1 tags retain build coverage for their exact
+Cortex-A9 fixtures. Upstream has no QEMU RV64 BSP for 3.1.x, so that range is
+Cortex-A9 only.

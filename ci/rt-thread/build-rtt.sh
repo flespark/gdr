@@ -31,6 +31,9 @@ case "$RT_THREAD_TARGET" in
         BSP_DIR="${RT_THREAD_BSP:-bsp/qemu-vexpress-a9}"
         CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-arm-none-eabi-}"
         case "$RT_THREAD_REF" in
+            v3.1.0|v3.1.1|v3.1.2|v3.1.3|v3.1.4|v3.1.5)
+                PATCH_SET="3.1.x"
+                ;;
             v4.0.0|v4.0.1)
                 PATCH_SET="4.0.0-4.0.1"
                 ;;

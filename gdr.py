@@ -112,7 +112,7 @@ def _setup_rtthread(version: str) -> None:
         )
         return
 
-    check_version(version)
+    target_version = check_version(version)
     info(f"setting up RT-Thread v{version}...")
     cfg = detect_config()
     info(
@@ -120,7 +120,7 @@ def _setup_rtthread(version: str) -> None:
         f"sem={cfg.using_semaphore} mutex={cfg.using_mutex} "
         f"mb={cfg.using_mailbox} mq={cfg.using_messagequeue}"
     )
-    kl = build_layouts(cfg)
+    kl = build_layouts(cfg, target_version)
     info(f"  layout: {len(kl.structs)} structs, {len(kl.list_hooks)} list hooks")
 
     register_printers(kl)

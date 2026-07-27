@@ -30,20 +30,7 @@ from gdr.gdb_bridge import (
 )
 from gdr.layout import KernelLayout
 from rtthread import adapter
-from rtthread.layout import (
-    RT_OBJECT_CLASS_DEVICE,
-    RT_OBJECT_CLASS_EVENT,
-    RT_OBJECT_CLASS_MAILBOX,
-    RT_OBJECT_CLASS_MEMHEAP,
-    RT_OBJECT_CLASS_MEMORY,
-    RT_OBJECT_CLASS_MEMPOOL,
-    RT_OBJECT_CLASS_MESSAGEQUEUE,
-    RT_OBJECT_CLASS_MUTEX,
-    RT_OBJECT_CLASS_SEMAPHORE,
-    RT_OBJECT_CLASS_THREAD,
-    RT_OBJECT_CLASS_TIMER,
-    ThreadState,
-)
+from rtthread.layout import ThreadState
 from rtthread.navigation import (
     get_current_thread,
     get_tick,
@@ -55,21 +42,6 @@ from rtthread.navigation import (
 # Module-level layout reference, set by register_commands()
 _kl: KernelLayout | None = None
 _registered = False
-
-# Human-readable names for object type codes
-_TYPE_NAMES: dict[int, str] = {
-    RT_OBJECT_CLASS_THREAD: "thread",
-    RT_OBJECT_CLASS_SEMAPHORE: "semaphore",
-    RT_OBJECT_CLASS_MUTEX: "mutex",
-    RT_OBJECT_CLASS_EVENT: "event",
-    RT_OBJECT_CLASS_MAILBOX: "mailbox",
-    RT_OBJECT_CLASS_MESSAGEQUEUE: "msgqueue",
-    RT_OBJECT_CLASS_MEMHEAP: "memheap",
-    RT_OBJECT_CLASS_MEMPOOL: "mempool",
-    RT_OBJECT_CLASS_MEMORY: "memory",
-    RT_OBJECT_CLASS_DEVICE: "device",
-    RT_OBJECT_CLASS_TIMER: "timer",
-}
 
 _THREAD_STATE_NAMES: dict[int, str] = {
     int(ThreadState.INIT): "init",
@@ -89,6 +61,15 @@ def _state_name(state: int) -> str:
 def _addr_str(addr: int) -> str:
     """Format an address as hex string."""
     return hex(addr) if addr else "0x0"
+
+
+def _type_names(layout: KernelLayout) -> dict[int, str]:
+    """Return enabled-target type names keyed by their active numeric codes."""
+    return {
+        type_code: info_obj.name
+        for type_code, info_obj in layout.object_types.items()
+        if info_obj.name
+    }
 
 
 @gdb_command_guard
@@ -147,7 +128,7 @@ def _cmd_semaphores() -> None:
         info("semaphore support not compiled in (RT_USING_SEMAPHORE)")
         return
     rows = []
-    for val in iter_objects(RT_OBJECT_CLASS_SEMAPHORE, _kl):
+    for val in iter_objects(_kl.object_codes["semaphore"], _kl):
         sem = adapter.value_to_semaphore(val, _kl)
         rows.append([sem.name, str(sem.value), _addr_str(sem.address)])
     print_table(rows, ["Name", "Value", "Addr"])
@@ -201,10 +182,10 @@ def _cmd_objects(arg: str) -> None:
 
     if arg.strip():
         # Filter by type name
-        type_code = _parse_type_name(arg.strip())
+        type_code = _parse_type_name(arg.strip(), _kl)
         if type_code is None:
             warn(f"unknown object type: {arg!r}")
-            warn(f"valid types: {', '.join(sorted(_TYPE_NAMES.values()))}")
+            warn(f"valid types: {', '.join(sorted(_type_names(_kl).values()))}")
             return
         info_obj = _kl.object_types.get(type_code)
         if info_obj is None or not info_obj.enabled:
@@ -213,11 +194,11 @@ def _cmd_objects(arg: str) -> None:
         count = 0
         for _ in iter_objects(type_code, _kl):
             count += 1
-        info(f"{_TYPE_NAMES[type_code]}: {count} object(s)")
+        info(f"{_type_names(_kl)[type_code]}: {count} object(s)")
     else:
         # Summary of all types
         rows = []
-        for tc, name in sorted(_TYPE_NAMES.items()):
+        for tc, name in sorted(_type_names(_kl).items()):
             ti = _kl.object_types.get(tc)
             if ti is None or not ti.enabled:
                 continue
@@ -226,10 +207,10 @@ def _cmd_objects(arg: str) -> None:
         print_table(rows, ["Type", "Count"])
 
 
-def _parse_type_name(name: str) -> int | None:
+def _parse_type_name(name: str, layout: KernelLayout) -> int | None:
     """Parse a human-readable type name to its type code."""
     name_lower = name.lower()
-    for tc, tn in _TYPE_NAMES.items():
+    for tc, tn in _type_names(layout).items():
         if tn == name_lower:
             return tc
     return None
@@ -256,7 +237,7 @@ def _cmd_system() -> None:
         info("Current thread: N/A")
 
     # Object counts
-    for tc, name in sorted(_TYPE_NAMES.items()):
+    for tc, name in sorted(_type_names(_kl).items()):
         ti = _kl.object_types.get(tc)
         if ti is None or not ti.enabled:
             continue

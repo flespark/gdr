@@ -14,6 +14,8 @@ EXPECTED_POINTER_BYTES = int(
     os.environ.get("GDR_EXPECT_POINTER_BYTES", _DEFAULT_POINTER_BYTES)
 )
 _IS_RV64 = os.environ.get("GDR_QEMU_TARGET") == "rv64"
+_RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+_OBJECT_SEMAPHORE_CODE = 1 if _RTTHREAD_VERSION in {"3.1.0", "3.1.1", "3.1.2"} else 2
 
 
 class TestConvenienceFunctions:
@@ -51,12 +53,11 @@ class TestConvenienceFunctions:
         bad member offsets, and casts to the wrong struct type on RV64.
 
         """
-        out = gdb_session.run_python(
-            """
+        code = """
 import gdb
 
 thread = gdb.parse_and_eval('$gdr_thread("worker1")')
-semaphore = gdb.parse_and_eval('$gdr_object(0x02, "test_sem")')
+semaphore = gdb.parse_and_eval('$gdr_object(OBJECT_SEMAPHORE_CODE, "test_sem")')
 print(f"thread_type={thread.type}")
 print(f"thread_tag={thread.type.strip_typedefs().tag}")
 print(f"thread_is_struct={thread.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
@@ -66,7 +67,8 @@ print(f"semaphore_tag={semaphore.type.strip_typedefs().tag}")
 print(f"semaphore_is_struct={semaphore.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
 print(f"semaphore_address_matches={int(semaphore.address) == int(gdb.parse_and_eval('test_sem').address)}")
 """
-        )
+        code = code.replace("OBJECT_SEMAPHORE_CODE", f"{_OBJECT_SEMAPHORE_CODE:#x}")
+        out = gdb_session.run_python(code)
         assert "thread_tag=rt_thread" in out, out
         assert "thread_is_struct=True" in out, out
         assert "thread_address_matches=True" in out, out
@@ -78,7 +80,7 @@ print(f"semaphore_address_matches={int(semaphore.address) == int(gdb.parse_and_e
         """``get_current_thread`` follows RT-Thread's SMP per-CPU handle."""
         expected_expr = (
             "rt_current_thread"
-            if _IS_RV64
+            if _IS_RV64 or _RTTHREAD_VERSION.startswith("3.")
             else "rt_cpu_index(rt_hw_cpu_id())->current_thread"
         )
         out = gdb_session.run_python(
@@ -124,8 +126,8 @@ if arch is not None:
         assert "endian=little" in out, out
 
     def test_gdr_object_semaphore(self, gdb_session):
-        """``$gdr_object(0x02, "test_sem")`` returns a non-null value."""
-        out = gdb_session.run('p $gdr_object(0x02, "test_sem")')
+        """``$gdr_object(type_code, "test_sem")`` resolves the active enum profile."""
+        out = gdb_session.run(f'p $gdr_object({_OBJECT_SEMAPHORE_CODE:#x}, "test_sem")')
         assert "= 0" not in out or "Semaphore(" in out, (
             f"expected non-null semaphore, got:\n{out}"
         )

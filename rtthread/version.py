@@ -6,8 +6,7 @@ import re
 
 from gdr.gdb_bridge import eval_safe, read_int, warn
 
-SUPPORTED_MIN = (4, 0, 0)
-SUPPORTED_MAX = (4, 1, 1)
+SUPPORTED_RANGES = (((3, 1, 0), (3, 1, 5)), ((4, 0, 0), (4, 1, 1)))
 
 
 def parse_version(version: str) -> tuple[int, int, int] | None:
@@ -26,9 +25,9 @@ def validate_version(version: str) -> tuple[int, int, int]:
         warn("expected full RT-Thread version form, e.g. 4.0.5")
         raise SystemExit(1)
 
-    if not (SUPPORTED_MIN <= parsed <= SUPPORTED_MAX):
+    if not any(lower <= parsed <= upper for lower, upper in SUPPORTED_RANGES):
         warn(f"unsupported RT-Thread version: {version!r}")
-        warn("currently verified: 4.0.0 through 4.1.1")
+        warn("currently verified: 3.1.0 through 3.1.5, and 4.0.0 through 4.1.1")
         raise SystemExit(1)
 
     return parsed
@@ -59,14 +58,15 @@ def detect_target_version() -> tuple[int, int, int] | None:
     return None
 
 
-def check_version(version: str) -> None:
+def check_version(version: str) -> tuple[int, int, int]:
     """Validate requested version and compare with target when available."""
     expected = validate_version(version)
     detected = detect_target_version()
     if detected is None:
         warn("target RT-Thread version not exported; cannot verify version")
-        return
+        return expected
     if detected != expected:
         actual = ".".join(str(part) for part in detected)
         warn(f"RT-Thread version mismatch: expected {version}, target is {actual}")
         raise SystemExit(1)
+    return expected

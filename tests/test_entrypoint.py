@@ -7,6 +7,8 @@ from pathlib import Path
 
 import rtthread.commands as commands
 import rtthread.version as version
+from gdr.layout import KernelLayout
+from rtthread.layout import RtConfig
 
 
 def _load_entrypoint():
@@ -43,3 +45,26 @@ def test_setup_rtthread_skips_an_existing_initialization(monkeypatch):
         "RT-Thread support is already initialized; restart GDB before "
         "selecting a different target or version"
     ]
+
+
+def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch):
+    """The layout factory receives the selected RT-Thread compatibility profile."""
+    entrypoint = _load_entrypoint()
+    received: list[tuple[int, int, int]] = []
+    monkeypatch.setattr(commands, "is_initialized", lambda: False)
+    monkeypatch.setattr(version, "check_version", lambda _value: (3, 1, 3))
+    monkeypatch.setattr(entrypoint, "info", lambda _message: None)
+    monkeypatch.setattr("rtthread.layout.detect_config", RtConfig)
+    monkeypatch.setattr(
+        "rtthread.layout.build_layouts",
+        lambda _config, target_version: (
+            received.append(target_version) or KernelLayout()
+        ),
+    )
+    monkeypatch.setattr("rtthread.adapter.register_adapter", lambda _layout: None)
+    monkeypatch.setattr("rtthread.commands.register_commands", lambda _layout: None)
+    monkeypatch.setattr(entrypoint, "register_printers", lambda _layout: None)
+
+    entrypoint._setup_rtthread("3.1.3")
+
+    assert received == [(3, 1, 3)]
