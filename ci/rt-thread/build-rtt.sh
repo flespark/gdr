@@ -186,14 +186,20 @@ export RTT_CC=gcc
 export RTT_EXEC_PATH="$RTOS_TOOLCHAIN_PATH"
 
 echo "[gdr-ci] scons (may take a minute)..."
-# Prefer bare scons, fall back to uvx for a clean Python env.
-SCONS_BIN="${SCONS_BIN:-scons}"
-if ! command -v "$SCONS_BIN" >/dev/null 2>&1; then
-    SCONS_BIN="uvx --from scons scons"
+# Reason: RT-Thread 3.1.x's tools/building.py has Python 2 syntax, while
+# 4.x is verified with the default Python 3/SCons 4 environment. Keep both
+# runners isolated in the image and select them from the explicit source ref.
+if [[ -n "${SCONS_BIN:-}" ]]; then
+    SCONS_CMD=("$SCONS_BIN")
+elif [[ "$RT_THREAD_REF" == v3.1.* ]]; then
+    SCONS_CMD=("${PYTHON2_BIN:-/opt/python2/bin/python}" "${PYTHON2_SCONS:-/opt/python2/bin/scons}")
+else
+    SCONS_CMD=(/opt/scons-venv/bin/scons)
 fi
 # Note: on macOS getconf _NPROCESSORS_ONLN; on Linux nproc. Both have getconf.
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
-$SCONS_BIN -j"$JOBS"
+echo "[gdr-ci] scons command: ${SCONS_CMD[*]}"
+"${SCONS_CMD[@]}" -j"$JOBS"
 
 if [[ ! -f rtthread.elf ]]; then
     echo "[gdr-ci] FAILED: rtthread.elf not produced" >&2

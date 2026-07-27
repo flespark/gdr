@@ -6,22 +6,31 @@
 #   - gdb-multiarch    (GDB with Python scripting and multi-ISA support)
 #   - xPack GNU Arm + RISC-V GCC/newlib (bare-metal cross-compilers)
 #   - python3 + uv     (Python deps + pytest/pexpect runner)
-#   - scons            (RT-Thread BSP build tool)
+#   - SCons 4/Python 3 (RT-Thread 4.x BSP build tool)
+#   - SCons 3/Python 2 (isolated RT-Thread 3.1.x BSP build tool)
 #
 # Design principle: ONE base Dockerfile covers all RTOS × hardware combos
-# until a real dependency conflict appears (e.g. one RTOS needs python2,
-# another needs python3, or incompatible GCC majors). Premature splits
-# multiply maintenance burden without value. See `TODO.md` "future evolution"
-# note for the splitting trigger.
+# until a dependency cannot coexist in isolated paths. RT-Thread 3.1.x needs
+# Python 2, but its interpreter and SCons stay under /opt/python2 and never
+# become the container default, so a separate image is unnecessary.
 #
 # Base choice: debian:trixie has recent enough gdb (>= 14) and qemu (>= 8)
 # to support modern ARM debug info and -gdb tcp::1234 server semantics.
 
+# Python 2.7 is EOL and is used only to run RT-Thread 3.1.x's Python-2-only
+# build scripts. Keep it out of the final image's default Python environment.
+FROM python:2.7.18-slim-buster AS legacy-scons
+
+RUN pip install --no-cache-dir "scons==3.1.2"
+
+
 FROM debian:trixie-slim
+
+COPY --from=legacy-scons /usr/local /opt/python2
 
 #----------------------------------------------------------------------
 # Runtime tools. Host GCC and pip are unnecessary: RT-Thread uses the xPack
-# cross-compilers and SCons is installed in an isolated virtual environment.
+# cross-compilers and SCons is installed in isolated environments.
 #----------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-system-arm \
@@ -72,6 +81,9 @@ RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-linux-x64.tar.gz" 
 
 ENV XPACK_ARM_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
     XPACK_RISCV_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
+    PYTHON2_BIN=/opt/python2/bin/python \
+    PYTHON2_SCONS=/opt/python2/bin/scons \
+    LD_LIBRARY_PATH=/opt/python2/lib \
     PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Default working directory; CNB mounts the repo at /root/workspace by

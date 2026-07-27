@@ -6,6 +6,15 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack}"
 PLATFORM="${PODMAN_PLATFORM:-linux/amd64}"
 
+# Keep the Podman machine, image store, and build cache off the system disk
+# when callers provide external XDG roots (for example, a USB drive on macOS).
+if [[ -n "${PODMAN_XDG_CONFIG_HOME:-}" ]]; then
+    export XDG_CONFIG_HOME="$PODMAN_XDG_CONFIG_HOME"
+fi
+if [[ -n "${PODMAN_XDG_DATA_HOME:-}" ]]; then
+    export XDG_DATA_HOME="$PODMAN_XDG_DATA_HOME"
+fi
+
 podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" --tag "$IMAGE_TAG" "$ROOT_DIR"
 podman run --rm --platform "$PLATFORM" \
     --volume "$ROOT_DIR:/workspace" \
