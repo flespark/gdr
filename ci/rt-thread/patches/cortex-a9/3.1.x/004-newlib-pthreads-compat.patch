@@ -1,0 +1,38 @@
+diff --git a/components/libc/compilers/newlib/libc.c b/components/libc/compilers/newlib/libc.c
+--- a/components/libc/compilers/newlib/libc.c
++++ b/components/libc/compilers/newlib/libc.c
+@@ -30,7 +30,11 @@
+ #include <sys/time.h>
+ 
+ #include "libc.h"
+ 
++#ifndef _EXFUN
++#define _EXFUN(name, prototype) name prototype
++#endif
++
+ #ifdef RT_USING_PTHREADS
+ #include <pthread.h>
+ #endif
+diff --git a/components/libc/compilers/newlib/stdio.c b/components/libc/compilers/newlib/stdio.c
+--- a/components/libc/compilers/newlib/stdio.c
++++ b/components/libc/compilers/newlib/stdio.c
+@@ -29,5 +29,9 @@
+ #include <rtthread.h>
+ #include "libc.h"
+ 
++#ifndef _EXFUN
++#define _EXFUN(name, prototype) name prototype
++#endif
++
+ #define STDIO_DEVICE_NAME_MAX   32
+ 
+@@ -80,7 +84,9 @@ int libc_stdio_set_console(const char* device_name, int mode)
+             _GLOBAL_REENT->_stderr = std_console;
+         }
+ 
++#ifdef _REENT_SMALL
+         _GLOBAL_REENT->__sdidinit = 1;
++#endif
+     }
+ 
+     if (std_console) return fileno(std_console);

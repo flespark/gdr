@@ -117,6 +117,22 @@ if [[ -n "${PATCH_DIR:-}" ]]; then
     PATCH_DIRS+=("$(cd "$PATCH_DIR" && pwd)")
 else
     PATCH_DIRS+=("$PATCH_ROOT/$RT_THREAD_TARGET/$PATCH_SET")
+    if [[ "$RT_THREAD_TARGET" == "cortex-a9" ]]; then
+        case "$RT_THREAD_REF" in
+            v3.1.0|v3.1.1|v3.1.2)
+                PATCH_DIRS+=("$PATCH_ROOT/$RT_THREAD_TARGET/3.1.0-3.1.2")
+                ;;
+            v3.1.3|v3.1.4|v3.1.5)
+                PATCH_DIRS+=("$PATCH_ROOT/$RT_THREAD_TARGET/3.1.3-3.1.5")
+                ;;
+        esac
+    fi
+    # Reason: only 3.1.0 predates the DFS _EXFUN guard needed by xPack's
+    # modern newlib; it was incorporated upstream in 3.1.1.
+    if [[ "$RT_THREAD_TARGET" == "cortex-a9" && \
+        "$RT_THREAD_REF" == "v3.1.0" ]]; then
+        PATCH_DIRS+=("$PATCH_ROOT/$RT_THREAD_TARGET/3.1.0")
+    fi
 fi
 echo "[gdr-ci] patch dirs:"
 for dir in "${PATCH_DIRS[@]}"; do

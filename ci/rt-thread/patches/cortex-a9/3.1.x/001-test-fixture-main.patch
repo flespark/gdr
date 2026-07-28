@@ -40,6 +40,7 @@ index d59513bc..d16297b1 100644
 +
 +    rt_mutex_take(&test_mutex, RT_WAITING_FOREVER);
 +    worker1_running = 1;
++    rt_kprintf("GDR test fixture ready.\n");
 +
 +    while (1)
 +    {
@@ -98,7 +99,6 @@ index d59513bc..d16297b1 100644
 +    rt_thread_startup(&worker2_thread);
 +    rt_thread_startup(&worker3_thread);
 +
-+    rt_kprintf("GDR test fixture ready.\n");
 -
 +
      return 0;

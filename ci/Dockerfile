@@ -27,6 +27,8 @@ RUN pip install --no-cache-dir "scons==3.1.2"
 FROM debian:trixie-slim
 
 COPY --from=legacy-scons /usr/local /opt/python2
+COPY --from=legacy-scons /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 /opt/python2/lib/
+COPY --from=legacy-scons /usr/lib/x86_64-linux-gnu/libssl.so.1.1 /opt/python2/lib/
 
 #----------------------------------------------------------------------
 # Runtime tools. Host GCC and pip are unnecessary: RT-Thread uses the xPack
@@ -85,6 +87,10 @@ ENV XPACK_ARM_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
     PYTHON2_SCONS=/opt/python2/bin/scons \
     LD_LIBRARY_PATH=/opt/python2/lib \
     PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Fail the image build if the isolated Python 2 runtime cannot load the
+# matching OpenSSL 1.1 extension modules copied from the Buster stage.
+RUN /opt/python2/bin/python -c 'import hashlib; assert hashlib.md5("gdr").hexdigest() == "fff7c7603b50cc39962ecf42277c0d0d"'
 
 # Default working directory; CNB mounts the repo at /root/workspace by
 # convention, but we leave WORKDIR generic so local `docker run -v` works.

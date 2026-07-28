@@ -146,7 +146,15 @@ class QemuSession:
             ):
                 return
             time.sleep(0.1)
-        raise RuntimeError(f"QEMU did not emit {READY_MARKER!r} within {BOOT_WAIT}s")
+        serial_output = (
+            self._serial_log.read_text(errors="replace")
+            if self._serial_log.exists()
+            else "<serial log was not created>"
+        )
+        raise RuntimeError(
+            f"QEMU did not emit {READY_MARKER!r} within {BOOT_WAIT}s. "
+            f"Serial output:\n{serial_output}"
+        )
 
     def stop(self):
         """Terminate the QEMU process."""

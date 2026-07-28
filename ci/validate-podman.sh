@@ -15,12 +15,23 @@ if [[ -n "${PODMAN_XDG_DATA_HOME:-}" ]]; then
     export XDG_DATA_HOME="$PODMAN_XDG_DATA_HOME"
 fi
 
+podman_args=(
+    --rm
+    --platform "$PLATFORM"
+    --volume "$ROOT_DIR:/workspace"
+    --workdir /workspace
+)
+if [[ -n "${RT_THREAD_REPO:-}" ]]; then
+    podman_args+=(--env "RT_THREAD_REPO=$RT_THREAD_REPO")
+fi
+if [[ -n "${RT_THREAD_SOURCE_DIR:-}" ]]; then
+    podman_args+=(--volume "$RT_THREAD_SOURCE_DIR:/rt-thread-source:ro")
+fi
+
 podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" --tag "$IMAGE_TAG" "$ROOT_DIR"
-podman run --rm --platform "$PLATFORM" \
-    --volume "$ROOT_DIR:/workspace" \
-    --workdir /workspace \
-    "$IMAGE_TAG" \
+podman run "${podman_args[@]}" "$IMAGE_TAG" \
     bash -c '
+        set -e
         RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
         CROSS_TOOL_PREFIX=arm-none-eabi- \
         bash ci/rt-thread/run-qemu-matrix.sh cortex-a9

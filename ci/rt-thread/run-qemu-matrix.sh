@@ -31,6 +31,12 @@ case "$1" in
         ;;
 esac
 
+# Permit focused local closed-loop validation without changing CI's default
+# coverage matrix. Values are whitespace-separated RT-Thread refs.
+if [[ -n "${RT_THREAD_REFS:-}" ]]; then
+    read -r -a refs <<<"$RT_THREAD_REFS"
+fi
+
 export GDR_GDB="${GDR_GDB:-gdb-multiarch}"
 # Reason: keep local container runs from creating a Linux virtualenv in the mounted repo.
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/gdr-venv}"

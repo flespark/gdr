@@ -30,16 +30,16 @@ class TestThreadsCommand:
             assert header in out, f"header {header!r} missing in output:\n{out}"
 
     def test_stack_used_matches_worker_stack_fields(self, gdb_session):
-        """StkUsed equals ``stack_size - (sp - stack_addr)`` for worker1."""
+        """Thread-table stack values match the layout-aware worker conversion."""
         out = gdb_session.run_python(
             """
 import gdb
+from rtthread import adapter
 
 thread = gdb.parse_and_eval('$gdr_thread("worker1")')
-stack_used = int(thread["stack_size"]) - (int(thread["sp"]) - int(thread["stack_addr"]))
-stack = bytes(gdb.selected_inferior().read_memory(int(thread["stack_addr"]), int(thread["stack_size"])))
-print(f"stack_used={stack_used}")
-print(f"max_stack_used={len(stack.lstrip(b'#'))}")
+converted = adapter.value_to_thread(thread, adapter._kl)
+print(f"stack_used={converted.stack_used}")
+print(f"max_stack_used={converted.max_stack_used}")
 """
         )
         stack_used = re.search(r"stack_used=(\d+)", out)

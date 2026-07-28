@@ -1,0 +1,26 @@
+diff --git a/bsp/qemu-vexpress-a9/rtconfig.h b/bsp/qemu-vexpress-a9/rtconfig.h
+--- a/bsp/qemu-vexpress-a9/rtconfig.h
++++ b/bsp/qemu-vexpress-a9/rtconfig.h
+@@ -112,3 +112,4 @@
+-#define RT_USING_SDIO
++/* Reason: the QEMU test fixture has no usable SDIO controller. */
++/* #define RT_USING_SDIO */
+ #define RT_SDIO_STACK_SIZE 512
+ #define RT_SDIO_THREAD_PRIORITY 15
+@@ -560,6 +561,16 @@
+ #define SOC_VEXPRESS_A9
+ #define RT_USING_UART0
+ #define RT_USING_UART1
+ #define BSP_DRV_EMAC
++
++/* Reason: the QEMU test fixture does not exercise networking or a DFS work
++ * directory. The legacy EMAC/LwIP path faults before main(), while FinSH's
++ * getcwd prompt path faults before the worker-owned readiness marker. */
++#undef RT_USING_SAL
++#undef SAL_USING_LWIP
++#undef RT_USING_LWIP
++#undef RT_USING_NETDEV
++#undef BSP_DRV_EMAC
++#undef DFS_USING_WORKDIR
+ 
+ #endif
