@@ -9,24 +9,15 @@ from __future__ import annotations
 
 import os
 
+from tests.rtthread_profiles import get_rtthread_test_profile
+
 # Symbolic thread state names (mirror rtthread.layout.ThreadState).
 # The printer's enum_map must render the raw stat int as one of these.
 _THREAD_STATE_SYMBOLS = {"INIT", "READY", "SUSPEND", "RUNNING", "CLOSE"}
 _IS_RV64 = os.environ.get("GDR_QEMU_TARGET") == "rv64"
 _RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-_LEGACY_31 = _RTTHREAD_VERSION in {"3.1.0", "3.1.1", "3.1.2"}
-# RT-Thread 3.1.3 inserted OBJECT_NULL at enum value zero. Query the active
-# semantic object codes so printer tests cover both sides of that ABI change.
-_OBJECT_CODES = {
-    "semaphore": 0x01 if _LEGACY_31 else 0x02,
-    "mutex": 0x02 if _LEGACY_31 else 0x03,
-    "timer": 0x09 if _LEGACY_31 else 0x0A,
-}
-MUTEX_NAME = os.environ.get(
-    "GDR_TEST_MUTEX_NAME", "test_mutex" if _IS_RV64 else "test_mut"
-)
-TIMER_NAME = os.environ.get(
-    "GDR_TEST_TIMER_NAME", "test_timer" if _IS_RV64 else "test_tim"
+_PROFILE = get_rtthread_test_profile(
+    _RTTHREAD_VERSION, "rv64" if _IS_RV64 else "cortex-a9"
 )
 
 
@@ -71,7 +62,7 @@ class TestPrinters:
     def test_semaphore_folds(self, gdb_session):
         """A semantic semaphore lookup prints ``Semaphore(...)``."""
         out = gdb_session.run(
-            f'p $gdr_object({_OBJECT_CODES["semaphore"]:#x}, "test_sem")'
+            f'p $gdr_object({_PROFILE.semaphore_code:#x}, "{_PROFILE.semaphore_name}")'
         )
         assert "Semaphore(" in out, f"expected Semaphore( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
@@ -79,7 +70,7 @@ class TestPrinters:
     def test_mutex_folds(self, gdb_session):
         """A semantic mutex lookup prints ``Mutex(...)``."""
         out = gdb_session.run(
-            f'p $gdr_object({_OBJECT_CODES["mutex"]:#x}, "{MUTEX_NAME}")'
+            f'p $gdr_object({_PROFILE.mutex_code:#x}, "{_PROFILE.mutex_name}")'
         )
         assert "Mutex(" in out, f"expected Mutex( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
@@ -88,7 +79,7 @@ class TestPrinters:
     def test_timer_folds(self, gdb_session):
         """A semantic timer lookup prints ``Timer(...)``."""
         out = gdb_session.run(
-            f'p $gdr_object({_OBJECT_CODES["timer"]:#x}, "{TIMER_NAME}")'
+            f'p $gdr_object({_PROFILE.timer_code:#x}, "{_PROFILE.timer_name}")'
         )
         assert "Timer(" in out, f"expected Timer( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
@@ -115,7 +106,7 @@ print(_format_field(entry, StructField("entry", ("entry",), kind="ptr")))
         than a bare ``0x7``.
         """
         out = gdb_session.run(
-            f'p $gdr_object({_OBJECT_CODES["timer"]:#x}, "{TIMER_NAME}")'
+            f'p $gdr_object({_PROFILE.timer_code:#x}, "{_PROFILE.timer_name}")'
         )
         assert "flag=" in out, f"expected flag= field, got:\n{out}"
         # test_timer is periodic + soft + activated per the fixture.

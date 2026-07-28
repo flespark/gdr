@@ -176,6 +176,14 @@ BSP boots the raw BIN, while GDB requires DWARF symbols from the ELF. The
 shared suite also asserts the target pointer width, so the RV64 profile must
 report `sizeof(void *) == 8`.
 
+`tests/rtthread_profiles.py` separately owns fixture-level expectations that
+vary by target or RT-Thread version: object enum values, the current-thread
+expression, and canonical fixture object names. It intentionally does not
+import production layout metadata, so a regression in GDR's layout mapping
+cannot update the expected values at the same time. Cortex-A9 fixture patches
+set `RT_NAME_MAX` to 16, preserving the canonical `test_mutex` and
+`test_timer` names used by every shared test; the RV64 BSPs already use 20.
+
 The RV64 matrix covers RT-Thread v4.0.4, v4.0.5, v4.1.0, and v4.1.1. The BSP
 is `bsp/qemu-riscv-virt64` through v4.1.0 and is renamed to
 `bsp/qemu-virt64-riscv` in v4.1.1; each path has a separate platform-specific

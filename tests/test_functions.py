@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import os
 
+from tests.rtthread_profiles import get_rtthread_test_profile
+
 _DEFAULT_POINTER_BYTES = "8" if os.environ.get("GDR_QEMU_TARGET") == "rv64" else "4"
 EXPECTED_POINTER_BYTES = int(
     os.environ.get("GDR_EXPECT_POINTER_BYTES", _DEFAULT_POINTER_BYTES)
 )
 _IS_RV64 = os.environ.get("GDR_QEMU_TARGET") == "rv64"
 _RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-_OBJECT_SEMAPHORE_CODE = 1 if _RTTHREAD_VERSION in {"3.1.0", "3.1.1", "3.1.2"} else 2
+_PROFILE = get_rtthread_test_profile(
+    _RTTHREAD_VERSION, "rv64" if _IS_RV64 else "cortex-a9"
+)
 
 
 class TestConvenienceFunctions:
@@ -57,7 +61,7 @@ class TestConvenienceFunctions:
 import gdb
 
 thread = gdb.parse_and_eval('$gdr_thread("worker1")')
-semaphore = gdb.parse_and_eval('$gdr_object(OBJECT_SEMAPHORE_CODE, "test_sem")')
+semaphore = gdb.parse_and_eval('$gdr_object(OBJECT_SEMAPHORE_CODE, "SEMAPHORE_NAME")')
 print(f"thread_type={thread.type}")
 print(f"thread_tag={thread.type.strip_typedefs().tag}")
 print(f"thread_is_struct={thread.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
@@ -66,8 +70,9 @@ print(f"semaphore_type={semaphore.type}")
 print(f"semaphore_tag={semaphore.type.strip_typedefs().tag}")
 print(f"semaphore_is_struct={semaphore.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
 print(f"semaphore_address_matches={int(semaphore.address) == int(gdb.parse_and_eval('test_sem').address)}")
-"""
-        code = code.replace("OBJECT_SEMAPHORE_CODE", f"{_OBJECT_SEMAPHORE_CODE:#x}")
+        """
+        code = code.replace("OBJECT_SEMAPHORE_CODE", f"{_PROFILE.semaphore_code:#x}")
+        code = code.replace("SEMAPHORE_NAME", _PROFILE.semaphore_name)
         out = gdb_session.run_python(code)
         assert "thread_tag=rt_thread" in out, out
         assert "thread_is_struct=True" in out, out
@@ -78,11 +83,7 @@ print(f"semaphore_address_matches={int(semaphore.address) == int(gdb.parse_and_e
 
     def test_current_thread_matches_selected_cpu(self, gdb_session):
         """``get_current_thread`` follows RT-Thread's SMP per-CPU handle."""
-        expected_expr = (
-            "rt_current_thread"
-            if _IS_RV64 or _RTTHREAD_VERSION.startswith("3.")
-            else "rt_cpu_index(rt_hw_cpu_id())->current_thread"
-        )
+        expected_expr = _PROFILE.current_thread_expression
         out = gdb_session.run_python(
             f"""
 import gdb
@@ -127,7 +128,9 @@ if arch is not None:
 
     def test_gdr_object_semaphore(self, gdb_session):
         """``$gdr_object(type_code, "test_sem")`` resolves the active enum profile."""
-        out = gdb_session.run(f'p $gdr_object({_OBJECT_SEMAPHORE_CODE:#x}, "test_sem")')
+        out = gdb_session.run(
+            f'p $gdr_object({_PROFILE.semaphore_code:#x}, "{_PROFILE.semaphore_name}")'
+        )
         assert "= 0" not in out or "Semaphore(" in out, (
             f"expected non-null semaphore, got:\n{out}"
         )

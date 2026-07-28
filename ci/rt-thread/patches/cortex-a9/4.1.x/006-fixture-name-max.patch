@@ -1,0 +1,9 @@
+diff --git a/bsp/qemu-vexpress-a9/rtconfig.h b/bsp/qemu-vexpress-a9/rtconfig.h
+--- a/bsp/qemu-vexpress-a9/rtconfig.h
++++ b/bsp/qemu-vexpress-a9/rtconfig.h
+@@ -9,3 +9,4 @@
+-#define RT_NAME_MAX 8
++#define RT_NAME_MAX 16
++/* Reason: preserve the fixture's full mutex and timer names. */
+ #define RT_USING_SMP
+ #define RT_CPUS_NR 2

@@ -7,7 +7,14 @@ expected test-fixture objects.
 
 from __future__ import annotations
 
+import os
 import re
+
+from tests.rtthread_profiles import get_rtthread_test_profile
+
+_RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+_TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
+_PROFILE = get_rtthread_test_profile(_RTTHREAD_VERSION, _TARGET)
 
 
 class TestThreadsCommand:
@@ -95,7 +102,9 @@ class TestSemaphoresCommand:
     def test_lists_test_sem(self, gdb_session):
         """Output contains test_sem."""
         out = gdb_session.run("rtthread semaphores")
-        assert "test_sem" in out, f"test_sem not found in output:\n{out}"
+        assert _PROFILE.semaphore_name in out, (
+            f"{_PROFILE.semaphore_name} not found in output:\n{out}"
+        )
 
     def test_has_value_column(self, gdb_session):
         """Output has Name, Value headers."""
@@ -113,10 +122,10 @@ class TestTimersCommand:
         assert "Kernel tick" in out
 
     def test_lists_test_timer(self, gdb_session):
-        """Output contains test_timer (may be truncated to test_tim)."""
+        """Output contains the fixture's full timer name."""
         out = gdb_session.run("rtthread timers")
-        assert "test_tim" in out or "test_timer" in out, (
-            f"test_timer not found in output:\n{out}"
+        assert _PROFILE.timer_name in out, (
+            f"{_PROFILE.timer_name} not found in output:\n{out}"
         )
 
     def test_test_timer_is_periodic_soft(self, gdb_session):
@@ -124,7 +133,7 @@ class TestTimersCommand:
         out = gdb_session.run("rtthread timers")
         lines = out.split("\n")
         for line in lines:
-            if "test_tim" in line or "test_timer" in line:
+            if _PROFILE.timer_name in line:
                 assert "periodic" in line.lower(), f"expected periodic in: {line!r}"
                 assert "soft" in line.lower(), f"expected soft in: {line!r}"
                 break
