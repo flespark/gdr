@@ -24,6 +24,7 @@ from gdr.gdb_bridge import (
     eval_safe,
     gdb_command_guard,
     info,
+    lookup_symbol_at,
     print_table,
     read_int,
     warn,
@@ -63,6 +64,12 @@ def _addr_str(addr: int) -> str:
     return hex(addr) if addr else "0x0"
 
 
+def _function_str(addr: int) -> str:
+    """Format a function address as a symbol when target debug info permits."""
+    symbol = lookup_symbol_at(addr) if addr else None
+    return f"<{symbol}>" if symbol is not None else _addr_str(addr)
+
+
 def _type_names(layout: KernelLayout) -> dict[int, str]:
     """Return enabled-target type names keyed by their active numeric codes."""
     return {
@@ -99,7 +106,7 @@ def _cmd_threads() -> None:
                 f"{thr.stack_size}" if thr.stack_size else "0",
                 str(thr.stack_used) if thr.stack_used is not None else "N/A",
                 str(thr.max_stack_used) if thr.max_stack_used is not None else "N/A",
-                _addr_str(thr.entry),
+                _function_str(thr.entry),
             ]
         )
     print_table(
@@ -150,7 +157,7 @@ def _cmd_timers() -> None:
         active = "active" if timer.active else "inactive"
         mode = "periodic" if timer.periodic else "one-shot"
         kind = "soft" if timer.soft_timer else "hard"
-        cb = _addr_str(timer.callback)
+        cb = _function_str(timer.callback)
         rows.append(
             [
                 timer.name,

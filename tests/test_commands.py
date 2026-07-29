@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 import re
 
+import rtthread.commands as commands
+from gdr.abstractions import Thread, Timer
 from tests.rtthread_profiles import get_rtthread_test_profile
 
 _RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
@@ -19,6 +21,41 @@ _PROFILE = get_rtthread_test_profile(_RTTHREAD_VERSION, _TARGET)
 
 class TestThreadsCommand:
     """``rtthread threads`` output."""
+
+    def test_entry_is_symbolized_with_address_fallback(self, monkeypatch):
+        """Thread entry cells resolve symbols without hiding raw addresses."""
+        threads = [
+            Thread(name="symbolized", entry=0x1000),
+            Thread(name="unknown", entry=0x2000),
+            Thread(name="null", entry=0),
+        ]
+        rows: list[list[str]] = []
+        looked_up: list[int] = []
+
+        monkeypatch.setattr(commands, "_kl", object())
+        monkeypatch.setattr(commands, "get_current_thread", lambda: None)
+        monkeypatch.setattr(commands, "iter_threads", lambda _: iter(threads))
+        monkeypatch.setattr(commands.adapter, "value_to_thread", lambda value, _: value)
+        monkeypatch.setattr(
+            commands,
+            "lookup_symbol_at",
+            lambda addr: (
+                looked_up.append(addr)
+                or ("worker1_entry+0" if addr == 0x1000 else None)
+            ),
+        )
+        monkeypatch.setattr(
+            commands, "print_table", lambda thread_rows, _: rows.extend(thread_rows)
+        )
+
+        commands._cmd_threads()
+
+        assert [row[-1] for row in rows] == [
+            "<worker1_entry+0>",
+            "0x2000",
+            "0x0",
+        ]
+        assert looked_up == [0x1000, 0x2000]
 
     def test_lists_test_threads(self, gdb_session):
         """Output contains worker1, worker2, worker3.
@@ -95,6 +132,11 @@ print(f"max_stack_used={converted.max_stack_used}")
             )
             assert state is not None, f"unknown state in line: {line!r}"
 
+    def test_worker_entry_is_symbolized(self, gdb_session):
+        """worker1's entry function resolves through the target debug symbols."""
+        out = gdb_session.run("rtthread threads")
+        assert "<worker1_entry" in out, f"expected a symbolized worker entry in:\n{out}"
+
 
 class TestSemaphoresCommand:
     """``rtthread semaphores`` output."""
@@ -115,6 +157,42 @@ class TestSemaphoresCommand:
 
 class TestTimersCommand:
     """``rtthread timers`` output."""
+
+    def test_callback_is_symbolized_with_address_fallback(self, monkeypatch):
+        """Timer callback cells resolve symbols without hiding raw addresses."""
+        timers = [
+            Timer(name="symbolized", callback=0x1000),
+            Timer(name="unknown", callback=0x2000),
+            Timer(name="null", callback=0),
+        ]
+        rows: list[list[str]] = []
+        looked_up: list[int] = []
+
+        monkeypatch.setattr(commands, "_kl", object())
+        monkeypatch.setattr(commands, "get_tick", lambda: 123)
+        monkeypatch.setattr(commands, "info", lambda _: None)
+        monkeypatch.setattr(commands, "iter_timers", lambda _: iter(timers))
+        monkeypatch.setattr(commands.adapter, "value_to_timer", lambda value, _: value)
+        monkeypatch.setattr(
+            commands,
+            "lookup_symbol_at",
+            lambda addr: (
+                looked_up.append(addr)
+                or ("test_timer_timeout+0" if addr == 0x1000 else None)
+            ),
+        )
+        monkeypatch.setattr(
+            commands, "print_table", lambda timer_rows, _: rows.extend(timer_rows)
+        )
+
+        commands._cmd_timers()
+
+        assert [row[-1] for row in rows] == [
+            "<test_timer_timeout+0>",
+            "0x2000",
+            "0x0",
+        ]
+        assert looked_up == [0x1000, 0x2000]
 
     def test_shows_kernel_tick(self, gdb_session):
         """Output includes the current kernel tick before timer rows."""
@@ -139,6 +217,13 @@ class TestTimersCommand:
                 break
         else:
             raise AssertionError(f"test_timer row not found in output:\n{out}")
+
+    def test_test_timer_callback_is_symbolized(self, gdb_session):
+        """test_timer's callback resolves through the target debug symbols."""
+        out = gdb_session.run("rtthread timers")
+        assert "<test_timer_timeout" in out, (
+            f"expected a symbolized test timer callback in:\n{out}"
+        )
 
 
 class TestObjectsCommand:
