@@ -8,7 +8,7 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 if [[ -z "${CNB_TOKEN:-}" ]]; then
-    echo "CNB_TOKEN must be available to publish a CNB Release" >&2
+    echo "CNB_TOKEN with repo-code:r and repo-release:rw must be available to publish a CNB Release" >&2
     exit 1
 fi
 
@@ -44,22 +44,53 @@ target_commit="$(git -C "$repo_root" rev-parse --verify "${release_tag}^{commit}
 release_notes="$($script_dir/extract-changelog.sh "$release_tag")"
 cnb_cli=(npx --yes @cnbcool/cnb-cli@1.6.2)
 
-release_json="$("${cnb_cli[@]}" releases post-release \
+existing_release_json="$("${cnb_cli[@]}" releases get-release-by-tag \
     --repo "$repository" \
-    --name "GDR ${release_tag}" \
-    --body "$release_notes" \
-    --tag-name "$release_tag" \
-    --target-commitish "$target_commit" \
-    --make-latest true \
+    --tag "$release_tag" \
     --verbose)"
+# Reason: cnb-cli returns HTTP error payloads on stdout without a non-zero exit status.
 release_id="$(node -e '
     const response = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-    const id = response.data?.id;
-    if (!id) {
-        throw new Error("CNB did not return a release id");
+    const status = Number(response.status);
+    const data = response.data ?? {};
+    if (status === 404) {
+        process.exit(0);
     }
-    process.stdout.write(id);
-' <<<"$release_json")"
+    if (!Number.isInteger(status) || status < 200 || status >= 300 || !data.id) {
+        const detail = [data.errcode, data.errmsg].filter(Boolean).join(": ");
+        throw new Error(
+            `CNB release lookup failed with HTTP ${response.status ?? "unknown"}${
+                detail ? ` (${detail})` : ""
+            }`,
+        );
+    }
+    process.stdout.write(data.id);
+' <<<"$existing_release_json")"
+
+if [[ -z "$release_id" ]]; then
+    release_json="$("${cnb_cli[@]}" releases post-release \
+        --repo "$repository" \
+        --name "GDR ${release_tag}" \
+        --body "$release_notes" \
+        --tag-name "$release_tag" \
+        --target-commitish "$target_commit" \
+        --make-latest true \
+        --verbose)"
+    release_id="$(node -e '
+        const response = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        const status = Number(response.status);
+        const data = response.data ?? {};
+        if (!Number.isInteger(status) || status < 200 || status >= 300 || !data.id) {
+            const detail = [data.errcode, data.errmsg].filter(Boolean).join(": ");
+            throw new Error(
+                `CNB release creation failed with HTTP ${response.status ?? "unknown"}${
+                    detail ? ` (${detail})` : ""
+                }`,
+            );
+        }
+        process.stdout.write(data.id);
+    ' <<<"$release_json")"
+fi
 
 upload_asset() {
     local archive_path="$1"
@@ -82,11 +113,46 @@ upload_asset() {
     IFS=$'\t' read -r upload_url upload_token asset_path < <(
         node -e '
             const response = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            const status = Number(response.status);
             const data = response.data ?? {};
-            const verificationUrl = new URL(data.verify_url);
-            const token = verificationUrl.searchParams.get("upload_token");
-            const path = verificationUrl.searchParams.get("asset_path");
-            if (!data.upload_url || !token || !path) {
+            if (!Number.isInteger(status) || status < 200 || status >= 300) {
+                const detail = [data.errcode, data.errmsg].filter(Boolean).join(": ");
+                throw new Error(
+                    `CNB release asset upload request failed with HTTP ${response.status ?? "unknown"}${
+                        detail ? ` (${detail})` : ""
+                    }`,
+                );
+            }
+            if (!data.upload_url || !data.verify_url) {
+                throw new Error("CNB returned incomplete asset upload metadata");
+            }
+            let verificationUrl;
+            try {
+                verificationUrl = new URL(data.verify_url);
+            } catch {
+                throw new Error("CNB returned an invalid asset upload verification URL");
+            }
+            let token = verificationUrl.searchParams.get("upload_token");
+            let path = verificationUrl.searchParams.get("asset_path");
+            if (!token || !path) {
+                // Reason: CNB moved these fields from the query string into the
+                // verification URL path, while the generated CLI help still
+                // documents the older query-string response shape.
+                const parts = verificationUrl.pathname.split("/").filter(Boolean);
+                const marker = parts.lastIndexOf("asset-upload-confirmation");
+                const encodedPath = marker >= 0 ? parts.slice(marker + 2).join("/") : "";
+                if (!token && marker >= 0) {
+                    token = parts[marker + 1];
+                }
+                if (!path && encodedPath) {
+                    try {
+                        path = decodeURIComponent(encodedPath);
+                    } catch {
+                        throw new Error("CNB returned an invalid asset upload verification path");
+                    }
+                }
+            }
+            if (!token || !path) {
                 throw new Error("CNB returned incomplete asset upload metadata");
             }
             process.stdout.write([data.upload_url, token, path].join("\t") + "\n");

@@ -141,11 +141,13 @@ main: # branch: main
           script: bash ci/rt-thread/run-qemu-matrix.sh rv64
 
 # `$` applies to every reference. CNB sets CNB_BRANCH to the pushed tag when
-# `tag_push` fires. CNB_TOKEN is the protected project token available to the
-# build; it is consumed by ci/publish-cnb-release.sh and is never logged.
+# `tag_push` fires. The imported Secret repository file provides
+# GDR_RELEASE_TOKEN; it is mapped to CNB_TOKEN only for the release script and
+# is never logged.
 $:
   tag_push:
     - name: release
+      imports: https://cnb.cool/flespark-2026/ci-secrets/-/blob/main/gdr-release.yml
       docker:
         image: node:22-bookworm
       stages:
@@ -157,4 +159,9 @@ $:
         - name: create source archives
           script: bash ci/create-release-archives.sh "$CNB_BRANCH"
         - name: publish CNB Release
-          script: bash ci/publish-cnb-release.sh "$CNB_BRANCH"
+          script: |
+            if [[ -z "${GDR_RELEASE_TOKEN:-}" ]]; then
+              echo "GDR_RELEASE_TOKEN must be provided by the imported CNB Secret repository file" >&2
+              exit 1
+            fi
+            CNB_TOKEN="$GDR_RELEASE_TOKEN" bash ci/publish-cnb-release.sh "$CNB_BRANCH"
