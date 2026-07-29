@@ -1,35 +1,55 @@
 # GDR
 
+English | [简体中文](README.zh-CN.md)
+
 GDB helper framework for debugging RTOS-based embedded firmware.
 
 GDR runs inside the GDB Python interpreter and provides three layers of
-debugging support, following the approach popularised by the Linux kernel
-`scripts/gdb/` and the Asterinas GDB helper:
+debugging support, following the approach popularised by the [GEF](#acknowledgements) and
+the [Asterinas GDB helper](#acknowledgements):
 
-1. **Pretty-printers** — fold noisy wrapper types (`rt_mutex`, `rt_semaphore`,
-   `rt_thread`) into one-line summaries so `p`, `bt full` and `info locals`
-   stay readable.
-2. **Convenience functions** — `$gdr_thread("main")`, `$gdr_threads()`,
-   `$gdr_object(type, name)` return `gdb.Value` so you can keep using native
-   GDB expressions for the actual field inspection.
-3. **Aggregate commands** — `rtthread threads`, `rtthread semaphores`, etc.
+1. **Aggregate commands** — `rtthread threads`, `rtthread semaphores`, etc.
    only handle what GDB expressions cannot easily do: iterate collections and
    tabulate results.
+2. **Pretty-printers** — fold noisy kernel object (`rt_mutex`, `rt_semaphore`,
+   `rt_thread`) into one-line summaries so `p`, `bt full` and `info locals`
+   stay readable.
+3. **Convenience functions** — `$gdr_thread("main")`, `$gdr_threads()`,
+   `$gdr_object(type, name)` return `gdb.Value` so you can keep using native
+   GDB expressions for the actual field inspection.
 
 ## Status
 
-Core implementation complete: GDB bridge, layout engine,
-pretty-printers, convenience functions, aggregate commands, and QEMU
-closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
-
-## Supported RTOS
+### Supported RTOS
 
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
 | FreeRTOS | — | not yet (deferred) |
 
+Core implementation complete: GDB bridge, layout engine,
+pretty-printers, convenience functions, aggregate commands, and QEMU
+closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
+
 ## Quick start
+
+### Prerequisites
+
+GDR runs inside the GDB Python interpreter, so the host GDB must be built
+with Python support, and the target firmware must retain debug symbols.
+
+1. **Python-enabled GDB** — verify with `gdb --configuration` that Python
+   support is enabled.
+   - ARM / RISC-V: download a prebuilt toolchain from
+     [xPack Dev Tools](https://github.com/xpack-dev-tools/)
+   - Other platforms: build from source with
+     `./configure --target="<target-triple>" --enable-targets=all --with-python`
+   - See also: [Installing GDB for ARM | Interrupt](https://interrupt.memfault.com/blog/installing-gdb#build-from-source)
+
+2. **Debug symbols** — ensure the RTOS image under debug includes DWARF /
+   ELF symbols (do not strip the `.elf` you attach GDB to).
+
+### Load and init
 
 ```gdb
 (gdb) source gdr.py
@@ -112,7 +132,9 @@ uv run ruff check . && uv run ruff format --check .
 uv run pytest tests/ -v      # requires QEMU + RT-Thread firmwar
 ```
 
-Run the same ARM and RV64 QEMU matrices as CNB in a local Podman machine:
+CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
+defined in `.cnb.yml` (lint plus Cortex-A9 and RV64 QEMU matrices). To
+reproduce the same ARM and RV64 QEMU matrices locally in a Podman machine:
 
 ```bash
 ci/validate-podman.sh
