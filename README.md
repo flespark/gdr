@@ -49,6 +49,23 @@ with Python support, and the target firmware must retain debug symbols.
 2. **Debug symbols** — ensure the RTOS image under debug includes DWARF /
    ELF symbols (do not strip the `.elf` you attach GDB to).
 
+### Download the latest release
+
+Download the RT-Thread archive from [GitHub Releases](https://github.com/flespark/gdr/releases/latest).
+Use `.tar.gz` on macOS or Linux, and `.zip` on Windows.
+
+```bash
+curl -LO https://github.com/flespark/gdr/releases/latest/download/gdr-rtthread-latest.tar.gz
+tar -xzf gdr-rtthread-latest.tar.gz
+cd gdr-rtthread
+```
+
+```powershell
+Invoke-WebRequest https://github.com/flespark/gdr/releases/latest/download/gdr-rtthread-latest.zip -OutFile gdr-rtthread-latest.zip
+Expand-Archive -Path .\gdr-rtthread-latest.zip -DestinationPath .
+Set-Location .\gdr-rtthread
+```
+
 ### Load and init
 
 ```gdb

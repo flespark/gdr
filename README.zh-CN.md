@@ -45,6 +45,21 @@ GDR 运行在 GDB Python 解释器中，因此主机 GDB 必须启用 Python 支
 2. **调试符号** — 确保被调试的 RTOS 镜像包含 DWARF / ELF 符号
    （不要 strip 你用 GDB 附加的 `.elf`）。
 
+### 下载最新版本
+
+请从 [CNB Releases](https://cnb.cool/flespark-2026/gdr/-/releases) 的最新 Release
+下载 RT-Thread 归档。macOS / Linux 使用 `.tar.gz`，Windows 使用原生支持的 `.zip`。
+
+```bash
+tar -xzf gdr-rtthread-latest.tar.gz
+cd gdr-rtthread
+```
+
+```powershell
+Expand-Archive -Path .\gdr-rtthread-latest.zip -DestinationPath .
+Set-Location .\gdr-rtthread
+```
+
 ### 加载与初始化
 
 ```gdb

@@ -42,3 +42,6 @@ tests/fixtures/**/rtthread.bin
 
 # OS
 .DS_Store
+
+# Convenience
+tmp/

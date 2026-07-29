@@ -13,8 +13,14 @@ repos:
         exclude: ^ci/rt-thread/patches/.*\.patch$
       - id: check-yaml
       - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
       - id: check-added-large-files
         args: ["--maxkb=512"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+        # patch context is byte-sensitive; preserve upstream whitespace exactly.
+        exclude: ^ci/rt-thread/patches/.*\.patch$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.12

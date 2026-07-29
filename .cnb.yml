@@ -1,9 +1,10 @@
 # CNB pipeline for GDR.
 #
-# Three pipelines, each running on push to main and on PR:
+# Four pipelines:
 #  1. lint      — ruff check/format (fast, no QEMU)
 #  2. qemu-test-a9 — Cortex-A9 closed-loop test
 #  3. qemu-test-rv64 — RISC-V RV64 closed-loop test
+#  4. release — source archives and a CNB Release on every pushed tag
 #
 # Both QEMU pipelines use `docker.build` with `ci/Dockerfile`; the resulting
 # image is cached by hash on the CNB artifact registry, so subsequent runs reuse
@@ -138,3 +139,22 @@ main: # branch: main
       stages:
         - name: pytest RV64 matrix (QEMU closed-loop)
           script: bash ci/rt-thread/run-qemu-matrix.sh rv64
+
+# `$` applies to every reference. CNB sets CNB_BRANCH to the pushed tag when
+# `tag_push` fires. CNB_TOKEN is the protected project token available to the
+# build; it is consumed by ci/publish-cnb-release.sh and is never logged.
+$:
+  tag_push:
+    - name: release
+      docker:
+        image: node:22-bookworm
+      stages:
+        - name: install release tools
+          script: |
+            apt-get update
+            apt-get install --yes --no-install-recommends ca-certificates curl git
+            rm -rf /var/lib/apt/lists/*
+        - name: create source archives
+          script: bash ci/create-release-archives.sh "$CNB_BRANCH"
+        - name: publish CNB Release
+          script: bash ci/publish-cnb-release.sh "$CNB_BRANCH"

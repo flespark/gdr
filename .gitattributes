@@ -1,0 +1,13 @@
+# Keep checked-out text stable across platforms and preserve binary assets.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.tar.gz binary
