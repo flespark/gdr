@@ -315,8 +315,8 @@ if gdb is not None:
 
         Usage in GDB::
 
-            p *$gdr_thread("main")
-            p $gdr_thread("worker")->current_priority
+            p $gdr_thread("main")
+            p $gdr_thread("worker").current_priority
         """
 
         def __init__(self):
@@ -364,9 +364,9 @@ if gdb is not None:
 
         Usage in GDB::
 
-            p *$gdr_object("SEMAPHORE", "my_sem")
-            p *$gdr_object(SEMAPHORE, "my_sem")
-            p *$gdr_object(0x02, "my_sem")
+            p $gdr_object("SEMAPHORE", "my_sem")
+            p $gdr_object(SEMAPHORE, "my_sem")
+            p $gdr_object(0x02, "my_sem")
         """
 
         def __init__(self):

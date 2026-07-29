@@ -40,7 +40,7 @@ GDR 运行在 GDB Python 解释器中，因此主机 GDB 必须启用 Python 支
      [xPack Dev Tools](https://github.com/xpack-dev-tools/) 下载预编译工具链
    - 其他平台：从源码构建，使用
      `./configure --target="<target-triple>" --enable-targets=all --with-python`
-   - 另见：[Installing GDB for ARM | Interrupt](https://interrupt.memfault.com/blog/installing-gdb#build-from-source)
+   - 另见：[Installing GDB for ARM | Interrupt](https://interrupt.memfault.com/blog/installing-gdb#summary-of-strategies)
 
 2. **调试符号** — 确保被调试的 RTOS 镜像包含 DWARF / ELF 符号
    （不要 strip 你用 GDB 附加的 `.elf`）。
@@ -50,7 +50,6 @@ GDR 运行在 GDB Python 解释器中，因此主机 GDB 必须启用 Python 支
 ```gdb
 (gdb) source gdr.py
 (gdb) gdr init rtthread 4.0.5
-warning: target RT-Thread version not exported; cannot verify --version
 [gdr] setting up RT-Thread v4.0.5...
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
 [gdr]   layout: 10 structs, 2 list hooks
@@ -60,7 +59,7 @@ warning: target RT-Thread version not exported; cannot verify --version
 (gdb) rtthread threads
 (gdb) rtthread semaphores
 (gdb) rtthread system
-(gdb) p *$gdr_thread("worker1")
+(gdb) p $gdr_thread("worker1")
 ```
 
 ## 命令
@@ -79,9 +78,9 @@ warning: target RT-Thread version not exported; cannot verify --version
 
 | 函数 | 返回值 | 示例 |
 |------|--------|------|
-| `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p *$gdr_thread("worker1")` |
+| `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p $gdr_thread("worker1")` / `p $gdr_thread("worker1").stat` |
 | `$gdr_threads()` | `struct rt_thread *` 数组 | `p $gdr_threads()` / `p *$gdr_threads()[0]` |
-| `$gdr_object(type, name)` | 内核对象 gdb.Value | `p *$gdr_object("SEMAPHORE", "my_sem")` |
+| `$gdr_object(type, name)` | 内核对象 gdb.Value | `p $gdr_object("SEMAPHORE", "my_sem")` |
 
 脚本与自动化中请优先使用带引号的类型名：
 `$gdr_object("SEMAPHORE", "my_sem")`。裸写 `SEMAPHORE` 仅在目标 ELF

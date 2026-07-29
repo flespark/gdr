@@ -152,24 +152,36 @@ if arch is not None:
         )
 
     def test_gdr_threads_returns_pointer_array(self, gdb_session):
-        """``$gdr_threads()`` returns an array that includes worker1."""
+        """``$gdr_threads()`` returns every registered thread pointer."""
         out = gdb_session.run_python(
             """
 import gdb
+from rtthread import adapter
+from rtthread.navigation import iter_threads
 
 threads = gdb.parse_and_eval("$gdr_threads()")
 print(f"is_array={threads.type.strip_typedefs().code == gdb.TYPE_CODE_ARRAY}")
 print(f"range={threads.type.range()}")
 names = []
+actual_addresses = []
 lo, hi = threads.type.range()
 for i in range(lo, hi + 1):
-    names.append(threads[i].dereference()["name"].string())
+    thread_ptr = threads[i]
+    actual_addresses.append(int(thread_ptr))
+    names.append(thread_ptr.dereference()["name"].string())
+expected_addresses = {int(thread.address) for thread in iter_threads(adapter._kl)}
+fixture_names = {"worker1", "worker2", "worker3"}
 print(f"names={names}")
-print(f"has_worker1={'worker1' in names}")
+print(
+    "addresses_match="
+    f"{set(actual_addresses) == expected_addresses and len(actual_addresses) == len(expected_addresses)}"
+)
+print(f"has_fixture_threads={fixture_names.issubset(names)}")
 """
         )
         assert "is_array=True" in out, out
-        assert "has_worker1=True" in out, out
+        assert "addresses_match=True" in out, out
+        assert "has_fixture_threads=True" in out, out
 
     def test_gdr_thread_not_found(self, gdb_session):
         """``$gdr_thread("nonexistent")`` returns 0 (not found)."""

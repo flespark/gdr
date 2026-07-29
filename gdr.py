@@ -6,7 +6,7 @@ Usage in GDB::
     (gdb) source gdr.py
     (gdb) gdr init rtthread 4.0.5
     (gdb) rtthread threads
-    (gdb) p *$gdr_thread("main")
+    (gdb) p $gdr_thread("main")
 
 This entry point loads the requested RTOS adapter package, probes kernel
 configuration by symbol presence, builds the layout, and registers

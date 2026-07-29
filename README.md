@@ -44,7 +44,7 @@ with Python support, and the target firmware must retain debug symbols.
      [xPack Dev Tools](https://github.com/xpack-dev-tools/)
    - Other platforms: build from source with
      `./configure --target="<target-triple>" --enable-targets=all --with-python`
-   - See also: [Installing GDB for ARM | Interrupt](https://interrupt.memfault.com/blog/installing-gdb#build-from-source)
+   - See also: [Installing GDB for ARM | Interrupt](https://interrupt.memfault.com/blog/installing-gdb#summary-of-strategies)
 
 2. **Debug symbols** — ensure the RTOS image under debug includes DWARF /
    ELF symbols (do not strip the `.elf` you attach GDB to).
@@ -54,7 +54,6 @@ with Python support, and the target firmware must retain debug symbols.
 ```gdb
 (gdb) source gdr.py
 (gdb) gdr init rtthread 4.0.5
-warning: target RT-Thread version not exported; cannot verify --version
 [gdr] setting up RT-Thread v4.0.5...
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
 [gdr]   layout: 10 structs, 2 list hooks
@@ -64,7 +63,7 @@ warning: target RT-Thread version not exported; cannot verify --version
 (gdb) rtthread threads
 (gdb) rtthread semaphores
 (gdb) rtthread system
-(gdb) p *$gdr_thread("worker1")
+(gdb) p $gdr_thread("worker1")
 ```
 
 ## Commands
@@ -84,9 +83,9 @@ expressions, not dedicated commands.
 
 | Function | Returns | Example |
 |----------|---------|---------|
-| `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p *$gdr_thread("worker1")` |
+| `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p $gdr_thread("worker1")` / `p $gdr_thread("worker1").stat` |
 | `$gdr_threads()` | array of `struct rt_thread *` | `p $gdr_threads()` / `p *$gdr_threads()[0]` |
-| `$gdr_object(type, name)` | kernel object gdb.Value | `p *$gdr_object("SEMAPHORE", "my_sem")` |
+| `$gdr_object(type, name)` | kernel object gdb.Value | `p $gdr_object("SEMAPHORE", "my_sem")` |
 
 Prefer the quoted type name in scripts and automation:
 `$gdr_object("SEMAPHORE", "my_sem")`. Bare names such as `SEMAPHORE` are

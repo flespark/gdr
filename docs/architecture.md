@@ -90,9 +90,11 @@ watchpoint output without leaking one RTOS's type taxonomy into another.
 
 "Wrapper-first" describes priority, not scope: it does not request another
 Python model around every kernel object. Convenience functions solve target-
-specific navigation and return raw `gdb.Value`; GDB expressions and
-pretty-printers remain responsible for inspection and presentation. Commands
-only aggregate collections that are awkward to express in GDB.
+specific navigation and return raw `gdb.Value` objects or GDB-native
+collections of raw pointers. GDB expressions and pretty-printers remain
+responsible for inspecting and presenting those values. Commands own display
+aggregation -- tables, trees, and derived summaries -- for collections that
+are awkward to express in GDB.
 
 ### Adapter-owned dataclass layouts, not YAML schemas
 
@@ -127,11 +129,13 @@ selects an adapter; modules inside `gdr/` never import or identify one.
 
 ### Commands only aggregate
 
-Per the Asterinas experience: commands should do what GDB expressions
-cannot — iterate collections, tabulate, build trees. Single-object
-field inspection is left to `$gdr_thread(name)` + `p (*.thr).field`.
-This keeps the command set small and avoids commands silently breaking
-when a field is renamed (the function returns the raw `gdb.Value`).
+Per the Asterinas experience: commands should provide the multi-object
+presentation that GDB expressions cannot conveniently produce: tables, trees,
+and derived summaries. Convenience functions may navigate a collection, but
+leave element inspection to native GDB expressions. Single-object field
+inspection is left to `$gdr_thread(name)` + `p $gdr_thread(name).field`. This
+keeps the command set small and avoids commands silently breaking when a field
+is renamed (the function returns the raw `gdb.Value`).
 
 ## Closed-loop verification
 
