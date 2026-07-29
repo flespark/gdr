@@ -44,7 +44,20 @@ def test_legacy_31_profile_uses_pre_null_object_codes_and_flags_field():
     assert layout.structs["struct rt_thread"].fields["stat"].path == ("stat",)
     assert "reserved" not in layout.structs["struct rt_semaphore"].fields
     assert commands._parse_type_name("semaphore", layout) == 1
+    assert commands._parse_type_name("SEMAPHORE", layout) == 1
     assert adapter._type_code(layout, "semaphore") == 1
+
+
+def test_resolve_object_type_code_accepts_display_and_semantic_names():
+    """Type-name lookup is case-insensitive for command and convenience use."""
+    from rtthread.layout import resolve_object_type_code
+
+    layout = build_layouts(RtConfig(using_semaphore=True), (4, 0, 5))
+
+    assert resolve_object_type_code("SEMAPHORE", layout) == 2
+    assert resolve_object_type_code("semaphore", layout) == 2
+    assert resolve_object_type_code("MSGQUEUE", layout) == 6
+    assert resolve_object_type_code("missing", layout) is None
 
 
 def test_modern_31_profile_uses_null_shifted_object_codes():

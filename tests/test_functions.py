@@ -135,6 +135,42 @@ if arch is not None:
             f"expected non-null semaphore, got:\n{out}"
         )
 
+    def test_gdr_object_type_name_string(self, gdb_session):
+        """``$gdr_object("SEMAPHORE", name)`` is the preferred script-safe form."""
+        out = gdb_session.run(
+            f'p $gdr_object("SEMAPHORE", "{_PROFILE.semaphore_name}")'
+        )
+        assert "= 0" not in out or "Semaphore(" in out, (
+            f"expected non-null semaphore via type name, got:\n{out}"
+        )
+
+    def test_gdr_object_type_name_macro(self, gdb_session):
+        """Bare ``SEMAPHORE`` works when GDR registered the type-name macro."""
+        out = gdb_session.run(f'p $gdr_object(SEMAPHORE, "{_PROFILE.semaphore_name}")')
+        assert "= 0" not in out or "Semaphore(" in out, (
+            f"expected non-null semaphore via SEMAPHORE macro, got:\n{out}"
+        )
+
+    def test_gdr_threads_returns_pointer_array(self, gdb_session):
+        """``$gdr_threads()`` returns an array that includes worker1."""
+        out = gdb_session.run_python(
+            """
+import gdb
+
+threads = gdb.parse_and_eval("$gdr_threads()")
+print(f"is_array={threads.type.strip_typedefs().code == gdb.TYPE_CODE_ARRAY}")
+print(f"range={threads.type.range()}")
+names = []
+lo, hi = threads.type.range()
+for i in range(lo, hi + 1):
+    names.append(threads[i].dereference()["name"].string())
+print(f"names={names}")
+print(f"has_worker1={'worker1' in names}")
+"""
+        )
+        assert "is_array=True" in out, out
+        assert "has_worker1=True" in out, out
+
     def test_gdr_thread_not_found(self, gdb_session):
         """``$gdr_thread("nonexistent")`` returns 0 (not found)."""
         out = gdb_session.run('p $gdr_thread("nonexistent")')

@@ -121,6 +121,24 @@ _OBJECT_TYPE_ORDER = (
 )
 
 
+def resolve_object_type_code(type_name: str, layout: KernelLayout) -> int | None:
+    """Resolve a human type name to the active target's numeric object code.
+
+    Accepts semantic names (``semaphore``) and display names (``SEMAPHORE``),
+    case-insensitively, using the version-specific ``layout.object_codes``.
+    """
+    key = type_name.strip().lower()
+    if not key:
+        return None
+    code = layout.object_codes.get(key)
+    if code is not None:
+        return code
+    for type_code, info in layout.object_types.items():
+        if info.name.lower() == key:
+            return type_code
+    return None
+
+
 def _is_legacy_31(version: tuple[int, int, int]) -> bool:
     """Return whether a version predates the 3.1.3 NULL enum entry."""
     return (3, 1, 0) <= version <= (3, 1, 2)

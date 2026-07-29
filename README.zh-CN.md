@@ -80,8 +80,13 @@ warning: target RT-Thread version not exported; cannot verify --version
 | 函数 | 返回值 | 示例 |
 |------|--------|------|
 | `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p *$gdr_thread("worker1")` |
-| `$gdr_threads()` | 第一个线程的 gdb.Value | `p *$gdr_threads()` |
-| `$gdr_object(type_code, name)` | 内核对象 gdb.Value | `p *$gdr_object(0x02, "my_sem")` |
+| `$gdr_threads()` | `struct rt_thread *` 数组 | `p $gdr_threads()` / `p *$gdr_threads()[0]` |
+| `$gdr_object(type, name)` | 内核对象 gdb.Value | `p *$gdr_object("SEMAPHORE", "my_sem")` |
+
+脚本与自动化中请优先使用带引号的类型名：
+`$gdr_object("SEMAPHORE", "my_sem")`。裸写 `SEMAPHORE` 仅在目标 ELF
+尚未定义同名宏时才会注册为 GDB macro；若冲突，GDR 会跳过该 macro 并告警，
+带引号写法始终可用。
 
 ## Pretty-printers
 

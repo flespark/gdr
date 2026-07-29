@@ -85,8 +85,14 @@ expressions, not dedicated commands.
 | Function | Returns | Example |
 |----------|---------|---------|
 | `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p *$gdr_thread("worker1")` |
-| `$gdr_threads()` | first thread gdb.Value | `p *$gdr_threads()` |
-| `$gdr_object(type_code, name)` | kernel object gdb.Value | `p *$gdr_object(0x02, "my_sem")` |
+| `$gdr_threads()` | array of `struct rt_thread *` | `p $gdr_threads()` / `p *$gdr_threads()[0]` |
+| `$gdr_object(type, name)` | kernel object gdb.Value | `p *$gdr_object("SEMAPHORE", "my_sem")` |
+
+Prefer the quoted type name in scripts and automation:
+`$gdr_object("SEMAPHORE", "my_sem")`. Bare names such as `SEMAPHORE` are
+registered as GDB macros only when the target ELF does not already define
+them; on conflict GDR skips the macro and warns, and the quoted form still
+works.
 
 ## Pretty-printers
 

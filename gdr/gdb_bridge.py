@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import os
+import struct
 import traceback as _traceback
 from dataclasses import dataclass
 from io import StringIO
@@ -203,6 +204,59 @@ def read_bytes(addr: int, size: int) -> bytes | None:
         return bytes(inferior.read_memory(addr, size))
     except (gdb.MemoryError, gdb.error):
         return None
+
+
+def make_pointer_array(values: list[gdb.Value]) -> gdb.Value:
+    """Build a host-side ``gdb.Value`` array of pointers to *values*.
+
+    Convenience functions can only return a ``gdb.Value``. Packing target
+    addresses into a typed pointer array lets ``$gdr_threads()`` expose every
+    thread while remaining usable from native GDB expressions
+    (``$gdr_threads()[i]``, ``*$gdr_threads()[i]``).
+
+    Args:
+        values: Struct values or pointers from the inferior.
+
+    Returns:
+        A ``T *[]`` array value, or ``0`` when *values* is empty / unusable.
+    """
+    _ensure_gdb()
+    if not values:
+        return gdb.Value(0)
+
+    arch = get_arch_info()
+    if arch is None or arch.ptrsize not in (4, 8):
+        return gdb.Value(0)
+
+    pointers: list[int] = []
+    elem_type: gdb.Type | None = None
+    for val in values:
+        vtype = val.type.strip_typedefs()
+        try:
+            if vtype.code == gdb.TYPE_CODE_PTR:
+                pointers.append(int(val))
+                if elem_type is None:
+                    elem_type = vtype
+            else:
+                addr = val.address
+                if addr is None:
+                    continue
+                pointers.append(int(addr))
+                if elem_type is None:
+                    elem_type = vtype.pointer()
+        except (TypeError, ValueError, gdb.error):
+            continue
+
+    if not pointers or elem_type is None:
+        return gdb.Value(0)
+
+    # Reason: gdb.Value(buffer, type) builds a host-side value without writing
+    # inferior memory — required for read-only embedded targets.
+    endian = "<" if arch.endian == "little" else ">"
+    fmt = "I" if arch.ptrsize == 4 else "Q"
+    mask = (1 << (arch.ptrsize * 8)) - 1
+    buf = b"".join(struct.pack(f"{endian}{fmt}", ptr & mask) for ptr in pointers)
+    return gdb.Value(buf, elem_type.array(len(pointers) - 1))
 
 
 def print_table(rows: list[list[str]], headers: list[str]) -> None:

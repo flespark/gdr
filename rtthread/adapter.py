@@ -15,6 +15,8 @@ Design follows the Asterinas principle:
 
 from __future__ import annotations
 
+import contextlib
+
 try:
     import gdb
 except ImportError:
@@ -29,7 +31,14 @@ from gdr.abstractions import (
     Thread,
     Timer,
 )
-from gdr.gdb_bridge import read_bytes, read_cstring, read_int
+from gdr.gdb_bridge import (
+    macro_defined,
+    make_pointer_array,
+    read_bytes,
+    read_cstring,
+    read_int,
+    warn,
+)
 from gdr.layout import KernelLayout, read_field
 from rtthread.layout import (
     RT_THREAD_STACK_FILL,
@@ -37,6 +46,7 @@ from rtthread.layout import (
     RT_TIMER_FLAG_PERIODIC,
     RT_TIMER_FLAG_SOFT_TIMER,
     ThreadState,
+    resolve_object_type_code,
 )
 from rtthread.navigation import find_object, find_thread, iter_threads
 
@@ -226,6 +236,34 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # Convenience functions (registered as gdb.Function subclasses)
 # ---------------------------------------------------------------------------
 
+
+def _register_object_type_macros(layout: KernelLayout) -> None:
+    """Define ``SEMAPHORE``/``MUTEX``/… macros for bare type-name arguments.
+
+    Reason: GDB expands user macros in expressions, so
+    ``$gdr_object(SEMAPHORE, "my_sem")`` works when the name is free.
+    Names already defined by the target ELF (``-g3`` macro info) are left
+    alone; scripts should prefer the quoted form
+    ``$gdr_object("SEMAPHORE", "my_sem")``, which never depends on macros.
+    """
+    if gdb is None:
+        return
+    skipped: list[str] = []
+    for semantic, code in layout.object_codes.items():
+        display = semantic.upper()
+        if macro_defined(display):
+            skipped.append(display)
+            continue
+        with contextlib.suppress(gdb.error):
+            gdb.execute(f"macro define {display} {code}", to_string=True)
+    if skipped:
+        warn(
+            "skipping type-name macros already defined by the target: "
+            f"{', '.join(skipped)}; prefer "
+            '$gdr_object("SEMAPHORE", "name")'
+        )
+
+
 # Reason: gdb.Function is only available inside a GDB interpreter.  Guard
 # the class definitions so the module is importable outside GDB for static
 # analysis and unit testing of the converter functions.
@@ -242,6 +280,35 @@ if gdb is not None:
             return val.string()
         except (gdb.error, TypeError):
             return str(val)
+
+    def _is_stringish(val: gdb.Value) -> bool:
+        """True when *val* is a C string literal or ``char*``."""
+        try:
+            vtype = val.type.strip_typedefs()
+            if vtype.code in (gdb.TYPE_CODE_ARRAY, gdb.TYPE_CODE_STRING):
+                return True
+            if vtype.code == gdb.TYPE_CODE_PTR:
+                target = vtype.target().strip_typedefs()
+                # Reason: plain ``char`` may be TYPE_CODE_INT or TYPE_CODE_CHAR.
+                char_codes = {gdb.TYPE_CODE_INT}
+                if hasattr(gdb, "TYPE_CODE_CHAR"):
+                    char_codes.add(gdb.TYPE_CODE_CHAR)
+                return target.code in char_codes and target.sizeof == 1
+        except (gdb.error, TypeError, AttributeError):
+            return False
+        return False
+
+    def _resolve_type_code_arg(type_arg: gdb.Value, layout: KernelLayout) -> int | None:
+        """Resolve ``$gdr_object``'s type argument (name string or numeric code)."""
+        if _is_stringish(type_arg):
+            try:
+                return resolve_object_type_code(_value_to_str(type_arg), layout)
+            except (gdb.error, TypeError, ValueError):
+                return None
+        try:
+            return int(type_arg)
+        except (TypeError, ValueError, gdb.error):
+            return None
 
     class GdrThreadFunction(gdb.Function):
         """Return the rt_thread gdb.Value for the named thread.
@@ -273,33 +340,32 @@ if gdb is not None:
             return result
 
     class GdrThreadsFunction(gdb.Function):
-        """Return the first thread gdb.Value (use `rtthread threads` for full list).
+        """Return an array of ``struct rt_thread *`` for every thread.
 
         Usage in GDB::
 
-            p *$gdr_threads()
+            p $gdr_threads()
+            p *$gdr_threads()[0]
+            p $gdr_threads()[1]->name
         """
 
         def __init__(self):
             super().__init__("gdr_threads")
 
         def invoke(self) -> gdb.Value:
-            """Return the first thread as a gdb.Value."""
+            """Return all threads as a pointer array gdb.Value."""
             if _kl is None:
                 return gdb.Value(0)
             threads = list(iter_threads(_kl))
-            if not threads:
-                return gdb.Value(0)
-            # Reason: GDB convenience functions can only return scalar or
-            # simple values. We return the first thread's address; users
-            # should use the `rtthread threads` command for a full listing.
-            return threads[0]
+            return make_pointer_array(threads)
 
     class GdrObjectFunction(gdb.Function):
-        """Return a kernel object gdb.Value by type code and name.
+        """Return a kernel object gdb.Value by type and name.
 
         Usage in GDB::
 
+            p *$gdr_object("SEMAPHORE", "my_sem")
+            p *$gdr_object(SEMAPHORE, "my_sem")
             p *$gdr_object(0x02, "my_sem")
         """
 
@@ -310,7 +376,8 @@ if gdb is not None:
             """Find and return the object's gdb.Value.
 
             Args:
-                type_code: Object type code (e.g. 0x02 for semaphore).
+                type_code: Type-name string (preferred), object type code, or
+                    a free type-name macro such as ``SEMAPHORE``.
                 name: Object name as a gdb.Value (string).
 
             Returns:
@@ -318,7 +385,9 @@ if gdb is not None:
             """
             if _kl is None:
                 return gdb.Value(0)
-            tc = int(type_code)
+            tc = _resolve_type_code_arg(type_code, _kl)
+            if tc is None:
+                return gdb.Value(0)
             name_str = _value_to_str(name)
             result = find_object(tc, name_str, _kl)
             if result is None:
@@ -348,4 +417,5 @@ def register_adapter(kl: KernelLayout) -> None:
     GdrThreadFunction()
     GdrThreadsFunction()
     GdrObjectFunction()
+    _register_object_type_macros(kl)
     _kl = kl

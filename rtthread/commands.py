@@ -30,7 +30,7 @@ from gdr.gdb_bridge import (
 )
 from gdr.layout import KernelLayout
 from rtthread import adapter
-from rtthread.layout import ThreadState
+from rtthread.layout import ThreadState, resolve_object_type_code
 from rtthread.navigation import (
     get_current_thread,
     get_tick,
@@ -209,11 +209,7 @@ def _cmd_objects(arg: str) -> None:
 
 def _parse_type_name(name: str, layout: KernelLayout) -> int | None:
     """Parse a human-readable type name to its type code."""
-    name_lower = name.lower()
-    for tc, tn in _type_names(layout).items():
-        if tn == name_lower:
-            return tc
-    return None
+    return resolve_object_type_code(name, layout)
 
 
 @gdb_command_guard

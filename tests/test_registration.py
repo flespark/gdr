@@ -39,11 +39,41 @@ def test_unregister_printers_preserves_non_gdr_lookups(monkeypatch):
     assert fake_gdb.pretty_printers == [external_lookup]
 
 
+def test_register_object_type_macros_skips_names_defined_by_target(monkeypatch):
+    """Target ELF macros are preserved; GDR warns and skips those names."""
+    commands: list[str] = []
+    warnings: list[str] = []
+
+    class _FakeGdb:
+        error = RuntimeError
+
+        @staticmethod
+        def execute(command: str, to_string: bool = False) -> str:  # noqa: ARG004
+            commands.append(command)
+            return ""
+
+    layout = KernelLayout(object_codes={"semaphore": 2, "mutex": 3, "thread": 1})
+    monkeypatch.setattr(adapter, "gdb", _FakeGdb())
+    monkeypatch.setattr(
+        adapter, "macro_defined", lambda name: name in {"SEMAPHORE", "THREAD"}
+    )
+    monkeypatch.setattr(adapter, "warn", warnings.append)
+
+    adapter._register_object_type_macros(layout)
+
+    assert commands == ["macro define MUTEX 3"]
+    assert len(warnings) == 1
+    assert "SEMAPHORE" in warnings[0]
+    assert "THREAD" in warnings[0]
+    assert '$gdr_object("SEMAPHORE", "name")' in warnings[0]
+
+
 def test_register_adapter_preserves_the_first_layout(monkeypatch):
     """Repeated adapter registration must not recreate convenience functions."""
     registrations: list[str] = []
     monkeypatch.setattr(adapter, "_kl", None)
     monkeypatch.setattr(adapter, "gdb", object())
+    monkeypatch.setattr(adapter, "_register_object_type_macros", lambda _kl: None)
     for name in ("GdrThreadFunction", "GdrThreadsFunction", "GdrObjectFunction"):
         monkeypatch.setattr(
             adapter,
