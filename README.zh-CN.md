@@ -31,11 +31,14 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 
 ### 前置条件
 
-GDR 运行在 GDB Python 解释器中，因此主机 GDB 必须启用 Python 支持，
-且目标固件需保留调试符号。
+1. **启用 Python 的 GDB** — 检查 GDB 实际将使用的解释器：
 
-1. **启用 Python 的 GDB** — 用 `gdb --configuration` 确认已启用 Python
-   支持。
+   ```bash
+   gdb --nx --quiet --batch -ex 'python import sys; print(sys.version)'
+   ```
+
+   对于启用 Python 的 GDB，要求输出版本不低于 3.10。内置更旧版本 Python 或许能工作但未经完整测试。
+
    - ARM / RISC-V：可从
      [xPack Dev Tools](https://github.com/xpack-dev-tools/) 下载预编译工具链
    - 其他平台：从源码构建，使用
@@ -145,8 +148,8 @@ uv run pytest tests/ -v      # 需要 QEMU + RT-Thread 固件
 ```
 
 CI 运行在 [CNB](https://cnb.cool/)（Cloud Native Build）平台上，流水线定义于
-`.cnb.yml`（含 lint，以及 Cortex-A9 与 RV64 QEMU 矩阵）。若要在本地
-Podman machine 中复现相同的 ARM 与 RV64 QEMU 矩阵：
+`.cnb.yml`（含 lint、GDB 12 最低兼容基线，以及 Cortex-A9 与 RV64 QEMU
+矩阵）。若要在本地 Podman machine 中复现当前的 ARM 与 RV64 QEMU 矩阵：
 
 ```bash
 ci/validate-podman.sh

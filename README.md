@@ -35,11 +35,15 @@ closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 
 ### Prerequisites
 
-GDR runs inside the GDB Python interpreter, so the host GDB must be built
-with Python support, and the target firmware must retain debug symbols.
+1. **Python-enabled GDB** — verify the interpreter GDB will actually use:
 
-1. **Python-enabled GDB** — verify with `gdb --configuration` that Python
-   support is enabled.
+   ```bash
+   gdb --nx --quiet --batch -ex 'python import sys; print(sys.version)'
+   ```
+
+   The reported version should be 3.10 or newer for a supported configuration.
+   GDB with older python version may work but not tested.
+
    - ARM / RISC-V: download a prebuilt toolchain from
      [xPack Dev Tools](https://github.com/xpack-dev-tools/)
    - Other platforms: build from source with
@@ -155,8 +159,9 @@ uv run pytest tests/ -v      # requires QEMU + RT-Thread firmwar
 ```
 
 CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
-defined in `.cnb.yml` (lint plus Cortex-A9 and RV64 QEMU matrices). To
-reproduce the same ARM and RV64 QEMU matrices locally in a Podman machine:
+defined in `.cnb.yml` (lint, the GDB 12 compatibility baseline, and Cortex-A9
+and RV64 QEMU matrices). To reproduce the current ARM and RV64 QEMU matrices
+locally in a Podman machine:
 
 ```bash
 ci/validate-podman.sh

@@ -38,6 +38,10 @@ if [[ -n "${RT_THREAD_REFS:-}" ]]; then
 fi
 
 export GDR_GDB="${GDR_GDB:-gdb-multiarch}"
+# Check the embedded interpreter before spending time fetching or building a
+# fixture. This is deliberately in the shared runner so all GDB/QEMU jobs use
+# the same compatibility gate.
+bash "$SCRIPT_DIR/../check-gdb-python.sh"
 # Reason: keep local container runs from creating a Linux virtualenv in the mounted repo.
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/gdr-venv}"
 SOURCE_REPO="${RT_THREAD_REPO:-https://github.com/RT-Thread/rt-thread.git}"

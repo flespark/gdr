@@ -1,17 +1,24 @@
 # CNB pipeline for GDR.
 #
-# Four pipelines:
+# Seven pipelines:
 #  1. lint      — ruff check/format (fast, no QEMU)
-#  2. qemu-test-a9 — Cortex-A9 closed-loop test
-#  3. qemu-test-rv64 — RISC-V RV64 closed-loop test
-#  4. release — source archives and a CNB Release on every pushed tag
+#  2. publish-qemu-matrix-image — timestamped QEMU matrix image
+#  3. publish-gdb12-compat-image — timestamped GDB 12 compatibility image
+#  4. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
+#  5. qemu-test-a9 — Cortex-A9 closed-loop test
+#  6. qemu-test-rv64 — RISC-V RV64 closed-loop test
+#  7. release — source archives and a CNB Release on every pushed tag
 #
-# Both QEMU pipelines use `docker.build` with `ci/Dockerfile`; the resulting
-# image is cached by hash on the CNB artifact registry, so subsequent runs reuse
-# it. CNB's `pull_request` reads the configured pipeline from the *target*
-# branch's `.cnb.yml` (here: main) and checks out the pre-merged commit — so
-# defining both `push:` and `pull_request:` under `main:` is the canonical way
-# to gate every push and every PR.
+# The QEMU jobs use `docker.build` with their respective CI Dockerfiles; the
+# resulting images are cached by hash on the CNB artifact registry, so later
+# runs reuse them. Main-branch pushes also publish the same Dockerfiles under
+# human-readable artifact names with `YYYYMMDD-HHMMSS` and `latest` tags:
+#   docker.cnb.cool/flespark-2026/gdr/qemu-matrix:<tag>
+#   docker.cnb.cool/flespark-2026/gdr/gdb12-compat:<tag>
+# Pull requests never update those shared tags. CNB's `pull_request` reads the
+# configured pipeline from the *target* branch's `.cnb.yml` (here: main) and
+# checks out the pre-merged commit — so defining both `push:` and
+# `pull_request:` under `main:` is the canonical way to gate every push and PR.
 #
 # Arch: `cnb:arch:amd64` runs both Cortex-A9 and RV64 QEMU targets under TCG.
 # An arm64 host gains nothing for either cross-ISA target, so amd64 is simplest.
@@ -34,6 +41,81 @@ main: # branch: main
         - name: ruff format check
           script: ruff format --check .
 
+    # `docker.build` cache tags are content hashes under `dockerfile-caches`.
+    # Publish stable aliases separately so the two large CI images have clear
+    # ownership and can be inspected or reused without resolving a hash tag.
+    - name: publish-qemu-matrix-image
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      services:
+        - docker
+      ifModify:
+        - ci/Dockerfile
+        - .cnb.yml
+      env:
+        GDR_CI_IMAGE: docker.cnb.cool/flespark-2026/gdr/qemu-matrix
+      stages:
+        - name: build and publish QEMU matrix image
+          script: |
+            IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
+            VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
+            LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
+            echo "Publishing ${VERSIONED_IMAGE}"
+            docker pull "$LATEST_IMAGE" || true
+            docker build --cache-from "$LATEST_IMAGE" --file ci/Dockerfile \
+              --tag "$VERSIONED_IMAGE" --tag "$LATEST_IMAGE" .
+            docker push "$VERSIONED_IMAGE"
+            docker push "$LATEST_IMAGE"
+
+    - name: publish-gdb12-compat-image
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      services:
+        - docker
+      ifModify:
+        - ci/Dockerfile.gdb12
+        - .cnb.yml
+      env:
+        GDR_CI_IMAGE: docker.cnb.cool/flespark-2026/gdr/gdb12-compat
+      stages:
+        - name: build and publish GDB 12 compatibility image
+          script: |
+            IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
+            VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
+            LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
+            echo "Publishing ${VERSIONED_IMAGE}"
+            docker pull "$LATEST_IMAGE" || true
+            docker build --cache-from "$LATEST_IMAGE" --file ci/Dockerfile.gdb12 \
+              --tag "$VERSIONED_IMAGE" --tag "$LATEST_IMAGE" .
+            docker push "$VERSIONED_IMAGE"
+            docker push "$LATEST_IMAGE"
+
+    - name: gdb12-compat-a9
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      docker:
+        build:
+          dockerfile: ci/Dockerfile.gdb12
+          by:
+            - ci/Dockerfile.gdb12
+        volumes:
+          - /tmp/rt-thread-build:copy-on-write
+          - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        GDR_EXPECTED_GDB_MAJOR: "12"
+        GDR_EXPECTED_EMBEDDED_PYTHON: "3.10"
+        RT_THREAD_REFS: v4.0.5
+        RT_THREAD_TARGET: cortex-a9
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        CROSS_TOOL_PREFIX: arm-none-eabi-
+      stages:
+        - name: GDB 12 / Python 3.10 Cortex-A9 smoke test
+          script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+
     - name: qemu-test-a9
       runner:
         tags: cnb:arch:amd64
@@ -47,11 +129,11 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
-      volumes:
-        # Cache the RT-Thread clone + scons build outputs across runs.
-        # `copy-on-write` lets concurrent PR builds share the cache safely.
-        - /tmp/rt-thread-build:copy-on-write
-        - /root/.cache/uv:copy-on-write
+        volumes:
+          # Cache the RT-Thread clone + scons build outputs across runs.
+          # `copy-on-write` lets concurrent PR builds share the cache safely.
+          - /tmp/rt-thread-build:copy-on-write
+          - /root/.cache/uv:copy-on-write
       env:
         # Use gdb-multiarch (the container's GDB with ARM target support).
         GDR_GDB: gdb-multiarch
@@ -71,9 +153,9 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
-      volumes:
-        - /tmp/rt-thread-build:copy-on-write
-        - /root/.cache/uv:copy-on-write
+        volumes:
+          - /tmp/rt-thread-build:copy-on-write
+          - /root/.cache/uv:copy-on-write
       env:
         GDR_GDB: gdb-multiarch
         GDR_QEMU_TARGET: rv64
@@ -97,6 +179,30 @@ main: # branch: main
         - name: ruff format check
           script: ruff format --check .
 
+    - name: gdb12-compat-a9
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 4
+      docker:
+        build:
+          dockerfile: ci/Dockerfile.gdb12
+          by:
+            - ci/Dockerfile.gdb12
+        volumes:
+          - /tmp/rt-thread-build:copy-on-write
+          - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        GDR_EXPECTED_GDB_MAJOR: "12"
+        GDR_EXPECTED_EMBEDDED_PYTHON: "3.10"
+        RT_THREAD_REFS: v4.0.5
+        RT_THREAD_TARGET: cortex-a9
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        CROSS_TOOL_PREFIX: arm-none-eabi-
+      stages:
+        - name: GDB 12 / Python 3.10 Cortex-A9 smoke test
+          script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+
     - name: qemu-test-a9
       runner:
         tags: cnb:arch:amd64
@@ -106,9 +212,9 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
-      volumes:
-        - /tmp/rt-thread-build:copy-on-write
-        - /root/.cache/uv:copy-on-write
+        volumes:
+          - /tmp/rt-thread-build:copy-on-write
+          - /root/.cache/uv:copy-on-write
       env:
         GDR_GDB: gdb-multiarch
         RT_THREAD_TARGET: cortex-a9
@@ -127,9 +233,9 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
-      volumes:
-        - /tmp/rt-thread-build:copy-on-write
-        - /root/.cache/uv:copy-on-write
+        volumes:
+          - /tmp/rt-thread-build:copy-on-write
+          - /root/.cache/uv:copy-on-write
       env:
         GDR_GDB: gdb-multiarch
         GDR_QEMU_TARGET: rv64
