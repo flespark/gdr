@@ -1,10 +1,10 @@
-"""GDR core framework: GDB helper for debugging RTOS-based firmware.
+"""RTOS-agnostic GDB helper core for embedded firmware debugging.
 
-This package is RTOS-agnostic. Concrete platform support lives in sibling
-packages that provide layout descriptions, adapters, and commands on top of
-the abstractions defined here.
+Provides generic GDB bridge, layout, table abstraction, and pretty-printer
+support. RTOS-specific packages supply layouts, navigation, adapters, and
+commands.
 """
 
 __all__ = ["__version__"]
 
-__version__ = "0.1.0"
+__version__ = "2026.1"

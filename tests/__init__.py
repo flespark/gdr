@@ -1,1 +1,1 @@
-"""GDR test suite: QEMU-based closed-loop verification."""
+"""GDR unit tests and QEMU-based closed-loop RT-Thread verification."""

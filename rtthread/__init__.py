@@ -1,5 +1,6 @@
-"""RT-Thread support package for GDR.
+"""RT-Thread 3.1.x and 4.x adapter for GDR.
 
-Provides layout descriptions (dataclass-driven), configuration probing,
-object adapters and aggregate GDB commands for RT-Thread v4.0.x.
+Provides dataclass-driven layouts with configuration probing, raw ``gdb.Value``
+navigation, convenience functions, pretty-printer metadata, and aggregate GDB
+commands.
 """
