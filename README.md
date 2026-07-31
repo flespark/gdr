@@ -53,16 +53,19 @@ closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 2. **Debug symbols** — ensure the RTOS image under debug includes DWARF /
    ELF symbols (do not strip the `.elf` you attach GDB to).
 
-### Download the latest release
+### Download
 
 Download the RT-Thread archive from [GitHub Releases](https://github.com/flespark/gdr/releases/latest).
-Use `.tar.gz` on macOS or Linux, and `.zip` on Windows.
+
+Use `.tar.gz` on macOS or Linux:
 
 ```bash
 curl -LO https://github.com/flespark/gdr/releases/latest/download/gdr-rtthread-latest.tar.gz
 tar -xzf gdr-rtthread-latest.tar.gz
 cd gdr-rtthread
 ```
+
+and `.zip` on Windows:
 
 ```powershell
 Invoke-WebRequest https://github.com/flespark/gdr/releases/latest/download/gdr-rtthread-latest.zip -OutFile gdr-rtthread-latest.zip

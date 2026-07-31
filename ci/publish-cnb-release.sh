@@ -31,11 +31,11 @@ shopt -s nullglob
 archives=(
     "$archive_dir"/gdr-*-${release_tag}.tar.gz
     "$archive_dir"/gdr-*-${release_tag}.zip
-    "$archive_dir"/gdr-*-latest.tar.gz
-    "$archive_dir"/gdr-*-latest.zip
 )
-if [[ ${#archives[@]} -ne 4 ]]; then
-    echo "expected one versioned and one latest archive in each format" >&2
+# Reason: CNB release URLs already scope assets by release tag; upload stable
+# names so README download commands do not need to include a release version.
+if [[ ${#archives[@]} -ne 2 ]]; then
+    echo "expected one versioned archive in each format" >&2
     exit 1
 fi
 
@@ -102,6 +102,14 @@ upload_asset() {
     local asset_path
 
     asset_name="$(basename "$archive_path")"
+    case "$asset_name" in
+        *.tar.gz)
+            asset_name="${asset_name%-$release_tag.tar.gz}.tar.gz"
+            ;;
+        *.zip)
+            asset_name="${asset_name%-$release_tag.zip}.zip"
+            ;;
+    esac
     asset_size="$(wc -c <"$archive_path" | tr -d '[:space:]')"
     upload_json="$("${cnb_cli[@]}" releases post-release-asset-upload-url \
         --repo "$repository" \
@@ -171,4 +179,4 @@ upload_asset() {
 for archive in "${archives[@]}"; do
     upload_asset "$archive"
 done
-printf 'published CNB Release %s with source archives\n' "$release_tag"
+printf 'published CNB Release %s with stable source archives\n' "$release_tag"
