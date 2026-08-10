@@ -113,9 +113,9 @@ Considered an external YAML schema + loader. Rejected because:
   consumes generic layout metadata, so another RTOS can use different
   wrappers and object types without changing `gdr/`.
 
-If a second RTOS (e.g. FreeRTOS) is added later, it gets its own
-`freertos/` adapter package with its own layout and navigation modules; the
-core `gdr/` package stays generic.
+FreeRTOS has a deliberately minimal `freertos/` package from Phase 1.
+Its layout and navigation modules will be added in later phases; the core
+`gdr/` package remains generic throughout.
 
 ### Coupling is explicit and localised
 
@@ -140,27 +140,34 @@ is renamed (the function returns the raw `gdb.Value`).
 ## Closed-loop verification
 
 GDB helpers degrade silently: the script runs but output is wrong. To
-guard against this, QEMU smoke tests boot RT-Thread firmware
-that creates known threads/semaphores/mutexes/timers, and assert:
+guard against this, QEMU smoke tests boot RTOS-specific firmware that creates
+known objects and assert, where an adapter implementation exists:
 
 - pretty-printers registered and fold correctly,
 - convenience functions return non-null `gdb.Value` with expected fields,
 - aggregate commands list the expected objects.
 
+FreeRTOS Phase 1 is intentionally narrower: its B-L475E-IOT01A fixture
+asserts ready-marker delivery, retained DWARF for the kernel structures, the
+32-bit ABI, and repeated commands over the same GDB connection. Its navigation,
+commands, convenience functions, and pretty-printers are deferred to later
+adapter phases.
+
 ### Test infrastructure
 
 Tests use a **persistent GDB session** driven by `pexpect`:
 
-1. A session-scoped `QemuSession` starts the selected QEMU profile with
-   `-gdb tcp::1234` (free-running, no `-S`) and waits for the fixture's
-   `GDR test fixture ready.` serial marker.
+1. A session-scoped `QemuSession` starts the selected QEMU profile with a
+   dynamically allocated `-gdb tcp::<port>` endpoint (free-running, no `-S`)
+   and waits for the profile's ready marker. Every session owns distinct serial
+   and QEMU-output logs, which are included in boot timeout and early-exit
+   diagnostics.
 2. A session-scoped `GdbSession` spawns one GDB process via `pexpect`,
    connects to QEMU, and runs `source gdr.py` **once**. All tests in the
    suite reuse this single GDB connection, keeping convenience
    functions and pretty-printers registered across tests.
-3. Each test calls `gdb_session.run("rtthread threads")` to execute a
-   GDB command and capture output. ANSI escape sequences and PTY
-   artifacts are stripped automatically.
+3. Each test calls `gdb_session.run(...)` to execute a GDB command and capture
+   output. ANSI escape sequences and PTY artifacts are stripped automatically.
 
 This approach (borrowed from `pytest-embedded-jtag`'s `Gdb` class) is
 preferred over spawning a fresh GDB batch process per test: it is faster
@@ -172,13 +179,14 @@ and avoids registration-state loss between tests.
 
 | Target | QEMU startup | GDB symbols | Notes |
 |--------|--------------|-------------|-------|
-| `cortex-a9` | `qemu-system-arm -M vexpress-a9 -kernel rtthread.elf` | `rtthread.elf` | Uses the ARM BSP's SD image. |
+| `cortex-a9` | `qemu-system-arm -M vexpress-a9 -kernel rtthread.elf` | `rtthread.elf` | No SD device is required for the fixture boot path. |
 | `rv64` | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | M-Mode boot, no SD image, `set architecture riscv:rv64`. |
+| `b-l475e-iot01a` | `qemu-system-arm -M b-l475e-iot01a -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS Phase 1, Cortex-M4F SysTick fixture, 32-bit pointers. |
 
-The ELF and firmware image are deliberately separate for RV64: QEMU's M-Mode
-BSP boots the raw BIN, while GDB requires DWARF symbols from the ELF. The
-shared suite also asserts the target pointer width, so the RV64 profile must
-report `sizeof(void *) == 8`.
+The ELF and firmware image may be separate: RV64 deliberately boots a raw BIN
+while GDB requires the DWARF ELF. The shared suite asserts each profile's
+pointer width, including `sizeof(void *) == 8` for RV64 and 4 for the FreeRTOS
+Cortex-M fixture.
 
 `tests/rtthread_profiles.py` separately owns fixture-level expectations that
 vary by target or RT-Thread version: object enum values, the current-thread

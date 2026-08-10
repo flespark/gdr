@@ -22,10 +22,14 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 | RTOS | 版本 | 状态 |
 |------|------|------|
 | RT-Thread | 3.1.x、4.0.x、4.1.x | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起 |
-| FreeRTOS | — | 尚未实现（暂缓） |
+| FreeRTOS | V10.3.1 fixture 基线 | Phase 1 QEMU B-L475E-IOT01A harness 已验证；adapter 导航和命令待实现 |
 
 核心实现已完成：GDB bridge、layout 引擎、pretty-printers、便捷函数、
 聚合命令，以及 Cortex-A9 与 RISC-V RV64 目标上的 QEMU 闭环验证。
+
+FreeRTOS Phase 1 仅建立了独立 adapter namespace 与真实 QEMU/GDB fixture，
+尚不构成可用的 FreeRTOS 调试支持：后续 Phase 才会加入 FreeRTOS command、
+便捷函数、layout 和 pretty-printer。
 
 ## 快速开始
 
@@ -150,6 +154,18 @@ uv run pre-commit install    # 启用 git hooks
 uv run ruff check . && uv run ruff format --check .
 uv run pytest tests/ -v      # 需要 QEMU + RT-Thread 固件
 ```
+
+FreeRTOS Phase 1 smoke test 会构建锁定的 STM32CubeL4 `v1.18.2`
+B-L475E-IOT01A fixture（其中 FreeRTOS submodule 固定为 commit
+`5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`），并在 QEMU 中运行：
+
+```bash
+bash ci/freertos/run-qemu-matrix.sh
+```
+
+该命令需要 `qemu-system-arm`、启用 Python 的 `gdb-multiarch` 与
+`arm-none-eabi-gcc`。fixture 使用 Cortex-M SysTick port 与 QEMU semihosting，
+不依赖该板卡 QEMU 尚未实现的 LPTIM。
 
 CI 运行在 [CNB](https://cnb.cool/)（Cloud Native Build）平台上，流水线定义于
 `.cnb.yml`（含 lint、GDB 12 最低兼容基线，以及 Cortex-A9 与 RV64 QEMU

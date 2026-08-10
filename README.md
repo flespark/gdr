@@ -25,11 +25,16 @@ the [Asterinas GDB helper](#acknowledgements):
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | — | not yet (deferred) |
+| FreeRTOS | V10.3.1 fixture baseline | Phase 1 harness verified on QEMU B-L475E-IOT01A; adapter navigation and commands are pending |
 
 Core implementation complete: GDB bridge, layout engine,
 pretty-printers, convenience functions, aggregate commands, and QEMU
 closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
+
+FreeRTOS Phase 1 establishes its independent adapter namespace and a real
+QEMU/GDB fixture. It is deliberately not advertised as debugger support yet:
+there are no FreeRTOS commands, convenience functions, layouts, or
+pretty-printers until the following implementation phases land.
 
 ## Quick start
 
@@ -158,8 +163,20 @@ reviewed together. See `docs/architecture.md` for the rationale.
 uv sync --group dev          # create .venv and install dev dependencies
 uv run pre-commit install    # activate git hooks
 uv run ruff check . && uv run ruff format --check .
-uv run pytest tests/ -v      # requires QEMU + RT-Thread firmwar
+uv run pytest tests/ -v      # requires QEMU + RT-Thread firmware
 ```
+
+The FreeRTOS Phase 1 smoke test builds the locked STM32CubeL4 `v1.18.2`
+B-L475E-IOT01A fixture (whose FreeRTOS submodule is commit
+`5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`) and runs it under QEMU:
+
+```bash
+bash ci/freertos/run-qemu-matrix.sh
+```
+
+It needs `qemu-system-arm`, a Python-enabled `gdb-multiarch`, and an
+`arm-none-eabi-gcc` toolchain. The fixture uses the Cortex-M SysTick port and
+QEMU semihosting, not the board's unsupported LPTIM.
 
 CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
 defined in `.cnb.yml` (lint, the GDB 12 compatibility baseline, and Cortex-A9
