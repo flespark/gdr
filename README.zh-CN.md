@@ -22,14 +22,15 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 | RTOS | 版本 | 状态 |
 |------|------|------|
 | RT-Thread | 3.1.x、4.0.x、4.1.x | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起 |
-| FreeRTOS | V10.3.1 fixture 基线 | Phase 1 QEMU B-L475E-IOT01A harness 已验证；adapter 导航和命令待实现 |
+| FreeRTOS | V10.3.1 fixture 基线 | Phase 2 任务导航及 `freertos tasks/system` 已在 QEMU B-L475E-IOT01A 验证 |
 
 核心实现已完成：GDB bridge、layout 引擎、pretty-printers、便捷函数、
 聚合命令，以及 Cortex-A9 与 RISC-V RV64 目标上的 QEMU 闭环验证。
 
-FreeRTOS Phase 1 仅建立了独立 adapter namespace 与真实 QEMU/GDB fixture，
-尚不构成可用的 FreeRTOS 调试支持：后续 Phase 才会加入 FreeRTOS command、
-便捷函数、layout 和 pretty-printer。
+FreeRTOS Phase 2 已加入显式版本/配置探测、基于 DWARF 字段路径的任务布局、
+调度器链表导航、`freertos tasks`、`freertos system`、`frt` 别名，以及
+`$gdr_freertos_task`/`$gdr_freertos_tasks` convenience function。队列和定时器
+对象枚举仍属于 Phase 3。
 
 ## 快速开始
 

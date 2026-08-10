@@ -25,16 +25,16 @@ the [Asterinas GDB helper](#acknowledgements):
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | V10.3.1 fixture baseline | Phase 1 harness verified on QEMU B-L475E-IOT01A; adapter navigation and commands are pending |
+| FreeRTOS | V10.3.1 fixture baseline | Phase 2 task navigation and `freertos tasks/system` verified on QEMU B-L475E-IOT01A |
 
 Core implementation complete: GDB bridge, layout engine,
 pretty-printers, convenience functions, aggregate commands, and QEMU
 closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 
-FreeRTOS Phase 1 establishes its independent adapter namespace and a real
-QEMU/GDB fixture. It is deliberately not advertised as debugger support yet:
-there are no FreeRTOS commands, convenience functions, layouts, or
-pretty-printers until the following implementation phases land.
+FreeRTOS Phase 2 adds explicit version/config probing, DWARF-path task layouts,
+scheduler-list navigation, `freertos tasks`, `freertos system`, the `frt` alias,
+and `$gdr_freertos_task`/`$gdr_freertos_tasks` convenience functions. Queue and
+timer object enumeration remains a Phase 3 feature.
 
 ## Quick start
 

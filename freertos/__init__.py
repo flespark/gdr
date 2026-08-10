@@ -1,6 +1,6 @@
-"""FreeRTOS adapter package.
+"""FreeRTOS task-navigation adapter for GDR.
 
-Phase 1 intentionally contains no object navigation or commands.  The package
-exists now so a release can carry the adapter namespace while the QEMU fixture
-and ABI baseline are established.
+Phase 2 covers version/config probing, DWARF layouts, scheduler-list
+navigation, task conversion, and the ``freertos tasks/system`` commands.
+Queue and timer object enumeration remains planned for Phase 3.
 """

@@ -8,10 +8,12 @@ All notable changes to GDR are documented in this file.
 
 - RTOS-neutral profile-driven QEMU/GDB harness with dynamic GDB ports,
   session-local logs, persistent GDB connections, and actionable boot errors.
-- FreeRTOS Phase 1 package skeleton and a B-L475E-IOT01A QEMU fixture built
+- FreeRTOS Phase 1 package and a B-L475E-IOT01A QEMU fixture built
   from STM32CubeL4 v1.18.2 and its pinned FreeRTOS V10.3.1 submodule.
+- FreeRTOS Phase 2 version/config probes, DWARF task layouts, safe scheduler
+  navigation, `freertos tasks/system`, `frt`, and task convenience functions.
 - FreeRTOS fixture smoke tests covering boot readiness, debug type visibility,
-  32-bit ABI, and repeated commands in one GDB session.
+  32-bit ABI, persistent commands, task enumeration, and system counters.
 
 ## [2026.01] - 2026-07-29
 

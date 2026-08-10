@@ -91,7 +91,7 @@ class GdrCommand(_GdbCommandBase):  # type: ignore[misc]
             warn("usage: gdr init <rtos> <version>")
             _print_usage()
             return
-        _setup_rtos(argv[1], argv[2])
+        _setup_rtos(argv[1].lower(), argv[2])
 
 
 def _setup_rtthread(version: str) -> None:
@@ -137,12 +137,36 @@ def _setup_rtos(rtos: str, version: str) -> None:
         rtos: RTOS name (e.g. ``"rtthread"``).
         version: Full RTOS version string.
     """
-    if rtos == "rtthread":
+    if rtos == "rtthread" or rtos == "rt-thread" or rtos == "rtt":
         _setup_rtthread(version)
+    elif rtos == "freertos" or rtos == "frt":
+        _setup_freertos(version)
     else:
         warn(f"unsupported RTOS: {rtos!r}")
-        warn("currently supported: rtthread")
+        warn("currently supported: rtthread, freertos")
         raise SystemExit(1)
+
+
+def _setup_freertos(version: str) -> None:
+    """Initialise FreeRTOS support for the current GDB target."""
+    from freertos.adapter import register_adapter
+    from freertos.commands import register_commands
+    from freertos.config import detect_config
+    from freertos.layout import build_layout
+    from freertos.version import check_version
+
+    target_version = check_version(version)
+    info(f"setting up FreeRTOS v{version}...")
+    cfg = detect_config()
+    info(
+        f"  config: smp={cfg.smp} cores={cfg.number_of_cores} "
+        f"tick={cfg.tick_bits} notifications={cfg.notification_count}"
+    )
+    layout = build_layout(cfg, target_version)
+    info(f"  layout: {len(layout.structs)} structs")
+    register_adapter(layout)
+    register_commands(layout, target_version)
+    info("FreeRTOS support ready. Type 'freertos help' for commands.")
 
 
 def initialize() -> None:
@@ -152,16 +176,13 @@ def initialize() -> None:
         raise SystemExit(1)
 
     GdrCommand()
-    from rtthread.commands import register_command_shell
-
-    register_command_shell()
     args = _parse_args()
     rtos = args.get("rtos", "")
     version = args.get("version", "")
 
     if not rtos and not version:
         info(
-            "GDR loaded. Run `gdr init rtthread 4.0.5` to initialise RT-Thread support."
+            "GDR loaded. Run `gdr init <rtos> <version>` to initialise support."
         )
         return
     if not rtos or not version:

@@ -31,6 +31,7 @@ def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
         firmware_option="-kernel",
         ready_marker=READY_MARKER,
         pointer_width=4,
+        init_command=f"gdr init freertos {FREE_RTOS_VERSION}",
         qemu_args=("-semihosting-config", "enable=on,target=native"),
         extra_env={"GDR_RTOS": "", "GDR_VERSION": ""},
     )

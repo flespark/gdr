@@ -113,9 +113,11 @@ Considered an external YAML schema + loader. Rejected because:
   consumes generic layout metadata, so another RTOS can use different
   wrappers and object types without changing `gdr/`.
 
-FreeRTOS has a deliberately minimal `freertos/` package from Phase 1.
-Its layout and navigation modules will be added in later phases; the core
-`gdr/` package remains generic throughout.
+FreeRTOS has an independent adapter under `freertos/`. Phase 2 owns version and
+configuration probes, DWARF-path layouts, scheduler-list navigation, task
+conversion, and the `freertos tasks/system` commands. Queue and timer object
+enumeration is intentionally deferred to Phase 3; the core `gdr/` package
+remains generic throughout.
 
 ### Coupling is explicit and localised
 
@@ -147,11 +149,10 @@ known objects and assert, where an adapter implementation exists:
 - convenience functions return non-null `gdb.Value` with expected fields,
 - aggregate commands list the expected objects.
 
-FreeRTOS Phase 1 is intentionally narrower: its B-L475E-IOT01A fixture
-asserts ready-marker delivery, retained DWARF for the kernel structures, the
-32-bit ABI, and repeated commands over the same GDB connection. Its navigation,
-commands, convenience functions, and pretty-printers are deferred to later
-adapter phases.
+The FreeRTOS B-L475E-IOT01A fixture asserts ready-marker delivery, retained
+DWARF for kernel structures, the 32-bit ABI, persistent GDB, scheduler-list
+navigation, current-task marking, and system counters. Pretty-printers and
+queue/timer object commands remain later adapter phases.
 
 ### Test infrastructure
 

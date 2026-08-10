@@ -36,3 +36,26 @@ def test_freertos_profile_uses_32_bit_pointers_and_persistent_gdb(
     assert str(qemu_profile.pointer_width) in pointer_output
     assert "2" in expressions
     assert "4" in expressions
+
+
+def test_freertos_tasks_and_system_commands_navigate_fixture(gdb_session):
+    """Phase 2 commands enumerate scheduler lists through DWARF ownership."""
+    tasks = gdb_session.run("freertos tasks", timeout=20)
+    system = gdb_session.run("freertos system", timeout=20)
+
+    for name in ("IDLE", "Tmr Svc", "gdr_ready", "gdr_normal", "gdr_low"):
+        assert name in tasks
+    assert "IDLE *" in tasks
+    assert "Kernel version: 10.3.1" in system
+    assert "Task count: 5" in system
+    assert "Scheduler state: running" in system
+    assert "Ready: 1" in system
+    assert "Delayed: 4" in system
+    assert "Heap: unavailable" in system
+
+    task_value = gdb_session.run('p $gdr_freertos_task("gdr_ready").uxPriority')
+    task_array = gdb_session.run("p $gdr_freertos_tasks()[0]")
+    alias = gdb_session.run("frt system")
+    assert "4" in task_value
+    assert "*" in task_array or "0x" in task_array
+    assert "Kernel version: 10.3.1" in alias
