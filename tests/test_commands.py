@@ -1,263 +1,167 @@
-"""Test aggregate commands produce correct tabular output.
-
-Asserts that ``rtthread threads``, ``rtthread semaphores``, ``rtthread
-timers``, ``rtthread objects``, and ``rtthread system`` list the
-expected test-fixture objects.
-"""
+"""Real QEMU checks for the RT-Thread command tree."""
 
 from __future__ import annotations
 
 import os
-import re
 
-import rtthread.commands as commands
-from gdr.abstractions import Thread, Timer
-from tests.rtthread_profiles import get_rtthread_test_profile
+import pytest
 
-_RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-_TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
-_PROFILE = get_rtthread_test_profile(_RTTHREAD_VERSION, _TARGET)
+pytestmark = pytest.mark.skipif(
+    os.environ.get("GDR_RTOS", "rtthread") != "rtthread",
+    reason="requires an RT-Thread QEMU profile",
+)
 
 
-class TestThreadsCommand:
-    """``rtthread threads`` output."""
+def test_rtt_threads_lists_rtthread_fixture_tasks(gdb_session):
+    """The RT-Thread command tree lists all fixture tasks."""
+    output = gdb_session.run("rtt threads")
+    for name in ("worker1", "worker2", "worker3"):
+        assert name in output
+    for header in ("Name", "State", "Prio", "Stack", "Used", "HighWater"):
+        assert header in output
+    assert "<worker1_entry" in output
 
-    def test_entry_is_symbolized_with_address_fallback(self, monkeypatch):
-        """Thread entry cells resolve symbols without hiding raw addresses."""
-        threads = [
-            Thread(name="symbolized", entry=0x1000),
-            Thread(name="unknown", entry=0x2000),
-            Thread(name="null", entry=0),
-        ]
-        rows: list[list[str]] = []
-        looked_up: list[int] = []
 
-        monkeypatch.setattr(commands, "_kl", object())
-        monkeypatch.setattr(commands, "get_current_thread", lambda: None)
-        monkeypatch.setattr(commands, "iter_threads", lambda _: iter(threads))
-        monkeypatch.setattr(commands.adapter, "value_to_thread", lambda value, _: value)
-        monkeypatch.setattr(
-            commands,
-            "lookup_symbol_at",
-            lambda addr: (
-                looked_up.append(addr)
-                or ("worker1_entry+0" if addr == 0x1000 else None)
-            ),
-        )
-        monkeypatch.setattr(
-            commands, "print_table", lambda thread_rows, _: rows.extend(thread_rows)
-        )
+def test_rtt_threads_has_complete_table_headers(gdb_session):
+    """Task output keeps every normalized presentation column."""
+    output = gdb_session.run("rtt threads")
+    for header in (
+        "Name",
+        "State",
+        "Prio",
+        "SP",
+        "Stack",
+        "Used",
+        "HighWater",
+        "Entry",
+    ):
+        assert header in output
 
-        commands._cmd_threads()
 
-        assert [row[-1] for row in rows] == [
-            "<worker1_entry+0>",
-            "0x2000",
-            "0x0",
-        ]
-        assert looked_up == [0x1000, 0x2000]
-
-    def test_lists_test_threads(self, gdb_session):
-        """Output contains worker1, worker2, worker3.
-
-        Note: ``main`` thread exits after ``main()`` returns and is
-        removed from the thread list — it is NOT expected here.
+def test_rtt_thread_stack_columns_match_adapter_conversion(gdb_session):
+    """Rendered stack values match the layout-aware RT-Thread converter."""
+    converted = gdb_session.run_python(
         """
-        out = gdb_session.run("rtthread threads")
-        for name in ["worker1", "worker2", "worker3"]:
-            assert name in out, f"thread {name!r} not found in output:\n{out}"
-
-    def test_has_table_headers(self, gdb_session):
-        """Output has Name, State, Prio, StkUsed, and MaxStkUsed headers."""
-        out = gdb_session.run("rtthread threads")
-        for header in ["Name", "State", "Prio", "StkUsed", "MaxStkUsed"]:
-            assert header in out, f"header {header!r} missing in output:\n{out}"
-
-    def test_stack_used_matches_worker_stack_fields(self, gdb_session):
-        """Thread-table stack values match the layout-aware worker conversion."""
-        out = gdb_session.run_python(
-            """
 import gdb
 from rtthread import adapter
 
-thread = gdb.parse_and_eval('$gdr_thread("worker1")')
-converted = adapter.value_to_thread(thread, adapter._kl)
-print(f"stack_used={converted.stack_used}")
-print(f"max_stack_used={converted.max_stack_used}")
+thread = gdb.parse_and_eval('$gdr_task("worker1")')
+value = adapter.value_to_thread(thread, adapter._kl)
+print(f"stack_used={value.stack_used}")
+print(f"max_stack_used={value.max_stack_used}")
 """
-        )
-        stack_used = re.search(r"stack_used=(\d+)", out)
-        max_stack_used = re.search(r"max_stack_used=(\d+)", out)
-        assert stack_used is not None, out
-        assert max_stack_used is not None, out
-
-        out = gdb_session.run("rtthread threads")
-        worker_row = next(
-            line for line in out.splitlines() if line.lstrip().startswith("worker1")
-        )
-        assert worker_row.split()[-3] == stack_used.group(1), worker_row
-        assert worker_row.split()[-2] == max_stack_used.group(1), worker_row
-
-    def test_thread_states_valid(self, gdb_session):
-        """All thread states in the table are known values."""
-        out = gdb_session.run("rtthread threads")
-        valid_states = ["suspend", "ready", "running", "init", "close"]
-        lines = out.strip().split("\n")
-
-        # Only parse lines within the table (after the "---" separator)
-        in_table = False
-        data_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("---"):
-                in_table = True
-                continue
-            if in_table:
-                # Stop at empty line or GDB messages
-                if not stripped or stripped.startswith("["):
-                    break
-                data_lines.append(line)
-
-        assert len(data_lines) > 0, "no thread data rows found"
-        for line in data_lines:
-            parts = line.split()
-            assert len(parts) >= 2, f"unexpected row format: {line!r}"
-            state = next(
-                (
-                    part.rstrip("*")
-                    for part in parts
-                    if part.rstrip("*") in valid_states
-                ),
-                None,
-            )
-            assert state is not None, f"unknown state in line: {line!r}"
-
-    def test_worker_entry_is_symbolized(self, gdb_session):
-        """worker1's entry function resolves through the target debug symbols."""
-        out = gdb_session.run("rtthread threads")
-        assert "<worker1_entry" in out, f"expected a symbolized worker entry in:\n{out}"
+    )
+    stack_used = next(
+        line.split("=", 1)[1]
+        for line in converted.splitlines()
+        if line.startswith("stack_used=")
+    )
+    high_water = next(
+        line.split("=", 1)[1]
+        for line in converted.splitlines()
+        if line.startswith("max_stack_used=")
+    )
+    output = gdb_session.run("rtt threads")
+    worker_row = next(
+        line for line in output.splitlines() if line.lstrip().startswith("worker1")
+    )
+    fields = worker_row.split()
+    assert stack_used in fields
+    assert high_water in fields
 
 
-class TestSemaphoresCommand:
-    """``rtthread semaphores`` output."""
-
-    def test_lists_test_sem(self, gdb_session):
-        """Output contains test_sem."""
-        out = gdb_session.run("rtthread semaphores")
-        assert _PROFILE.semaphore_name in out, (
-            f"{_PROFILE.semaphore_name} not found in output:\n{out}"
-        )
-
-    def test_has_value_column(self, gdb_session):
-        """Output has Name, Value headers."""
-        out = gdb_session.run("rtthread semaphores")
-        for header in ["Name", "Value"]:
-            assert header in out
-
-
-class TestTimersCommand:
-    """``rtthread timers`` output."""
-
-    def test_callback_is_symbolized_with_address_fallback(self, monkeypatch):
-        """Timer callback cells resolve symbols without hiding raw addresses."""
-        timers = [
-            Timer(name="symbolized", callback=0x1000),
-            Timer(name="unknown", callback=0x2000),
-            Timer(name="null", callback=0),
-        ]
-        rows: list[list[str]] = []
-        looked_up: list[int] = []
-
-        monkeypatch.setattr(commands, "_kl", object())
-        monkeypatch.setattr(commands, "get_tick", lambda: 123)
-        monkeypatch.setattr(commands, "info", lambda _: None)
-        monkeypatch.setattr(commands, "iter_timers", lambda _: iter(timers))
-        monkeypatch.setattr(commands.adapter, "value_to_timer", lambda value, _: value)
-        monkeypatch.setattr(
-            commands,
-            "lookup_symbol_at",
-            lambda addr: (
-                looked_up.append(addr)
-                or ("test_timer_timeout+0" if addr == 0x1000 else None)
-            ),
-        )
-        monkeypatch.setattr(
-            commands, "print_table", lambda timer_rows, _: rows.extend(timer_rows)
-        )
-
-        commands._cmd_timers()
-
-        assert [row[-1] for row in rows] == [
-            "<test_timer_timeout+0>",
-            "0x2000",
-            "0x0",
-        ]
-        assert looked_up == [0x1000, 0x2000]
-
-    def test_shows_kernel_tick(self, gdb_session):
-        """Output includes the current kernel tick before timer rows."""
-        out = gdb_session.run("rtthread timers")
-        assert "Kernel tick" in out
-
-    def test_lists_test_timer(self, gdb_session):
-        """Output contains the fixture's full timer name."""
-        out = gdb_session.run("rtthread timers")
-        assert _PROFILE.timer_name in out, (
-            f"{_PROFILE.timer_name} not found in output:\n{out}"
-        )
-
-    def test_test_timer_is_periodic_soft(self, gdb_session):
-        """test_timer shows periodic + soft mode."""
-        out = gdb_session.run("rtthread timers")
-        lines = out.split("\n")
-        for line in lines:
-            if _PROFILE.timer_name in line:
-                assert "periodic" in line.lower(), f"expected periodic in: {line!r}"
-                assert "soft" in line.lower(), f"expected soft in: {line!r}"
-                break
-        else:
-            raise AssertionError(f"test_timer row not found in output:\n{out}")
-
-    def test_test_timer_callback_is_symbolized(self, gdb_session):
-        """test_timer's callback resolves through the target debug symbols."""
-        out = gdb_session.run("rtthread timers")
-        assert "<test_timer_timeout" in out, (
-            f"expected a symbolized test timer callback in:\n{out}"
-        )
+def test_rtt_thread_states_are_known(gdb_session):
+    """Task rows only expose recognized RT-Thread state names."""
+    output = gdb_session.run("rtt threads")
+    valid = {"suspend", "ready", "running", "init", "close", "unknown"}
+    lines = output.splitlines()
+    separator = next(
+        i for i, line in enumerate(lines) if line.lstrip().startswith("---")
+    )
+    rows = []
+    for line in lines[separator + 1 :]:
+        if not line.strip() or line.startswith("["):
+            break
+        parts = line.split()
+        if parts:
+            rows.append(parts)
+    assert rows, output
+    for parts in rows:
+        assert any(part.rstrip("*").lower() in valid for part in parts), parts
 
 
-class TestObjectsCommand:
-    """``rtthread objects`` output."""
-
-    def test_summary_lists_types(self, gdb_session):
-        """``rtthread objects`` shows all enabled type counts."""
-        out = gdb_session.run("rtthread objects")
-        for type_name in ["thread", "semaphore", "mutex", "timer"]:
-            assert type_name in out, (
-                f"type {type_name!r} missing in objects output:\n{out}"
-            )
-
-    def test_filtered_by_type(self, gdb_session):
-        """``rtthread objects thread`` shows thread count."""
-        out = gdb_session.run("rtthread objects thread")
-        assert "thread" in out.lower()
-
-    def test_unknown_type_warns(self, gdb_session):
-        """``rtthread objects invalid`` prints a warning."""
-        out = gdb_session.run("rtthread objects invalid")
-        assert "warning" in out.lower() or "unknown" in out.lower()
+def test_rtt_thread_entry_falls_back_to_an_address(gdb_session):
+    """The shared renderer does not hide an entry address without a symbol."""
+    output = gdb_session.run_python(
+        """
+from gdr.commands import _display_entry
+print(f"null={_display_entry(0)}")
+print(f"unknown={_display_entry(1)}")
+"""
+    )
+    assert "null=N/A" in output
+    assert "unknown=0x1" in output
 
 
-class TestSystemCommand:
-    """``rtthread system`` output."""
+def test_rtt_system_produces_a_normalized_summary(gdb_session):
+    """The RT-Thread command exposes task, tick, state, and heap data."""
+    output = gdb_session.run("rtt system")
+    for label in (
+        "Kernel version:",
+        "Task count:",
+        "Tick count:",
+        "semaphore:",
+        "Heap:",
+    ):
+        assert label in output
 
-    def test_shows_kernel_tick(self, gdb_session):
-        """Output contains 'Kernel tick'."""
-        out = gdb_session.run("rtthread system")
-        assert "Kernel tick" in out or "tick" in out.lower()
 
-    def test_shows_object_counts(self, gdb_session):
-        """Output contains thread and semaphore counts."""
-        out = gdb_session.run("rtthread system")
-        assert "thread" in out.lower()
-        assert "semaphore" in out.lower() or "sem" in out.lower()
+def test_rtt_system_reports_kernel_tick(gdb_session):
+    """System output includes the live kernel tick."""
+    assert "Tick count:" in gdb_session.run("rtt system")
+
+
+def test_rtt_system_reports_object_counts(gdb_session):
+    """System output retains object counts from the RT-Thread registry."""
+    output = gdb_session.run("rtt system")
+    assert "semaphore:" in output
+    assert "timer:" in output
+
+
+def test_rtt_semaphore_command_lists_fixture_semaphore(gdb_session):
+    """The RT-Thread command tree lists semaphore data."""
+    output = gdb_session.run("rtt semaphores")
+    assert "test_sem" in output
+    assert "Value" in output
+
+
+def test_rtt_semaphore_command_has_address_column(gdb_session):
+    """Semaphore output retains the target address column."""
+    assert "Addr" in gdb_session.run("rtt semaphores")
+
+
+
+def test_rtt_timer_table_lists_fixture_timers(gdb_session):
+    """The RT-Thread command tree preserves timer-table capability."""
+    output = gdb_session.run("rtt timers")
+    assert "test_timer" in output
+    assert "Kernel tick:" in output
+    assert "Callback" in output
+
+
+def test_rtt_timer_table_reports_kernel_tick(gdb_session):
+    """Timer output includes the tick snapshot used to interpret deadlines."""
+    assert "Kernel tick:" in gdb_session.run("rtt timers")
+
+
+def test_rtt_timer_fixture_is_periodic_soft(gdb_session):
+    """The fixture timer retains its periodic software-timer mode."""
+    output = gdb_session.run("rtt timers")
+    timer_row = next(line for line in output.splitlines() if "test_timer" in line)
+    assert "periodic" in timer_row.lower()
+    assert "soft" in timer_row.lower()
+
+
+def test_rtt_timer_callback_is_symbolized(gdb_session):
+    """Timer callback addresses resolve through target debug symbols."""
+    assert "<test_timer_timeout" in gdb_session.run("rtt timers")

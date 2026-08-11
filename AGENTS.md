@@ -6,7 +6,7 @@ Guidance for AI agents (and humans) working in this repository.
 
 GDR is a GDB helper framework for debugging RTOS-based embedded firmware.
 It runs **inside the GDB Python interpreter** via `source gdr.py` and provides
-pretty-printers, convenience functions and aggregate commands.
+pretty-printers, convenience functions and RTOS-specific command trees.
 
 ## Architecture (layered)
 
@@ -21,9 +21,12 @@ rtthread/              RT-Thread v4.x adapter
   layout.py            dataclass field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
   navigation.py        RT-Thread symbols and object navigation
-  adapter.py           value→dataclass converters + gdb.Function convenience
-                       functions ($gdr_thread, $gdr_threads, $gdr_object)
-  commands.py          5 aggregate commands (threads/semaphores/timers/objects/system)
+  adapter.py           value→dataclass converters + semantic adapter contract
+  commands.py          RT-Thread command tree (`rtt threads`, `rtt timers`, ...)
+freertos/              FreeRTOS adapter
+  commands.py          FreeRTOS command tree (`frt tasks`, `frt system`)
+gdr/                   semantic command/function core ($gdr_task, $gdr_tasks,
+                       $gdr_object; internal renderers, not gdr subcommands)
 tests/                 QEMU closed-loop verification (pexpect-driven)
   conftest.py          Cortex-A9/RV64 QEMU profiles + persistent GDB via pexpect
   test_commands.py     aggregate command output assertions

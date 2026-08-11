@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import rtthread.commands as commands
 import rtthread.version as version
 from gdr.layout import KernelLayout
 from rtthread.layout import RtConfig
@@ -34,7 +33,7 @@ def test_setup_rtthread_skips_an_existing_initialization(monkeypatch):
     entrypoint = _load_entrypoint()
     warnings: list[str] = []
     version_checks: list[str] = []
-    monkeypatch.setattr(commands, "is_initialized", lambda: True)
+    monkeypatch.setattr("gdr.registry.is_initialized", lambda: True)
     monkeypatch.setattr(version, "check_version", version_checks.append)
     monkeypatch.setattr(entrypoint, "warn", warnings.append)
 
@@ -51,7 +50,7 @@ def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch)
     """The layout factory receives the selected RT-Thread compatibility profile."""
     entrypoint = _load_entrypoint()
     received: list[tuple[int, int, int]] = []
-    monkeypatch.setattr(commands, "is_initialized", lambda: False)
+    monkeypatch.setattr("gdr.registry.is_initialized", lambda: False)
     monkeypatch.setattr(version, "check_version", lambda _value: (3, 1, 3))
     monkeypatch.setattr(entrypoint, "info", lambda _message: None)
     monkeypatch.setattr("rtthread.layout.detect_config", RtConfig)
@@ -62,7 +61,8 @@ def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch)
         ),
     )
     monkeypatch.setattr("rtthread.adapter.register_adapter", lambda _layout: None)
-    monkeypatch.setattr("rtthread.commands.register_commands", lambda _layout: None)
+    monkeypatch.setattr("gdr.functions.register_functions", lambda: None)
+    monkeypatch.setattr("rtthread.commands.register_commands", lambda: None)
     monkeypatch.setattr(entrypoint, "register_printers", lambda _layout: None)
 
     entrypoint._setup_rtthread("3.1.3")

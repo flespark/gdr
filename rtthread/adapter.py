@@ -1,9 +1,9 @@
-"""RT-Thread adapter: gdb.Value → dataclass + convenience functions.
+"""RT-Thread adapter: gdb.Value conversion and semantic capability provider.
 
-Converts raw ``gdb.Value`` objects into the lightweight dataclasses from
-``gdr.abstractions`` for tabulation by aggregate commands, and registers
-GDB convenience functions (``$gdr_thread``, ``$gdr_threads``, ``$gdr_object``)
-that return ``gdb.Value`` for user expression drilling.
+Converts raw ``gdb.Value`` objects into lightweight dataclasses for generic
+command tables and implements the RTOS-neutral task/object contract. The core
+registers the public GDB functions, which return raw target values for native
+GDB expression drilling.
 
 Design follows the Asterinas principle:
 - **Navigation belongs to helpers** — convenience functions locate objects
@@ -14,8 +14,6 @@ Design follows the Asterinas principle:
 """
 
 from __future__ import annotations
-
-import contextlib
 
 try:
     import gdb
@@ -31,15 +29,16 @@ from gdr.abstractions import (
     Thread,
     Timer,
 )
+from gdr.adapter_api import ObjectTable, RtosAdapter, SystemSummary, TaskSummary
 from gdr.gdb_bridge import (
-    macro_defined,
-    make_pointer_array,
+    eval_safe,
+    lookup_symbol_at,
     read_bytes,
     read_cstring,
     read_int,
-    warn,
 )
 from gdr.layout import KernelLayout, read_field
+from gdr.registry import register
 from rtthread.layout import (
     RT_THREAD_STACK_FILL,
     RT_TIMER_FLAG_ACTIVATED,
@@ -48,7 +47,17 @@ from rtthread.layout import (
     ThreadState,
     resolve_object_type_code,
 )
-from rtthread.navigation import find_object, find_thread, iter_threads
+from rtthread.navigation import (
+    find_object as find_rt_object,
+)
+from rtthread.navigation import (
+    find_thread,
+    get_current_thread,
+    get_tick,
+    iter_objects,
+    iter_threads,
+    iter_timers,
+)
 
 # Module-level reference set by register_adapter()
 _kl: KernelLayout | None = None
@@ -233,171 +242,145 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 
 
 # ---------------------------------------------------------------------------
-# Convenience functions (registered as gdb.Function subclasses)
-# ---------------------------------------------------------------------------
-
-
-def _register_object_type_macros(layout: KernelLayout) -> None:
-    """Define ``SEMAPHORE``/``MUTEX``/… macros for bare type-name arguments.
-
-    Reason: GDB expands user macros in expressions, so
-    ``$gdr_object(SEMAPHORE, "my_sem")`` works when the name is free.
-    Names already defined by the target ELF (``-g3`` macro info) are left
-    alone; scripts should prefer the quoted form
-    ``$gdr_object("SEMAPHORE", "my_sem")``, which never depends on macros.
-    """
-    if gdb is None:
-        return
-    skipped: list[str] = []
-    for semantic, code in layout.object_codes.items():
-        display = semantic.upper()
-        if macro_defined(display):
-            skipped.append(display)
-            continue
-        with contextlib.suppress(gdb.error):
-            gdb.execute(f"macro define {display} {code}", to_string=True)
-    if skipped:
-        warn(
-            "skipping type-name macros already defined by the target: "
-            f"{', '.join(skipped)}; prefer "
-            '$gdr_object("SEMAPHORE", "name")'
-        )
-
-
-# Reason: gdb.Function is only available inside a GDB interpreter.  Guard
-# the class definitions so the module is importable outside GDB for static
-# analysis and unit testing of the converter functions.
-if gdb is not None:
-
-    def _value_to_str(val: gdb.Value) -> str:
-        """Extract a C string from a gdb.Value.
-
-        GDB string literals have ``type.code == TYPE_CODE_ARRAY`` (char
-        array), not ``TYPE_CODE_STRING``.  The ``string()`` method works
-        on both; ``str()`` on a char array returns the quoted literal.
-        """
-        try:
-            return val.string()
-        except (gdb.error, TypeError):
-            return str(val)
-
-    def _is_stringish(val: gdb.Value) -> bool:
-        """True when *val* is a C string literal or ``char*``."""
-        try:
-            vtype = val.type.strip_typedefs()
-            if vtype.code in (gdb.TYPE_CODE_ARRAY, gdb.TYPE_CODE_STRING):
-                return True
-            if vtype.code == gdb.TYPE_CODE_PTR:
-                target = vtype.target().strip_typedefs()
-                # Reason: plain ``char`` may be TYPE_CODE_INT or TYPE_CODE_CHAR.
-                char_codes = {gdb.TYPE_CODE_INT}
-                if hasattr(gdb, "TYPE_CODE_CHAR"):
-                    char_codes.add(gdb.TYPE_CODE_CHAR)
-                return target.code in char_codes and target.sizeof == 1
-        except (gdb.error, TypeError, AttributeError):
-            return False
-        return False
-
-    def _resolve_type_code_arg(type_arg: gdb.Value, layout: KernelLayout) -> int | None:
-        """Resolve ``$gdr_object``'s type argument (name string or numeric code)."""
-        if _is_stringish(type_arg):
-            try:
-                return resolve_object_type_code(_value_to_str(type_arg), layout)
-            except (gdb.error, TypeError, ValueError):
-                return None
-        try:
-            return int(type_arg)
-        except (TypeError, ValueError, gdb.error):
-            return None
-
-    class GdrThreadFunction(gdb.Function):
-        """Return the rt_thread gdb.Value for the named thread.
-
-        Usage in GDB::
-
-            p $gdr_thread("main")
-            p $gdr_thread("worker").current_priority
-        """
-
-        def __init__(self):
-            super().__init__("gdr_thread")
-
-        def invoke(self, name: gdb.Value) -> gdb.Value:
-            """Find and return the thread gdb.Value.
-
-            Args:
-                name: Thread name as a gdb.Value (string).
-
-            Returns:
-                The thread's gdb.Value, or a void value if not found.
-            """
-            if _kl is None:
-                return gdb.Value(0)
-            name_str = _value_to_str(name)
-            result = find_thread(name_str, _kl)
-            if result is None:
-                return gdb.Value(0)
-            return result
-
-    class GdrThreadsFunction(gdb.Function):
-        """Return an array of ``struct rt_thread *`` for every thread.
-
-        Usage in GDB::
-
-            p $gdr_threads()
-            p *$gdr_threads()[0]
-            p $gdr_threads()[1]->name
-        """
-
-        def __init__(self):
-            super().__init__("gdr_threads")
-
-        def invoke(self) -> gdb.Value:
-            """Return all threads as a pointer array gdb.Value."""
-            if _kl is None:
-                return gdb.Value(0)
-            threads = list(iter_threads(_kl))
-            return make_pointer_array(threads)
-
-    class GdrObjectFunction(gdb.Function):
-        """Return a kernel object gdb.Value by type and name.
-
-        Usage in GDB::
-
-            p $gdr_object("SEMAPHORE", "my_sem")
-            p $gdr_object(SEMAPHORE, "my_sem")
-            p $gdr_object(0x02, "my_sem")
-        """
-
-        def __init__(self):
-            super().__init__("gdr_object")
-
-        def invoke(self, type_code: gdb.Value, name: gdb.Value) -> gdb.Value:
-            """Find and return the object's gdb.Value.
-
-            Args:
-                type_code: Type-name string (preferred), object type code, or
-                    a free type-name macro such as ``SEMAPHORE``.
-                name: Object name as a gdb.Value (string).
-
-            Returns:
-                The object's gdb.Value, or a void value if not found.
-            """
-            if _kl is None:
-                return gdb.Value(0)
-            tc = _resolve_type_code_arg(type_code, _kl)
-            if tc is None:
-                return gdb.Value(0)
-            name_str = _value_to_str(name)
-            result = find_object(tc, name_str, _kl)
-            if result is None:
-                return gdb.Value(0)
-            return result
-
-
-# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
+
+class RtThreadAdapter(RtosAdapter):
+    """Expose RT-Thread navigation through GDR's semantic adapter contract."""
+
+    def __init__(self, layout: KernelLayout) -> None:
+        self.layout = layout
+
+    def find_task(self, name: str) -> gdb.Value | None:
+        return find_thread(name, self.layout)
+
+    def find_object(self, kind: str, name: str) -> gdb.Value | None:
+        if kind.strip().lower() == "task":
+            kind = "thread"
+        type_code = resolve_object_type_code(kind, self.layout)
+        return (
+            find_rt_object(type_code, name, self.layout)
+            if type_code is not None
+            else None
+        )
+
+    def object_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for type_code, info in self.layout.object_types.items():
+            if not info.enabled:
+                continue
+            kind = "task" if info.name == "thread" else info.name
+            counts[kind] = sum(1 for _ in iter_objects(type_code, self.layout))
+        return counts
+
+    def object_table(self, kind: str) -> ObjectTable | None:
+        if kind == "semaphore":
+            if "struct rt_semaphore" not in self.layout.structs:
+                return None
+            rows = []
+            for value in iter_objects(
+                self.layout.object_codes["semaphore"], self.layout
+            ):
+                semaphore = value_to_semaphore(value, self.layout)
+                rows.append(
+                    [semaphore.name, str(semaphore.value), hex(semaphore.address)]
+                )
+            return ObjectTable(["Name", "Value", "Addr"], rows)
+        if kind == "mutex":
+            if "struct rt_mutex" not in self.layout.structs:
+                return None
+            rows = []
+            for value in iter_objects(self.layout.object_codes["mutex"], self.layout):
+                mutex = value_to_mutex(value, self.layout)
+                rows.append(
+                    [
+                        mutex.name,
+                        str(mutex.value),
+                        str(mutex.hold),
+                        mutex.owner or "N/A",
+                        hex(mutex.address),
+                    ]
+                )
+            return ObjectTable(["Name", "Value", "Hold", "Owner", "Addr"], rows)
+        if kind == "timer":
+            rows = []
+            for value in iter_timers(self.layout):
+                timer = value_to_timer(value, self.layout)
+                callback = lookup_symbol_at(timer.callback) if timer.callback else None
+                rows.append(
+                    [
+                        timer.name,
+                        "active" if timer.active else "inactive",
+                        "periodic" if timer.periodic else "one-shot",
+                        "soft" if timer.soft_timer else "hard",
+                        str(timer.init_tick),
+                        str(timer.timeout_tick),
+                        f"<{callback}>" if callback else hex(timer.callback),
+                    ]
+                )
+            tick = get_tick()
+            return ObjectTable(
+                [
+                    "Name",
+                    "State",
+                    "Mode",
+                    "Type",
+                    "InitTick",
+                    "TimeoutTick",
+                    "Callback",
+                ],
+                rows,
+                [f"Kernel tick: {tick if tick is not None else 'N/A'}"],
+            )
+        return None
+
+    def iter_tasks(self):
+        yield from iter_threads(self.layout)
+
+    def summarize_task(self, value: gdb.Value) -> TaskSummary:
+        thread = value_to_thread(value, self.layout)
+        try:
+            state = ThreadState(thread.state).name.title()
+        except ValueError:
+            state = "Unknown"
+        current = get_current_thread()
+        current_address = _get_addr(current) if current is not None else 0
+        return TaskSummary(
+            name=thread.name,
+            address=thread.address,
+            state=state,
+            priority=thread.current_priority,
+            base_priority=thread.init_priority,
+            stack_pointer=thread.sp,
+            stack_size=thread.stack_size or None,
+            stack_used=thread.stack_used,
+            high_water_mark=thread.max_stack_used,
+            entry=thread.entry,
+            current_core=0
+            if current_address == thread.address and thread.address
+            else None,
+        )
+
+    def system_summary(self) -> SystemSummary:
+        values = list(self.iter_tasks())
+        tasks = [self.summarize_task(value) for value in values]
+        states: dict[str, int] = {}
+        for task in tasks:
+            states[task.state] = states.get(task.state, 0) + 1
+        current = next(
+            (task.name for task in tasks if task.current_core is not None), None
+        )
+        used = read_int(eval_safe("(int)rt_memory_info(0)"))
+        return SystemSummary(
+            kernel_version="RT-Thread",
+            current_task=current,
+            task_count=len(tasks),
+            tick_count=get_tick(),
+            scheduler_state="unavailable",
+            state_counts=states,
+            heap_summary=f"{used} bytes used" if used is not None else "unavailable",
+        )
 
 
 def register_adapter(kl: KernelLayout) -> None:
@@ -413,9 +396,5 @@ def register_adapter(kl: KernelLayout) -> None:
     if gdb is None:
         raise RuntimeError("not running inside GDB")
 
-    # Instantiate function classes to register them with GDB
-    GdrThreadFunction()
-    GdrThreadsFunction()
-    GdrObjectFunction()
-    _register_object_type_macros(kl)
     _kl = kl
+    register(RtThreadAdapter(kl))

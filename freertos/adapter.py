@@ -10,9 +10,11 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.layout import FreeRtosLayout
-from freertos.navigation import iter_tasks
-from gdr.gdb_bridge import make_pointer_array, read_cstring, read_int
+from freertos.navigation import current_tasks, iter_tasks, list_count, system_value
+from gdr.adapter_api import ObjectTable, RtosAdapter, SystemSummary, TaskSummary
+from gdr.gdb_bridge import read_cstring, read_int
 from gdr.layout import read_field
+from gdr.registry import register
 
 
 @dataclass
@@ -89,26 +91,92 @@ def find_task(name: str, layout: FreeRtosLayout):
     return None
 
 
-if gdb is not None:
+class FreeRtosAdapter(RtosAdapter):
+    """Expose FreeRTOS scheduler lists through the shared task contract."""
 
-    class GdrFreeRtosTaskFunction(gdb.Function):
-        def __init__(self):
-            super().__init__("gdr_freertos_task")
+    def __init__(self, layout: FreeRtosLayout) -> None:
+        self.layout = layout
 
-        def invoke(self, name):
-            if _layout is None:
-                return gdb.Value(0)
-            value = find_task(read_cstring(name) or "", _layout)
-            return value if value is not None else gdb.Value(0)
+    def find_task(self, name: str) -> gdb.Value | None:
+        return find_task(name, self.layout)
 
-    class GdrFreeRtosTasksFunction(gdb.Function):
-        def __init__(self):
-            super().__init__("gdr_freertos_tasks")
+    def find_object(self, kind: str, name: str) -> gdb.Value | None:  # noqa: ARG002
+        # Queue Registry and active-timer traversal are Phase 3 features.
+        return None
 
-        def invoke(self):
-            if _layout is None:
-                return gdb.Value(0)
-            return make_pointer_array([v for v, _, _ in iter_tasks(_layout)])
+    def object_counts(self) -> dict[str, int]:
+        return {"task": len(list(self.iter_tasks()))}
+
+    def object_table(self, kind: str) -> ObjectTable | None:  # noqa: ARG002
+        return None
+
+    def iter_tasks(self):
+        for value, _state, _core in iter_tasks(self.layout):
+            yield value
+
+    def _locations(self) -> dict[int, tuple[str, int | None]]:
+        return {
+            _address(value): (state, core)
+            for value, state, core in iter_tasks(self.layout)
+        }
+
+    def summarize_task(self, value: gdb.Value) -> TaskSummary:
+        state, core = self._locations().get(_address(value), ("Unknown", None))
+        task = value_to_task(value, state, core, self.layout)
+        return TaskSummary(
+            name=task.name,
+            address=task.address,
+            state=task.state,
+            priority=task.current_priority,
+            base_priority=task.base_priority,
+            stack_pointer=task.top_of_stack,
+            stack_size=task.stack_size,
+            stack_used=task.stack_used,
+            high_water_mark=task.high_water_mark,
+            entry=task.entry,
+            current_core=task.core,
+        )
+
+    def system_summary(self) -> SystemSummary:
+        tasks = [self.summarize_task(value) for value in self.iter_tasks()]
+        current_addresses = {address for _core, address in current_tasks(self.layout)}
+        current = next(
+            (task.name for task in tasks if task.address in current_addresses), None
+        )
+        delayed = [list_count(key, self.layout) for key in ("delayed_1", "delayed_2")]
+        counts = {
+            "Ready": list_count("ready", self.layout),
+            "Delayed": (
+                sum(value for value in delayed if value is not None)
+                if any(value is not None for value in delayed)
+                else None
+            ),
+            "Pending": list_count("pending", self.layout),
+            "Suspended": list_count("suspended", self.layout),
+            "Termination": list_count("termination", self.layout),
+        }
+        scheduler = system_value("xSchedulerRunning")
+        return SystemSummary(
+            kernel_version=(
+                ".".join(map(str, self.layout.version))
+                if self.layout.version is not None
+                else "unknown"
+            ),
+            current_task=current,
+            task_count=system_value("uxCurrentNumberOfTasks") or len(tasks),
+            tick_count=system_value("xTickCount"),
+            scheduler_state=(
+                "running"
+                if scheduler
+                else "not-running"
+                if scheduler is not None
+                else "unavailable"
+            ),
+            state_counts={
+                name: value for name, value in counts.items() if value is not None
+            },
+            heap_summary="unavailable",
+        )
 
 
 def register_adapter(layout: FreeRtosLayout) -> None:
@@ -117,6 +185,5 @@ def register_adapter(layout: FreeRtosLayout) -> None:
         return
     if gdb is None:
         raise RuntimeError("not running inside GDB")
-    GdrFreeRtosTaskFunction()
-    GdrFreeRtosTasksFunction()
     _layout = layout
+    register(FreeRtosAdapter(layout))

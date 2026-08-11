@@ -35,6 +35,8 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). It interprets adapter-supplied paths but contains no target type names, symbols, or list conventions. |
 | `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. |
 | `abstractions.py` | Neutral table-output dataclasses (`Thread`, `Semaphore`, `Mutex`, `Timer`, and related objects). They are not used to replace raw `gdb.Value` navigation results. |
+| `adapter_api.py` / `registry.py` | The RTOS-neutral semantic contract and the single active adapter selected by `gdr init`. |
+| `commands.py` / `functions.py` | Shared internal renderers used by RTOS command trees and raw-value convenience functions (`$gdr_task`, `$gdr_tasks`, `$gdr_object`). `gdr` itself only exposes bootstrap commands. |
 
 ### `rtthread/` — adapter
 
@@ -42,8 +44,8 @@ duplicating what `rust-gdb` / `gdb` already display well.
 |--------|---------------|
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** Defines `RtConfig`, `detect_config()` (symbol-presence probing), and `build_layouts(config) -> KernelLayout`. Handles config-conditional fields (SMP, heap manager, IPC toggles) via factory branches, not version-branched files. |
 | `navigation.py` | RT-Thread object navigation: registry/current-thread/tick entry symbols, type codes, and timer traversal. Returns raw `gdb.Value` objects using the layouts supplied by `layout.py`. |
-| `adapter.py` | Value→dataclass converters (`value_to_thread`, `value_to_semaphore`, …) and `gdb.Function` subclasses (`$gdr_thread`, `$gdr_threads`, `$gdr_object`). The `_value_to_str()` helper handles GDB string literals whose `type.code` is `TYPE_CODE_ARRAY`, not `TYPE_CODE_STRING`. |
-| `commands.py` | The 5 aggregate commands. Argument parsing + table output only; no struct knowledge. |
+| `adapter.py` | Value→dataclass converters and an implementation of the RTOS-neutral task/object contract. It owns RT-Thread object tables and returns raw target values to the core functions. |
+| `commands.py` | The `rtthread` / `rtt` command tree for `threads`, `semaphores`, `mutexes`, `timers`, `messagequeues`, `mailboxs`, and `system`, including short aliases. There is no `objects` subcommand. |
 
 ## Key decisions
 
@@ -115,9 +117,10 @@ Considered an external YAML schema + loader. Rejected because:
 
 FreeRTOS has an independent adapter under `freertos/`. Phase 2 owns version and
 configuration probes, DWARF-path layouts, scheduler-list navigation, task
-conversion, and the `freertos tasks/system` commands. Queue and timer object
+conversion, and the `freertos tasks/system` command tree. Queue and timer
 enumeration is intentionally deferred to Phase 3; the core `gdr/` package
-remains generic throughout.
+remains generic throughout. As with RT-Thread, the adapter command tree owns
+kernel data presentation; `gdr` only bootstraps the adapter.
 
 ### Coupling is explicit and localised
 
@@ -135,7 +138,7 @@ Per the Asterinas experience: commands should provide the multi-object
 presentation that GDB expressions cannot conveniently produce: tables, trees,
 and derived summaries. Convenience functions may navigate a collection, but
 leave element inspection to native GDB expressions. Single-object field
-inspection is left to `$gdr_thread(name)` + `p $gdr_thread(name).field`. This
+inspection is left to `$gdr_task(name)` + `p $gdr_task(name).field`. This
 keeps the command set small and avoids commands silently breaking when a field
 is renamed (the function returns the raw `gdb.Value`).
 

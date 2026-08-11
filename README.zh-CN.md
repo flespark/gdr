@@ -7,12 +7,12 @@
 GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 [GEF](#致谢) 与 [Asterinas GDB helper](#致谢)：
 
-1. **聚合命令** — `rtthread threads`、`rtthread semaphores` 等只处理
-   GDB 表达式不易完成的工作：遍历集合并制表输出。
+1. **RTOS 命令** — 每个 adapter 自己提供命令树（例如
+   `rtt threads`、`rtt timers`）和对应的表格输出。
 2. **Pretty-printers** — 将复杂的内核对象（`rt_mutex`、`rt_semaphore`、
    `rt_thread`）显示为一行摘要，使 `p`、`bt full`、`info locals` 更易读。
-3. **便捷函数** — `$gdr_thread("main")`、`$gdr_threads()`、
-   `$gdr_object(type, name)` 返回 `gdb.Value`，便于继续用原生 GDB
+3. **便捷函数** — `$gdr_task("main")`、`$gdr_tasks()`、
+   `$gdr_object(kind, name)` 返回 `gdb.Value`，便于继续用原生 GDB
    表达式做字段级检查。
 
 ## 状态
@@ -25,12 +25,12 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 | FreeRTOS | V10.3.1 fixture 基线 | Phase 2 任务导航及 `freertos tasks/system` 已在 QEMU B-L475E-IOT01A 验证 |
 
 核心实现已完成：GDB bridge、layout 引擎、pretty-printers、便捷函数、
-聚合命令，以及 Cortex-A9 与 RISC-V RV64 目标上的 QEMU 闭环验证。
+RTOS 命令树，以及 Cortex-A9 与 RISC-V RV64 目标上的 QEMU 闭环验证。
 
 FreeRTOS Phase 2 已加入显式版本/配置探测、基于 DWARF 字段路径的任务布局、
-调度器链表导航、`freertos tasks`、`freertos system`、`frt` 别名，以及
-`$gdr_freertos_task`/`$gdr_freertos_tasks` convenience function。队列和定时器
-对象枚举仍属于 Phase 3。
+调度器链表导航，以及 `freertos tasks`、`freertos system` 命令。队列和
+定时器对象枚举仍属于 Phase 3。`gdr` 命令有意只保留 `gdr init` 和
+`gdr help`；原始值便捷函数仍保持 RTOS 无关。
 
 ## 快速开始
 
@@ -81,23 +81,23 @@ Set-Location .\gdr-rtthread
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
 [gdr]   layout: 10 structs, 2 list hooks
 [gdr] rtthread commands registered (alias: rtt)
-[gdr] RT-Thread support ready. Type 'rtthread help' for commands.
+[gdr] RT-Thread support ready. Type 'rtt help' for commands.
 
-(gdb) rtthread threads
-(gdb) rtthread semaphores
-(gdb) rtthread system
-(gdb) p $gdr_thread("worker1")
+(gdb) rtt threads
+(gdb) rtt timers
+(gdb) rtt system
+(gdb) p $gdr_task("worker1")
 ```
 
 ## 命令
 
 | 命令 | 说明 |
 |------|------|
-| `rtthread threads` | 列出所有线程（name/state/priority/sp/stack_size/stack_used/max_stack_used/entry） |
-| `rtthread semaphores` | 列出信号量（name/value/addr） |
-| `rtthread timers` | 列出定时器（name/state/mode/type/ticks/callback） |
-| `rtthread objects [type]` | 列出内核对象计数，可按类型过滤 |
-| `rtthread system` | 系统摘要（tick、当前线程、对象计数、堆） |
+| `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
+| `gdr help` | 显示 GDR 启动用法 |
+| `rtthread ...` / `rtt ...` | RT-Thread 命令树：`threads`、`semaphores`、`mutexes`、`timers`、`messagequeues`、`mailboxs`、`system`；短别名包括 `tasks`、`sems`、`mtxs`、`msgs`、`mboxs` |
+| `freertos tasks` | 列出 FreeRTOS 任务 |
+| `freertos system` | 输出 FreeRTOS 系统摘要 |
 
 单个对象的检查交给便捷函数 + GDB 表达式，不提供专用命令。
 
@@ -105,14 +105,13 @@ Set-Location .\gdr-rtthread
 
 | 函数 | 返回值 | 示例 |
 |------|--------|------|
-| `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p $gdr_thread("worker1")` / `p $gdr_thread("worker1").stat` |
-| `$gdr_threads()` | `struct rt_thread *` 数组 | `p $gdr_threads()` / `p *$gdr_threads()[0]` |
-| `$gdr_object(type, name)` | 内核对象 gdb.Value | `p $gdr_object("SEMAPHORE", "my_sem")` |
+| `$gdr_task(name)` | 目标原生任务 `gdb.Value` | `p $gdr_task("worker1")` / `p $gdr_task("worker1").stat` |
+| `$gdr_tasks()` | 目标原生任务指针数组 | `p $gdr_tasks()` / `p *$gdr_tasks()[0]` |
+| `$gdr_object(kind, name)` | 目标原生对象 `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |
 
-脚本与自动化中请优先使用带引号的类型名：
-`$gdr_object("SEMAPHORE", "my_sem")`。裸写 `SEMAPHORE` 仅在目标 ELF
-尚未定义同名宏时才会注册为 GDB macro；若冲突，GDR 会跳过该 macro 并告警，
-带引号写法始终可用。
+脚本与自动化请使用小写语义对象种类，例如
+`$gdr_object("semaphore", "my_sem")`。返回 null 表示对象不存在，或当前
+adapter 不能可靠枚举该种类。
 
 ## Pretty-printers
 

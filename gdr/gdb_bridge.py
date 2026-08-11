@@ -210,9 +210,9 @@ def make_pointer_array(values: list[gdb.Value]) -> gdb.Value:
     """Build a host-side ``gdb.Value`` array of pointers to *values*.
 
     Convenience functions can only return a ``gdb.Value``. Packing target
-    addresses into a typed pointer array lets ``$gdr_threads()`` expose every
+    addresses into a typed pointer array lets ``$gdr_tasks()`` expose every
     thread while remaining usable from native GDB expressions
-    (``$gdr_threads()[i]``, ``*$gdr_threads()[i]``).
+    (``$gdr_tasks()[i]``, ``*$gdr_tasks()[i]``).
 
     Args:
         values: Struct values or pointers from the inferior.

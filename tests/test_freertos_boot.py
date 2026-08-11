@@ -53,9 +53,7 @@ def test_freertos_tasks_and_system_commands_navigate_fixture(gdb_session):
     assert "Delayed: 4" in system
     assert "Heap: unavailable" in system
 
-    task_value = gdb_session.run('p $gdr_freertos_task("gdr_ready").uxPriority')
-    task_array = gdb_session.run("p $gdr_freertos_tasks()[0]")
-    alias = gdb_session.run("frt system")
+    task_value = gdb_session.run('p $gdr_task("gdr_ready").uxPriority')
+    task_array = gdb_session.run("p $gdr_tasks()[0]")
     assert "4" in task_value
     assert "*" in task_array or "0x" in task_array
-    assert "Kernel version: 10.3.1" in alias

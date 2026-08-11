@@ -10,8 +10,13 @@ All notable changes to GDR are documented in this file.
   session-local logs, persistent GDB connections, and actionable boot errors.
 - FreeRTOS Phase 1 package and a B-L475E-IOT01A QEMU fixture built
   from STM32CubeL4 v1.18.2 and its pinned FreeRTOS V10.3.1 submodule.
+- RTOS-neutral semantic adapter API with raw-value `$gdr_task`, `$gdr_tasks`,
+  and `$gdr_object(kind, name)` convenience functions. The `gdr` command is
+  limited to `init` and `help`.
 - FreeRTOS Phase 2 version/config probes, DWARF task layouts, safe scheduler
-  navigation, `freertos tasks/system`, `frt`, and task convenience functions.
+  navigation, and the RTOS-specific `freertos tasks/system` commands.
+- RT-Thread `rtthread` / `rtt` command tree for task, system, semaphore, mutex,
+  and timer output. The redundant `rtt objects` command was removed.
 - FreeRTOS fixture smoke tests covering boot readiness, debug type visibility,
   32-bit ABI, persistent commands, task enumeration, and system counters.
 

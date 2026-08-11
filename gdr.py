@@ -5,13 +5,13 @@ Usage in GDB::
 
     (gdb) source gdr.py
     (gdb) gdr init rtthread 4.0.5
-    (gdb) rtthread threads
-    (gdb) p $gdr_thread("main")
+    (gdb) rtt threads
+    (gdb) p $gdr_task("main")
 
 This entry point loads the requested RTOS adapter package, probes kernel
 configuration by symbol presence, builds the layout, and registers
-pretty-printers, convenience functions and aggregate commands.  No RTOS
-auto-detection is performed.
+pretty-printers, convenience functions and the selected RTOS command tree.
+No RTOS auto-detection is performed.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ GDR — GDB helper for RTOS debugging
 Usage:
     source gdr.py
     gdr init <rtos> <version>
+    gdr help
 
 Automation:
     GDR_RTOS=<name> GDR_VERSION=<ver> gdb ... -ex 'source gdr.py'
@@ -66,6 +67,7 @@ Automation:
 Examples:
     source gdr.py
     gdr init rtthread 4.0.5
+    rtt threads
 """
     )
 
@@ -100,8 +102,10 @@ def _setup_rtthread(version: str) -> None:
     Args:
         version: Full RT-Thread version string (e.g. ``"4.0.5"``).
     """
+    from gdr.functions import register_functions
+    from gdr.registry import is_initialized
     from rtthread.adapter import register_adapter
-    from rtthread.commands import is_initialized, register_commands
+    from rtthread.commands import register_commands
     from rtthread.layout import build_layouts, detect_config
     from rtthread.version import check_version
 
@@ -125,9 +129,10 @@ def _setup_rtthread(version: str) -> None:
 
     register_printers(kl)
     register_adapter(kl)
-    register_commands(kl)
+    register_functions()
+    register_commands()
 
-    info("RT-Thread support ready. Type 'rtthread help' for commands.")
+    info("RT-Thread support ready. Type 'rtt help' for commands.")
 
 
 def _setup_rtos(rtos: str, version: str) -> None:
@@ -154,6 +159,15 @@ def _setup_freertos(version: str) -> None:
     from freertos.config import detect_config
     from freertos.layout import build_layout
     from freertos.version import check_version
+    from gdr.functions import register_functions
+    from gdr.registry import is_initialized
+
+    if is_initialized():
+        warn(
+            "an RTOS adapter is already initialized; restart GDB before "
+            "selecting a different target or version"
+        )
+        return
 
     target_version = check_version(version)
     info(f"setting up FreeRTOS v{version}...")
@@ -165,7 +179,8 @@ def _setup_freertos(version: str) -> None:
     layout = build_layout(cfg, target_version)
     info(f"  layout: {len(layout.structs)} structs")
     register_adapter(layout)
-    register_commands(layout, target_version)
+    register_functions()
+    register_commands()
     info("FreeRTOS support ready. Type 'freertos help' for commands.")
 
 
@@ -181,9 +196,7 @@ def initialize() -> None:
     version = args.get("version", "")
 
     if not rtos and not version:
-        info(
-            "GDR loaded. Run `gdr init <rtos> <version>` to initialise support."
-        )
+        info("GDR loaded. Run `gdr init <rtos> <version>` to initialise support.")
         return
     if not rtos or not version:
         warn("GDR_RTOS and GDR_VERSION are both required for automatic initialisation")

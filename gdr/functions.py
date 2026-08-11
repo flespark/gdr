@@ -1,0 +1,80 @@
+"""Stable RTOS-neutral GDB convenience functions."""
+
+from __future__ import annotations
+
+try:
+    import gdb
+except ImportError:
+    gdb = None  # type: ignore[assignment]
+
+from gdr.gdb_bridge import make_pointer_array, read_cstring
+from gdr.registry import active
+
+_registered = False
+
+
+if gdb is not None:
+
+    class GdrTaskFunction(gdb.Function):
+        """Return a target-native task value by name.
+
+        Usage: ``p $gdr_task("worker")``.
+        """
+
+        def __init__(self) -> None:
+            super().__init__("gdr_task")
+
+        def invoke(self, name):
+            adapter = active()
+            if adapter is None:
+                return gdb.Value(0)
+            return adapter.find_task(read_cstring(name) or "") or gdb.Value(0)
+
+    class GdrTasksFunction(gdb.Function):
+        """Return a target-native pointer array for all task values.
+
+        Usage: ``p $gdr_tasks()[0]``.
+        """
+
+        def __init__(self) -> None:
+            super().__init__("gdr_tasks")
+
+        def invoke(self):
+            adapter = active()
+            return (
+                make_pointer_array(list(adapter.iter_tasks()))
+                if adapter
+                else gdb.Value(0)
+            )
+
+    class GdrObjectFunction(gdb.Function):
+        """Return a target-native object by semantic kind and name.
+
+        Usage: ``p $gdr_object("semaphore", "work_sem")``. An adapter
+        returns zero when that kind is not reliably enumerable on its RTOS.
+        """
+
+        def __init__(self) -> None:
+            super().__init__("gdr_object")
+
+        def invoke(self, kind, name):
+            adapter = active()
+            if adapter is None:
+                return gdb.Value(0)
+            result = adapter.find_object(
+                read_cstring(kind) or "", read_cstring(name) or ""
+            )
+            return result if result is not None else gdb.Value(0)
+
+
+def register_functions() -> None:
+    """Register generic function names once after a target adapter is selected."""
+    global _registered
+    if _registered:
+        return
+    if gdb is None:
+        raise RuntimeError("not running inside GDB")
+    GdrTaskFunction()
+    GdrTasksFunction()
+    GdrObjectFunction()
+    _registered = True

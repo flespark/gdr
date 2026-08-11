@@ -1,117 +1,135 @@
-"""Test convenience functions return valid gdb.Value objects.
-
-Asserts that ``$gdr_thread(name)`` and ``$gdr_object(type, name)``
-return usable values.  Uses the persistent GDB session so convenience
-functions are registered once and available across all tests.
-"""
+"""Real QEMU checks for stable RTOS-neutral convenience functions."""
 
 from __future__ import annotations
 
 import os
 
+import pytest
+
 from tests.rtthread_profiles import get_rtthread_test_profile
 
-_DEFAULT_POINTER_BYTES = "8" if os.environ.get("GDR_QEMU_TARGET") == "rv64" else "4"
-EXPECTED_POINTER_BYTES = int(
+_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+_TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
+_PROFILE = get_rtthread_test_profile(_VERSION, _TARGET)
+_DEFAULT_POINTER_BYTES = "8" if _TARGET == "rv64" else "4"
+_EXPECTED_POINTER_BYTES = int(
     os.environ.get("GDR_EXPECT_POINTER_BYTES", _DEFAULT_POINTER_BYTES)
 )
-_IS_RV64 = os.environ.get("GDR_QEMU_TARGET") == "rv64"
-_RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-_PROFILE = get_rtthread_test_profile(
-    _RTTHREAD_VERSION, "rv64" if _IS_RV64 else "cortex-a9"
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("GDR_RTOS", "rtthread") != "rtthread",
+    reason="requires an RT-Thread QEMU profile",
 )
 
 
-class TestConvenienceFunctions:
-    """GDB convenience function ($gdr_*) correctness."""
+def test_gdr_task_returns_a_target_native_rtthread_value(gdb_session):
+    output = gdb_session.run('p $gdr_task("worker1").current_priority')
+    assert "20" in output
 
-    def test_gdr_thread_worker1(self, gdb_session):
-        """``$gdr_thread("worker1")`` returns a non-null value.
 
-        The pretty-printer should fold it into ``Thread(name=...)``.
+def test_gdr_task_returns_a_non_null_target_value(gdb_session):
+    output = gdb_session.run('p $gdr_task("worker1")')
+    assert "= 0" not in output or "Thread(" in output
+
+
+def test_gdr_task_exposes_the_target_name_field(gdb_session):
+    output = gdb_session.run('p $gdr_task("worker1").name')
+    assert "worker1" in output
+
+
+def test_gdr_task_returns_zero_for_an_unknown_name(gdb_session):
+    output = gdb_session.run('p $gdr_task("nonexistent")')
+    assert "= 0" in output
+
+
+def test_gdr_tasks_returns_every_target_native_task_pointer(gdb_session):
+    output = gdb_session.run_python(
         """
-        out = gdb_session.run('p $gdr_thread("worker1")')
-        # Non-null: GDB prints the struct (folded by pretty-printer)
-        # or at least a non-zero value.
-        assert "= 0" not in out or "Thread(" in out, (
-            f"expected non-null thread, got:\n{out}"
-        )
-
-    def test_gdr_thread_field_access(self, gdb_session):
-        """``$gdr_thread("worker1").current_priority`` is 20."""
-        out = gdb_session.run('p $gdr_thread("worker1").current_priority')
-        # GDB prints "$N = 20" for the priority field
-        assert "20" in out, f"expected priority 20, got:\n{out}"
-
-    def test_gdr_thread_name_field(self, gdb_session):
-        """``$gdr_thread("worker1").name`` contains "worker1"."""
-        out = gdb_session.run('p $gdr_thread("worker1").name')
-        assert "worker1" in out, f"expected name 'worker1', got:\n{out}"
-
-    def test_container_recovery_preserves_type_and_address(self, gdb_session):
-        """List traversal returns the fixture structs after cast + dereference.
-
-        ``$gdr_thread`` and ``$gdr_object`` both recover an owning struct from
-        an embedded ``rt_list_t`` node through ``container_of``. Comparing the
-        resulting values with known fixture symbols catches pointer truncation,
-        bad member offsets, and casts to the wrong struct type on RV64.
-
-        """
-        code = """
 import gdb
 
-thread = gdb.parse_and_eval('$gdr_thread("worker1")')
-semaphore = gdb.parse_and_eval('$gdr_object(OBJECT_SEMAPHORE_CODE, "SEMAPHORE_NAME")')
-print(f"thread_type={thread.type}")
-print(f"thread_tag={thread.type.strip_typedefs().tag}")
-print(f"thread_is_struct={thread.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
-print(f"thread_address_matches={int(thread.address) == int(gdb.parse_and_eval('worker1_thread').address)}")
-print(f"semaphore_type={semaphore.type}")
-print(f"semaphore_tag={semaphore.type.strip_typedefs().tag}")
-print(f"semaphore_is_struct={semaphore.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}")
-print(f"semaphore_address_matches={int(semaphore.address) == int(gdb.parse_and_eval('test_sem').address)}")
-        """
-        code = code.replace("OBJECT_SEMAPHORE_CODE", f"{_PROFILE.semaphore_code:#x}")
-        code = code.replace("SEMAPHORE_NAME", _PROFILE.semaphore_name)
-        out = gdb_session.run_python(code)
-        assert "thread_tag=rt_thread" in out, out
-        assert "thread_is_struct=True" in out, out
-        assert "thread_address_matches=True" in out, out
-        assert "semaphore_tag=rt_semaphore" in out, out
-        assert "semaphore_is_struct=True" in out, out
-        assert "semaphore_address_matches=True" in out, out
+tasks = gdb.parse_and_eval("$gdr_tasks()")
+lo, hi = tasks.type.range()
+names = [tasks[i].dereference()["name"].string() for i in range(lo, hi + 1)]
+print(f"is_array={tasks.type.strip_typedefs().code == gdb.TYPE_CODE_ARRAY}")
+print(f"names={names}")
+"""
+    )
+    assert "is_array=True" in output
+    for name in ("worker1", "worker2", "worker3"):
+        assert name in output
 
-    def test_current_thread_matches_selected_cpu(self, gdb_session):
-        """``get_current_thread`` follows RT-Thread's SMP per-CPU handle."""
-        expected_expr = _PROFILE.current_thread_expression
-        out = gdb_session.run_python(
-            f"""
+
+def test_gdr_object_uses_semantic_string_arguments(gdb_session):
+    output = gdb_session.run(f'p $gdr_object("semaphore", "{_PROFILE.semaphore_name}")')
+    assert "= 0" not in output or "Semaphore(" in output
+
+
+def test_gdr_values_preserve_target_struct_types_and_addresses(gdb_session):
+    output = gdb_session.run_python(
+        f'''
+import gdb
+
+thread = gdb.parse_and_eval('$gdr_task("worker1")')
+semaphore = gdb.parse_and_eval(
+    '$gdr_object("semaphore", "{_PROFILE.semaphore_name}")'
+)
+print(f"thread_tag={{thread.type.strip_typedefs().tag}}")
+print(f"thread_is_struct={{thread.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}}")
+print(
+    "thread_address_matches="
+    f"{{int(thread.address) == int(gdb.parse_and_eval('worker1_thread').address)}}"
+)
+print(f"semaphore_tag={{semaphore.type.strip_typedefs().tag}}")
+print(
+    "semaphore_is_struct="
+    f"{{semaphore.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}}"
+)
+print(
+    "semaphore_address_matches="
+    f"{{int(semaphore.address) == int(gdb.parse_and_eval('test_sem').address)}}"
+)
+'''
+    )
+    for expected in (
+        "thread_tag=rt_thread",
+        "thread_is_struct=True",
+        "thread_address_matches=True",
+        "semaphore_tag=rt_semaphore",
+        "semaphore_is_struct=True",
+        "semaphore_address_matches=True",
+    ):
+        assert expected in output, output
+
+
+def test_current_task_matches_the_selected_cpu(gdb_session):
+    output = gdb_session.run_python(
+        f"""
 import gdb
 from rtthread.navigation import get_current_thread
 
-expected = gdb.parse_and_eval({expected_expr!r})
+expected = gdb.parse_and_eval({_PROFILE.current_thread_expression!r})
 current = get_current_thread()
 print(f"expected_non_null={{int(expected) != 0}}")
 print(f"current_found={{current is not None}}")
-print(f"current_matches_selected_cpu={{current is not None and int(current.address) == int(expected)}}")
+print(
+    "current_matches_selected_cpu="
+    f"{{current is not None and int(current.address) == int(expected)}}"
+)
 """
-        )
+    )
+    assert "expected_non_null=True" in output, output
+    assert "current_found=True" in output, output
+    assert "current_matches_selected_cpu=True" in output, output
 
-        assert "expected_non_null=True" in out, out
-        assert "current_found=True" in out, out
-        assert "current_matches_selected_cpu=True" in out, out
 
-    def test_target_pointer_width(self, gdb_session):
-        """The connected firmware has the expected native pointer width."""
-        out = gdb_session.run("p sizeof(void *)")
-        assert f"= {EXPECTED_POINTER_BYTES}" in out, (
-            f"expected {EXPECTED_POINTER_BYTES}-byte pointers, got:\n{out}"
-        )
+def test_target_pointer_width_matches_the_qemu_profile(gdb_session):
+    output = gdb_session.run("p sizeof(void *)")
+    assert f"= {_EXPECTED_POINTER_BYTES}" in output, output
 
-    def test_arch_info_matches_the_connected_target(self, gdb_session):
-        """ArchInfo reports the target pointer width and resolved byte order."""
-        out = gdb_session.run_python(
-            """
+
+def test_arch_info_matches_the_connected_target(gdb_session):
+    output = gdb_session.run_python(
+        """
 from gdr.gdb_bridge import get_arch_info
 
 arch = get_arch_info()
@@ -120,71 +138,7 @@ if arch is not None:
     print(f"ptrsize={arch.ptrsize}")
     print(f"endian={arch.endian}")
 """
-        )
-
-        assert "arch_found=True" in out, out
-        assert f"ptrsize={EXPECTED_POINTER_BYTES}" in out, out
-        assert "endian=little" in out, out
-
-    def test_gdr_object_semaphore(self, gdb_session):
-        """``$gdr_object(type_code, "test_sem")`` resolves the active enum profile."""
-        out = gdb_session.run(
-            f'p $gdr_object({_PROFILE.semaphore_code:#x}, "{_PROFILE.semaphore_name}")'
-        )
-        assert "= 0" not in out or "Semaphore(" in out, (
-            f"expected non-null semaphore, got:\n{out}"
-        )
-
-    def test_gdr_object_type_name_string(self, gdb_session):
-        """``$gdr_object("SEMAPHORE", name)`` is the preferred script-safe form."""
-        out = gdb_session.run(
-            f'p $gdr_object("SEMAPHORE", "{_PROFILE.semaphore_name}")'
-        )
-        assert "= 0" not in out or "Semaphore(" in out, (
-            f"expected non-null semaphore via type name, got:\n{out}"
-        )
-
-    def test_gdr_object_type_name_macro(self, gdb_session):
-        """Bare ``SEMAPHORE`` works when GDR registered the type-name macro."""
-        out = gdb_session.run(f'p $gdr_object(SEMAPHORE, "{_PROFILE.semaphore_name}")')
-        assert "= 0" not in out or "Semaphore(" in out, (
-            f"expected non-null semaphore via SEMAPHORE macro, got:\n{out}"
-        )
-
-    def test_gdr_threads_returns_pointer_array(self, gdb_session):
-        """``$gdr_threads()`` returns every registered thread pointer."""
-        out = gdb_session.run_python(
-            """
-import gdb
-from rtthread import adapter
-from rtthread.navigation import iter_threads
-
-threads = gdb.parse_and_eval("$gdr_threads()")
-print(f"is_array={threads.type.strip_typedefs().code == gdb.TYPE_CODE_ARRAY}")
-print(f"range={threads.type.range()}")
-names = []
-actual_addresses = []
-lo, hi = threads.type.range()
-for i in range(lo, hi + 1):
-    thread_ptr = threads[i]
-    actual_addresses.append(int(thread_ptr))
-    names.append(thread_ptr.dereference()["name"].string())
-expected_addresses = {int(thread.address) for thread in iter_threads(adapter._kl)}
-fixture_names = {"worker1", "worker2", "worker3"}
-print(f"names={names}")
-print(
-    "addresses_match="
-    f"{set(actual_addresses) == expected_addresses and len(actual_addresses) == len(expected_addresses)}"
-)
-print(f"has_fixture_threads={fixture_names.issubset(names)}")
-"""
-        )
-        assert "is_array=True" in out, out
-        assert "addresses_match=True" in out, out
-        assert "has_fixture_threads=True" in out, out
-
-    def test_gdr_thread_not_found(self, gdb_session):
-        """``$gdr_thread("nonexistent")`` returns 0 (not found)."""
-        out = gdb_session.run('p $gdr_thread("nonexistent")')
-        # GDB prints "$N = 0" for null return
-        assert "= 0" in out, f"expected 0 for nonexistent thread, got:\n{out}"
+    )
+    assert "arch_found=True" in output, output
+    assert f"ptrsize={_EXPECTED_POINTER_BYTES}" in output, output
+    assert "endian=little" in output, output

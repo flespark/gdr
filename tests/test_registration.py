@@ -1,10 +1,12 @@
-"""Unit tests for idempotent RT-Thread registration."""
+"""Unit tests for generic adapter and printer registration."""
 
 from __future__ import annotations
 
 import gdr.printers as printers
+import gdr.registry as registry
 import rtthread.adapter as adapter
 import rtthread.commands as commands
+from gdr.adapter_api import RtosAdapter
 from gdr.layout import KernelLayout
 
 
@@ -15,102 +17,84 @@ class _FakeGdb:
         self.pretty_printers: list[object] = []
 
 
+class _Adapter(RtosAdapter):
+    def find_task(self, name):  # noqa: ARG002
+        return None
+
+    def find_object(self, kind, name):  # noqa: ARG002
+        return None
+
+    def object_counts(self):
+        return {}
+
+    def object_table(self, kind):  # noqa: ARG002
+        return None
+
+    def iter_tasks(self):
+        return iter(())
+
+    def summarize_task(self, value):  # noqa: ARG002
+        raise AssertionError("not called")
+
+    def system_summary(self):
+        raise AssertionError("not called")
+
+
 def test_register_printers_is_idempotent(monkeypatch):
-    """Repeated setup leaves one GDR lookup in GDB's global registry."""
     fake_gdb = _FakeGdb()
     monkeypatch.setattr(printers, "gdb", fake_gdb)
-
     printers.register_printers(KernelLayout())
     printers.register_printers(KernelLayout())
-
     assert len(fake_gdb.pretty_printers) == 1
 
 
 def test_unregister_printers_preserves_non_gdr_lookups(monkeypatch):
-    """Development reload removes only lookup functions created by GDR."""
     fake_gdb = _FakeGdb()
     external_lookup = object()
     fake_gdb.pretty_printers.append(external_lookup)
     monkeypatch.setattr(printers, "gdb", fake_gdb)
     printers.register_printers(KernelLayout())
-
     printers.unregister_printers()
-
     assert fake_gdb.pretty_printers == [external_lookup]
 
 
-def test_register_object_type_macros_skips_names_defined_by_target(monkeypatch):
-    """Target ELF macros are preserved; GDR warns and skips those names."""
-    commands: list[str] = []
-    warnings: list[str] = []
-
-    class _FakeGdb:
-        error = RuntimeError
-
-        @staticmethod
-        def execute(command: str, to_string: bool = False) -> str:  # noqa: ARG004
-            commands.append(command)
-            return ""
-
-    layout = KernelLayout(object_codes={"semaphore": 2, "mutex": 3, "thread": 1})
-    monkeypatch.setattr(adapter, "gdb", _FakeGdb())
-    monkeypatch.setattr(
-        adapter, "macro_defined", lambda name: name in {"SEMAPHORE", "THREAD"}
-    )
-    monkeypatch.setattr(adapter, "warn", warnings.append)
-
-    adapter._register_object_type_macros(layout)
-
-    assert commands == ["macro define MUTEX 3"]
-    assert len(warnings) == 1
-    assert "SEMAPHORE" in warnings[0]
-    assert "THREAD" in warnings[0]
-    assert '$gdr_object("SEMAPHORE", "name")' in warnings[0]
+def test_registry_preserves_the_first_active_adapter(monkeypatch):
+    first = _Adapter()
+    second = _Adapter()
+    monkeypatch.setattr(registry, "_active", None)
+    registry.register(first)
+    registry.register(second)
+    assert registry.active() is first
 
 
-def test_register_adapter_preserves_the_first_layout(monkeypatch):
-    """Repeated adapter registration must not recreate convenience functions."""
-    registrations: list[str] = []
+def test_rtthread_adapter_registers_the_generic_contract(monkeypatch):
+    registrations: list[object] = []
     monkeypatch.setattr(adapter, "_kl", None)
     monkeypatch.setattr(adapter, "gdb", object())
-    monkeypatch.setattr(adapter, "_register_object_type_macros", lambda _kl: None)
-    for name in ("GdrThreadFunction", "GdrThreadsFunction", "GdrObjectFunction"):
-        monkeypatch.setattr(
-            adapter,
-            name,
-            lambda name=name: registrations.append(name),
-            raising=False,
-        )
-    first = KernelLayout()
-    second = KernelLayout()
-
-    adapter.register_adapter(first)
-    adapter.register_adapter(second)
-
-    assert adapter._kl is first
-    assert registrations == [
-        "GdrThreadFunction",
-        "GdrThreadsFunction",
-        "GdrObjectFunction",
-    ]
+    monkeypatch.setattr(adapter, "register", registrations.append)
+    layout = KernelLayout()
+    adapter.register_adapter(layout)
+    assert adapter._kl is layout
+    assert len(registrations) == 1
+    assert isinstance(registrations[0], adapter.RtThreadAdapter)
 
 
-def test_register_commands_preserves_the_first_layout(monkeypatch):
-    """Repeated command registration keeps the original command layout."""
-    shell_calls: list[None] = []
-    messages: list[str] = []
-    monkeypatch.setattr(commands, "_kl", None)
+def test_register_rtthread_commands_is_idempotent(monkeypatch):
+    calls: list[str] = []
+    fake_gdb = type(
+        "FakeGdb", (), {"execute": staticmethod(lambda command: calls.append(command))}
+    )()
+    monkeypatch.setattr(commands, "gdb", fake_gdb)
     monkeypatch.setattr(
-        commands, "register_command_shell", lambda: shell_calls.append(None)
+        commands,
+        "RtThreadCommand",
+        lambda: calls.append("command"),
+        raising=False,
     )
-    monkeypatch.setattr(commands, "info", messages.append)
-    first = KernelLayout()
-    second = KernelLayout()
+    monkeypatch.setattr(commands, "info", lambda _message: None)
+    monkeypatch.setattr(commands, "_registered", False)
 
-    commands.register_commands(first)
-    commands.register_commands(second)
+    commands.register_commands()
+    commands.register_commands()
 
-    assert commands.is_initialized()
-    assert commands._kl is first
-    assert shell_calls == [None]
-    assert messages == ["rtthread commands registered (alias: rtt)"]
+    assert calls == ["command", "alias rtt = rtthread"]

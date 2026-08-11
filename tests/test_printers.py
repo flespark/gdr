@@ -1,6 +1,6 @@
 """Test pretty-printers fold kernel structs into one-line summaries.
 
-Uses convenience functions (``$gdr_thread``, ``$gdr_object``) to
+Uses the stable convenience functions (``$gdr_task``, ``$gdr_object``) to
 obtain struct values, then verifies ``p`` output contains the folded
 format ``TypeName(field=value, ...)`` with the expected summary fields.
 """
@@ -26,13 +26,13 @@ class TestPrinters:
 
     def test_printer_registered(self, gdb_session):
         """Printing a known struct produces a folded summary, not a raw dump."""
-        out = gdb_session.run('p $gdr_thread("worker1")')
+        out = gdb_session.run('p $gdr_task("worker1")')
         # If printers work, we see "Thread(...)" instead of a raw struct dump
         assert "Thread(" in out, f"pretty-printer not active, got:\n{out}"
 
     def test_thread_prints_as_thread(self, gdb_session):
-        """``p $gdr_thread("worker1")`` output contains ``Thread(``."""
-        out = gdb_session.run('p $gdr_thread("worker1")')
+        """``p $gdr_task("worker1")`` output contains ``Thread(``."""
+        out = gdb_session.run('p $gdr_task("worker1")')
         assert "Thread(" in out, f"expected Thread( fold, got:\n{out}"
         # Summary should include name and state
         assert "name=" in out, f"expected name= field, got:\n{out}"
@@ -44,7 +44,7 @@ class TestPrinters:
         ``gdr.printers._format_field``: before the map the fold showed
         ``stat=2``; afterwards it shows ``stat=SUSPEND``.
         """
-        out = gdb_session.run('p $gdr_thread("worker1")')
+        out = gdb_session.run('p $gdr_task("worker1")')
         assert "stat=" in out, f"expected stat= field, got:\n{out}"
         # Extract the value after ``stat=``
         after = out.split("stat=", 1)[1]
@@ -62,25 +62,21 @@ class TestPrinters:
     def test_semaphore_folds(self, gdb_session):
         """A semantic semaphore lookup prints ``Semaphore(...)``."""
         out = gdb_session.run(
-            f'p $gdr_object({_PROFILE.semaphore_code:#x}, "{_PROFILE.semaphore_name}")'
+            f'p $gdr_object("semaphore", "{_PROFILE.semaphore_name}")'
         )
         assert "Semaphore(" in out, f"expected Semaphore( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
 
     def test_mutex_folds(self, gdb_session):
         """A semantic mutex lookup prints ``Mutex(...)``."""
-        out = gdb_session.run(
-            f'p $gdr_object({_PROFILE.mutex_code:#x}, "{_PROFILE.mutex_name}")'
-        )
+        out = gdb_session.run(f'p $gdr_object("mutex", "{_PROFILE.mutex_name}")')
         assert "Mutex(" in out, f"expected Mutex( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
         assert 'owner=\\"worker1\\"' in out, f"expected dereferenced owner, got:\n{out}"
 
     def test_timer_folds(self, gdb_session):
         """A semantic timer lookup prints ``Timer(...)``."""
-        out = gdb_session.run(
-            f'p $gdr_object({_PROFILE.timer_code:#x}, "{_PROFILE.timer_name}")'
-        )
+        out = gdb_session.run(f'p $gdr_object("timer", "{_PROFILE.timer_name}")')
         assert "Timer(" in out, f"expected Timer( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
 
@@ -92,7 +88,7 @@ import gdb
 from gdr.printers import _format_field
 from gdr.layout import StructField
 
-entry = gdb.parse_and_eval('$gdr_thread("worker1").entry')
+entry = gdb.parse_and_eval('$gdr_task("worker1").entry')
 print(_format_field(entry, StructField("entry", ("entry",), kind="ptr")))
 """
         )
@@ -105,9 +101,7 @@ print(_format_field(entry, StructField("entry", ("entry",), kind="ptr")))
         so the fold must show ``ACTIVE`` and ``PERIODIC`` and ``SOFT`` rather
         than a bare ``0x7``.
         """
-        out = gdb_session.run(
-            f'p $gdr_object({_PROFILE.timer_code:#x}, "{_PROFILE.timer_name}")'
-        )
+        out = gdb_session.run(f'p $gdr_object("timer", "{_PROFILE.timer_name}")')
         assert "flag=" in out, f"expected flag= field, got:\n{out}"
         # test_timer is periodic + soft + activated per the fixture.
         for bit in ("ACTIVE", "PERIODIC", "SOFT"):

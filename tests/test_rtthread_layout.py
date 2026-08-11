@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import rtthread.adapter as adapter
-import rtthread.commands as commands
 from rtthread.layout import (
     RT_OBJECT_CLASS_THREAD,
     RtConfig,
@@ -43,8 +42,10 @@ def test_legacy_31_profile_uses_pre_null_object_codes_and_flags_field():
     assert layout.structs["struct rt_thread"].fields["flag"].path == ("flags",)
     assert layout.structs["struct rt_thread"].fields["stat"].path == ("stat",)
     assert "reserved" not in layout.structs["struct rt_semaphore"].fields
-    assert commands._parse_type_name("semaphore", layout) == 1
-    assert commands._parse_type_name("SEMAPHORE", layout) == 1
+    from rtthread.layout import resolve_object_type_code
+
+    assert resolve_object_type_code("semaphore", layout) == 1
+    assert resolve_object_type_code("SEMAPHORE", layout) == 1
     assert adapter._type_code(layout, "semaphore") == 1
 
 

@@ -8,14 +8,13 @@ GDR runs inside the GDB Python interpreter and provides three layers of
 debugging support, following the approach popularised by the [GEF](#acknowledgements) and
 the [Asterinas GDB helper](#acknowledgements):
 
-1. **Aggregate commands** — `rtthread threads`, `rtthread semaphores`, etc.
-   only handle what GDB expressions cannot easily do: iterate collections and
-   tabulate results.
+1. **RTOS commands** — each adapter owns its command tree (for example,
+   `rtt threads` and `rtt timers`) and the corresponding table output.
 2. **Pretty-printers** — fold noisy kernel object (`rt_mutex`, `rt_semaphore`,
    `rt_thread`) into one-line summaries so `p`, `bt full` and `info locals`
    stay readable.
-3. **Convenience functions** — `$gdr_thread("main")`, `$gdr_threads()`,
-   `$gdr_object(type, name)` return `gdb.Value` so you can keep using native
+3. **Convenience functions** — `$gdr_task("main")`, `$gdr_tasks()`,
+   `$gdr_object(kind, name)` return `gdb.Value` so you can keep using native
    GDB expressions for the actual field inspection.
 
 ## Status
@@ -28,13 +27,14 @@ the [Asterinas GDB helper](#acknowledgements):
 | FreeRTOS | V10.3.1 fixture baseline | Phase 2 task navigation and `freertos tasks/system` verified on QEMU B-L475E-IOT01A |
 
 Core implementation complete: GDB bridge, layout engine,
-pretty-printers, convenience functions, aggregate commands, and QEMU
+pretty-printers, convenience functions, RTOS command trees, and QEMU
 closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 
 FreeRTOS Phase 2 adds explicit version/config probing, DWARF-path task layouts,
-scheduler-list navigation, `freertos tasks`, `freertos system`, the `frt` alias,
-and `$gdr_freertos_task`/`$gdr_freertos_tasks` convenience functions. Queue and
-timer object enumeration remains a Phase 3 feature.
+scheduler-list navigation, and the `freertos tasks` / `freertos system` commands.
+Queue and timer object enumeration remains a Phase 3 feature. The `gdr`
+command is intentionally limited to `gdr init` and `gdr help`; raw-value
+convenience functions remain RTOS-neutral.
 
 ## Quick start
 
@@ -87,23 +87,23 @@ Set-Location .\gdr-rtthread
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
 [gdr]   layout: 10 structs, 2 list hooks
 [gdr] rtthread commands registered (alias: rtt)
-[gdr] RT-Thread support ready. Type 'rtthread help' for commands.
+[gdr] RT-Thread support ready. Type 'rtt help' for commands.
 
-(gdb) rtthread threads
-(gdb) rtthread semaphores
-(gdb) rtthread system
-(gdb) p $gdr_thread("worker1")
+(gdb) rtt threads
+(gdb) rtt timers
+(gdb) rtt system
+(gdb) p $gdr_task("worker1")
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `rtthread threads` | List all threads (name/state/priority/sp/stack_size/stack_used/max_stack_used/entry) |
-| `rtthread semaphores` | List semaphores (name/value/addr) |
-| `rtthread timers` | List timers (name/state/mode/type/ticks/callback) |
-| `rtthread objects [type]` | List kernel object counts, optionally filtered by type |
-| `rtthread system` | System summary (tick, current thread, object counts, heap) |
+| `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
+| `gdr help` | Show GDR bootstrap usage |
+| `rtthread ...` / `rtt ...` | RT-Thread command tree: `threads`, `semaphores`, `mutexes`, `timers`, `messagequeues`, `mailboxs`, and `system`; short aliases include `tasks`, `sems`, `mtxs`, `msgs`, and `mboxs` |
+| `freertos tasks` | List FreeRTOS tasks |
+| `freertos system` | Show the FreeRTOS system summary |
 
 Single-object inspection is delegated to convenience functions + GDB
 expressions, not dedicated commands.
@@ -112,15 +112,13 @@ expressions, not dedicated commands.
 
 | Function | Returns | Example |
 |----------|---------|---------|
-| `$gdr_thread(name)` | `struct rt_thread` gdb.Value | `p $gdr_thread("worker1")` / `p $gdr_thread("worker1").stat` |
-| `$gdr_threads()` | array of `struct rt_thread *` | `p $gdr_threads()` / `p *$gdr_threads()[0]` |
-| `$gdr_object(type, name)` | kernel object gdb.Value | `p $gdr_object("SEMAPHORE", "my_sem")` |
+| `$gdr_task(name)` | target-native task `gdb.Value` | `p $gdr_task("worker1")` / `p $gdr_task("worker1").stat` |
+| `$gdr_tasks()` | target-native task pointer array | `p $gdr_tasks()` / `p *$gdr_tasks()[0]` |
+| `$gdr_object(kind, name)` | target-native object `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |
 
-Prefer the quoted type name in scripts and automation:
-`$gdr_object("SEMAPHORE", "my_sem")`. Bare names such as `SEMAPHORE` are
-registered as GDB macros only when the target ELF does not already define
-them; on conflict GDR skips the macro and warns, and the quoted form still
-works.
+Use lower-case semantic object kinds in scripts and automation, such as
+`$gdr_object("semaphore", "my_sem")`. A null result means that the object was
+not found or that the selected adapter cannot reliably enumerate that kind.
 
 ## Pretty-printers
 
