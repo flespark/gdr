@@ -95,7 +95,7 @@ Set-Location .\gdr-rtthread
 |------|------|
 | `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
 | `gdr help` | 显示 GDR 启动用法 |
-| `rtthread ...` / `rtt ...` | RT-Thread 命令树：`threads`、`semaphores`、`mutexes`、`timers`、`messagequeues`、`mailboxs`、`system`；短别名包括 `tasks`、`sems`、`mtxs`、`msgs`、`mboxs` |
+| `rtthread ...` / `rtt ...` | RT-Thread 命令树：`threads`、`semaphores`、`mutexes`、`events`、`mailboxs`、`messagequeues`、`mempools`、`timers`、`system`；短别名包括 `tasks`、`sems`、`mtxs`、`msgs`、`mboxs` |
 | `freertos tasks` | 列出 FreeRTOS 任务 |
 | `freertos system` | 输出 FreeRTOS 系统摘要 |
 

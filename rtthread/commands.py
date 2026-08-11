@@ -13,6 +13,20 @@ from gdr.gdb_bridge import info, warn
 _command_registered = False
 _alias_registered = False
 
+_OBJECT_COMMANDS = {
+    "semaphores": "semaphore",
+    "mutexes": "mutex",
+    "events": "event",
+    "mailboxs": "mailbox",
+    "messagequeues": "msgqueue",
+    "mempools": "mempool",
+    "timers": "timer",
+}
+_USAGE = (
+    "usage: rtthread <threads|semaphores|mutexes|events|mailboxs|"
+    "messagequeues|mempools|timers|system>"
+)
+
 _COMMAND_ALIASES = {
     "tasks": "threads",
     "sems": "semaphores",
@@ -25,6 +39,25 @@ _COMMAND_ALIASES = {
 }
 
 
+def _invoke_command(argument: str, help_text: str) -> None:
+    """Parse and dispatch one RT-Thread command without depending on GDB."""
+    args = argument.split()
+    if not args or args[0].lower() == "help":
+        print(help_text)
+        return
+    command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
+    if len(args) != 1:
+        warn(_USAGE)
+    elif command == "threads":
+        render_tasks()
+    elif command == "system":
+        render_system()
+    elif command in _OBJECT_COMMANDS:
+        render_objects(_OBJECT_COMMANDS[command])
+    else:
+        warn(_USAGE)
+
+
 if gdb is not None:
 
     class RtThreadCommand(gdb.Command):
@@ -34,9 +67,11 @@ if gdb is not None:
             rtthread threads
             rtthread semaphores
             rtthread mutexes
-            rtthread timers
-            rtthread messagequeues
+            rtthread events
             rtthread mailboxs
+            rtthread messagequeues
+            rtthread mempools
+            rtthread timers
             rtthread system
 
         Short aliases:
@@ -47,32 +82,7 @@ if gdb is not None:
             super().__init__("rtthread", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND)
 
         def invoke(self, argument: str, from_tty: bool) -> None:  # noqa: ARG002
-            args = argument.split()
-            if not args or args[0].lower() == "help":
-                print(self.__doc__)
-                return
-            command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
-            if command == "threads" and len(args) == 1:
-                render_tasks()
-            elif command == "system" and len(args) == 1:
-                render_system()
-            elif (
-                command
-                in {
-                    "semaphores",
-                    "mutexes",
-                    "timers",
-                    "messagequeues",
-                    "mailboxs",
-                }
-                and len(args) == 1
-            ):
-                render_objects(command)
-            else:
-                warn(
-                    "usage: rtthread <threads|semaphores|mutexes|timers|"
-                    "messagequeues|mailboxs|system>"
-                )
+            _invoke_command(argument, self.__doc__)
 
 
 def register_commands() -> None:

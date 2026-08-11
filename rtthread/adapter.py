@@ -15,6 +15,8 @@ Design follows the Asterinas principle:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 try:
     import gdb
 except ImportError:
@@ -270,24 +272,33 @@ class RtThreadAdapter(RtosAdapter):
             counts[kind] = sum(1 for _ in iter_objects(type_code, self.layout))
         return counts
 
+    def _registered_objects(
+        self, kind: str, struct_name: str
+    ) -> Iterator[gdb.Value] | None:
+        """Return one enabled registry route, or ``None`` when unavailable."""
+        type_code = self.layout.object_codes.get(kind)
+        if struct_name not in self.layout.structs or type_code is None:
+            return None
+        return iter_objects(type_code, self.layout)
+
     def object_table(self, kind: str) -> ObjectTable | None:
         if kind == "semaphore":
-            if "struct rt_semaphore" not in self.layout.structs:
+            values = self._registered_objects("semaphore", "struct rt_semaphore")
+            if values is None:
                 return None
             rows = []
-            for value in iter_objects(
-                self.layout.object_codes["semaphore"], self.layout
-            ):
+            for value in values:
                 semaphore = value_to_semaphore(value, self.layout)
                 rows.append(
                     [semaphore.name, str(semaphore.value), hex(semaphore.address)]
                 )
             return ObjectTable(["Name", "Value", "Addr"], rows)
         if kind == "mutex":
-            if "struct rt_mutex" not in self.layout.structs:
+            values = self._registered_objects("mutex", "struct rt_mutex")
+            if values is None:
                 return None
             rows = []
-            for value in iter_objects(self.layout.object_codes["mutex"], self.layout):
+            for value in values:
                 mutex = value_to_mutex(value, self.layout)
                 rows.append(
                     [
@@ -299,6 +310,67 @@ class RtThreadAdapter(RtosAdapter):
                     ]
                 )
             return ObjectTable(["Name", "Value", "Hold", "Owner", "Addr"], rows)
+        if kind == "event":
+            values = self._registered_objects("event", "struct rt_event")
+            if values is None:
+                return None
+            rows = []
+            for value in values:
+                event = value_to_event(value, self.layout)
+                rows.append([event.name, hex(event.set), hex(event.address)])
+            return ObjectTable(["Name", "Set", "Addr"], rows)
+        if kind == "mailbox":
+            values = self._registered_objects("mailbox", "struct rt_mailbox")
+            if values is None:
+                return None
+            rows = []
+            for value in values:
+                mailbox = value_to_mailbox(value, self.layout)
+                rows.append(
+                    [
+                        mailbox.name,
+                        str(mailbox.entry),
+                        str(mailbox.size),
+                        str(mailbox.in_offset),
+                        str(mailbox.out_offset),
+                        hex(mailbox.address),
+                    ]
+                )
+            return ObjectTable(["Name", "Entry", "Size", "In", "Out", "Addr"], rows)
+        if kind == "msgqueue":
+            values = self._registered_objects("msgqueue", "struct rt_messagequeue")
+            if values is None:
+                return None
+            rows = []
+            for value in values:
+                msgqueue = value_to_messagequeue(value, self.layout)
+                rows.append(
+                    [
+                        msgqueue.name,
+                        str(msgqueue.entry),
+                        str(msgqueue.msg_size),
+                        str(msgqueue.max_msgs),
+                        hex(msgqueue.address),
+                    ]
+                )
+            return ObjectTable(["Name", "Entry", "MsgSize", "MaxMsgs", "Addr"], rows)
+        if kind == "mempool":
+            values = self._registered_objects("mempool", "struct rt_mempool")
+            if values is None:
+                return None
+            rows = []
+            for value in values:
+                mempool = value_to_mempool(value, self.layout)
+                rows.append(
+                    [
+                        mempool.name,
+                        str(mempool.block_size),
+                        str(mempool.block_total_count),
+                        str(mempool.block_free_count),
+                        hex(mempool.address),
+                    ]
+                )
+            return ObjectTable(["Name", "BlockSize", "Total", "Free", "Addr"], rows)
         if kind == "timer":
             rows = []
             for value in iter_timers(self.layout):

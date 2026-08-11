@@ -22,6 +22,11 @@ All notable changes to GDR are documented in this file.
 - FreeRTOS fixture smoke tests covering boot readiness, debug type visibility,
   32-bit ABI, persistent commands, task enumeration, and system counters.
 
+### Fixed
+
+- Completed RT-Thread command routing and object tables for events, mailboxes,
+  message queues, and memory pools.
+
 ## [2026.01] - 2026-07-29
 
 ### Added

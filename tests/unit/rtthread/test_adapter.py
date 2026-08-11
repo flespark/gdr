@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 import rtthread.adapter as adapter_module
-from gdr.abstractions import Timer
+from gdr.abstractions import Event, Mailbox, MemoryPool, MessageQueue, Timer
 from gdr.adapter_api import TaskSummary
-from gdr.layout import KernelLayout
+from gdr.layout import KernelLayout, StructLayout
 
 
 def test_task_summaries_read_current_task_once(monkeypatch):
@@ -67,3 +69,87 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
     ]
     assert table.messages == ["Kernel tick: 123"]
     assert looked_up == [0x1000, 0x2000]
+
+
+@pytest.mark.parametrize(
+    ("kind", "struct_name", "converted", "headers", "expected_row"),
+    (
+        (
+            "event",
+            "struct rt_event",
+            Event(name="ready", set=0x3, address=0x1000),
+            ["Name", "Set", "Addr"],
+            ["ready", "0x3", "0x1000"],
+        ),
+        (
+            "mailbox",
+            "struct rt_mailbox",
+            Mailbox(
+                name="input",
+                entry=2,
+                size=8,
+                in_offset=3,
+                out_offset=1,
+                address=0x2000,
+            ),
+            ["Name", "Entry", "Size", "In", "Out", "Addr"],
+            ["input", "2", "8", "3", "1", "0x2000"],
+        ),
+        (
+            "msgqueue",
+            "struct rt_messagequeue",
+            MessageQueue(name="work", entry=3, msg_size=16, max_msgs=8, address=0x3000),
+            ["Name", "Entry", "MsgSize", "MaxMsgs", "Addr"],
+            ["work", "3", "16", "8", "0x3000"],
+        ),
+        (
+            "mempool",
+            "struct rt_mempool",
+            MemoryPool(
+                name="blocks",
+                block_size=32,
+                block_total_count=10,
+                block_free_count=4,
+                address=0x4000,
+            ),
+            ["Name", "BlockSize", "Total", "Free", "Addr"],
+            ["blocks", "32", "10", "4", "0x4000"],
+        ),
+    ),
+)
+def test_ipc_object_tables_use_their_own_registry_route(
+    kind, struct_name, converted, headers, expected_row, monkeypatch
+):
+    """Each IPC command converts only its own registered object type."""
+    value = object()
+    type_code = 7
+    layout = KernelLayout(
+        structs={struct_name: StructLayout(struct_name)},
+        object_codes={kind: type_code},
+    )
+    calls: list[tuple[int, KernelLayout]] = []
+    monkeypatch.setattr(
+        adapter_module,
+        "iter_objects",
+        lambda code, selected: calls.append((code, selected)) or iter((value,)),
+    )
+    converter_name = {
+        "event": "value_to_event",
+        "mailbox": "value_to_mailbox",
+        "msgqueue": "value_to_messagequeue",
+        "mempool": "value_to_mempool",
+    }[kind]
+    monkeypatch.setattr(
+        adapter_module,
+        converter_name,
+        lambda raw, selected: (
+            converted if raw is value and selected is layout else None
+        ),
+    )
+
+    table = adapter_module.RtThreadAdapter(layout).object_table(kind)
+
+    assert table is not None
+    assert table.headers == headers
+    assert table.rows == [expected_row]
+    assert calls == [(type_code, layout)]
