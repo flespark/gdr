@@ -33,7 +33,7 @@ def test_public_commands_reach_their_semantic_renderer(command, expected, monkey
         lambda kind: calls.append(("objects", kind)),
     )
 
-    commands._invoke_command(command, "help")
+    commands._invoke_command(command)
 
     assert calls == [expected]
 
@@ -59,19 +59,33 @@ def test_command_aliases_share_the_public_route(alias, public_command, monkeypat
         lambda kind: calls.append(("objects", kind)),
     )
 
-    commands._invoke_command(alias, "help")
+    commands._invoke_command(alias)
 
     assert calls == [_PUBLIC_ROUTES[public_command]]
 
 
-def test_unknown_or_extra_arguments_report_the_complete_usage(monkeypatch):
-    """Rejected input advertises every supported RT-Thread command."""
+@pytest.mark.parametrize("argument", ("", "help", "HELP"))
+def test_help_lists_every_command_and_alias(argument, capsys):
+    """Help is available explicitly and for an empty command line."""
+    commands._invoke_command(argument)
+
+    assert capsys.readouterr().out == f"{commands._HELP}\n"
+    assert set(commands._COMMAND_DESCRIPTIONS) == {"help", *_PUBLIC_ROUTES}
+    for command in commands._COMMAND_DESCRIPTIONS:
+        assert f"rtt {command}" in commands._HELP
+    for alias, public_command in commands._COMMAND_ALIASES.items():
+        assert f"{alias}" in commands._HELP
+        assert f"-> {public_command}" in commands._HELP
+
+
+def test_unknown_or_extra_arguments_refer_to_help(monkeypatch):
+    """Rejected input directs users to the complete command reference."""
     warnings: list[str] = []
     monkeypatch.setattr(commands, "warn", warnings.append)
 
-    commands._invoke_command("events extra", "help")
-    commands._invoke_command("unknown", "help")
+    commands._invoke_command("events extra")
+    commands._invoke_command("help extra")
+    commands._invoke_command("unknown")
 
-    assert warnings == [commands._USAGE, commands._USAGE]
-    for command in _PUBLIC_ROUTES:
-        assert command in commands._USAGE
+    assert warnings == [commands._USAGE] * 3
+    assert "rtt help" in commands._USAGE

@@ -45,7 +45,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** Defines `RtConfig`, `detect_config()` (symbol-presence probing), and `build_layouts(config) -> KernelLayout`. Handles config-conditional fields (SMP, heap manager, IPC toggles) via factory branches, not version-branched files. |
 | `navigation.py` | RT-Thread object navigation: registry/current-thread/tick entry symbols, type codes, and timer traversal. Returns raw `gdb.Value` objects using the layouts supplied by `layout.py`. |
 | `adapter.py` | Value→dataclass converters and an implementation of the RTOS-neutral task/object contract. It owns RT-Thread object tables and returns raw target values to the core functions. |
-| `commands.py` | The `rtthread` / `rtt` command tree for `threads`, `semaphores`, `mutexes`, `events`, `mailboxs`, `messagequeues`, `mempools`, `timers`, and `system`, including short aliases. There is no `objects` subcommand. |
+| `commands.py` | The `rtthread` / `rtt` command tree, including routing, aliases, and `rtt help`. |
 
 ## Key decisions
 

@@ -18,7 +18,8 @@ All notable changes to GDR are documented in this file.
 - FreeRTOS Phase 2 version/config probes, DWARF task layouts, safe scheduler
   navigation, and the RTOS-specific `freertos tasks/system` commands.
 - RT-Thread `rtthread` / `rtt` command tree for task, system, semaphore, mutex,
-  and timer output. The redundant `rtt objects` command was removed.
+  timer, and IPC object output, with an `rtt help` command that lists supported
+  subcommands and aliases. The redundant `rtt objects` command was removed.
 - FreeRTOS fixture smoke tests covering boot readiness, debug type visibility,
   32-bit ABI, persistent commands, task enumeration, and system counters.
 

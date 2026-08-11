@@ -101,7 +101,7 @@ Set-Location .\gdr-rtthread
 |---------|-------------|
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
 | `gdr help` | Show GDR bootstrap usage |
-| `rtthread ...` / `rtt ...` | RT-Thread command tree: `threads`, `semaphores`, `mutexes`, `events`, `mailboxs`, `messagequeues`, `mempools`, `timers`, and `system`; short aliases include `tasks`, `sems`, `mtxs`, `msgs`, and `mboxs` |
+| `rtt help` | List RT-Thread commands and aliases |
 | `freertos tasks` | List FreeRTOS tasks |
 | `freertos system` | Show the FreeRTOS system summary |
 

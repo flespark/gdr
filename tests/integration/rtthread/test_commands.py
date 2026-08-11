@@ -12,6 +12,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 _PUBLIC_COMMANDS = (
+    "help",
     "threads",
     "semaphores",
     "mutexes",
@@ -41,6 +42,15 @@ def test_all_rtt_commands_are_available(rtt_outputs):
             f"rtt {command}:\n{output}"
         )
         assert "Python Exception" not in output, f"rtt {command}:\n{output}"
+
+
+def test_rtt_help_lists_commands_and_aliases(rtt_outputs):
+    """The runtime help is the complete command and alias reference."""
+    output = rtt_outputs["help"]
+    for command in _PUBLIC_COMMANDS:
+        assert f"rtt {command}" in output
+    for alias in ("tasks", "sems", "mtxs", "msgs", "mboxs", "mailboxes"):
+        assert alias in output
 
 
 def test_rtt_threads_render_normalized_fixture_tasks(gdb, rtt_outputs):
