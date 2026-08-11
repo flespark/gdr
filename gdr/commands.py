@@ -22,7 +22,7 @@ def _display_entry(address: int) -> str:
 
 
 @gdb_command_guard
-def tasks() -> None:
+def render_tasks() -> None:
     """Render all tasks from the active adapter in one normalized table."""
     adapter = active()
     if adapter is None:
@@ -52,7 +52,7 @@ def tasks() -> None:
 
 
 @gdb_command_guard
-def system() -> None:
+def render_system() -> None:
     """Render the normalized system summary from the active adapter."""
     adapter = active()
     if adapter is None:
@@ -76,7 +76,7 @@ def system() -> None:
 
 
 @gdb_command_guard
-def objects(kind: str = "") -> None:
+def render_objects(kind: str = "") -> None:
     """Render reliably enumerable object counts from the active adapter.
 
     A count is an adapter capability claim: an absent kind means the adapter
@@ -89,7 +89,7 @@ def objects(kind: str = "") -> None:
     requested = _canonical_kind(kind)
     if requested:
         if requested == "task":
-            tasks()
+            render_tasks()
             return
         table = adapter.object_table(requested)
         if table is not None:

@@ -7,9 +7,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.commands import objects as render_objects
-from gdr.commands import system as render_system
-from gdr.commands import tasks as render_tasks
+from gdr.commands import render_objects, render_system, render_tasks
 from gdr.gdb_bridge import info, warn
 
 _command_registered = False

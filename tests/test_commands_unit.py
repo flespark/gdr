@@ -82,7 +82,7 @@ def test_tasks_renders_symbols_address_fallbacks_and_optional_values(monkeypatch
         lambda rows, headers: tables.append((rows, headers)),
     )
 
-    commands.tasks()
+    commands.render_tasks()
 
     assert looked_up == [0x1000, 0x2000]
     assert tables == [
@@ -130,7 +130,7 @@ def test_tasks_renders_an_empty_adapter_without_target_access(monkeypatch):
         lambda rows, headers: tables.append((rows, headers)),
     )
 
-    commands.tasks()
+    commands.render_tasks()
 
     assert tables[0][0] == []
 
@@ -146,7 +146,7 @@ def test_tasks_warns_before_initialization(monkeypatch):
         lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected table")),
     )
 
-    commands.tasks()
+    commands.render_tasks()
 
     assert warnings == ["run `gdr init <rtos> <version>` first"]
 
@@ -170,7 +170,7 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
     monkeypatch.setattr(commands, "active", lambda: adapter)
     monkeypatch.setattr(commands, "info", messages.append)
 
-    commands.system()
+    commands.render_system()
 
     assert messages == [
         "Kernel version: 10.3.1",
@@ -209,7 +209,7 @@ def test_objects_normalizes_kind_and_renders_adapter_table(monkeypatch):
         lambda rows, headers: tables.append((rows, headers)),
     )
 
-    commands.objects("timers")
+    commands.render_objects("timers")
 
     assert messages == ["Kernel tick: 10"]
     assert tables == [([["heartbeat", "<tick>"]], ["Name", "Callback"])]
@@ -227,7 +227,7 @@ def test_objects_only_counts_when_no_detailed_table_is_available(monkeypatch):
         lambda rows, headers: tables.append((rows, headers)),
     )
 
-    commands.objects("messagequeues")
+    commands.render_objects("messagequeues")
 
     assert adapter.count_calls == 1
     assert tables == [([["msgqueue", "2"]], ["Kind", "Count"])]
@@ -245,8 +245,8 @@ def test_shared_renderer_guard_contains_unexpected_adapter_errors(monkeypatch):
     monkeypatch.setattr(bridge, "err", errors.append)
     monkeypatch.setattr(bridge, "is_debug", lambda: False)
 
-    assert commands.tasks() is None
-    assert errors == ["tasks: ValueError: corrupt task list"]
+    assert commands.render_tasks() is None
+    assert errors == ["render_tasks: ValueError: corrupt task list"]
 
 
 def test_freertos_system_summary_uses_one_scheduler_snapshot(monkeypatch):
