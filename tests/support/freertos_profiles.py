@@ -16,7 +16,7 @@ def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
     """Build the locked B-L475E-IOT01A profile from standard overrides."""
     if FREE_RTOS_TARGET != "b-l475e-iot01a":
         raise RuntimeError(f"unknown FreeRTOS QEMU target: {FREE_RTOS_TARGET}")
-    default_elf = gdr_root / "tests" / "fixtures" / "freertos_b_l475e_iot01a.elf"
+    default_elf = gdr_root / ".." / "fixture" / "freertos_b_l475e_iot01a.elf"
     elf_path = Path(os.environ.get("GDR_ELF_PATH", str(default_elf)))
     firmware_path = Path(os.environ.get("GDR_FIRMWARE_PATH", str(elf_path)))
     return QemuProfile(

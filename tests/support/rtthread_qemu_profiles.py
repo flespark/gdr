@@ -14,9 +14,7 @@ def get_rtthread_qemu_profile(gdr_root: Path) -> QemuProfile:
     version = os.environ.get(
         "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
     )
-    fixture_elf = gdr_root / "tests" / "fixtures" / "rtthread_qemu.elf"
-    legacy_elf = Path.home() / "Source/rt-thread/bsp/qemu-vexpress-a9/rtthread.elf"
-    default_elf = fixture_elf if fixture_elf.exists() else legacy_elf
+    default_elf = gdr_root / ".." / "fixture" / version / "rtthread_qemu.elf"
     elf_path = Path(os.environ.get("GDR_ELF_PATH", str(default_elf)))
     if target == "cortex-a9":
         profile = QemuProfile(
