@@ -1,14 +1,24 @@
-diff --git a/bsp/qemu-riscv-virt64/applications/main.c b/bsp/qemu-riscv-virt64/applications/main.c
-index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c72cf85a2 100644
---- a/bsp/qemu-riscv-virt64/applications/main.c
-+++ b/bsp/qemu-riscv-virt64/applications/main.c
-@@ -9,13 +9,118 @@
-  */
- 
- #include <rtthread.h>
--#include <rthw.h>
+diff --git a/bsp/qemu-vexpress-a9/applications/main.c b/bsp/qemu-vexpress-a9/applications/main.c
+index c0c1e34d9821eaea2be9388186600c2ab4c39105..ecf8c40142721973c05a6afb78e5119b629a66a9 100644
+--- a/bsp/qemu-vexpress-a9/applications/main.c
++++ b/bsp/qemu-vexpress-a9/applications/main.c
+@@ -1,21 +1,130 @@
+-/*
+- * Copyright (c) 2006-2021, RT-Thread Development Team
+- *
+- * SPDX-License-Identifier: Apache-2.0
+- *
+- * Change Logs:
+- * Date           Author       Notes
+- * 2020/12/31     Bernard      Add license info
+- */
+-
+-#include <stdint.h>
 -#include <stdio.h>
--#include <string.h>
+-#include <stdlib.h>
++/* GDR test fixture: creates known kernel objects for QEMU smoke tests. */
++
++#include <rtthread.h>
 +
 +#define THREAD_STACK_SIZE 1024
 +#define THREAD_PRIORITY   20
@@ -40,6 +50,10 @@ index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c
 +static struct rt_thread worker2_thread;
 +static struct rt_thread worker3_thread;
 +
++static volatile int worker1_running = 0;
++static volatile int worker2_running = 0;
++static volatile int worker3_running = 0;
++
 +static void test_timer_timeout(void *parameter)
 +{
 +    (void)parameter;
@@ -50,6 +64,9 @@ index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c
 +    (void)parameter;
 +
 +    rt_mutex_take(&test_mutex, RT_WAITING_FOREVER);
++    worker1_running = 1;
++    rt_kprintf("GDR test fixture ready.\n");
++
 +    while (1)
 +    {
 +        rt_thread_mdelay(100);
@@ -59,6 +76,8 @@ index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c
 +static void worker2_entry(void *parameter)
 +{
 +    (void)parameter;
++
++    worker2_running = 1;
 +
 +    while (1)
 +    {
@@ -71,6 +90,8 @@ index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c
 +{
 +    (void)parameter;
 +
++    worker3_running = 1;
++
 +    while (1)
 +    {
 +        rt_thread_mdelay(200);
@@ -79,11 +100,12 @@ index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c
  
  int main(void)
  {
--    printf("Hello RISC-V!\n");
+-    printf("hello rt-thread\n");
 +    rt_kprintf("GDR test fixture starting...\n");
 +
 +    rt_sem_init(&test_sem, "test_sem", 1, RT_IPC_FLAG_FIFO);
 +    rt_mutex_init(&test_mutex, "test_mutex", RT_IPC_FLAG_FIFO);
++
 +    RT_ASSERT(rt_event_init(&test_event, "test_event",
 +                            RT_IPC_FLAG_FIFO) == RT_EOK);
 +    RT_ASSERT(rt_event_send(&test_event, 0x5) == RT_EOK);
@@ -103,6 +125,7 @@ index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c
 +                         MEMPOOL_BLOCK_SIZE) == RT_EOK);
 +    test_mempool_block = rt_mp_alloc(&test_mempool, RT_WAITING_NO);
 +    RT_ASSERT(test_mempool_block != RT_NULL);
++
 +    rt_timer_init(&test_timer, "test_timer", test_timer_timeout, RT_NULL,
 +                  100, RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
 +    rt_timer_start(&test_timer);
@@ -121,7 +144,7 @@ index 50d2de7a229a3ef3c56b2a8e27cde06c9e4d8064..6b844cd711e62eb1e24ab0620799347c
 +    rt_thread_startup(&worker2_thread);
 +    rt_thread_startup(&worker3_thread);
 +
-+    rt_kprintf("GDR test fixture ready.\n");
  
      return 0;
  }
+-

@@ -1,0 +1,26 @@
+diff --git a/components/libc/posix/io/poll/select.c b/components/libc/posix/io/poll/select.c
+index bac63258a..a2b17edaa 100644
+--- a/components/libc/posix/io/poll/select.c
++++ b/components/libc/posix/io/poll/select.c
+@@ -14,7 +14,7 @@
+ 
+ static void fdszero(fd_set *set, int nfds)
+ {
+-    fd_mask *m;
++    long *m;
+     int n;
+ 
+     /*
+@@ -22,9 +22,9 @@ static void fdszero(fd_set *set, int nfds)
+       so the actual size of the 'fd_set' is determined here with the parameter 'nfds'
+     */
+-    m = (fd_mask *)set;
++    m = (long *)set;
+-    for (n = 0; n < nfds; n += (sizeof(fd_mask) * 8))
++    for (n = 0; n < nfds; n += (sizeof(long) * 8))
+     {
+-        rt_memset(m, 0, sizeof(fd_mask));
++        rt_memset(m, 0, sizeof(long));
+         m ++;
+     }
+ }

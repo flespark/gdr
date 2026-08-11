@@ -135,8 +135,8 @@ main: # branch: main
           by:
             - ci/Dockerfile
         volumes:
-          # Cache the RT-Thread clone + scons build outputs across runs.
-          # `copy-on-write` lets concurrent PR builds share the cache safely.
+          # Cache RT-Thread tags and per-version Git clones across CI runs.
+          # build-rtt.sh removes ignored SCons outputs before every build.
           - /tmp/rt-thread-build:copy-on-write
           - /root/.cache/uv:copy-on-write
       env:

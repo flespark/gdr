@@ -1,8 +1,8 @@
 diff --git a/bsp/qemu-vexpress-a9/applications/main.c b/bsp/qemu-vexpress-a9/applications/main.c
-index 7f02db48d..0c9b3c5e1 100644
+index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..b91982f441cbddde176a42e104a48c0090268b93 100644
 --- a/bsp/qemu-vexpress-a9/applications/main.c
 +++ b/bsp/qemu-vexpress-a9/applications/main.c
-@@ -1,10 +1,95 @@
+@@ -1,11 +1,130 @@
 -#include <stdint.h>
 -#include <stdio.h>
 -#include <stdlib.h>
@@ -12,10 +12,25 @@ index 7f02db48d..0c9b3c5e1 100644
 +
 +#define THREAD_STACK_SIZE 1024
 +#define THREAD_PRIORITY   20
++#define MAILBOX_SIZE      4
++#define MESSAGE_SIZE      8
++#define MQ_POOL_WORDS     32
++#define MEMPOOL_WORDS     64
++#define MEMPOOL_BLOCK_SIZE 32
 +
 +static struct rt_semaphore test_sem;
 +static struct rt_mutex test_mutex;
 +static struct rt_timer test_timer;
++static struct rt_event test_event;
++static struct rt_mailbox test_mailbox;
++static struct rt_messagequeue test_msgqueue;
++static struct rt_mempool test_mempool;
++
++static rt_ubase_t test_mailbox_pool[MAILBOX_SIZE];
++static rt_ubase_t test_msgqueue_pool[MQ_POOL_WORDS];
++static rt_ubase_t test_mempool_pool[MEMPOOL_WORDS];
++static rt_uint8_t test_message[MESSAGE_SIZE] = {0, 1, 2, 3, 4, 5, 6, 7};
++static void *test_mempool_block;
 +
 +static rt_uint8_t worker1_stack[THREAD_STACK_SIZE];
 +static rt_uint8_t worker2_stack[THREAD_STACK_SIZE];
@@ -80,6 +95,26 @@ index 7f02db48d..0c9b3c5e1 100644
 +    rt_sem_init(&test_sem, "test_sem", 1, RT_IPC_FLAG_FIFO);
 +    rt_mutex_init(&test_mutex, "test_mutex", RT_IPC_FLAG_FIFO);
 +
++    RT_ASSERT(rt_event_init(&test_event, "test_event",
++                            RT_IPC_FLAG_FIFO) == RT_EOK);
++    RT_ASSERT(rt_event_send(&test_event, 0x5) == RT_EOK);
++
++    RT_ASSERT(rt_mb_init(&test_mailbox, "test_mailbox", test_mailbox_pool,
++                         MAILBOX_SIZE, RT_IPC_FLAG_FIFO) == RT_EOK);
++    RT_ASSERT(rt_mb_send(&test_mailbox, 0x1234) == RT_EOK);
++
++    RT_ASSERT(rt_mq_init(&test_msgqueue, "test_msgqueue", test_msgqueue_pool,
++                         sizeof(test_message), sizeof(test_msgqueue_pool),
++                         RT_IPC_FLAG_FIFO) == RT_EOK);
++    RT_ASSERT(rt_mq_send(&test_msgqueue, test_message,
++                         sizeof(test_message)) == RT_EOK);
++
++    RT_ASSERT(rt_mp_init(&test_mempool, "test_mempool", test_mempool_pool,
++                         sizeof(test_mempool_pool),
++                         MEMPOOL_BLOCK_SIZE) == RT_EOK);
++    test_mempool_block = rt_mp_alloc(&test_mempool, RT_WAITING_NO);
++    RT_ASSERT(test_mempool_block != RT_NULL);
++
 +    rt_timer_init(&test_timer, "test_timer", test_timer_timeout, RT_NULL,
 +                  100, RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
 +    rt_timer_start(&test_timer);
@@ -102,3 +137,4 @@ index 7f02db48d..0c9b3c5e1 100644
  
      return 0;
  }
+-

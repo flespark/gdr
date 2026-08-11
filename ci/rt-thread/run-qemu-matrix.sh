@@ -14,9 +14,8 @@ case "$1" in
         export GDR_QEMU_TARGET="cortex-a9"
         export RTOS_TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:?XPACK_ARM_TOOLCHAIN_PATH is required}}"
         export CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-arm-none-eabi-}"
-        # Three complete runs cover 3.1's old enum, 3.1.3's enum migration,
-        # and its final layout.
-        refs=(v3.1.0 v3.1.1 v3.1.2 v3.1.3 v3.1.4 v3.1.5 v4.0.0 v4.0.5 v4.1.1)
+        # Build every patch baseline; representative tags run the full suite.
+        refs=(v3.1.0 v3.1.1 v3.1.2 v3.1.3 v3.1.4 v3.1.5 v4.0.0 v4.0.1 v4.0.2 v4.0.3 v4.0.4 v4.0.5 v4.1.0 v4.1.1)
         ;;
     rv64)
         export RT_THREAD_TARGET="rv64"
@@ -80,10 +79,14 @@ for ref in "${refs[@]}"; do
         unset GDR_FIRMWARE_PATH
     fi
     bash "$SCRIPT_DIR/build-rtt.sh"
-    # skip versions that keep same kernel layout as previous ones
-    if [[ "$RT_THREAD_TARGET" == "cortex-a9" && "$ref" == v3.1.* && \
-        "$ref" != v3.1.0 && "$ref" != v3.1.3 && "$ref" != v3.1.5 ]]; then
-        continue
+    if [[ "$RT_THREAD_TARGET" == "cortex-a9" ]]; then
+        case "$ref" in
+            v3.1.0|v3.1.3|v3.1.5|v4.0.0|v4.0.2|v4.0.5|v4.1.1)
+                ;;
+            *)
+                continue
+                ;;
+        esac
     fi
     uv run pytest tests/integration/rtthread -v --tb=short
 done

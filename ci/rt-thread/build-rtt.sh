@@ -31,8 +31,11 @@ case "$RT_THREAD_TARGET" in
         BSP_DIR="${RT_THREAD_BSP:-bsp/qemu-vexpress-a9}"
         CROSS_TOOL_PREFIX="${CROSS_TOOL_PREFIX:-arm-none-eabi-}"
         case "$RT_THREAD_REF" in
-            v3.1.0|v3.1.1|v3.1.2|v3.1.3|v3.1.4|v3.1.5)
+            v3.1.0|v3.1.1|v3.1.2|v3.1.3|v3.1.4)
                 PATCH_SET="3.1.x"
+                ;;
+            v3.1.5)
+                PATCH_SET="3.1.5"
                 ;;
             v4.0.0|v4.0.1)
                 PATCH_SET="4.0.0-4.0.1"
@@ -126,6 +129,11 @@ else
                 PATCH_DIRS+=("$PATCH_ROOT/$RT_THREAD_TARGET/3.1.3-3.1.5")
                 ;;
         esac
+        # Reason: v3.1.5 has a different main.c baseline, but still needs the
+        # non-fixture compatibility patches shared by the full 3.1 series.
+        if [[ "$RT_THREAD_REF" == "v3.1.5" ]]; then
+            PATCH_DIRS+=("$PATCH_ROOT/$RT_THREAD_TARGET/3.1.x")
+        fi
     fi
     # Reason: only 3.1.0 predates the DFS _EXFUN guard needed by xPack's
     # modern newlib; it was incorporated upstream in 3.1.1.
@@ -144,13 +152,16 @@ if [[ -d "$BUILD_DIR/.git" ]]; then
     cd "$BUILD_DIR"
     git fetch --depth=1 origin "$RT_THREAD_REF"
     git checkout "$RT_THREAD_REF"
-    # Hard-reset so any leftovers from a previous (failed) patch run are gone.
-    git reset --hard "$RT_THREAD_REF" 2>/dev/null || true
 else
     mkdir -p "$BUILD_DIR"
     git clone --depth=1 --branch "$RT_THREAD_REF" "$RT_THREAD_REPO" "$BUILD_DIR"
     cd "$BUILD_DIR"
 fi
+
+# BUILD_DIR is a disposable, version-specific clone. Reset tracked files and
+# remove untracked/ignored SCons outputs so every invocation is a clean build.
+git reset --hard "$RT_THREAD_REF"
+git clean -ffdxq
 
 echo "[gdr-ci] applying patches"
 shopt -s nullglob
@@ -165,6 +176,11 @@ if [[ ${#patches[@]} -eq 0 ]]; then
 fi
 for patch in "${patches[@]}"; do
     name="$(basename "$patch")"
+    if [[ "$RT_THREAD_REF" == v3.1.5 && \
+        "$patch" == "$PATCH_ROOT/cortex-a9/3.1.x/001-test-fixture-main.patch" ]]; then
+        echo "  $name (replaced by the v3.1.5-specific fixture patch)"
+        continue
+    fi
     if [[ "$RT_THREAD_REF" == v4.1.0* && "$name" == "003-warn-fix.patch" ]]; then
         echo "  $name (skipped for $RT_THREAD_REF)"
         continue
@@ -186,8 +202,8 @@ for patch in "${patches[@]}"; do
         continue
     fi
     echo "  $name"
-    # Apply strictly: after `git reset --hard` above the tree is pristine,
-    # so any failure here is a real conflict, not a "already applied".
+    # Apply strictly: after reset/clean above the tree is pristine, so any
+    # failure here is a real conflict, not an "already applied" patch.
     if ! git apply --whitespace=fix "$patch"; then
         echo "[gdr-ci] FAILED: patch $name did not apply cleanly" >&2
         exit 1

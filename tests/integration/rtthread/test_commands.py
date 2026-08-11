@@ -6,6 +6,12 @@ import os
 
 import pytest
 
+from tests.support.rtthread_profiles import get_rtthread_test_profile
+
+_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+_TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
+_PROFILE = get_rtthread_test_profile(_VERSION, _TARGET)
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("GDR_RTOS", "rtthread") != "rtthread",
     reason="requires an RT-Thread QEMU profile",
@@ -31,6 +37,41 @@ def rtt_outputs(gdb):
     return {
         command: gdb.run(f"rtt {command}", timeout=20) for command in _PUBLIC_COMMANDS
     }
+
+
+@pytest.fixture(scope="module")
+def ipc_fixture_values(gdb):
+    """Read fixture fields directly from target memory for table comparison."""
+    output = gdb.run_python(
+        """
+import gdb
+
+objects = (
+    ("event", "test_event", ("set",)),
+    ("mailbox", "test_mailbox", ("entry", "size", "in_offset", "out_offset")),
+    ("msgqueue", "test_msgqueue", ("entry", "msg_size", "max_msgs")),
+    ("mempool", "test_mempool", ("block_size", "block_total_count", "block_free_count")),
+)
+for kind, symbol, fields in objects:
+    value = gdb.parse_and_eval(symbol)
+    print(f"{kind}.address={int(value.address)}")
+    for field in fields:
+        print(f"{kind}.{field}={int(value[field])}")
+"""
+    )
+    return {
+        key: value
+        for line in output.splitlines()
+        if "=" in line
+        for key, value in (line.split("=", 1),)
+    }
+
+
+def _fixture_row(output: str, name: str) -> list[str]:
+    """Return one whitespace-delimited table row by fixture object name."""
+    return next(
+        line.split() for line in output.splitlines() if line.lstrip().startswith(name)
+    )
 
 
 def test_all_rtt_commands_are_available(rtt_outputs):
@@ -141,6 +182,62 @@ def test_rtt_semaphore_command_lists_fixture_data(rtt_outputs):
     assert "test_sem" in output
     assert "Value" in output
     assert "Addr" in output
+
+
+def test_rtt_event_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
+    """The event table preserves the target's bit set and address."""
+    output = rtt_outputs["events"]
+    assert "Set" in output
+    assert _fixture_row(output, _PROFILE.event_name) == [
+        _PROFILE.event_name,
+        hex(int(ipc_fixture_values["event.set"])),
+        hex(int(ipc_fixture_values["event.address"])),
+    ]
+
+
+def test_rtt_mailbox_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
+    """The mailbox table preserves occupancy, offsets, capacity, and address."""
+    output = rtt_outputs["mailboxs"]
+    for header in ("Entry", "Size", "In", "Out", "Addr"):
+        assert header in output
+    assert _fixture_row(output, _PROFILE.mailbox_name) == [
+        _PROFILE.mailbox_name,
+        ipc_fixture_values["mailbox.entry"],
+        ipc_fixture_values["mailbox.size"],
+        ipc_fixture_values["mailbox.in_offset"],
+        ipc_fixture_values["mailbox.out_offset"],
+        hex(int(ipc_fixture_values["mailbox.address"])),
+    ]
+
+
+def test_rtt_messagequeue_command_matches_target_memory(
+    rtt_outputs, ipc_fixture_values
+):
+    """The messagequeue table preserves target capacity, entry, and address."""
+    output = rtt_outputs["messagequeues"]
+    for header in ("Entry", "MsgSize", "MaxMsgs", "Addr"):
+        assert header in output
+    assert _fixture_row(output, _PROFILE.msgqueue_name) == [
+        _PROFILE.msgqueue_name,
+        ipc_fixture_values["msgqueue.entry"],
+        ipc_fixture_values["msgqueue.msg_size"],
+        ipc_fixture_values["msgqueue.max_msgs"],
+        hex(int(ipc_fixture_values["msgqueue.address"])),
+    ]
+
+
+def test_rtt_mempool_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
+    """The mempool table preserves target block counts, size, and address."""
+    output = rtt_outputs["mempools"]
+    for header in ("BlockSize", "Total", "Free", "Addr"):
+        assert header in output
+    assert _fixture_row(output, _PROFILE.mempool_name) == [
+        _PROFILE.mempool_name,
+        ipc_fixture_values["mempool.block_size"],
+        ipc_fixture_values["mempool.block_total_count"],
+        ipc_fixture_values["mempool.block_free_count"],
+        hex(int(ipc_fixture_values["mempool.address"])),
+    ]
 
 
 def test_rtt_timer_command_lists_fixture_data(rtt_outputs):

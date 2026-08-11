@@ -78,6 +78,27 @@ print(
     "semaphore_address_matches="
     f"{{int(semaphore.address) == int(gdb.parse_and_eval('test_sem').address)}}"
 )
+for kind, name, symbol, tag in (
+    ("event", "{_PROFILE.event_name}", "test_event", "rt_event"),
+    ("mailbox", "{_PROFILE.mailbox_name}", "test_mailbox", "rt_mailbox"),
+    (
+        "msgqueue",
+        "{_PROFILE.msgqueue_name}",
+        "test_msgqueue",
+        "rt_messagequeue",
+    ),
+    ("mempool", "{_PROFILE.mempool_name}", "test_mempool", "rt_mempool"),
+):
+    value = gdb.parse_and_eval(f'$gdr_object("{{kind}}", "{{name}}")')
+    print(f"{{kind}}_tag={{value.type.strip_typedefs().tag}}")
+    print(
+        f"{{kind}}_is_struct="
+        f"{{value.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT}}"
+    )
+    print(
+        f"{{kind}}_address_matches="
+        f"{{int(value.address) == int(gdb.parse_and_eval(symbol).address)}}"
+    )
 '''
     )
     for expected in (
@@ -87,6 +108,18 @@ print(
         "semaphore_tag=rt_semaphore",
         "semaphore_is_struct=True",
         "semaphore_address_matches=True",
+        "event_tag=rt_event",
+        "event_is_struct=True",
+        "event_address_matches=True",
+        "mailbox_tag=rt_mailbox",
+        "mailbox_is_struct=True",
+        "mailbox_address_matches=True",
+        "msgqueue_tag=rt_messagequeue",
+        "msgqueue_is_struct=True",
+        "msgqueue_address_matches=True",
+        "mempool_tag=rt_mempool",
+        "mempool_is_struct=True",
+        "mempool_address_matches=True",
     ):
         assert expected in output, output
 

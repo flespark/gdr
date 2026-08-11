@@ -14,7 +14,9 @@ def get_rtthread_qemu_profile(gdr_root: Path) -> QemuProfile:
     version = os.environ.get(
         "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
     )
-    default_elf = gdr_root / ".." / "fixture" / version / "rtthread_qemu.elf"
+    fixture_dir = gdr_root / ".." / "fixture" / target / version
+    default_elf = fixture_dir / "rtthread_qemu.elf"
+    default_bin = fixture_dir / "rtthread_qemu.bin"
     elf_path = Path(os.environ.get("GDR_ELF_PATH", str(default_elf)))
     if target == "cortex-a9":
         profile = QemuProfile(
@@ -41,7 +43,7 @@ def get_rtthread_qemu_profile(gdr_root: Path) -> QemuProfile:
             machine="virt",
             gdb_architecture="riscv:rv64",
             elf_path=elf_path,
-            firmware_path=Path(os.environ.get("GDR_FIRMWARE_PATH", str(elf_path))),
+            firmware_path=Path(os.environ.get("GDR_FIRMWARE_PATH", str(default_bin))),
             firmware_option="-bios",
             ready_marker="GDR test fixture ready.",
             pointer_width=8,
