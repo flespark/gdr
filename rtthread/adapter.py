@@ -38,7 +38,6 @@ from gdr.gdb_bridge import (
     read_int,
 )
 from gdr.layout import KernelLayout, read_field
-from gdr.registry import register
 from rtthread.layout import (
     RT_THREAD_STACK_FILL,
     RT_TIMER_FLAG_ACTIVATED,
@@ -58,9 +57,6 @@ from rtthread.navigation import (
     iter_threads,
     iter_timers,
 )
-
-# Module-level reference set by register_adapter()
-_kl: KernelLayout | None = None
 
 
 def _type_code(layout: KernelLayout, name: str) -> int:
@@ -381,20 +377,3 @@ class RtThreadAdapter(RtosAdapter):
             state_counts=states,
             heap_summary=f"{used} bytes used" if used is not None else "unavailable",
         )
-
-
-def register_adapter(kl: KernelLayout) -> None:
-    """Register convenience functions and retain the first layout.
-
-    Args:
-        kl: Kernel layout built by ``rtthread.layout.build_layouts``.
-    """
-    global _kl
-
-    if _kl is not None:
-        return
-    if gdb is None:
-        raise RuntimeError("not running inside GDB")
-
-    _kl = kl
-    register(RtThreadAdapter(kl))

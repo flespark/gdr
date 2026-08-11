@@ -43,10 +43,13 @@ def test_rtt_thread_stack_columns_match_adapter_conversion(gdb_session):
     converted = gdb_session.run_python(
         """
 import gdb
+from gdr.registry import active
 from rtthread import adapter
 
 thread = gdb.parse_and_eval('$gdr_task("worker1")')
-value = adapter.value_to_thread(thread, adapter._kl)
+selected = active()
+assert isinstance(selected, adapter.RtThreadAdapter)
+value = adapter.value_to_thread(thread, selected.layout)
 print(f"stack_used={value.stack_used}")
 print(f"max_stack_used={value.max_stack_used}")
 """

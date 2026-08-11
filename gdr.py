@@ -103,8 +103,8 @@ def _setup_rtthread(version: str) -> None:
         version: Full RT-Thread version string (e.g. ``"4.0.5"``).
     """
     from gdr.functions import register_functions
-    from gdr.registry import is_initialized
-    from rtthread.adapter import register_adapter
+    from gdr.registry import is_initialized, register
+    from rtthread.adapter import RtThreadAdapter
     from rtthread.commands import register_commands
     from rtthread.layout import build_layouts, detect_config
     from rtthread.version import check_version
@@ -126,11 +126,12 @@ def _setup_rtthread(version: str) -> None:
     )
     kl = build_layouts(cfg, target_version)
     info(f"  layout: {len(kl.structs)} structs, {len(kl.list_hooks)} list hooks")
+    adapter = RtThreadAdapter(kl)
 
     register_printers(kl)
-    register_adapter(kl)
     register_functions()
     register_commands()
+    register(adapter)
 
     info("RT-Thread support ready. Type 'rtt help' for commands.")
 
@@ -154,13 +155,13 @@ def _setup_rtos(rtos: str, version: str) -> None:
 
 def _setup_freertos(version: str) -> None:
     """Initialise FreeRTOS support for the current GDB target."""
-    from freertos.adapter import register_adapter
+    from freertos.adapter import FreeRtosAdapter
     from freertos.commands import register_commands
     from freertos.config import detect_config
     from freertos.layout import build_layout
     from freertos.version import check_version
     from gdr.functions import register_functions
-    from gdr.registry import is_initialized
+    from gdr.registry import is_initialized, register
 
     if is_initialized():
         warn(
@@ -178,9 +179,10 @@ def _setup_freertos(version: str) -> None:
     )
     layout = build_layout(cfg, target_version)
     info(f"  layout: {len(layout.structs)} structs")
-    register_adapter(layout)
+    adapter = FreeRtosAdapter(layout)
     register_functions()
     register_commands()
+    register(adapter)
     info("FreeRTOS support ready. Type 'freertos help' for commands.")
 
 

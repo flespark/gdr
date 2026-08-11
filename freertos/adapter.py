@@ -14,7 +14,6 @@ from freertos.navigation import current_tasks, iter_tasks, list_count, system_va
 from gdr.adapter_api import ObjectTable, RtosAdapter, SystemSummary, TaskSummary
 from gdr.gdb_bridge import read_cstring, read_int
 from gdr.layout import read_field
-from gdr.registry import register
 
 
 @dataclass
@@ -33,9 +32,6 @@ class FreeRtosTask:
     runtime_counter: int | None = None
     entry: int = 0
     core: int | None = None
-
-
-_layout: FreeRtosLayout | None = None
 
 
 def _address(value) -> int:
@@ -177,13 +173,3 @@ class FreeRtosAdapter(RtosAdapter):
             },
             heap_summary="unavailable",
         )
-
-
-def register_adapter(layout: FreeRtosLayout) -> None:
-    global _layout
-    if _layout is not None:
-        return
-    if gdb is None:
-        raise RuntimeError("not running inside GDB")
-    _layout = layout
-    register(FreeRtosAdapter(layout))

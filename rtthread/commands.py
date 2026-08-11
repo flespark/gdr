@@ -12,7 +12,8 @@ from gdr.commands import system as render_system
 from gdr.commands import tasks as render_tasks
 from gdr.gdb_bridge import info, warn
 
-_registered = False
+_command_registered = False
+_alias_registered = False
 
 _COMMAND_ALIASES = {
     "tasks": "threads",
@@ -77,13 +78,16 @@ if gdb is not None:
 
 
 def register_commands() -> None:
-    """Register the RT-Thread command tree and its short alias once."""
-    global _registered
-    if _registered:
+    """Register the command tree and alias, resuming after partial failure."""
+    global _alias_registered, _command_registered
+    if _command_registered and _alias_registered:
         return
     if gdb is None:
         raise RuntimeError("not running inside GDB")
-    RtThreadCommand()
-    gdb.execute("alias rtt = rtthread")
-    _registered = True
+    if not _command_registered:
+        RtThreadCommand()
+        _command_registered = True
+    if not _alias_registered:
+        gdb.execute("alias rtt = rtthread")
+        _alias_registered = True
     info("rtthread commands registered (alias: rtt)")

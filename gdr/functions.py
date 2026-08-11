@@ -10,7 +10,7 @@ except ImportError:
 from gdr.gdb_bridge import make_pointer_array, read_cstring
 from gdr.registry import active
 
-_registered = False
+_registered_functions: set[str] = set()
 
 
 if gdb is not None:
@@ -68,13 +68,16 @@ if gdb is not None:
 
 
 def register_functions() -> None:
-    """Register generic function names once after a target adapter is selected."""
-    global _registered
-    if _registered:
-        return
+    """Register generic function names, resuming after a partial failure."""
     if gdb is None:
         raise RuntimeError("not running inside GDB")
-    GdrTaskFunction()
-    GdrTasksFunction()
-    GdrObjectFunction()
-    _registered = True
+    functions = (
+        ("gdr_task", GdrTaskFunction),
+        ("gdr_tasks", GdrTasksFunction),
+        ("gdr_object", GdrObjectFunction),
+    )
+    for name, function_type in functions:
+        if name in _registered_functions:
+            continue
+        function_type()
+        _registered_functions.add(name)
