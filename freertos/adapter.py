@@ -10,7 +10,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.layout import FreeRtosLayout
-from freertos.navigation import current_tasks, iter_tasks, list_count, system_value
+from freertos.navigation import iter_tasks, list_count, system_value
 from gdr.adapter_api import ObjectTable, RtosAdapter, SystemSummary, TaskSummary
 from gdr.gdb_bridge import read_cstring, read_int
 from gdr.layout import read_field
@@ -79,6 +79,22 @@ def iter_converted_tasks(layout: FreeRtosLayout):
         yield value_to_task(value, state, core, layout)
 
 
+def _task_summary(task: FreeRtosTask) -> TaskSummary:
+    return TaskSummary(
+        name=task.name,
+        address=task.address,
+        state=task.state,
+        priority=task.current_priority,
+        base_priority=task.base_priority,
+        stack_pointer=task.top_of_stack,
+        stack_size=task.stack_size,
+        stack_used=task.stack_used,
+        high_water_mark=task.high_water_mark,
+        entry=task.entry,
+        current_core=task.core,
+    )
+
+
 def find_task(name: str, layout: FreeRtosLayout):
     for value, state, core in iter_tasks(layout):
         task = value_to_task(value, state, core, layout)
@@ -110,34 +126,14 @@ class FreeRtosAdapter(RtosAdapter):
         for value, _state, _core in iter_tasks(self.layout):
             yield value
 
-    def _locations(self) -> dict[int, tuple[str, int | None]]:
-        return {
-            _address(value): (state, core)
-            for value, state, core in iter_tasks(self.layout)
-        }
-
-    def summarize_task(self, value: gdb.Value) -> TaskSummary:
-        state, core = self._locations().get(_address(value), ("Unknown", None))
-        task = value_to_task(value, state, core, self.layout)
-        return TaskSummary(
-            name=task.name,
-            address=task.address,
-            state=task.state,
-            priority=task.current_priority,
-            base_priority=task.base_priority,
-            stack_pointer=task.top_of_stack,
-            stack_size=task.stack_size,
-            stack_used=task.stack_used,
-            high_water_mark=task.high_water_mark,
-            entry=task.entry,
-            current_core=task.core,
-        )
+    def iter_task_summaries(self):
+        for task in iter_converted_tasks(self.layout):
+            yield _task_summary(task)
 
     def system_summary(self) -> SystemSummary:
-        tasks = [self.summarize_task(value) for value in self.iter_tasks()]
-        current_addresses = {address for _core, address in current_tasks(self.layout)}
+        tasks = list(self.iter_task_summaries())
         current = next(
-            (task.name for task in tasks if task.address in current_addresses), None
+            (task.name for task in tasks if task.current_core is not None), None
         )
         delayed = [list_count(key, self.layout) for key in ("delayed_1", "delayed_2")]
         counts = {
@@ -152,6 +148,7 @@ class FreeRtosAdapter(RtosAdapter):
             "Termination": list_count("termination", self.layout),
         }
         scheduler = system_value("xSchedulerRunning")
+        total = system_value("uxCurrentNumberOfTasks")
         return SystemSummary(
             kernel_version=(
                 ".".join(map(str, self.layout.version))
@@ -159,7 +156,7 @@ class FreeRtosAdapter(RtosAdapter):
                 else "unknown"
             ),
             current_task=current,
-            task_count=system_value("uxCurrentNumberOfTasks") or len(tasks),
+            task_count=total if total is not None else len(tasks),
             tick_count=system_value("xTickCount"),
             scheduler_state=(
                 "running"
@@ -171,5 +168,6 @@ class FreeRtosAdapter(RtosAdapter):
             state_counts={
                 name: value for name, value in counts.items() if value is not None
             },
+            object_counts={"task": len(tasks)},
             heap_summary="unavailable",
         )

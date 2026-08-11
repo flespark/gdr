@@ -29,8 +29,7 @@ def tasks() -> None:
         warn("run `gdr init <rtos> <version>` first")
         return
     rows: list[list[str]] = []
-    for value in adapter.iter_tasks():
-        task = adapter.summarize_task(value)
+    for task in adapter.iter_task_summaries():
         name = task.name + (" *" if task.current_core is not None else "")
         rows.append(
             [
@@ -71,7 +70,7 @@ def system() -> None:
     info(f"Scheduler state: {summary.scheduler_state}")
     for state, count in summary.state_counts.items():
         info(f"{state}: {count}")
-    for kind, count in sorted(adapter.object_counts().items()):
+    for kind, count in sorted(summary.object_counts.items()):
         info(f"  {kind}: {count}")
     info(f"Heap: {summary.heap_summary}")
 
@@ -87,7 +86,6 @@ def objects(kind: str = "") -> None:
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
-    counts = adapter.object_counts()
     requested = _canonical_kind(kind)
     if requested:
         if requested == "task":
@@ -99,11 +97,13 @@ def objects(kind: str = "") -> None:
                 info(message)
             print_table(table.rows, table.headers)
             return
+        counts = adapter.object_counts()
         if requested not in counts:
             warn(f"object kind {requested!r} is not reliably enumerable")
             return
         print_table([[requested, str(counts[requested])]], ["Kind", "Count"])
         return
+    counts = adapter.object_counts()
     print_table(
         [[name, str(count)] for name, count in sorted(counts.items())],
         ["Kind", "Count"],

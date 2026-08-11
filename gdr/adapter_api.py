@@ -43,6 +43,7 @@ class SystemSummary:
     tick_count: int | None = None
     scheduler_state: str = "unavailable"
     state_counts: dict[str, int] = field(default_factory=dict)
+    object_counts: dict[str, int] = field(default_factory=dict)
     heap_summary: str = "unavailable"
 
 
@@ -68,6 +69,6 @@ class RtosAdapter(Protocol):
 
     def iter_tasks(self) -> Iterator[gdb.Value]: ...
 
-    def summarize_task(self, value: gdb.Value) -> TaskSummary: ...
+    def iter_task_summaries(self) -> Iterator[TaskSummary]: ...
 
     def system_summary(self) -> SystemSummary: ...

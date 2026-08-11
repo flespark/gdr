@@ -334,14 +334,12 @@ class RtThreadAdapter(RtosAdapter):
     def iter_tasks(self):
         yield from iter_threads(self.layout)
 
-    def summarize_task(self, value: gdb.Value) -> TaskSummary:
+    def _summarize_task(self, value: gdb.Value, current_address: int) -> TaskSummary:
         thread = value_to_thread(value, self.layout)
         try:
             state = ThreadState(thread.state).name.title()
         except ValueError:
             state = "Unknown"
-        current = get_current_thread()
-        current_address = _get_addr(current) if current is not None else 0
         return TaskSummary(
             name=thread.name,
             address=thread.address,
@@ -358,9 +356,14 @@ class RtThreadAdapter(RtosAdapter):
             else None,
         )
 
+    def iter_task_summaries(self):
+        current = get_current_thread()
+        current_address = _get_addr(current) if current is not None else 0
+        for value in iter_threads(self.layout):
+            yield self._summarize_task(value, current_address)
+
     def system_summary(self) -> SystemSummary:
-        values = list(self.iter_tasks())
-        tasks = [self.summarize_task(value) for value in values]
+        tasks = list(self.iter_task_summaries())
         states: dict[str, int] = {}
         for task in tasks:
             states[task.state] = states.get(task.state, 0) + 1
@@ -375,5 +378,6 @@ class RtThreadAdapter(RtosAdapter):
             tick_count=get_tick(),
             scheduler_state="unavailable",
             state_counts=states,
+            object_counts=self.object_counts(),
             heap_summary=f"{used} bytes used" if used is not None else "unavailable",
         )

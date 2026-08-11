@@ -36,8 +36,8 @@ class _Adapter(RtosAdapter):
     def iter_tasks(self):
         return iter(())
 
-    def summarize_task(self, value):  # noqa: ARG002
-        raise AssertionError("not called")
+    def iter_task_summaries(self):
+        return iter(())
 
     def system_summary(self):
         raise AssertionError("not called")
