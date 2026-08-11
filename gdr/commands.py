@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from gdr.gdb_bridge import info, lookup_symbol_at, print_table, warn
+from gdr.gdb_bridge import (
+    gdb_command_guard,
+    info,
+    lookup_symbol_at,
+    print_table,
+    warn,
+)
 from gdr.registry import active
 
 
@@ -15,6 +21,7 @@ def _display_entry(address: int) -> str:
     return f"<{symbol}>" if symbol else _display_address(address)
 
 
+@gdb_command_guard
 def tasks() -> None:
     """Render all tasks from the active adapter in one normalized table."""
     adapter = active()
@@ -45,6 +52,7 @@ def tasks() -> None:
     )
 
 
+@gdb_command_guard
 def system() -> None:
     """Render the normalized system summary from the active adapter."""
     adapter = active()
@@ -68,6 +76,7 @@ def system() -> None:
     info(f"Heap: {summary.heap_summary}")
 
 
+@gdb_command_guard
 def objects(kind: str = "") -> None:
     """Render reliably enumerable object counts from the active adapter.
 

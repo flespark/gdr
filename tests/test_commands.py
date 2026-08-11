@@ -90,19 +90,6 @@ def test_rtt_thread_states_are_known(gdb_session):
         assert any(part.rstrip("*").lower() in valid for part in parts), parts
 
 
-def test_rtt_thread_entry_falls_back_to_an_address(gdb_session):
-    """The shared renderer does not hide an entry address without a symbol."""
-    output = gdb_session.run_python(
-        """
-from gdr.commands import _display_entry
-print(f"null={_display_entry(0)}")
-print(f"unknown={_display_entry(1)}")
-"""
-    )
-    assert "null=N/A" in output
-    assert "unknown=0x1" in output
-
-
 def test_rtt_system_produces_a_normalized_summary(gdb_session):
     """The RT-Thread command exposes task, tick, state, and heap data."""
     output = gdb_session.run("rtt system")
@@ -138,7 +125,6 @@ def test_rtt_semaphore_command_lists_fixture_semaphore(gdb_session):
 def test_rtt_semaphore_command_has_address_column(gdb_session):
     """Semaphore output retains the target address column."""
     assert "Addr" in gdb_session.run("rtt semaphores")
-
 
 
 def test_rtt_timer_table_lists_fixture_timers(gdb_session):

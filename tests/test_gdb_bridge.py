@@ -127,6 +127,56 @@ def test_print_table_writes_empty_table_once(monkeypatch):
     assert fake_gdb.writes == ["(empty)\n"]
 
 
+def test_gdb_command_guard_warns_for_target_errors(monkeypatch):
+    """Expected target failures are downgraded to concise warnings."""
+    fake_gdb = _FakeArchGdb(4, "The target is set to little endian.")
+    warnings: list[str] = []
+    errors: list[str] = []
+    monkeypatch.setattr(bridge, "gdb", fake_gdb)
+    monkeypatch.setattr(bridge, "warn", warnings.append)
+    monkeypatch.setattr(bridge, "err", errors.append)
+    monkeypatch.setattr(bridge, "is_debug", lambda: False)
+
+    @bridge.gdb_command_guard
+    def read_target(error: Exception):
+        raise error
+
+    assert read_target(fake_gdb.error("target unavailable")) is None
+    assert read_target(fake_gdb.MemoryError("unmapped memory")) is None
+    assert warnings == [
+        "read_target: error: target unavailable",
+        "read_target: MemoryError: unmapped memory",
+    ]
+    assert errors == []
+
+
+def test_gdb_command_guard_reports_unexpected_errors(monkeypatch):
+    """Unexpected command failures use the error channel without escaping."""
+    errors: list[str] = []
+    monkeypatch.setattr(bridge, "gdb", _FakeArchGdb(4, "little endian"))
+    monkeypatch.setattr(bridge, "err", errors.append)
+    monkeypatch.setattr(bridge, "is_debug", lambda: False)
+
+    @bridge.gdb_command_guard
+    def render_command():
+        raise ValueError("invalid task state")
+
+    assert render_command() is None
+    assert errors == ["render_command: ValueError: invalid task state"]
+
+
+def test_gdb_command_guard_preserves_successful_results(monkeypatch):
+    """The guard is transparent when a command body succeeds."""
+    monkeypatch.setattr(bridge, "gdb", _FakeArchGdb(4, "little endian"))
+
+    @bridge.gdb_command_guard
+    def command(value: int) -> int:
+        return value + 1
+
+    assert command(41) == 42
+    assert command.__name__ == "command"
+
+
 def test_get_arch_info_reports_a_fresh_target_snapshot(monkeypatch):
     """Architecture changes must not reuse stale pointer or endian metadata."""
     fake_gdb = _FakeArchGdb(
