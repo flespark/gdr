@@ -19,4 +19,4 @@ bash "$REPO_ROOT/ci/check-gdb-python.sh"
 bash "$SCRIPT_DIR/build-freertos.sh"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/gdr-venv}"
 uv sync --group dev
-uv run pytest tests/test_freertos_boot.py -v --tb=short
+uv run pytest tests/integration/freertos -v --tb=short

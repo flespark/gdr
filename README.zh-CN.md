@@ -152,7 +152,8 @@ RT-Thread 内核结构体发生变化（新增字段、成员重命名、偏移�
 uv sync --group dev          # 创建 .venv 并安装开发依赖
 uv run pre-commit install    # 启用 git hooks
 uv run ruff check . && uv run ruff format --check .
-uv run pytest tests/ -v      # 需要 QEMU + RT-Thread 固件
+uv run pytest tests/unit --cov
+uv run pytest tests/integration -v  # QEMU fixture 可用时运行
 ```
 
 FreeRTOS Phase 1 smoke test 会构建锁定的 STM32CubeL4 `v1.18.2`

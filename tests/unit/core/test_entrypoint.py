@@ -16,7 +16,7 @@ from rtthread.layout import RtConfig
 
 def _load_entrypoint():
     """Load ``gdr.py`` without executing its GDB-only script entry point."""
-    path = Path(__file__).resolve().parent.parent / "gdr.py"
+    path = Path(__file__).resolve().parents[3] / "gdr.py"
     spec = importlib.util.spec_from_file_location("gdr_entrypoint", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

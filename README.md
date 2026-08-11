@@ -161,7 +161,8 @@ reviewed together. See `docs/architecture.md` for the rationale.
 uv sync --group dev          # create .venv and install dev dependencies
 uv run pre-commit install    # activate git hooks
 uv run ruff check . && uv run ruff format --check .
-uv run pytest tests/ -v      # requires QEMU + RT-Thread firmware
+uv run pytest tests/unit --cov
+uv run pytest tests/integration -v  # runs when QEMU fixtures are available
 ```
 
 The FreeRTOS Phase 1 smoke test builds the locked STM32CubeL4 `v1.18.2`

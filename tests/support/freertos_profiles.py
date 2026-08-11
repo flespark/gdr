@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from tests.qemu_harness import QemuProfile
+from tests.support.qemu_harness import QemuProfile
 
 FREE_RTOS_VERSION = os.environ.get("GDR_VERSION", "10.3.1")
 FREE_RTOS_TARGET = os.environ.get("GDR_QEMU_TARGET", "b-l475e-iot01a")

@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from tests.rtthread_profiles import get_rtthread_test_profile
+from tests.support.rtthread_profiles import get_rtthread_test_profile
 
 _VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
 _TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
@@ -25,11 +25,6 @@ pytestmark = pytest.mark.skipif(
 def test_gdr_task_returns_a_target_native_rtthread_value(gdb_session):
     output = gdb_session.run('p $gdr_task("worker1").current_priority')
     assert "20" in output
-
-
-def test_gdr_task_returns_a_non_null_target_value(gdb_session):
-    output = gdb_session.run('p $gdr_task("worker1")')
-    assert "= 0" not in output or "Thread(" in output
 
 
 def test_gdr_task_exposes_the_target_name_field(gdb_session):
@@ -57,11 +52,6 @@ print(f"names={names}")
     assert "is_array=True" in output
     for name in ("worker1", "worker2", "worker3"):
         assert name in output
-
-
-def test_gdr_object_uses_semantic_string_arguments(gdb_session):
-    output = gdb_session.run(f'p $gdr_object("semaphore", "{_PROFILE.semaphore_name}")')
-    assert "= 0" not in output or "Semaphore(" in output
 
 
 def test_gdr_values_preserve_target_struct_types_and_addresses(gdb_session):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from tests.qemu_harness import QemuProfile
+from tests.support.qemu_harness import QemuProfile
 
 
 def get_rtthread_qemu_profile(gdr_root: Path) -> QemuProfile:

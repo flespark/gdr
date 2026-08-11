@@ -85,5 +85,5 @@ for ref in "${refs[@]}"; do
         "$ref" != v3.1.0 && "$ref" != v3.1.3 && "$ref" != v3.1.5 ]]; then
         continue
     fi
-    uv run pytest tests/ -v --tb=short
+    uv run pytest tests/integration/rtthread -v --tb=short
 done

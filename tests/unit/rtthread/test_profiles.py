@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.rtthread_profiles import get_rtthread_test_profile
+from tests.support.rtthread_profiles import get_rtthread_test_profile
 
 
 def test_legacy_31_profile_has_pre_null_object_codes():

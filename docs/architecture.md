@@ -192,7 +192,7 @@ while GDB requires the DWARF ELF. The shared suite asserts each profile's
 pointer width, including `sizeof(void *) == 8` for RV64 and 4 for the FreeRTOS
 Cortex-M fixture.
 
-`tests/rtthread_profiles.py` separately owns fixture-level expectations that
+`tests/support/rtthread_profiles.py` separately owns fixture-level expectations that
 vary by target or RT-Thread version: object enum values, the current-thread
 expression, and canonical fixture object names. It intentionally does not
 import production layout metadata, so a regression in GDR's layout mapping

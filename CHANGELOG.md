@@ -1,5 +1,7 @@
 # Changelog
 
+<!-- markdownlint-configure-file { "MD024": { "siblings_only": true } } -->
+
 All notable changes to GDR are documented in this file.
 
 ## [Unreleased]

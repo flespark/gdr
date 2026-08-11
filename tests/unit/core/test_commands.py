@@ -4,14 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import freertos.adapter as free_adapter
 import gdr.commands as commands
 import gdr.gdb_bridge as bridge
-import rtthread.adapter as rt_adapter
-from freertos.layout import FreeRtosLayout
-from gdr.abstractions import Timer
 from gdr.adapter_api import ObjectTable, SystemSummary, TaskSummary
-from gdr.layout import KernelLayout
 
 
 @dataclass
@@ -247,104 +242,3 @@ def test_shared_renderer_guard_contains_unexpected_adapter_errors(monkeypatch):
 
     assert commands.render_tasks() is None
     assert errors == ["render_tasks: ValueError: corrupt task list"]
-
-
-def test_freertos_system_summary_uses_one_scheduler_snapshot(monkeypatch):
-    """System rendering converts every task from one scheduler-list traversal."""
-    traversals = 0
-    source = [
-        (object(), "Running", 0),
-        (object(), "Blocked", None),
-    ]
-
-    def iter_scheduler_tasks(_layout):
-        nonlocal traversals
-        traversals += 1
-        yield from source
-
-    def convert(_value, state, core, _layout):
-        return free_adapter.FreeRtosTask(
-            name=f"task-{state.lower()}",
-            state=state,
-            current_priority=2,
-            core=core,
-        )
-
-    values = {
-        "uxCurrentNumberOfTasks": 2,
-        "xTickCount": 123,
-        "xSchedulerRunning": 1,
-    }
-    monkeypatch.setattr(free_adapter, "iter_tasks", iter_scheduler_tasks)
-    monkeypatch.setattr(free_adapter, "value_to_task", convert)
-    monkeypatch.setattr(free_adapter, "list_count", lambda _key, _layout: 0)
-    monkeypatch.setattr(free_adapter, "system_value", values.get)
-    adapter = free_adapter.FreeRtosAdapter(FreeRtosLayout(version=(10, 3, 1)))
-
-    summary = adapter.system_summary()
-
-    assert traversals == 1
-    assert summary.current_task == "task-running"
-    assert summary.task_count == 2
-    assert summary.object_counts == {"task": 2}
-
-
-def test_rtthread_task_summaries_read_current_task_once(monkeypatch):
-    """RT-Thread does not re-read the current task for every rendered row."""
-    current_reads = 0
-    converted: list[tuple[object, int]] = []
-    values = [object(), object(), object()]
-    adapter = rt_adapter.RtThreadAdapter(KernelLayout())
-
-    def current_task():
-        nonlocal current_reads
-        current_reads += 1
-        return object()
-
-    def summarize(value, current_address):
-        converted.append((value, current_address))
-        return TaskSummary(name=f"task-{len(converted)}")
-
-    monkeypatch.setattr(rt_adapter, "get_current_thread", current_task)
-    monkeypatch.setattr(rt_adapter, "_get_addr", lambda _value: 0x1234)
-    monkeypatch.setattr(rt_adapter, "iter_threads", lambda _layout: iter(values))
-    monkeypatch.setattr(adapter, "_summarize_task", summarize)
-
-    summaries = list(adapter.iter_task_summaries())
-
-    assert current_reads == 1
-    assert [summary.name for summary in summaries] == ["task-1", "task-2", "task-3"]
-    assert converted == [(value, 0x1234) for value in values]
-
-
-def test_rtthread_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
-    """Timer callbacks retain the old symbol, address, and null boundary behavior."""
-    timers = [
-        Timer(name="symbolized", callback=0x1000),
-        Timer(name="unknown", callback=0x2000),
-        Timer(name="null", callback=0),
-    ]
-    looked_up: list[int] = []
-    adapter = rt_adapter.RtThreadAdapter(KernelLayout())
-    monkeypatch.setattr(rt_adapter, "iter_timers", lambda _layout: iter(timers))
-    monkeypatch.setattr(rt_adapter, "value_to_timer", lambda value, _layout: value)
-    monkeypatch.setattr(rt_adapter, "get_tick", lambda: 123)
-    monkeypatch.setattr(
-        rt_adapter,
-        "lookup_symbol_at",
-        lambda address: (
-            looked_up.append(address)
-            or ("test_timer_timeout+0" if address == 0x1000 else None)
-        ),
-    )
-
-    table = adapter.object_table("timer")
-
-    assert table is not None
-    assert [row[-1] for row in table.rows] == [
-        "<test_timer_timeout+0>",
-        "0x2000",
-        "0x0",
-    ]
-    assert table.messages == ["Kernel tick: 123"]
-    assert looked_up == [0x1000, 0x2000]

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 
-from tests.rtthread_profiles import get_rtthread_test_profile
+import pytest
+
+from tests.support.rtthread_profiles import get_rtthread_test_profile
 
 # Symbolic thread state names (mirror rtthread.layout.ThreadState).
 # The printer's enum_map must render the raw stat int as one of these.
@@ -20,31 +22,25 @@ _PROFILE = get_rtthread_test_profile(
     _RTTHREAD_VERSION, "rv64" if _IS_RV64 else "cortex-a9"
 )
 
+pytestmark = pytest.mark.skipif(
+    os.environ.get("GDR_RTOS", "rtthread") != "rtthread",
+    reason="requires an RT-Thread QEMU profile",
+)
+
 
 class TestPrinters:
     """Pretty-printer registration and folding output."""
 
-    def test_printer_registered(self, gdb_session):
-        """Printing a known struct produces a folded summary, not a raw dump."""
-        out = gdb_session.run('p $gdr_task("worker1")')
-        # If printers work, we see "Thread(...)" instead of a raw struct dump
-        assert "Thread(" in out, f"pretty-printer not active, got:\n{out}"
-
-    def test_thread_prints_as_thread(self, gdb_session):
-        """``p $gdr_task("worker1")`` output contains ``Thread(``."""
-        out = gdb_session.run('p $gdr_task("worker1")')
-        assert "Thread(" in out, f"expected Thread( fold, got:\n{out}"
-        # Summary should include name and state
-        assert "name=" in out, f"expected name= field, got:\n{out}"
-
-    def test_thread_stat_symbolic(self, gdb_session):
-        """``stat`` field renders as a symbolic name, not a raw int.
+    def test_thread_folds_with_summary_fields(self, gdb_session):
+        """A thread folds with its name and a symbolic state.
 
         Regression guard for the enum_map feature in
         ``gdr.printers._format_field``: before the map the fold showed
         ``stat=2``; afterwards it shows ``stat=SUSPEND``.
         """
         out = gdb_session.run('p $gdr_task("worker1")')
+        assert "Thread(" in out, f"expected Thread( fold, got:\n{out}"
+        assert "name=" in out, f"expected name= field, got:\n{out}"
         assert "stat=" in out, f"expected stat= field, got:\n{out}"
         # Extract the value after ``stat=``
         after = out.split("stat=", 1)[1]
@@ -74,12 +70,6 @@ class TestPrinters:
         assert "name=" in out, f"expected name= field, got:\n{out}"
         assert 'owner=\\"worker1\\"' in out, f"expected dereferenced owner, got:\n{out}"
 
-    def test_timer_folds(self, gdb_session):
-        """A semantic timer lookup prints ``Timer(...)``."""
-        out = gdb_session.run(f'p $gdr_object("timer", "{_PROFILE.timer_name}")')
-        assert "Timer(" in out, f"expected Timer( fold, got:\n{out}"
-        assert "name=" in out, f"expected name= field, got:\n{out}"
-
     def test_function_pointer_symbolic(self, gdb_session):
         """A function pointer is rendered as its symbol and offset."""
         out = gdb_session.run_python(
@@ -94,14 +84,16 @@ print(_format_field(entry, StructField("entry", ("entry",), kind="ptr")))
         )
         assert "<" in out and ">" in out, f"expected symbolized pointer, got:\n{out}"
 
-    def test_timer_flag_symbolic(self, gdb_session):
-        """Timer ``flag`` field renders flag-bit names (ACTIVE/PERIODIC/SOFT).
+    def test_timer_folds_with_symbolic_flags(self, gdb_session):
+        """Timer output folds fields and renders ACTIVE/PERIODIC/SOFT flags.
 
         The test fixture installs ``test_timer`` as a periodic soft timer,
         so the fold must show ``ACTIVE`` and ``PERIODIC`` and ``SOFT`` rather
         than a bare ``0x7``.
         """
         out = gdb_session.run(f'p $gdr_object("timer", "{_PROFILE.timer_name}")')
+        assert "Timer(" in out, f"expected Timer( fold, got:\n{out}"
+        assert "name=" in out, f"expected name= field, got:\n{out}"
         assert "flag=" in out, f"expected flag= field, got:\n{out}"
         # test_timer is periodic + soft + activated per the fixture.
         for bit in ("ACTIVE", "PERIODIC", "SOFT"):

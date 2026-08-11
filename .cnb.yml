@@ -1,7 +1,7 @@
 # CNB pipeline for GDR.
 #
 # Seven pipelines:
-#  1. lint      — ruff check/format (fast, no QEMU)
+#  1. validate  — ruff check/format and unit-test coverage (no QEMU)
 #  2. publish-qemu-matrix-image — timestamped QEMU matrix image
 #  3. publish-gdb12-compat-image — timestamped GDB 12 compatibility image
 #  4. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
@@ -27,10 +27,10 @@
 main: # branch: main
   push:
     # ---------------------------------------------------------------
-    # lint: static checks. Uses python:3.12 because the CNB default image
+    # validate: static checks and unit coverage. Uses python:3.12 because the CNB default image
     # `cnbcool/default-build-env` only ships git/jq/rsync/curl — no pip.
     # ---------------------------------------------------------------
-    - name: lint
+    - name: validate
       docker:
         image: python:3.12
       stages:
@@ -40,6 +40,11 @@ main: # branch: main
             ruff check .
         - name: ruff format check
           script: ruff format --check .
+        - name: unit test coverage
+          script: |
+            pip install --quiet uv
+            uv sync --locked --group dev
+            uv run pytest tests/unit --cov
 
     # `docker.build` cache tags are content hashes under `dockerfile-caches`.
     # Publish stable aliases separately so the two large CI images have clear
@@ -168,7 +173,7 @@ main: # branch: main
 
   pull_request:
     # Mirror of the push pipelines, for pre-merge feedback on PRs.
-    - name: lint
+    - name: validate
       docker:
         image: python:3.12
       stages:
@@ -178,6 +183,11 @@ main: # branch: main
             ruff check .
         - name: ruff format check
           script: ruff format --check .
+        - name: unit test coverage
+          script: |
+            pip install --quiet uv
+            uv sync --locked --group dev
+            uv run pytest tests/unit --cov
 
     - name: gdb12-compat-a9
       runner:

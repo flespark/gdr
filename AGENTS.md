@@ -27,11 +27,15 @@ freertos/              FreeRTOS adapter
   commands.py          FreeRTOS command tree (`frt tasks`, `frt system`)
 gdr/                   semantic command/function core ($gdr_task, $gdr_tasks,
                        $gdr_object; internal renderers, not gdr subcommands)
-tests/                 QEMU closed-loop verification (pexpect-driven)
-  conftest.py          Cortex-A9/RV64 QEMU profiles + persistent GDB via pexpect
-  test_commands.py     aggregate command output assertions
-  test_functions.py    convenience function return-value assertions
-  test_printers.py     pretty-printer fold-output assertions
+tests/
+  unit/                hardware-independent core and adapter tests
+    core/              RTOS-neutral rendering, layout, registration, bootstrap
+    rtthread/          RT-Thread layout, navigation, version, adapter tests
+    freertos/          FreeRTOS adapter tests
+  integration/         QEMU/GDB closed-loop tests and fixtures
+    rtthread/          command, function, and pretty-printer assertions
+    freertos/          FreeRTOS boot and command assertions
+  support/             shared QEMU harness and fixture expectation profiles
 ```
 
 Key design principles (see `docs/architecture.md`):
@@ -67,7 +71,8 @@ All commands run via `uv run` (auto-activates the `.venv`):
 | `uv run ruff check .` | Lint |
 | `uv run ruff format .` | Format (black-compatible) |
 | `uv run ruff format --check .` | Verify formatting without writing |
-| `uv run pytest tests/ -v` | Run QEMU closed-loop tests |
+| `uv run pytest tests/unit --cov` | Run unit tests and enforce core coverage |
+| `uv run pytest tests/integration -v` | Run QEMU tests when fixtures exist |
 
 There is **no separate `black` tool**; `ruff format` is the drop-in
 replacement and the only formatter used.
@@ -78,7 +83,7 @@ replacement and the only formatter used.
 - Files <= 500 lines; split when approaching the limit.
 - Relative imports within packages.
 - No external runtime dependencies (GDB Python API only). Dev tools
-  (ruff/pytest/pre-commit/pexpect) live in `[dependency-groups].dev`.
+  (ruff/pytest/pytest-cov/pre-commit/pexpect) live in `[dependency-groups].dev`.
   `pexpect` drives the persistent GDB session in tests.
 - Add `# Reason:` inline comments for non-obvious *why* decisions.
 - When a layout-sensitive struct field changes in `rtthread/layout.py`,

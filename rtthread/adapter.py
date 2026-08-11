@@ -24,6 +24,7 @@ from gdr.abstractions import (
     Event,
     Mailbox,
     MemoryPool,
+    MessageQueue,
     Mutex,
     Semaphore,
     Thread,
@@ -209,10 +210,9 @@ def value_to_mailbox(val: gdb.Value, layout: KernelLayout) -> Mailbox:
     )
 
 
-def value_to_messagequeue(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
+def value_to_messagequeue(val: gdb.Value, layout: KernelLayout) -> MessageQueue:
     """Convert a ``struct rt_messagequeue`` gdb.Value to a dataclass."""
     sl = layout.structs["struct rt_messagequeue"]
-    from gdr.abstractions import MessageQueue
 
     return MessageQueue(
         name=read_cstring(read_field(val, sl, "name")) or "",

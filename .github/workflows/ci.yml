@@ -35,5 +35,7 @@ jobs:
         run: uv sync --locked --group dev
       - name: Run repository hooks
         run: uv run pre-commit run --all-files
-      - name: Run tests
-        run: uv run pytest tests/ -v
+      - name: Run unit tests with coverage
+        run: uv run pytest tests/unit -v --cov
+      - name: Run integration tests when fixtures are available
+        run: uv run pytest tests/integration -v
