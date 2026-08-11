@@ -52,8 +52,21 @@ extend-exclude = [
 
 [tool.ruff.lint]
 # PEP8 + common-sense rules. E/W = pycodestyle, F = pyflakes, I = isort,
-# UP = pyupgrade, B = bugbear, SIM = simplify.
-select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+# UP = pyupgrade, B = bugbear, SIM = simplify, ARG = unused arguments,
+# PERF = perflint, RUF059/RUF100 = unused unpacking/suppressions.
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "ARG",
+    "PERF",
+    "RUF059",
+    "RUF100",
+]
 ignore = [
     "E501",  # line length handled by formatter
 ]
