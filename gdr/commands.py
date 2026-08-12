@@ -29,28 +29,50 @@ def render_tasks() -> None:
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
+    summaries = list(adapter.iter_task_summaries())
+    # SMP capability is data-driven so UP targets and UP adapters keep the
+    # same column set.
+    smp = any(task.bind_cpu is not None or task.oncpu is not None for task in summaries)
     rows: list[list[str]] = []
-    for task in adapter.iter_task_summaries():
+    for task in summaries:
         name = task.name + (" *" if task.current_core is not None else "")
-        rows.append(
-            [
-                name,
-                task.state,
-                str(task.priority) if task.priority is not None else "N/A",
-                _display_address(task.stack_pointer),
-                str(task.stack_size) if task.stack_size is not None else "N/A",
-                str(task.stack_used) if task.stack_used is not None else "N/A",
-                str(task.high_water_mark)
-                if task.high_water_mark is not None
-                else "N/A",
-                _display_entry(task.entry),
-            ]
-        )
-    print_table(
-        rows,
-        ["Name", "State", "Prio", "SP", "Stack", "Used", "HighWater", "Entry"],
-        elastic=("Name", "Entry"),
-    )
+        row = [
+            name,
+            task.state,
+            str(task.priority) if task.priority is not None else "N/A",
+            str(task.base_priority) if task.base_priority is not None else "N/A",
+            _display_address(task.stack_pointer),
+            str(task.stack_size) if task.stack_size is not None else "N/A",
+            str(task.stack_used) if task.stack_used is not None else "N/A",
+            str(task.high_water_mark) if task.high_water_mark is not None else "N/A",
+            _display_entry(task.entry),
+        ]
+        if smp:
+            row.append(_display_int(task.oncpu))
+            row.append(_display_int(task.bind_cpu))
+        row.append(_display_address(task.address))
+        rows.append(row)
+
+    headers = [
+        "Name",
+        "State",
+        "Prio",
+        "BasePrio",
+        "SP",
+        "Stack",
+        "Used",
+        "HighWater",
+        "Entry",
+    ]
+    if smp:
+        headers += ["CPU", "Bind"]
+    headers.append("Addr")
+    print_table(rows, headers, elastic=("Name", "Entry"))
+
+
+def _display_int(value: int | None) -> str:
+    """Render an optional int as its value or ``N/A``."""
+    return str(value) if value is not None else "N/A"
 
 
 @gdb_command_guard

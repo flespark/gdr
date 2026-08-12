@@ -31,6 +31,10 @@ class TaskSummary:
     high_water_mark: int | None = None
     entry: int = 0
     current_core: int | None = None
+    # SMP capability fields stay optional so UP adapters and renderers never
+    # fabricate a CPU that the target does not expose.
+    bind_cpu: int | None = None
+    oncpu: int | None = None
 
 
 @dataclass

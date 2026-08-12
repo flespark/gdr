@@ -129,11 +129,13 @@ print(f"max_stack_used={value.max_stack_used}")
         "Name",
         "State",
         "Prio",
+        "BasePrio",
         "SP",
         "Stack",
         "Used",
         "HighWater",
         "Entry",
+        "Addr",
     ):
         assert header in output
     assert "<worker1_entry" in output
@@ -182,6 +184,7 @@ def test_rtt_semaphore_command_lists_fixture_data(rtt_outputs):
     output = rtt_outputs["semaphores"]
     assert "test_sem" in output
     assert "Value" in output
+    assert "Policy" in output
     assert "Addr" in output
 
 
@@ -189,10 +192,12 @@ def test_rtt_event_command_matches_target_memory(rtt_outputs, ipc_fixture_values
     """The event table preserves the target's bit set, waiters, and address."""
     output = rtt_outputs["events"]
     assert "Set" in output
+    assert "Policy" in output
     assert "Waiters" in output
     assert _fixture_row(output, _PROFILE.event_name) == [
         _PROFILE.event_name,
         hex(int(ipc_fixture_values["event.set"])),
+        "FIFO",
         "0",
         hex(int(ipc_fixture_values["event.address"])),
     ]
@@ -201,14 +206,28 @@ def test_rtt_event_command_matches_target_memory(rtt_outputs, ipc_fixture_values
 def test_rtt_mailbox_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
     """The mailbox table preserves occupancy, offsets, waiters, and address."""
     output = rtt_outputs["mailboxs"]
-    for header in ("Entry", "Size", "In", "Out", "RecvWait", "SendWait", "Addr"):
+    for header in (
+        "Entry",
+        "Size",
+        "Free",
+        "In",
+        "Out",
+        "Policy",
+        "RecvWait",
+        "SendWait",
+        "Addr",
+    ):
         assert header in output
+    mailbox_size = int(ipc_fixture_values["mailbox.size"])
+    mailbox_entry = int(ipc_fixture_values["mailbox.entry"])
     assert _fixture_row(output, _PROFILE.mailbox_name) == [
         _PROFILE.mailbox_name,
         ipc_fixture_values["mailbox.entry"],
         ipc_fixture_values["mailbox.size"],
+        str(max(mailbox_size - mailbox_entry, 0)),
         ipc_fixture_values["mailbox.in_offset"],
         ipc_fixture_values["mailbox.out_offset"],
+        "FIFO",
         "0",
         "0",
         hex(int(ipc_fixture_values["mailbox.address"])),
@@ -220,14 +239,27 @@ def test_rtt_messagequeue_command_matches_target_memory(
 ):
     """The messagequeue table preserves capacity, waiters, and address."""
     output = rtt_outputs["messagequeues"]
-    for header in ("Entry", "MsgSize", "MaxMsgs", "RecvWait", "SendWait", "Addr"):
+    for header in (
+        "Entry",
+        "MsgSize",
+        "MaxMsgs",
+        "Free",
+        "Policy",
+        "RecvWait",
+        "SendWait",
+        "Addr",
+    ):
         assert header in output
     sender_cell = "0" if _PROFILE.mq_sender_list else "N/A"
+    max_msgs = int(ipc_fixture_values["msgqueue.max_msgs"])
+    entry = int(ipc_fixture_values["msgqueue.entry"])
     assert _fixture_row(output, _PROFILE.msgqueue_name) == [
         _PROFILE.msgqueue_name,
         ipc_fixture_values["msgqueue.entry"],
         ipc_fixture_values["msgqueue.msg_size"],
         ipc_fixture_values["msgqueue.max_msgs"],
+        str(max(max_msgs - entry, 0)),
+        "FIFO",
         "0",
         sender_cell,
         hex(int(ipc_fixture_values["msgqueue.address"])),
@@ -263,13 +295,16 @@ print(f"has_suspend_sender_thread={'suspend_sender_thread' in field_names}")
 def test_rtt_mempool_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
     """The mempool table preserves block counts, size, waiters, and address."""
     output = rtt_outputs["mempools"]
-    for header in ("BlockSize", "Total", "Free", "Waiters", "Addr"):
+    for header in ("BlockSize", "Total", "Free", "Used", "Waiters", "Addr"):
         assert header in output
+    total = int(ipc_fixture_values["mempool.block_total_count"])
+    free = int(ipc_fixture_values["mempool.block_free_count"])
     assert _fixture_row(output, _PROFILE.mempool_name) == [
         _PROFILE.mempool_name,
         ipc_fixture_values["mempool.block_size"],
         ipc_fixture_values["mempool.block_total_count"],
         ipc_fixture_values["mempool.block_free_count"],
+        str(max(total - free, 0)),
         "0",
         hex(int(ipc_fixture_values["mempool.address"])),
     ]
@@ -281,6 +316,8 @@ def test_rtt_timer_command_lists_fixture_data(rtt_outputs):
     assert "test_timer" in output
     assert "Kernel tick:" in output
     assert "Callback" in output
+    assert "ExpiresIn" in output
+    assert "Addr" in output
     timer_row = next(line for line in output.splitlines() if "test_timer" in line)
     assert "periodic" in timer_row.lower()
     assert "soft" in timer_row.lower()
@@ -301,9 +338,15 @@ def test_rtt_tables_keep_column_set_at_80_columns(gdb):
     """A narrow GDB width never removes columns; only elastic text shrinks."""
     with _with_width(gdb, 80):
         for command, required in (
-            ("rtt semaphores", ("Name", "Value", "Addr")),
-            ("rtt threads", ("Name", "State", "Prio", "SP", "Stack", "Entry")),
-            ("rtt mutexes", ("Name", "Value", "Hold", "Owner", "Addr")),
+            ("rtt semaphores", ("Name", "Value", "Policy", "Addr")),
+            (
+                "rtt threads",
+                ("Name", "State", "Prio", "BasePrio", "SP", "Stack", "Entry", "Addr"),
+            ),
+            (
+                "rtt mutexes",
+                ("Name", "Value", "Hold", "OrigPrio", "Owner", "Policy", "Addr"),
+            ),
         ):
             output = gdb.run(command, timeout=20)
             assert "usage: rtthread" not in output, output

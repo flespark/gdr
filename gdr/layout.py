@@ -133,6 +133,10 @@ class KernelLayout:
             names to target-specific numeric type codes.
         stack_grows_up: Whether thread stacks grow toward higher addresses, or
             ``None`` when the target direction cannot be determined.
+        cpu_count: Number of configured CPUs for SMP kernels, or ``None`` for
+            UP targets or when the count cannot be probed. SMP capability
+            fields (e.g. ``oncpu``/``bind_cpu``) are only meaningful relative
+            to this bound.
     """
 
     structs: dict[str, StructLayout] = field(default_factory=dict)
@@ -140,6 +144,7 @@ class KernelLayout:
     object_types: dict[int, ObjectTypeInfo] = field(default_factory=dict)
     object_codes: dict[str, int] = field(default_factory=dict)
     stack_grows_up: bool | None = None
+    cpu_count: int | None = None
 
 
 # ---------------------------------------------------------------------------

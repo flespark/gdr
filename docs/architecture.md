@@ -164,6 +164,21 @@ Waiter traversal is bounded and corruption-guarded: it recovers threads via
 names as `<invalid>`. The layout drives both the field paths and the version
 boundaries, so adapter code never hardcodes offsets.
 
+### Default-table enhancements
+
+IPC and mempool tables derive capacity from the kernel's own counters:
+mailboxes and message queues show `Free = capacity - entry`, memory pools show
+`Used = total - free`, and IPC objects carry a `FIFO`/`PRIO` policy column
+decoded from the object flag. Mutex rows include the owner's
+`original_priority` for priority-inheritance analysis, and timer rows add the
+object `Addr` plus a wrap-safe `ExpiresIn` (inactive timers render `N/A`).
+
+Task lists add `BasePrio` and `Addr` for every adapter. On SMP targets they
+also show `CPU`/`Bind`: the current task reports its real `oncpu` instead of a
+hardcoded core 0, and CPU 0 is a legal value — the adapter distinguishes
+"no SMP field / unbound / not running" (`None`) from a genuine CPU index. UP
+targets keep the current marker on core 0 and never fabricate CPU columns.
+
 ### Table width handling
 
 List tables render at the current terminal width using a fixed priority:

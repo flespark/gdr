@@ -58,9 +58,9 @@ def thread_detail(thread: Thread) -> list[tuple[str, str]]:
         ("HighWater", _optional_int(thread.max_stack_used)),
         ("Entry", _symbol_or_hex(thread.entry)),
     ]
-    if thread.bind_cpu >= 0:
+    if thread.bind_cpu is not None:
         pairs.append(("BindCPU", str(thread.bind_cpu)))
-    if thread.oncpu >= 0:
+    if thread.oncpu is not None:
         pairs.append(("OnCPU", str(thread.oncpu)))
     return pairs
 

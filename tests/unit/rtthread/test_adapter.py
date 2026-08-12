@@ -38,6 +38,48 @@ def test_task_summaries_read_current_task_once(monkeypatch):
     assert converted == [(value, 0x1234) for value in values]
 
 
+def test_smp_task_summary_uses_real_oncpu(monkeypatch):
+    """The current task reports its actual CPU, not a hardcoded core 0."""
+    from gdr.abstractions import Thread
+
+    current_value = object()
+    current_thread = Thread(
+        name="worker",
+        address=0x2000,
+        current_priority=20,
+        init_priority=20,
+        oncpu=1,
+        bind_cpu=0,
+    )
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(cpu_count=2))
+    monkeypatch.setattr(
+        adapter_module, "value_to_thread", lambda _value, _layout: current_thread
+    )
+
+    summary = adapter._summarize_task(current_value, 0x2000)
+
+    assert summary.current_core == 1
+    assert summary.oncpu == 1
+    assert summary.bind_cpu == 0
+
+
+def test_up_task_summary_keeps_core_zero_marker(monkeypatch):
+    """UP targets keep the current marker on core 0 without SMP fields."""
+    from gdr.abstractions import Thread
+
+    current_thread = Thread(name="main", address=0x3000, oncpu=None, bind_cpu=None)
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+    monkeypatch.setattr(
+        adapter_module, "value_to_thread", lambda _value, _layout: current_thread
+    )
+
+    summary = adapter._summarize_task(object(), 0x3000)
+
+    assert summary.current_core == 0
+    assert summary.oncpu is None
+    assert summary.bind_cpu is None
+
+
 def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
     """Timer callbacks preserve symbol, address, and null boundary behavior."""
     timers = [
@@ -62,7 +104,8 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
     table = adapter.object_table("timer")
 
     assert table is not None
-    assert [row[-1] for row in table.rows] == [
+    callback_idx = table.headers.index("Callback")
+    assert [row[callback_idx] for row in table.rows] == [
         "<test_timer_timeout+0>",
         "0x2000",
         "0x0",
@@ -78,8 +121,8 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
             "event",
             "struct rt_event",
             Event(name="ready", set=0x3, address=0x1000),
-            ["Name", "Set", "Waiters", "Addr"],
-            ["ready", "0x3", "0", "0x1000"],
+            ["Name", "Set", "Policy", "Waiters", "Addr"],
+            ["ready", "0x3", "N/A", "0", "0x1000"],
         ),
         (
             "mailbox",
@@ -92,15 +135,36 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
                 out_offset=1,
                 address=0x2000,
             ),
-            ["Name", "Entry", "Size", "In", "Out", "RecvWait", "SendWait", "Addr"],
-            ["input", "2", "8", "3", "1", "0", "0", "0x2000"],
+            [
+                "Name",
+                "Entry",
+                "Size",
+                "Free",
+                "In",
+                "Out",
+                "Policy",
+                "RecvWait",
+                "SendWait",
+                "Addr",
+            ],
+            ["input", "2", "8", "6", "3", "1", "N/A", "0", "0", "0x2000"],
         ),
         (
             "msgqueue",
             "struct rt_messagequeue",
             MessageQueue(name="work", entry=3, msg_size=16, max_msgs=8, address=0x3000),
-            ["Name", "Entry", "MsgSize", "MaxMsgs", "RecvWait", "SendWait", "Addr"],
-            ["work", "3", "16", "8", "0", "N/A", "0x3000"],
+            [
+                "Name",
+                "Entry",
+                "MsgSize",
+                "MaxMsgs",
+                "Free",
+                "Policy",
+                "RecvWait",
+                "SendWait",
+                "Addr",
+            ],
+            ["work", "3", "16", "8", "5", "N/A", "0", "N/A", "0x3000"],
         ),
         (
             "mempool",
@@ -112,8 +176,8 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
                 block_free_count=4,
                 address=0x4000,
             ),
-            ["Name", "BlockSize", "Total", "Free", "Waiters", "Addr"],
-            ["blocks", "32", "10", "4", "0", "0x4000"],
+            ["Name", "BlockSize", "Total", "Free", "Used", "Waiters", "Addr"],
+            ["blocks", "32", "10", "4", "6", "0", "0x4000"],
         ),
     ),
 )
@@ -364,14 +428,16 @@ def test_mailbox_table_splits_receiver_and_sender_waiters(monkeypatch):
         "Name",
         "Entry",
         "Size",
+        "Free",
         "In",
         "Out",
+        "Policy",
         "RecvWait",
         "SendWait",
         "Addr",
     ]
     assert table.rows == [
-        ["input", "0", "0", "0", "0", "1:recv1", "2:send1,send2", "0x2000"]
+        ["input", "0", "0", "0", "0", "0", "N/A", "1:recv1", "2:send1,send2", "0x2000"]
     ]
 
 
@@ -402,4 +468,32 @@ def test_messagequeue_table_honors_sender_list_availability(monkeypatch):
     table = adapter.object_table("msgqueue")
 
     assert table is not None
-    assert table.rows == [["work", "0", "0", "0", "1:recv1", "N/A", "0x3000"]]
+    assert table.rows == [
+        ["work", "0", "0", "0", "0", "N/A", "1:recv1", "N/A", "0x3000"]
+    ]
+
+
+def test_cpu_or_none_preserves_cpu_zero():
+    """A legal CPU 0 must never be coerced to -1."""
+    assert adapter_module._cpu_or_none(0, 2) == 0
+    assert adapter_module._cpu_or_none(1, 2) == 1
+    assert adapter_module._cpu_or_none(None, 2) is None
+    assert adapter_module._cpu_or_none(2, 2) is None
+    assert adapter_module._cpu_or_none(-1, 2) is None
+    assert adapter_module._cpu_or_none(0, None) == 0
+
+
+def test_ipc_policy_decodes_fifo_and_prio():
+    """IPC policy decoding covers FIFO/PRIO and unknown flag values."""
+    assert adapter_module._ipc_policy(0) == "FIFO"
+    assert adapter_module._ipc_policy(0x01) == "PRIO"
+    assert adapter_module._ipc_policy(None) == "N/A"
+    assert adapter_module._ipc_policy(0x40) == "0x40"
+
+
+def test_timer_expires_in_wraps_safely():
+    """Timer remaining time survives 32-bit tick wraparound."""
+    assert adapter_module._timer_expires_in(100, 90) == "10"
+    assert adapter_module._timer_expires_in(0xFFFFFFF5, 0xFFFFFFF0) == "5"
+    assert adapter_module._timer_expires_in(0x00000005, 0xFFFFFFF0) == "21"
+    assert adapter_module._timer_expires_in(100, None) is None

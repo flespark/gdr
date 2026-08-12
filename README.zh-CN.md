@@ -111,6 +111,13 @@ IPC 与内存池列表以 `count:names` 摘要显示等待线程：信号量、�
 等待数量一律通过遍历挂起链表得出（不读旧版本才有的缓存计数），没有发送
 等待链表的版本显示 `N/A` 而不是伪造的 `0`。
 
+默认表还会从内核自身计数派生容量：邮箱与消息队列显示 `Free = capacity
+- entry`，内存池显示 `Used = total - free`，IPC 对象带有由对象 flag 解码的
+`FIFO`/`PRIO` 策略列。互斥量行包含 `OrigPrio` 用于优先级继承分析，定时器
+显示 `Addr` 与回绕安全的 `ExpiresIn`（非活动定时器显示 `N/A`）。任务列表
+增加 `BasePrio` 与 `Addr`；SMP 目标还会显示 `CPU`/`Bind`，当前任务报告真实
+的 `oncpu`，且 CPU 0 是合法值。
+
 单个对象的详情也可以通过命令查看：`rtt <object> <name>`
 （如 `rtt semaphore my_sem`、`rtt thread worker1`），以纵向 `Key: Value`
 呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。事件详情还会

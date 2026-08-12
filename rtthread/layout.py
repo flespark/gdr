@@ -25,6 +25,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 
+try:
+    import gdb
+except ImportError:
+    gdb = None  # type: ignore[assignment]
+
 from gdr.layout import (
     KernelLayout,
     ListHook,
@@ -60,6 +65,10 @@ RT_TIMER_FLAG_SOFT_TIMER = 0x4
 RT_EVENT_FLAG_AND = 0x1
 RT_EVENT_FLAG_OR = 0x2
 RT_EVENT_FLAG_CLEAR = 0x4
+
+# IPC scheduling policy bits (rtdef.h)
+RT_IPC_FLAG_FIFO = 0x00
+RT_IPC_FLAG_PRIO = 0x01
 
 # Thread stat mask (rtdef.h)
 RT_THREAD_STAT_MASK = 0x07
@@ -149,6 +158,36 @@ def _is_legacy_31(version: tuple[int, int, int]) -> bool:
     return (3, 1, 0) <= version <= (3, 1, 2)
 
 
+def _probe_cpu_count(lookup_symbol) -> int | None:
+    """Probe the SMP CPU count from target symbols.
+
+    ``struct rt_cpu _rt_cpus[RT_CPUS_NR]`` (4.x) or ``rt_cpus[]`` (3.1) is a
+    global array whose length equals the configured CPU count. Falling back to
+    ``RT_CPUS_NR`` only when the macro is visible; otherwise return ``None``
+    and callers treat unknown CPU values conservatively.
+    """
+    for symbol_name in ("_rt_cpus", "rt_cpus"):
+        array = lookup_symbol(symbol_name)
+        if array is None:
+            continue
+        try:
+            array_type = array.type.strip_typedefs()
+            if array_type.code == gdb.TYPE_CODE_ARRAY:
+                low, high = array_type.range()
+                return high - low + 1
+        except (gdb.error, AttributeError, TypeError, ValueError):
+            continue
+
+    macro = lookup_symbol("RT_CPUS_NR")
+    if macro is not None:
+        try:
+            count = int(macro)
+            return count if count > 0 else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _messagequeue_has_sender_list(version: tuple[int, int, int]) -> bool:
     """Return whether ``rt_messagequeue`` has ``suspend_sender_thread``.
 
@@ -229,6 +268,7 @@ class RtConfig:
     thread_has_pthread_data: bool = False
     heap_type: str = "none"  # "small_mem", "slab", "memheap", "none"
     stack_grows_up: bool | None = None
+    cpu_count: int | None = None
 
 
 def detect_config() -> RtConfig:
@@ -245,11 +285,13 @@ def detect_config() -> RtConfig:
     Raises:
         RuntimeError: if not running inside GDB.
     """
-    from gdr.gdb_bridge import lookup_type, macro_defined, symbol_exists
+    from gdr.gdb_bridge import lookup_symbol, lookup_type, macro_defined, symbol_exists
 
     cfg = RtConfig()
 
     cfg.smp = symbol_exists("rt_cpu_index")
+    if cfg.smp:
+        cfg.cpu_count = _probe_cpu_count(lookup_symbol)
     cfg.using_module = symbol_exists("rt_dlmodule_init")
     cfg.using_semaphore = symbol_exists("rt_sem_init")
     cfg.using_mutex = symbol_exists("rt_mutex_init")
@@ -696,7 +738,11 @@ def build_layouts(
     """
     object_codes = _object_codes(version)
     object_type_names = _object_type_names(object_codes)
-    kl = KernelLayout(stack_grows_up=cfg.stack_grows_up, object_codes=object_codes)
+    kl = KernelLayout(
+        stack_grows_up=cfg.stack_grows_up,
+        cpu_count=cfg.cpu_count,
+        object_codes=object_codes,
+    )
 
     # Struct layouts
     kl.structs["struct rt_thread"] = build_thread_layout(

@@ -46,11 +46,13 @@ def test_tasks_renders_symbols_address_fallbacks_and_optional_values(monkeypatch
                 name="symbolized",
                 state="Ready",
                 priority=20,
+                base_priority=20,
                 stack_pointer=0x3000,
                 stack_size=1024,
                 stack_used=128,
                 high_water_mark=256,
                 entry=0x1000,
+                address=0x4000,
                 current_core=0,
             ),
             TaskSummary(name="unknown", state="Suspend", entry=0x2000),
@@ -91,11 +93,13 @@ def test_tasks_renders_symbols_address_fallbacks_and_optional_values(monkeypatch
                     "symbolized *",
                     "Ready",
                     "20",
+                    "20",
                     "0x3000",
                     "1024",
                     "128",
                     "256",
                     "<worker_entry+0>",
+                    "0x4000",
                 ],
                 [
                     "unknown",
@@ -105,11 +109,35 @@ def test_tasks_renders_symbols_address_fallbacks_and_optional_values(monkeypatch
                     "N/A",
                     "N/A",
                     "N/A",
+                    "N/A",
                     "0x2000",
+                    "N/A",
                 ],
-                ["zero", "Unknown", "0", "N/A", "0", "0", "0", "N/A"],
+                [
+                    "zero",
+                    "Unknown",
+                    "0",
+                    "N/A",
+                    "N/A",
+                    "0",
+                    "0",
+                    "0",
+                    "N/A",
+                    "N/A",
+                ],
             ],
-            ["Name", "State", "Prio", "SP", "Stack", "Used", "HighWater", "Entry"],
+            [
+                "Name",
+                "State",
+                "Prio",
+                "BasePrio",
+                "SP",
+                "Stack",
+                "Used",
+                "HighWater",
+                "Entry",
+                "Addr",
+            ],
         )
     ]
 
@@ -241,6 +269,80 @@ def test_tasks_renderer_passes_elastic_metadata(monkeypatch):
     commands.render_tasks()
 
     assert tables[0][2] == ("Name", "Entry")
+
+
+def test_tasks_renderer_adds_cpu_and_bind_for_smp(monkeypatch):
+    """SMP adapters surface CPU/Bind columns with the real CPU placement."""
+    adapter = _Adapter(
+        tasks=[
+            TaskSummary(
+                name="worker1",
+                state="Running",
+                priority=20,
+                current_core=1,
+                oncpu=1,
+                bind_cpu=0,
+                address=0x1000,
+            ),
+            TaskSummary(name="worker2", state="Ready", priority=21, address=0x2000),
+        ]
+    )
+    tables: list[tuple[list[list[str]], list[str]]] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(commands, "lookup_symbol_at", lambda _address: None)
+    monkeypatch.setattr(
+        commands,
+        "print_table",
+        lambda rows, headers, **_kwargs: tables.append((rows, headers)),
+    )
+
+    commands.render_tasks()
+
+    headers = tables[0][1]
+    assert headers == [
+        "Name",
+        "State",
+        "Prio",
+        "BasePrio",
+        "SP",
+        "Stack",
+        "Used",
+        "HighWater",
+        "Entry",
+        "CPU",
+        "Bind",
+        "Addr",
+    ]
+    assert tables[0][0] == [
+        [
+            "worker1 *",
+            "Running",
+            "20",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "1",
+            "0",
+            "0x1000",
+        ],
+        [
+            "worker2",
+            "Ready",
+            "21",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "N/A",
+            "0x2000",
+        ],
+    ]
 
 
 def test_objects_only_counts_when_no_detailed_table_is_available(monkeypatch):

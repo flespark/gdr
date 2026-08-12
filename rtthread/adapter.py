@@ -52,6 +52,8 @@ from rtthread.layout import (
     RT_EVENT_FLAG_AND,
     RT_EVENT_FLAG_CLEAR,
     RT_EVENT_FLAG_OR,
+    RT_IPC_FLAG_FIFO,
+    RT_IPC_FLAG_PRIO,
     RT_THREAD_STACK_FILL,
     RT_TIMER_FLAG_ACTIVATED,
     RT_TIMER_FLAG_PERIODIC,
@@ -143,8 +145,10 @@ def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
         entry=read_int(read_field(val, sl, "entry")) or 0,
         error=read_int(read_field(val, sl, "error")) or 0,
         remaining_tick=read_int(read_field(val, sl, "remaining_tick")) or 0,
-        bind_cpu=read_int(read_field(val, sl, "bind_cpu")) or -1,
-        oncpu=read_int(read_field(val, sl, "oncpu")) or -1,
+        bind_cpu=_cpu_or_none(
+            read_int(read_field(val, sl, "bind_cpu")), layout.cpu_count
+        ),
+        oncpu=_cpu_or_none(read_int(read_field(val, sl, "oncpu")), layout.cpu_count),
     )
 
 
@@ -254,6 +258,45 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
+
+def _cpu_or_none(raw: int | None, cpu_count: int | None) -> int | None:
+    """Map a raw SMP CPU field to a CPU index, or ``None`` when meaningless.
+
+    ``None`` covers three cases that must not become a fake ``-1`` or a fake
+    valid CPU: the field is absent (UP build), the thread is unbound /
+    not-running (sentinel ``RT_CPUS_NR``), or the value is out of range.
+    """
+    if raw is None:
+        return None
+    if cpu_count is not None and (raw < 0 or raw >= cpu_count):
+        return None
+    return raw
+
+
+def _ipc_policy(flag: int | None) -> str:
+    """Decode an RT-Thread IPC object's scheduling policy from its flag."""
+    if flag is None:
+        return "N/A"
+    if flag & RT_IPC_FLAG_PRIO:
+        return "PRIO"
+    if flag & RT_IPC_FLAG_FIFO or flag == 0:
+        return "FIFO"
+    return hex(flag)
+
+
+def _timer_expires_in(timeout_tick: int, current_tick: int | None) -> str | None:
+    """Return the wrap-safe remaining ticks for a timer, or ``None``.
+
+    RT-Thread ticks are 32-bit unsigned; ``timeout_tick - current_tick`` is
+    valid across wraparound, so no signed overflow handling is needed. ``None``
+    means the timer is inactive or the kernel tick is unavailable.
+    """
+    if current_tick is None:
+        return None
+    # Reason: ticks are unsigned 32-bit; the subtraction already wraps safely
+    # on the target, so re-apply the mask to keep the host value positive.
+    return str((timeout_tick - current_tick) & 0xFFFFFFFF)
 
 
 def _waiter_summary(
@@ -382,10 +425,16 @@ class RtThreadAdapter(RtosAdapter):
             rows = []
             for value in values:
                 semaphore = value_to_semaphore(value, self.layout)
+                flag = read_int(
+                    read_field(
+                        value, self.layout.structs["struct rt_semaphore"], "flag"
+                    )
+                )
                 rows.append(
                     [
                         semaphore.name,
                         str(semaphore.value),
+                        _ipc_policy(flag),
                         _waiter_summary(
                             value, self.layout, "struct rt_semaphore", "suspend_thread"
                         ),
@@ -393,7 +442,7 @@ class RtThreadAdapter(RtosAdapter):
                     ]
                 )
             return ObjectTable(
-                ["Name", "Value", "Waiters", "Addr"],
+                ["Name", "Value", "Policy", "Waiters", "Addr"],
                 rows,
                 elastic=("Name", "Waiters"),
             )
@@ -404,12 +453,17 @@ class RtThreadAdapter(RtosAdapter):
             rows = []
             for value in values:
                 mutex = value_to_mutex(value, self.layout)
+                flag = read_int(
+                    read_field(value, self.layout.structs["struct rt_mutex"], "flag")
+                )
                 rows.append(
                     [
                         mutex.name,
                         str(mutex.value),
                         str(mutex.hold),
+                        str(mutex.original_priority),
                         mutex.owner or "N/A",
+                        _ipc_policy(flag),
                         _waiter_summary(
                             value, self.layout, "struct rt_mutex", "suspend_thread"
                         ),
@@ -417,7 +471,16 @@ class RtThreadAdapter(RtosAdapter):
                     ]
                 )
             return ObjectTable(
-                ["Name", "Value", "Hold", "Owner", "Waiters", "Addr"],
+                [
+                    "Name",
+                    "Value",
+                    "Hold",
+                    "OrigPrio",
+                    "Owner",
+                    "Policy",
+                    "Waiters",
+                    "Addr",
+                ],
                 rows,
                 elastic=("Name", "Owner", "Waiters"),
             )
@@ -428,10 +491,14 @@ class RtThreadAdapter(RtosAdapter):
             rows = []
             for value in values:
                 event = value_to_event(value, self.layout)
+                flag = read_int(
+                    read_field(value, self.layout.structs["struct rt_event"], "flag")
+                )
                 rows.append(
                     [
                         event.name,
                         hex(event.set),
+                        _ipc_policy(flag),
                         _waiter_summary(
                             value, self.layout, "struct rt_event", "suspend_thread"
                         ),
@@ -439,7 +506,7 @@ class RtThreadAdapter(RtosAdapter):
                     ]
                 )
             return ObjectTable(
-                ["Name", "Set", "Waiters", "Addr"],
+                ["Name", "Set", "Policy", "Waiters", "Addr"],
                 rows,
                 elastic=("Name", "Waiters"),
             )
@@ -450,13 +517,18 @@ class RtThreadAdapter(RtosAdapter):
             rows = []
             for value in values:
                 mailbox = value_to_mailbox(value, self.layout)
+                flag = read_int(
+                    read_field(value, self.layout.structs["struct rt_mailbox"], "flag")
+                )
                 rows.append(
                     [
                         mailbox.name,
                         str(mailbox.entry),
                         str(mailbox.size),
+                        str(max(mailbox.size - mailbox.entry, 0)),
                         str(mailbox.in_offset),
                         str(mailbox.out_offset),
+                        _ipc_policy(flag),
                         _waiter_summary(
                             value, self.layout, "struct rt_mailbox", "suspend_thread"
                         ),
@@ -470,7 +542,18 @@ class RtThreadAdapter(RtosAdapter):
                     ]
                 )
             return ObjectTable(
-                ["Name", "Entry", "Size", "In", "Out", "RecvWait", "SendWait", "Addr"],
+                [
+                    "Name",
+                    "Entry",
+                    "Size",
+                    "Free",
+                    "In",
+                    "Out",
+                    "Policy",
+                    "RecvWait",
+                    "SendWait",
+                    "Addr",
+                ],
                 rows,
                 elastic=("Name", "RecvWait", "SendWait"),
             )
@@ -487,12 +570,19 @@ class RtThreadAdapter(RtosAdapter):
             rows = []
             for value in values:
                 msgqueue = value_to_messagequeue(value, self.layout)
+                flag = read_int(
+                    read_field(
+                        value, self.layout.structs["struct rt_messagequeue"], "flag"
+                    )
+                )
                 rows.append(
                     [
                         msgqueue.name,
                         str(msgqueue.entry),
                         str(msgqueue.msg_size),
                         str(msgqueue.max_msgs),
+                        str(max(msgqueue.max_msgs - msgqueue.entry, 0)),
+                        _ipc_policy(flag),
                         _waiter_summary(
                             value,
                             self.layout,
@@ -515,6 +605,8 @@ class RtThreadAdapter(RtosAdapter):
                     "Entry",
                     "MsgSize",
                     "MaxMsgs",
+                    "Free",
+                    "Policy",
                     "RecvWait",
                     "SendWait",
                     "Addr",
@@ -535,6 +627,9 @@ class RtThreadAdapter(RtosAdapter):
                         str(mempool.block_size),
                         str(mempool.block_total_count),
                         str(mempool.block_free_count),
+                        str(
+                            max(mempool.block_total_count - mempool.block_free_count, 0)
+                        ),
                         _waiter_summary(
                             value, self.layout, "struct rt_mempool", "suspend_thread"
                         ),
@@ -542,12 +637,13 @@ class RtThreadAdapter(RtosAdapter):
                     ]
                 )
             return ObjectTable(
-                ["Name", "BlockSize", "Total", "Free", "Waiters", "Addr"],
+                ["Name", "BlockSize", "Total", "Free", "Used", "Waiters", "Addr"],
                 rows,
                 elastic=("Name", "Waiters"),
             )
         if kind == "timer":
             rows = []
+            current_tick = get_tick()
             for value in iter_timers(self.layout):
                 timer = value_to_timer(value, self.layout)
                 callback = lookup_symbol_at(timer.callback) if timer.callback else None
@@ -559,10 +655,13 @@ class RtThreadAdapter(RtosAdapter):
                         "soft" if timer.soft_timer else "hard",
                         str(timer.init_tick),
                         str(timer.timeout_tick),
+                        _timer_expires_in(timer.timeout_tick, current_tick)
+                        if timer.active
+                        else "N/A",
                         f"<{callback}>" if callback else hex(timer.callback),
+                        hex(timer.address),
                     ]
                 )
-            tick = get_tick()
             return ObjectTable(
                 [
                     "Name",
@@ -571,10 +670,12 @@ class RtThreadAdapter(RtosAdapter):
                     "Type",
                     "InitTick",
                     "TimeoutTick",
+                    "ExpiresIn",
                     "Callback",
+                    "Addr",
                 ],
                 rows,
-                [f"Kernel tick: {tick if tick is not None else 'N/A'}"],
+                [f"Kernel tick: {current_tick if current_tick is not None else 'N/A'}"],
                 elastic=("Name", "Callback"),
             )
         return None
@@ -623,6 +724,15 @@ class RtThreadAdapter(RtosAdapter):
             state = ThreadState(thread.state).name.title()
         except ValueError:
             state = "Unknown"
+        is_current = current_address == thread.address and thread.address
+        # SMP reports the real CPU; UP keeps the current marker on core 0.
+        current_core = (
+            thread.oncpu
+            if is_current and thread.oncpu is not None
+            else 0
+            if is_current
+            else None
+        )
         return TaskSummary(
             name=thread.name,
             address=thread.address,
@@ -634,9 +744,9 @@ class RtThreadAdapter(RtosAdapter):
             stack_used=thread.stack_used,
             high_water_mark=thread.max_stack_used,
             entry=thread.entry,
-            current_core=0
-            if current_address == thread.address and thread.address
-            else None,
+            current_core=current_core,
+            bind_cpu=thread.bind_cpu,
+            oncpu=thread.oncpu,
         )
 
     def iter_task_summaries(self):

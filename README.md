@@ -121,6 +121,14 @@ by traversing each suspend list (never a cached counter that later kernels
 removed), and versions without a sender wait list show `N/A` instead of a
 fabricated `0`.
 
+Default tables also derive capacity from the kernel's own counters: mailboxes
+and message queues show `Free = capacity - entry`, memory pools show
+`Used = total - free`, and IPC objects carry a `FIFO`/`PRIO` policy column.
+Mutex rows include `OrigPrio` for priority-inheritance analysis, and timers
+show `Addr` plus a wrap-safe `ExpiresIn` (inactive timers render `N/A`). Task
+lists add `BasePrio` and `Addr`; SMP targets additionally show `CPU`/`Bind`,
+where the current task reports its real `oncpu` and CPU 0 is a valid value.
+
 Single-object detail is also available as a command: `rtt <object> <name>`
 (e.g. `rtt semaphore my_sem`, `rtt thread worker1`). It prints a vertical
 `Key: Value` view of one object without disturbing `$gdr_object()`, which

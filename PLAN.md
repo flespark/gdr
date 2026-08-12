@@ -294,20 +294,20 @@ Detail 不替代 `$gdr_object()`：前者提供可读摘要和校验，后者继
 
 ### 11.8 TODO：P1 默认表增强和缺陷修复
 
-- [ ] Mutex 打印 converter 已读取的 `original_priority`，用于分析 priority
+- [x] Mutex 打印 converter 已读取的 `original_priority`，用于分析 priority
   inheritance 和 priority inversion；
-- [ ] Mailbox 增加派生 `Free = size - entry`；
-- [ ] Messagequeue 增加派生 `Free = max_msgs - entry`；
-- [ ] Mempool 增加派生 `Used = total - free`，必要时再增加使用率；
-- [ ] Timer 表增加 `Addr`；
-- [ ] Timer 增加回绕安全的 `ExpiresIn`，inactive timer 显示 `N/A`；
-- [ ] Task 表显示已有的 `Addr` 和 `BasePrio`，同步更新 FreeRTOS 单元与集成
+- [x] Mailbox 增加派生 `Free = size - entry`；
+- [x] Messagequeue 增加派生 `Free = max_msgs - entry`；
+- [x] Mempool 增加派生 `Used = total - free`，必要时再增加使用率；
+- [x] Timer 表增加 `Addr`；
+- [x] Timer 增加回绕安全的 `ExpiresIn`，inactive timer 显示 `N/A`；
+- [x] Task 表显示已有的 `Addr` 和 `BasePrio`，同步更新 FreeRTOS 单元与集成
   测试；
-- [ ] 修复 `bind_cpu/oncpu` 将合法 CPU 0 转换为 `-1` 的问题；
-- [ ] SMP task summary 使用真实 `oncpu`，并按目标能力显示 `CPU/Bind`；
-- [ ] 在 120 列预算内增加 IPC `FIFO/PRIO` policy 列，确保 flag 解码覆盖
+- [x] 修复 `bind_cpu/oncpu` 将合法 CPU 0 转换为 `-1` 的问题；
+- [x] SMP task summary 使用真实 `oncpu`，并按目标能力显示 `CPU/Bind`；
+- [x] 在 120 列预算内增加 IPC `FIFO/PRIO` policy 列，确保 flag 解码覆盖
   全部目标版本；
-- [ ] 为所有新增派生值覆盖空、满、inactive、tick 回绕和非法原始值边界。
+- [x] 为所有新增派生值覆盖空、满、inactive、tick 回绕和非法原始值边界。
 
 ### 11.9 TODO：P2 Detail 和高级诊断
 

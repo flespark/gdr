@@ -42,8 +42,10 @@ class Thread(KernelObject):
     entry: int = 0
     error: int = 0
     remaining_tick: int = 0
-    bind_cpu: int = -1
-    oncpu: int = -1
+    # ``None`` means "no value" (SMP field absent, unbound, or not running),
+    # never a fabricated -1: CPU 0 is a legal binding.
+    bind_cpu: int | None = None
+    oncpu: int | None = None
 
     @property
     def stack_used(self) -> int | None:
