@@ -99,6 +99,59 @@ def find_object(type_code: int, name: str, kl: KernelLayout) -> gdb.Value | None
     return None
 
 
+MAX_SUSPEND_THREADS = 256
+
+
+def iter_suspend_threads(
+    head_value: gdb.Value,
+    kl: KernelLayout,  # noqa: ARG001
+) -> Iterator[gdb.Value]:
+    """Iterate threads linked through one wait-list head.
+
+    Each wait-list node is a ``struct rt_thread.tlist`` embedded node, so
+    ``container_of`` recovers the containing thread. Traversal is bounded by
+    :data:`MAX_SUSPEND_THREADS` and inherits cycle / bad-pointer / node-limit
+    protection from :func:`gdr.layout.iter_list`.
+    """
+    hook = ListHook(
+        head_expr="",
+        node_path=("tlist",),
+        container_type="struct rt_thread",
+        next_path=("next",),
+    )
+    yield from iter_list(head_value, hook, max_count=MAX_SUSPEND_THREADS)
+
+
+def suspend_thread_names(
+    value: gdb.Value, kl: KernelLayout, struct_name: str, field_name: str
+) -> list[str]:
+    """Return a stable waiter-name list for one object's wait list.
+
+    Args:
+        value: The object whose wait list is inspected.
+        kl: Active kernel layout.
+        struct_name: Struct name of the object (e.g. ``struct rt_semaphore``).
+        field_name: Layout field holding the wait-list head.
+
+    Returns:
+        Thread names in list order; unreadable names render as ``<invalid>``.
+        An empty list means the list is empty or the struct/field is absent
+        (callers distinguish those cases from the layout).
+    """
+    sl = kl.structs.get(struct_name)
+    thread_layout = kl.structs.get("struct rt_thread")
+    if sl is None or thread_layout is None:
+        return []
+    head = read_field(value, sl, field_name)
+    if head is None:
+        return []
+    names: list[str] = []
+    for thread in iter_suspend_threads(head, kl):
+        name = read_cstring(read_field(thread, thread_layout, "name"))
+        names.append(name or "<invalid>")
+    return names
+
+
 def iter_threads(kl: KernelLayout) -> Iterator[gdb.Value]:
     """Iterate all RT-Thread thread objects."""
     type_code = _object_code(kl, "thread")

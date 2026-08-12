@@ -19,6 +19,8 @@ TRUNCATION_SUFFIX = ".."
 # "Entry" share one rank; ties shrink the currently-widest column first.
 _ELASTIC_RANK: dict[str, int] = {
     "Waiters": 0,
+    "RecvWait": 0,
+    "SendWait": 0,
     "Callback": 1,
     "Entry": 1,
     "Owner": 2,

@@ -24,6 +24,19 @@ class RtThreadTestProfile:
     mempool_name: str = "test_mempool"
     timer_name: str = "test_timer"
     current_thread_expression: str = "rt_current_thread"
+    mq_sender_list: bool = True
+
+
+def _messagequeue_sender_list(major: int, minor: int, patch: int) -> bool:
+    """Return whether a version provides ``rt_messagequeue.suspend_sender_thread``.
+
+    The sender wait list was introduced in v3.1.4, dropped in v4.0.0-v4.0.1,
+    and restored in v4.0.2. Kept independent of production layout metadata so
+    a GDR regression cannot silently update the expected values.
+    """
+    if major == 3:
+        return minor == 1 and patch >= 4
+    return major == 4 and (minor >= 1 or (minor == 0 and patch >= 2))
 
 
 def get_rtthread_test_profile(version: str, target: str) -> RtThreadTestProfile:
@@ -45,4 +58,5 @@ def get_rtthread_test_profile(version: str, target: str) -> RtThreadTestProfile:
         mempool_code=0x07 + offset,
         timer_code=0x09 + offset,
         current_thread_expression=current_thread_expression,
+        mq_sender_list=_messagequeue_sender_list(major, minor, patch),
     )

@@ -114,10 +114,19 @@ truncating overlong cells with `..` (a leading waiter count is preserved). If
 even the minimum widths overflow, the natural table is printed and your
 terminal may wrap it.
 
+IPC and memory-pool lists show waiting threads as `count:names` summaries:
+semaphores, mutexes, events, and memory pools carry a `Waiters` column, while
+mailboxes and message queues split `RecvWait`/`SendWait`. Counts are derived
+by traversing each suspend list (never a cached counter that later kernels
+removed), and versions without a sender wait list show `N/A` instead of a
+fabricated `0`.
+
 Single-object detail is also available as a command: `rtt <object> <name>`
 (e.g. `rtt semaphore my_sem`, `rtt thread worker1`). It prints a vertical
 `Key: Value` view of one object without disturbing `$gdr_object()`, which
-continues to return the raw `gdb.Value`.
+continues to return the raw `gdb.Value`. Event detail additionally pairs each
+waiter with its `event_set` mask and AND/OR/CLEAR mode so you can see why the
+current event set did not wake it.
 
 ## Convenience functions
 

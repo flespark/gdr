@@ -82,3 +82,23 @@ def test_4x_soft_timer_hook_requires_its_own_config_probe():
 
     assert "soft_timer_list" not in no_soft.list_hooks
     assert soft.list_hooks["soft_timer_list"].head_expr == "_soft_timer_list[0]"
+
+
+def test_messagequeue_layout_describes_receiver_suspend_list():
+    """MQ always describes the receiver suspend list on the current version."""
+    layout = build_layouts(RtConfig(using_messagequeue=True), (4, 0, 5))
+    mq_fields = layout.structs["struct rt_messagequeue"].fields
+
+    assert "suspend_thread" in mq_fields
+    assert mq_fields["suspend_thread"].path == ("parent", "suspend_thread")
+
+
+def test_mempool_layout_describes_suspend_thread_list():
+    """Waiter counts come from the list, never the removed count field."""
+    layout = build_layouts(RtConfig(using_mempool=True), (4, 1, 1))
+    mempool = layout.structs["struct rt_mempool"].fields
+
+    assert mempool["suspend_thread"].path == ("suspend_thread",)
+    assert mempool["suspend_thread"].kind == "list"
+    # The old cached count field is deliberately not part of the layout.
+    assert "suspend_thread_count" not in mempool

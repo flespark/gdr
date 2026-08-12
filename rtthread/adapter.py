@@ -49,6 +49,9 @@ from gdr.gdb_bridge import (
 from gdr.layout import KernelLayout, read_field
 from rtthread import detail as rt_detail
 from rtthread.layout import (
+    RT_EVENT_FLAG_AND,
+    RT_EVENT_FLAG_CLEAR,
+    RT_EVENT_FLAG_OR,
     RT_THREAD_STACK_FILL,
     RT_TIMER_FLAG_ACTIVATED,
     RT_TIMER_FLAG_PERIODIC,
@@ -64,8 +67,10 @@ from rtthread.navigation import (
     get_current_thread,
     get_tick,
     iter_objects,
+    iter_suspend_threads,
     iter_threads,
     iter_timers,
+    suspend_thread_names,
 )
 
 
@@ -251,6 +256,77 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # ---------------------------------------------------------------------------
 
 
+def _waiter_summary(
+    value: gdb.Value,
+    layout: KernelLayout,
+    struct_name: str,
+    field_name: str,
+    *,
+    available: bool = True,
+) -> str:
+    """Return a ``count:names`` waiter summary for one object's wait list.
+
+    Args:
+        value: The object whose wait list is inspected.
+        layout: Active kernel layout.
+        struct_name: Struct name of the object.
+        field_name: Layout field holding the wait-list head.
+        available: Whether the field exists in this target configuration;
+            when False the summary is ``N/A`` instead of a fabricated ``0``.
+
+    The count always leads so truncation keeps the diagnostic count.
+    """
+    if not available:
+        return "N/A"
+    names = suspend_thread_names(value, layout, struct_name, field_name)
+    if not names:
+        return "0"
+    return f"{len(names)}:{','.join(names)}"
+
+
+def _event_mode(info: int) -> str:
+    """Decode RT-Thread event wait-mode bits for a waiter's event_info."""
+    modes = []
+    if info & RT_EVENT_FLAG_AND:
+        modes.append("AND")
+    if info & RT_EVENT_FLAG_OR:
+        modes.append("OR")
+    if info & RT_EVENT_FLAG_CLEAR:
+        modes.append("CLEAR")
+    return "|".join(modes) if modes else hex(info)
+
+
+def _event_detail_with_waiters(
+    value: gdb.Value, layout: KernelLayout
+) -> list[tuple[str, str]]:
+    """Build event detail pairs plus each waiter's wait condition.
+
+    RT-Thread stores a waiter's mask and AND/OR/CLEAR mode in the thread's
+    ``event_set`` / ``event_info``, not on the event object itself. Pairing
+    them with the waiter explains why the current ``event.set`` did not wake
+    it.
+    """
+    pairs = rt_detail.event_detail(value_to_event(value, layout))
+    thread_layout = layout.structs.get("struct rt_thread")
+    event_layout = layout.structs.get("struct rt_event")
+    if thread_layout is None or event_layout is None:
+        return pairs
+    head = read_field(value, event_layout, "suspend_thread")
+    if head is None:
+        return pairs
+    for thread in iter_suspend_threads(head, layout):
+        name = read_cstring(read_field(thread, thread_layout, "name")) or "<invalid>"
+        event_set = read_int(read_field(thread, thread_layout, "event_set")) or 0
+        event_info = read_int(read_field(thread, thread_layout, "event_info")) or 0
+        pairs.append(
+            (
+                f"Waiter: {name}",
+                f"set=0x{event_set:x} mode={_event_mode(event_info)}",
+            )
+        )
+    return pairs
+
+
 _DETAIL_BUILDERS: dict[str, tuple[Callable, Callable]] = {
     "semaphore": (value_to_semaphore, rt_detail.semaphore_detail),
     "mutex": (value_to_mutex, rt_detail.mutex_detail),
@@ -307,9 +383,20 @@ class RtThreadAdapter(RtosAdapter):
             for value in values:
                 semaphore = value_to_semaphore(value, self.layout)
                 rows.append(
-                    [semaphore.name, str(semaphore.value), hex(semaphore.address)]
+                    [
+                        semaphore.name,
+                        str(semaphore.value),
+                        _waiter_summary(
+                            value, self.layout, "struct rt_semaphore", "suspend_thread"
+                        ),
+                        hex(semaphore.address),
+                    ]
                 )
-            return ObjectTable(["Name", "Value", "Addr"], rows, elastic=("Name",))
+            return ObjectTable(
+                ["Name", "Value", "Waiters", "Addr"],
+                rows,
+                elastic=("Name", "Waiters"),
+            )
         if kind == "mutex":
             values = self._registered_objects("mutex", "struct rt_mutex")
             if values is None:
@@ -323,13 +410,16 @@ class RtThreadAdapter(RtosAdapter):
                         str(mutex.value),
                         str(mutex.hold),
                         mutex.owner or "N/A",
+                        _waiter_summary(
+                            value, self.layout, "struct rt_mutex", "suspend_thread"
+                        ),
                         hex(mutex.address),
                     ]
                 )
             return ObjectTable(
-                ["Name", "Value", "Hold", "Owner", "Addr"],
+                ["Name", "Value", "Hold", "Owner", "Waiters", "Addr"],
                 rows,
-                elastic=("Name", "Owner"),
+                elastic=("Name", "Owner", "Waiters"),
             )
         if kind == "event":
             values = self._registered_objects("event", "struct rt_event")
@@ -338,8 +428,21 @@ class RtThreadAdapter(RtosAdapter):
             rows = []
             for value in values:
                 event = value_to_event(value, self.layout)
-                rows.append([event.name, hex(event.set), hex(event.address)])
-            return ObjectTable(["Name", "Set", "Addr"], rows, elastic=("Name",))
+                rows.append(
+                    [
+                        event.name,
+                        hex(event.set),
+                        _waiter_summary(
+                            value, self.layout, "struct rt_event", "suspend_thread"
+                        ),
+                        hex(event.address),
+                    ]
+                )
+            return ObjectTable(
+                ["Name", "Set", "Waiters", "Addr"],
+                rows,
+                elastic=("Name", "Waiters"),
+            )
         if kind == "mailbox":
             values = self._registered_objects("mailbox", "struct rt_mailbox")
             if values is None:
@@ -354,18 +457,33 @@ class RtThreadAdapter(RtosAdapter):
                         str(mailbox.size),
                         str(mailbox.in_offset),
                         str(mailbox.out_offset),
+                        _waiter_summary(
+                            value, self.layout, "struct rt_mailbox", "suspend_thread"
+                        ),
+                        _waiter_summary(
+                            value,
+                            self.layout,
+                            "struct rt_mailbox",
+                            "suspend_sender_thread",
+                        ),
                         hex(mailbox.address),
                     ]
                 )
             return ObjectTable(
-                ["Name", "Entry", "Size", "In", "Out", "Addr"],
+                ["Name", "Entry", "Size", "In", "Out", "RecvWait", "SendWait", "Addr"],
                 rows,
-                elastic=("Name",),
+                elastic=("Name", "RecvWait", "SendWait"),
             )
         if kind == "msgqueue":
             values = self._registered_objects("msgqueue", "struct rt_messagequeue")
             if values is None:
                 return None
+            mq_layout = self.layout.structs.get("struct rt_messagequeue")
+            # Reason: the sender wait list is absent on versions that predate
+            # v3.1.4 or fall in v4.0.0-v4.0.1; N/A must not become a fake 0.
+            sender_available = (
+                mq_layout is not None and "suspend_sender_thread" in mq_layout.fields
+            )
             rows = []
             for value in values:
                 msgqueue = value_to_messagequeue(value, self.layout)
@@ -375,13 +493,34 @@ class RtThreadAdapter(RtosAdapter):
                         str(msgqueue.entry),
                         str(msgqueue.msg_size),
                         str(msgqueue.max_msgs),
+                        _waiter_summary(
+                            value,
+                            self.layout,
+                            "struct rt_messagequeue",
+                            "suspend_thread",
+                        ),
+                        _waiter_summary(
+                            value,
+                            self.layout,
+                            "struct rt_messagequeue",
+                            "suspend_sender_thread",
+                            available=sender_available,
+                        ),
                         hex(msgqueue.address),
                     ]
                 )
             return ObjectTable(
-                ["Name", "Entry", "MsgSize", "MaxMsgs", "Addr"],
+                [
+                    "Name",
+                    "Entry",
+                    "MsgSize",
+                    "MaxMsgs",
+                    "RecvWait",
+                    "SendWait",
+                    "Addr",
+                ],
                 rows,
-                elastic=("Name",),
+                elastic=("Name", "RecvWait", "SendWait"),
             )
         if kind == "mempool":
             values = self._registered_objects("mempool", "struct rt_mempool")
@@ -396,13 +535,16 @@ class RtThreadAdapter(RtosAdapter):
                         str(mempool.block_size),
                         str(mempool.block_total_count),
                         str(mempool.block_free_count),
+                        _waiter_summary(
+                            value, self.layout, "struct rt_mempool", "suspend_thread"
+                        ),
                         hex(mempool.address),
                     ]
                 )
             return ObjectTable(
-                ["Name", "BlockSize", "Total", "Free", "Addr"],
+                ["Name", "BlockSize", "Total", "Free", "Waiters", "Addr"],
                 rows,
-                elastic=("Name",),
+                elastic=("Name", "Waiters"),
             )
         if kind == "timer":
             rows = []
@@ -464,6 +606,8 @@ class RtThreadAdapter(RtosAdapter):
         value = find_rt_object(type_code, name, self.layout)
         if value is None:
             return ObjectDetail(found=False)
+        if kind == "event":
+            return ObjectDetail(pairs=_event_detail_with_waiters(value, self.layout))
         entry = _DETAIL_BUILDERS.get(kind)
         if entry is None:
             return None

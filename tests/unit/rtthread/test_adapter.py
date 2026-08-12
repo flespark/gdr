@@ -78,8 +78,8 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
             "event",
             "struct rt_event",
             Event(name="ready", set=0x3, address=0x1000),
-            ["Name", "Set", "Addr"],
-            ["ready", "0x3", "0x1000"],
+            ["Name", "Set", "Waiters", "Addr"],
+            ["ready", "0x3", "0", "0x1000"],
         ),
         (
             "mailbox",
@@ -92,15 +92,15 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
                 out_offset=1,
                 address=0x2000,
             ),
-            ["Name", "Entry", "Size", "In", "Out", "Addr"],
-            ["input", "2", "8", "3", "1", "0x2000"],
+            ["Name", "Entry", "Size", "In", "Out", "RecvWait", "SendWait", "Addr"],
+            ["input", "2", "8", "3", "1", "0", "0", "0x2000"],
         ),
         (
             "msgqueue",
             "struct rt_messagequeue",
             MessageQueue(name="work", entry=3, msg_size=16, max_msgs=8, address=0x3000),
-            ["Name", "Entry", "MsgSize", "MaxMsgs", "Addr"],
-            ["work", "3", "16", "8", "0x3000"],
+            ["Name", "Entry", "MsgSize", "MaxMsgs", "RecvWait", "SendWait", "Addr"],
+            ["work", "3", "16", "8", "0", "N/A", "0x3000"],
         ),
         (
             "mempool",
@@ -112,8 +112,8 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
                 block_free_count=4,
                 address=0x4000,
             ),
-            ["Name", "BlockSize", "Total", "Free", "Addr"],
-            ["blocks", "32", "10", "4", "0x4000"],
+            ["Name", "BlockSize", "Total", "Free", "Waiters", "Addr"],
+            ["blocks", "32", "10", "4", "0", "0x4000"],
         ),
     ),
 )
@@ -152,7 +152,6 @@ def test_ipc_object_tables_use_their_own_registry_route(
     assert table is not None
     assert table.headers == headers
     assert table.rows == [expected_row]
-    assert table.elastic == ("Name",)
     assert calls == [(type_code, layout)]
 
 
@@ -198,7 +197,6 @@ def test_object_detail_task_uses_thread_builder(monkeypatch):
     (
         ("semaphore", [("Value", "3")]),
         ("mutex", [("Owner", "main")]),
-        ("event", [("Set", "0x3")]),
         ("mailbox", [("Entry", "2")]),
         ("msgqueue", [("MaxMsgs", "8")]),
         ("mempool", [("Free", "4")]),
@@ -239,3 +237,169 @@ def test_object_detail_ipc_kinds_use_their_converter_and_builder(
     assert detail is not None
     assert detail.found is True
     assert detail.pairs == expected_pairs
+
+
+def test_event_detail_appends_waiter_conditions(monkeypatch):
+    """Event detail pairs each waiter with its mask and AND/OR/CLEAR mode."""
+    layout = KernelLayout()
+    adapter = adapter_module.RtThreadAdapter(layout)
+    event = object()
+    type_code = 7
+    base_pairs = [("Name", "ready"), ("Set", "0x3")]
+
+    def fake_waiter_detail(_value, _layout):
+        return base_pairs + [
+            ("Waiter: t1", "set=0x3 mode=AND"),
+            ("Waiter: t2", "set=0x1 mode=OR|CLEAR"),
+        ]
+
+    monkeypatch.setattr(
+        adapter_module,
+        "resolve_object_type_code",
+        lambda _kind, _layout: type_code,
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "find_rt_object",
+        lambda code, _name, _layout: event if code == type_code else None,
+    )
+    monkeypatch.setattr(
+        adapter_module, "_event_detail_with_waiters", fake_waiter_detail
+    )
+
+    detail = adapter.object_detail("event", "ready")
+
+    assert detail is not None
+    assert detail.found is True
+    assert detail.pairs == base_pairs + [
+        ("Waiter: t1", "set=0x3 mode=AND"),
+        ("Waiter: t2", "set=0x1 mode=OR|CLEAR"),
+    ]
+
+
+def test_event_mode_decodes_and_or_clear_bits():
+    """Event wait-mode decoding covers AND/OR/CLEAR and unknown values."""
+    assert adapter_module._event_mode(0x1) == "AND"
+    assert adapter_module._event_mode(0x2) == "OR"
+    assert adapter_module._event_mode(0x4) == "CLEAR"
+    assert adapter_module._event_mode(0x7) == "AND|OR|CLEAR"
+    assert adapter_module._event_mode(0x8) == "0x8"
+
+
+def test_waiter_summary_leads_with_count(monkeypatch):
+    """The ``count:names`` summary keeps the count first for truncation."""
+    layout = KernelLayout()
+    value = object()
+    monkeypatch.setattr(
+        adapter_module,
+        "suspend_thread_names",
+        lambda _v, _l, _s, _f: ["worker1", "worker2"],
+    )
+
+    summary = adapter_module._waiter_summary(
+        value, layout, "struct rt_semaphore", "suspend_thread"
+    )
+
+    assert summary == "2:worker1,worker2"
+
+
+def test_waiter_summary_shows_zero_for_an_empty_list(monkeypatch):
+    """An empty wait list renders as ``0``, never a fabricated N/A."""
+    layout = KernelLayout()
+    monkeypatch.setattr(
+        adapter_module, "suspend_thread_names", lambda _v, _l, _s, _f: []
+    )
+
+    summary = adapter_module._waiter_summary(
+        object(), layout, "struct rt_semaphore", "suspend_thread"
+    )
+
+    assert summary == "0"
+
+
+def test_waiter_summary_shows_na_when_field_is_unavailable():
+    """A missing field (e.g. old MQ sender list) is N/A, not a fake 0."""
+    layout = KernelLayout()
+    summary = adapter_module._waiter_summary(
+        object(),
+        layout,
+        "struct rt_messagequeue",
+        "suspend_sender_thread",
+        available=False,
+    )
+
+    assert summary == "N/A"
+
+
+def test_mailbox_table_splits_receiver_and_sender_waiters(monkeypatch):
+    """Mailbox waiters distinguish receiver and sender suspend lists."""
+    layout = KernelLayout(
+        structs={"struct rt_mailbox": StructLayout("struct rt_mailbox")},
+        object_codes={"mailbox": 5},
+    )
+    adapter = adapter_module.RtThreadAdapter(layout)
+    value = object()
+    monkeypatch.setattr(
+        adapter_module,
+        "iter_objects",
+        lambda _code, _layout: iter((value,)),
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "value_to_mailbox",
+        lambda _v, _l: Mailbox(name="input", address=0x2000),
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "suspend_thread_names",
+        lambda _v, _l, _struct, field: (
+            ["recv1"] if field == "suspend_thread" else ["send1", "send2"]
+        ),
+    )
+
+    table = adapter.object_table("mailbox")
+
+    assert table is not None
+    assert table.headers == [
+        "Name",
+        "Entry",
+        "Size",
+        "In",
+        "Out",
+        "RecvWait",
+        "SendWait",
+        "Addr",
+    ]
+    assert table.rows == [
+        ["input", "0", "0", "0", "0", "1:recv1", "2:send1,send2", "0x2000"]
+    ]
+
+
+def test_messagequeue_table_honors_sender_list_availability(monkeypatch):
+    """MQ sender waiters render as N/A when the field is absent by version."""
+    layout = KernelLayout(
+        structs={"struct rt_messagequeue": StructLayout("struct rt_messagequeue")},
+        object_codes={"msgqueue": 6},
+    )
+    adapter = adapter_module.RtThreadAdapter(layout)
+    value = object()
+    monkeypatch.setattr(
+        adapter_module,
+        "iter_objects",
+        lambda _code, _layout: iter((value,)),
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "value_to_messagequeue",
+        lambda _v, _l: MessageQueue(name="work", address=0x3000),
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "suspend_thread_names",
+        lambda _v, _l, _s, _f: ["recv1"],
+    )
+
+    table = adapter.object_table("msgqueue")
+
+    assert table is not None
+    assert table.rows == [["work", "0", "0", "0", "1:recv1", "N/A", "0x3000"]]

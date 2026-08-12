@@ -106,9 +106,16 @@ Set-Location .\gdr-rtthread
 收缩，超长单元格用 `..` 截断（等待者数量在开头，截断后仍保留）。若弹性
 列缩到最小宽度后仍超宽，则输出原始自然表格，允许终端自行换行。
 
+IPC 与内存池列表以 `count:names` 摘要显示等待线程：信号量、互斥量、事件
+和内存池有 `Waiters` 列，邮箱与消息队列拆分为 `RecvWait`/`SendWait`。
+等待数量一律通过遍历挂起链表得出（不读旧版本才有的缓存计数），没有发送
+等待链表的版本显示 `N/A` 而不是伪造的 `0`。
+
 单个对象的详情也可以通过命令查看：`rtt <object> <name>`
 （如 `rtt semaphore my_sem`、`rtt thread worker1`），以纵向 `Key: Value`
-呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。
+呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。事件详情还会
+把每个等待线程与它的 `event_set` 掩码和 AND/OR/CLEAR 模式关联，帮助解释
+当前事件集为何没有唤醒它。
 
 ## 便捷函数
 

@@ -275,21 +275,22 @@ Detail 不替代 `$gdr_object()`：前者提供可读摘要和校验，后者继
 
 ### 11.7 TODO：P0 阻塞关系和准确性
 
-- [ ] 在 `rtthread/navigation.py` 增加有界的 suspend-list 遍历辅助函数，
+- [x] 在 `rtthread/navigation.py` 增加有界的 suspend-list 遍历辅助函数，
   使用 `struct rt_thread.tlist` 恢复线程对象并返回稳定的名称列表；
-- [ ] 为等待列表增加坏指针、闭环异常和节点上限保护，错误时显示明确的
+- [x] 为等待列表增加坏指针、闭环异常和节点上限保护，错误时显示明确的
   `<invalid>`/truncated 信息；
-- [ ] 在 semaphore 表增加 `count:names` 形式的等待线程摘要；
-- [ ] 在 mutex 表增加 `count:names` 形式的等待线程摘要；
-- [ ] 在 event 表增加 `count:names` 形式的等待线程摘要，并在 event detail
+- [x] 在 semaphore 表增加 `count:names` 形式的等待线程摘要；
+- [x] 在 mutex 表增加 `count:names` 形式的等待线程摘要；
+- [x] 在 event 表增加 `count:names` 形式的等待线程摘要，并在 event detail
   中显示每个 waiter 的 `event_set/event_info` 条件；
-- [ ] 在 mailbox 表分别增加 `count:names` 形式的 receiver 和 sender waiters；
-- [ ] 在 messagequeue 表分别增加 `count:names` 形式的 receiver 和 sender
+- [x] 在 mailbox 表分别增加 `count:names` 形式的 receiver 和 sender waiters；
+- [x] 在 messagequeue 表分别增加 `count:names` 形式的 receiver 和 sender
   waiters，旧版本没有 sender list 时显示 `N/A`，不能显示伪造的 `0`；
-- [ ] 在 mempool layout 增加 `suspend_thread` 并显示 `count:names` 摘要；
-- [ ] 所有 waiter count 通过链表遍历得出，不读取旧版
+- [x] 在 mempool layout 增加 `suspend_thread` 并显示 `count:names` 摘要；
+- [x] 所有 waiter count 通过链表遍历得出，不读取旧版
   `suspend_thread_count`；
-- [ ] 为新增字段和版本条件添加 layout、navigation、adapter 单元测试。
+- [x] 为新增字段添加 layout、navigation、adapter 单元测试；版本边界由 QEMU
+  集成测试在真实内核上验证（见 11.10）。
 
 ### 11.8 TODO：P1 默认表增强和缺陷修复
 

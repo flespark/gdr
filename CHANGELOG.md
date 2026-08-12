@@ -16,6 +16,14 @@ All notable changes to GDR are documented in this file.
 - Singular object detail commands: `rtt thread|timer|semaphore|mutex|event|
   mailbox|messagequeue|mempool <name>` render one object as a vertical
   `Key: Value` block via the adapter-owned `object_detail` contract.
+- Waiter summaries on IPC and mempool tables: `count:names` `Waiters` columns
+  for semaphores, mutexes, events, and memory pools, plus split
+  `RecvWait`/`SendWait` columns for mailboxes and message queues. Counts come
+  from bounded, corruption-guarded suspend-list traversal (via
+  `struct rt_thread.tlist`), never a cached counter removed in later kernels,
+  and versions without a sender wait list render `N/A` instead of a fake `0`.
+  Event detail pairs each waiter with its `event_set` mask and
+  AND/OR/CLEAR mode.
 - RTOS-neutral profile-driven QEMU/GDB harness with dynamic GDB ports,
   session-local logs, persistent GDB connections, and actionable boot errors.
 - FreeRTOS Phase 1 package and a B-L475E-IOT01A QEMU fixture built

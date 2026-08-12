@@ -145,7 +145,24 @@ is renamed (the function returns the raw `gdb.Value`).
 List commands may also offer a **singular detail form**
 (`rtt semaphore <name>`) that renders one object as a vertical `Key: Value`
 block. The adapter builds neutral pairs; the generic renderer never sees
-adapter field names, so a future adapter can reuse it unchanged.
+adapter field names, so a future adapter can reuse it unchanged. Event detail
+goes further and pairs each waiting thread with its `event_set`/`event_info`
+condition, explaining why the current event set did not wake it.
+
+### Blocking relations and accuracy
+
+IPC and mempool lists show a `count:names` waiter summary per wait list
+(semaphore/mutex/event/mempool: one `Waiters` column; mailbox and message
+queue: separate `RecvWait` and `SendWait` columns). Waiter counts always come
+from traversing the suspend list, never from the `suspend_thread_count` cache
+that was removed in later kernels. When a version has no sender wait list
+(e.g. message queues before v3.1.4 or in v4.0.0-v4.0.1), the column renders
+`N/A` rather than a fabricated `0`.
+
+Waiter traversal is bounded and corruption-guarded: it recovers threads via
+`struct rt_thread.tlist`, caps the walk, detects cycles, and renders unreadable
+names as `<invalid>`. The layout drives both the field paths and the version
+boundaries, so adapter code never hardcodes offsets.
 
 ### Table width handling
 

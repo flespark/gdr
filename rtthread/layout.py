@@ -56,6 +56,11 @@ RT_TIMER_FLAG_ACTIVATED = 0x1
 RT_TIMER_FLAG_PERIODIC = 0x2
 RT_TIMER_FLAG_SOFT_TIMER = 0x4
 
+# Event flag bits (rtdef.h)
+RT_EVENT_FLAG_AND = 0x1
+RT_EVENT_FLAG_OR = 0x2
+RT_EVENT_FLAG_CLEAR = 0x4
+
 # Thread stat mask (rtdef.h)
 RT_THREAD_STAT_MASK = 0x07
 
@@ -142,6 +147,17 @@ def resolve_object_type_code(type_name: str, layout: KernelLayout) -> int | None
 def _is_legacy_31(version: tuple[int, int, int]) -> bool:
     """Return whether a version predates the 3.1.3 NULL enum entry."""
     return (3, 1, 0) <= version <= (3, 1, 2)
+
+
+def _messagequeue_has_sender_list(version: tuple[int, int, int]) -> bool:
+    """Return whether ``rt_messagequeue`` has ``suspend_sender_thread``.
+
+    The sender wait list was introduced in v3.1.4, dropped in v4.0.0-v4.0.1,
+    and restored in v4.0.2.
+    """
+    if version[0] == 3:
+        return (3, 1, 4) <= version <= (3, 1, 5)
+    return version >= (4, 0, 2) and version[0] == 4
 
 
 def _object_codes(version: tuple[int, int, int]) -> dict[str, int]:
@@ -485,8 +501,14 @@ def build_mailbox_layout(object_type_names: dict[int, str]) -> StructLayout:
     return sl
 
 
-def build_messagequeue_layout(object_type_names: dict[int, str]) -> StructLayout:
-    """Build ``rt_messagequeue`` layout (COUPLED: rtdef.h struct rt_messagequeue)."""
+def build_messagequeue_layout(
+    object_type_names: dict[int, str], version: tuple[int, int, int] = (4, 1, 1)
+) -> StructLayout:
+    """Build ``rt_messagequeue`` layout (COUPLED: rtdef.h struct rt_messagequeue).
+
+    ``suspend_sender_thread`` is version-conditional: it is absent before
+    v3.1.4 and in v4.0.0-v4.0.1, and present elsewhere.
+    """
     sl = StructLayout("struct rt_messagequeue", display_name="MsgQueue")
     sl.fields.update(_ipc_fields(object_type_names))
     sl.fields["msg_pool"] = StructField("msg_pool", ("msg_pool",), kind="ptr")
@@ -502,9 +524,10 @@ def build_messagequeue_layout(object_type_names: dict[int, str]) -> StructLayout
     sl.fields["msg_queue_free"] = StructField(
         "msg_queue_free", ("msg_queue_free",), kind="ptr"
     )
-    sl.fields["suspend_sender_thread"] = StructField(
-        "suspend_sender_thread", ("suspend_sender_thread",), kind="list"
-    )
+    if _messagequeue_has_sender_list(version):
+        sl.fields["suspend_sender_thread"] = StructField(
+            "suspend_sender_thread", ("suspend_sender_thread",), kind="list"
+        )
     return sl
 
 
@@ -535,6 +558,12 @@ def build_mempool_layout(object_type_names: dict[int, str]) -> StructLayout:
     )
     sl.fields["block_free_count"] = StructField(
         "block_free_count", ("block_free_count",), summary=True
+    )
+    # Reason: waiters are counted by traversing the suspend list on every
+    # version; the cached suspend_thread_count was removed in later releases
+    # so the layout must describe the list itself.
+    sl.fields["suspend_thread"] = StructField(
+        "suspend_thread", ("suspend_thread",), kind="list"
     )
     return sl
 
@@ -688,7 +717,7 @@ def build_layouts(
         kl.structs["struct rt_mailbox"] = build_mailbox_layout(object_type_names)
     if cfg.using_messagequeue:
         kl.structs["struct rt_messagequeue"] = build_messagequeue_layout(
-            object_type_names
+            object_type_names, version
         )
     if cfg.using_memheap:
         kl.structs["struct rt_memheap"] = build_memheap_layout(object_type_names)

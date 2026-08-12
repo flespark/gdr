@@ -186,20 +186,22 @@ def test_rtt_semaphore_command_lists_fixture_data(rtt_outputs):
 
 
 def test_rtt_event_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
-    """The event table preserves the target's bit set and address."""
+    """The event table preserves the target's bit set, waiters, and address."""
     output = rtt_outputs["events"]
     assert "Set" in output
+    assert "Waiters" in output
     assert _fixture_row(output, _PROFILE.event_name) == [
         _PROFILE.event_name,
         hex(int(ipc_fixture_values["event.set"])),
+        "0",
         hex(int(ipc_fixture_values["event.address"])),
     ]
 
 
 def test_rtt_mailbox_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
-    """The mailbox table preserves occupancy, offsets, capacity, and address."""
+    """The mailbox table preserves occupancy, offsets, waiters, and address."""
     output = rtt_outputs["mailboxs"]
-    for header in ("Entry", "Size", "In", "Out", "Addr"):
+    for header in ("Entry", "Size", "In", "Out", "RecvWait", "SendWait", "Addr"):
         assert header in output
     assert _fixture_row(output, _PROFILE.mailbox_name) == [
         _PROFILE.mailbox_name,
@@ -207,6 +209,8 @@ def test_rtt_mailbox_command_matches_target_memory(rtt_outputs, ipc_fixture_valu
         ipc_fixture_values["mailbox.size"],
         ipc_fixture_values["mailbox.in_offset"],
         ipc_fixture_values["mailbox.out_offset"],
+        "0",
+        "0",
         hex(int(ipc_fixture_values["mailbox.address"])),
     ]
 
@@ -214,29 +218,59 @@ def test_rtt_mailbox_command_matches_target_memory(rtt_outputs, ipc_fixture_valu
 def test_rtt_messagequeue_command_matches_target_memory(
     rtt_outputs, ipc_fixture_values
 ):
-    """The messagequeue table preserves target capacity, entry, and address."""
+    """The messagequeue table preserves capacity, waiters, and address."""
     output = rtt_outputs["messagequeues"]
-    for header in ("Entry", "MsgSize", "MaxMsgs", "Addr"):
+    for header in ("Entry", "MsgSize", "MaxMsgs", "RecvWait", "SendWait", "Addr"):
         assert header in output
+    sender_cell = "0" if _PROFILE.mq_sender_list else "N/A"
     assert _fixture_row(output, _PROFILE.msgqueue_name) == [
         _PROFILE.msgqueue_name,
         ipc_fixture_values["msgqueue.entry"],
         ipc_fixture_values["msgqueue.msg_size"],
         ipc_fixture_values["msgqueue.max_msgs"],
+        "0",
+        sender_cell,
         hex(int(ipc_fixture_values["msgqueue.address"])),
     ]
 
 
+def test_rtt_messagequeue_sender_list_matches_target_dwarf(gdb):
+    """The sender wait list tracks the real kernel's struct field presence.
+
+    The v3.1.4/v4.0.2 version boundary is a fact about the compiled kernel,
+    not about GDR's layout table. Inspect ``struct rt_messagequeue`` DWARF
+    directly and assert it agrees with the fixture profile expectation.
+    """
+    output = gdb.run_python(
+        """
+import gdb
+
+messagequeue = gdb.parse_and_eval("test_msgqueue")
+mq_type = messagequeue.type.strip_typedefs()
+if mq_type.code == gdb.TYPE_CODE_PTR:
+    mq_type = mq_type.target().strip_typedefs()
+field_names = {field.name for field in mq_type.fields()}
+print(f"has_suspend_sender_thread={'suspend_sender_thread' in field_names}")
+"""
+    )
+    has_field = "has_suspend_sender_thread=True" in output
+    assert has_field == _PROFILE.mq_sender_list, (
+        f"kernel DWARF sender list ({has_field}) disagrees with fixture "
+        f"profile expectation ({_PROFILE.mq_sender_list})\n{output}"
+    )
+
+
 def test_rtt_mempool_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
-    """The mempool table preserves target block counts, size, and address."""
+    """The mempool table preserves block counts, size, waiters, and address."""
     output = rtt_outputs["mempools"]
-    for header in ("BlockSize", "Total", "Free", "Addr"):
+    for header in ("BlockSize", "Total", "Free", "Waiters", "Addr"):
         assert header in output
     assert _fixture_row(output, _PROFILE.mempool_name) == [
         _PROFILE.mempool_name,
         ipc_fixture_values["mempool.block_size"],
         ipc_fixture_values["mempool.block_total_count"],
         ipc_fixture_values["mempool.block_free_count"],
+        "0",
         hex(int(ipc_fixture_values["mempool.address"])),
     ]
 
@@ -309,6 +343,34 @@ def test_rtt_semaphore_detail_shows_fixture_value(gdb):
     for label in ("Name:", "Address:", "Type:", "Value:"):
         assert label in output, output
     assert _PROFILE.semaphore_name in output
+
+
+def test_rtt_event_detail_shows_waiter_conditions(gdb):
+    """``rtt event <name>`` pairs each waiter with its mask and mode."""
+    output = gdb.run(f"rtt event {_PROFILE.event_name}", timeout=20)
+    for label in ("Name:", "Address:", "Type:", "Set:"):
+        assert label in output, output
+    assert _PROFILE.event_name in output
+    assert "[gdr] error:" not in output, output
+    assert "Traceback" not in output, output
+
+
+def test_rtt_mailbox_detail_shows_waiters(gdb):
+    """``rtt mailbox <name>`` renders the fixture's public fields."""
+    output = gdb.run(f"rtt mailbox {_PROFILE.mailbox_name}", timeout=20)
+    for label in ("Name:", "Address:", "Type:", "Entry:", "Size:"):
+        assert label in output, output
+    assert _PROFILE.mailbox_name in output
+    assert "[gdr] error:" not in output, output
+
+
+def test_rtt_messagequeue_detail_shows_waiters(gdb):
+    """``rtt messagequeue <name>`` renders capacity and waiter fields."""
+    output = gdb.run(f"rtt messagequeue {_PROFILE.msgqueue_name}", timeout=20)
+    for label in ("Name:", "Address:", "Type:", "MaxMsgs:"):
+        assert label in output, output
+    assert _PROFILE.msgqueue_name in output
+    assert "[gdr] error:" not in output, output
 
 
 def test_rtt_timer_detail_shows_fixture_timer(gdb):
