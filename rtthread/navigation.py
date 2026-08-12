@@ -165,6 +165,43 @@ def find_thread(name: str, kl: KernelLayout) -> gdb.Value | None:
     return find_object(type_code, name, kl) if type_code is not None else None
 
 
+def iter_object_names(kind: str, kl: KernelLayout) -> Iterator[str]:
+    """Yield object names of a semantic kind for command completion.
+
+    Args:
+        kind: Semantic kind (``task``, ``semaphore``, ``mutex``, ``event``,
+            ``mailbox``, ``msgqueue``, ``mempool``, ``timer``).
+        kl: Active kernel layout.
+
+    Traverses the live kernel registry so tab-completion reflects objects that
+    exist right now, including version/config-conditional ones.
+    """
+    if kind == "task":
+        kind = "thread"
+    if kind == "timer":
+        for value in iter_timers(kl):
+            name = read_cstring(
+                read_field(value, kl.structs["struct rt_timer"], "name")
+            )
+            if name:
+                yield name
+        return
+
+    type_code = kl.object_codes.get(kind)
+    if type_code is None:
+        return
+    type_info = kl.object_types.get(type_code)
+    if type_info is None or not type_info.enabled:
+        return
+    layout = kl.structs.get(type_info.struct_name)
+    if layout is None:
+        return
+    for value in iter_objects(type_code, kl):
+        name = read_cstring(read_field(value, layout, "name"))
+        if name:
+            yield name
+
+
 def _dereference_thread(ptr: gdb.Value | None) -> gdb.Value | None:
     """Dereference a non-null RT-Thread handle safely."""
     if ptr is None:

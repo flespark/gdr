@@ -14,6 +14,9 @@ from gdr.commands import (
     render_tasks,
 )
 from gdr.gdb_bridge import info, warn
+from gdr.registry import active
+from rtthread.adapter import RtThreadAdapter
+from rtthread.navigation import iter_object_names
 
 _command_registered = False
 _alias_registered = False
@@ -110,16 +113,80 @@ def _invoke_command(argument: str) -> None:
         warn(_USAGE)
 
 
+def _command_vocabulary() -> list[str]:
+    """Return every word the first argument may complete against."""
+    return list(_COMMAND_DESCRIPTIONS) + list(_SINGULAR_COMMANDS)
+
+
+def _prefixes(word: str | None, candidates: list[str]) -> list[str]:
+    """Return candidates that start with ``word``, preserving order.
+
+    ``None`` or an empty word (GDB probes completion with ``word=None`` first)
+    yields every candidate.
+    """
+    if not word:
+        return list(candidates)
+    return [candidate for candidate in candidates if candidate.startswith(word)]
+
+
+def _object_names(kind: str) -> list[str]:
+    """Return live object names of *kind* for tab completion.
+
+    Traverses the active adapter's kernel registry so candidates reflect the
+    objects on the connected target right now. Degrades to ``[]`` when no
+    RT-Thread adapter is active or traversal fails, so tab completion never
+    raises inside GDB.
+    """
+    adapter = active()
+    if not isinstance(adapter, RtThreadAdapter):
+        return []
+    try:
+        return list(iter_object_names(kind, adapter.layout))
+    except Exception:
+        return []
+
+
+def _complete(text: str, word: str | None) -> list[str]:
+    """Return tab-completion candidates for a partial ``rtt`` command line.
+
+    The first argument completes against the command vocabulary; the second
+    argument of a singular detail command completes against live kernel
+    object names. This is RT-Thread command-tree policy; the prefix filter is
+    a private helper because nothing outside the adapter needs it.
+    """
+    parts = text.split()
+    if not parts:
+        return _prefixes(word, _command_vocabulary())
+    command = _COMMAND_ALIASES.get(parts[0].lower(), parts[0].lower())
+    if command in _SINGULAR_COMMANDS and " " in text:
+        return _prefixes(word, _object_names(_SINGULAR_COMMANDS[command]))
+    return _prefixes(word, _command_vocabulary())
+
+
 if gdb is not None:
 
     class RtThreadCommand(gdb.Command):
         """RT-Thread command tree. Run `rtt help` for available commands."""
 
         def __init__(self) -> None:
-            super().__init__("rtthread", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND)
+            # Reason: do not pass a completer_class here. GDB only calls the
+            # command's Python ``complete()`` method when no completer class is
+            # given; passing gdb.COMPLETE_NONE explicitly means "no completion"
+            # and would silently disable tab-completion of our subcommands and
+            # live object names (GDB manual: "Command.complete").
+            super().__init__("rtthread", gdb.COMMAND_USER)
 
         def invoke(self, argument: str, from_tty: bool) -> None:  # noqa: ARG002
             _invoke_command(argument)
+
+        def complete(self, text: str, word: str | None) -> list[str]:
+            """Tab-complete subcommands and live object names.
+
+            Completing the second argument of a singular detail command walks
+            the active adapter's kernel registry, so candidates reflect the
+            objects that exist on the connected target right now.
+            """
+            return _complete(text, word)
 
 
 def register_commands() -> None:

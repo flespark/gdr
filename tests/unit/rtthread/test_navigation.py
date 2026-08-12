@@ -166,3 +166,113 @@ def test_iter_suspend_threads_uses_tlist_container_hook(monkeypatch):
 
     assert len(result) == 1
     assert captured == [(head, object())] or len(captured) == 1
+
+
+def test_iter_object_names_skips_missing_type_code():
+    """An unknown semantic kind yields no names."""
+    layout = navigation.KernelLayout()
+
+    assert list(navigation.iter_object_names("device", layout)) == []
+
+
+def test_iter_object_names_disabled_type_yields_nothing(monkeypatch):
+    """A type the target does not compile is skipped for completion."""
+    from gdr.layout import ObjectTypeInfo
+
+    layout = navigation.KernelLayout(
+        object_codes={"semaphore": 2},
+        object_types={
+            2: ObjectTypeInfo(
+                2,
+                "struct rt_semaphore",
+                ("parent", "parent", "list"),
+                ("next",),
+                enabled=False,
+                name="semaphore",
+            )
+        },
+    )
+    monkeypatch.setattr(
+        navigation,
+        "iter_objects",
+        lambda _code, _layout: (_ for _ in ()).throw(AssertionError("unused")),
+    )
+
+    assert list(navigation.iter_object_names("semaphore", layout)) == []
+
+
+def test_iter_object_names_walks_the_object_registry(monkeypatch):
+    """Completion names come from a live kernel-registry traversal."""
+    from gdr.layout import ObjectTypeInfo
+
+    layout = navigation.KernelLayout(
+        object_codes={"semaphore": 2},
+        structs={"struct rt_semaphore": StructLayout("struct rt_semaphore")},
+        object_types={
+            2: ObjectTypeInfo(
+                2,
+                "struct rt_semaphore",
+                ("parent", "parent", "list"),
+                ("next",),
+                enabled=True,
+                name="semaphore",
+            )
+        },
+    )
+    values = [object(), object(), object()]
+    names_by_id = {
+        id(v): n for v, n in zip(values, ["test_sem", "other", "third"], strict=False)
+    }
+    monkeypatch.setattr(navigation, "iter_objects", lambda _code, _layout: iter(values))
+    monkeypatch.setattr(navigation, "read_field", lambda value, _sl, _f: value)
+    monkeypatch.setattr(
+        navigation, "read_cstring", lambda value: names_by_id.get(id(value))
+    )
+
+    assert list(navigation.iter_object_names("semaphore", layout)) == [
+        "test_sem",
+        "other",
+        "third",
+    ]
+
+
+def test_iter_object_names_filters_unreadable_and_task_mapping(monkeypatch):
+    """Task maps to thread and unreadable names are dropped."""
+    from gdr.layout import ObjectTypeInfo
+
+    layout = navigation.KernelLayout(
+        object_codes={"thread": 1},
+        structs={"struct rt_thread": StructLayout("struct rt_thread")},
+        object_types={
+            1: ObjectTypeInfo(
+                1, "struct rt_thread", ("list",), ("next",), enabled=True, name="thread"
+            )
+        },
+    )
+    values = [object()]
+    monkeypatch.setattr(navigation, "iter_objects", lambda _code, _layout: iter(values))
+    monkeypatch.setattr(navigation, "read_field", lambda _value, _sl, _f: _value)
+    monkeypatch.setattr(navigation, "read_cstring", lambda _value: None)
+
+    assert list(navigation.iter_object_names("task", layout)) == []
+
+
+def test_iter_object_names_uses_timer_traversal(monkeypatch):
+    """Timers complete from the live timer list, not the object registry."""
+    layout = navigation.KernelLayout(
+        structs={"struct rt_timer": StructLayout("struct rt_timer")}
+    )
+    timers = [object(), object()]
+    names_by_id = {
+        id(v): n for v, n in zip(timers, ["heartbeat", "watchdog"], strict=False)
+    }
+    monkeypatch.setattr(navigation, "iter_timers", lambda _layout: iter(timers))
+    monkeypatch.setattr(navigation, "read_field", lambda value, _sl, _f: value)
+    monkeypatch.setattr(
+        navigation, "read_cstring", lambda value: names_by_id.get(id(value))
+    )
+
+    assert list(navigation.iter_object_names("timer", layout)) == [
+        "heartbeat",
+        "watchdog",
+    ]

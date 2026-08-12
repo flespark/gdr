@@ -6,6 +6,14 @@ import pytest
 
 import rtthread.commands as commands
 
+
+class _FakeAdapter:
+    """Minimal stand-in exposing a layout for completion tests."""
+
+    def __init__(self) -> None:
+        self.layout = object()
+
+
 _PUBLIC_ROUTES = {
     "threads": ("tasks", None),
     "semaphores": ("objects", "semaphore"),
@@ -141,3 +149,98 @@ def test_help_documents_singular_detail_syntax(capsys):
     for command in commands._SINGULAR_COMMANDS:
         assert f"rtt {command}" in help_output
     assert "Single-object detail" in help_output
+
+
+def test_complete_suggests_commands_for_the_first_word():
+    """The first argument completes against the command vocabulary."""
+    candidates = commands._complete("sem", "sem")
+
+    assert "semaphores" in candidates
+    assert "semaphore" in candidates
+    assert all(candidate.startswith("sem") for candidate in candidates)
+
+
+def test_complete_commands_filters_by_prefix():
+    """Command completion honours the partial prefix."""
+    candidates = commands._complete("ev", "ev")
+
+    assert "events" in candidates
+    assert "event" in candidates
+    assert all(candidate.startswith("ev") for candidate in candidates)
+
+
+def test_complete_object_names_walks_live_kernel(monkeypatch):
+    """The second argument of a detail command completes real object names."""
+    adapter = _FakeAdapter()
+    monkeypatch.setattr(commands, "RtThreadAdapter", _FakeAdapter)
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        commands,
+        "iter_object_names",
+        lambda _kind, _layout: ["worker1", "worker2", "main"],
+    )
+
+    candidates = commands._complete("thread wor", "wor")
+
+    assert candidates == ["worker1", "worker2"]
+
+
+def test_complete_object_names_uses_the_command_semantic_kind(monkeypatch):
+    """The detail command selects the matching kernel object registry."""
+    adapter = _FakeAdapter()
+    monkeypatch.setattr(commands, "RtThreadAdapter", _FakeAdapter)
+    seen_kinds: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        commands,
+        "iter_object_names",
+        lambda kind, _layout: seen_kinds.append(kind) or [],
+    )
+
+    commands._complete("messagequeue test", "test")
+
+    assert seen_kinds == ["msgqueue"]
+
+
+def test_complete_object_names_degrades_without_rtthread_adapter(monkeypatch):
+    """No active RT-Thread adapter yields no object-name candidates."""
+    monkeypatch.setattr(commands, "active", lambda: object())
+    monkeypatch.setattr(
+        commands,
+        "iter_object_names",
+        lambda _kind, _layout: (_ for _ in ()).throw(AssertionError("unused")),
+    )
+
+    assert commands._complete("semaphore tes", "tes") == []
+
+
+def test_complete_object_names_degrades_on_traversal_failure(monkeypatch):
+    """A broken registry walk never raises inside GDB completion."""
+    adapter = _FakeAdapter()
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+
+    def broken(_kind, _layout):
+        raise RuntimeError("target unreachable")
+
+    monkeypatch.setattr(commands, "iter_object_names", broken)
+
+    assert commands._complete("semaphore tes", "tes") == []
+
+
+def test_complete_plural_list_command_does_not_walk_objects(monkeypatch):
+    """Plural list commands never trigger object-name traversal."""
+    monkeypatch.setattr(
+        commands,
+        "active",
+        lambda: (_ for _ in ()).throw(AssertionError("unused")),
+    )
+    monkeypatch.setattr(
+        commands,
+        "iter_object_names",
+        lambda _kind, _layout: (_ for _ in ()).throw(AssertionError("unused")),
+    )
+
+    candidates = commands._complete("sema", "sema")
+
+    assert "semaphores" in candidates
+    assert "semaphore" in candidates
