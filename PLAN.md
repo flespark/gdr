@@ -333,17 +333,17 @@ Detail 不替代 `$gdr_object()`：前者提供可读摘要和校验，后者继
 - [ ] 对不支持 MQ sender wait list 的旧版本只验证 receiver waiters 和
   `SendWaiters=N/A`；
 - [ ] fixture ready marker 只能在对象创建、线程进入预期阻塞状态后输出；
-- [ ] 测试期望继续存放于 `tests/support/rtthread_profiles.py` 和
+- [x] 测试期望继续存放于 `tests/support/rtthread_profiles.py` 和
   `tests/support/rtthread_qemu_profiles.py`，禁止从生产 layout 自动生成；
-- [ ] 更新 `tests/integration/rtthread/test_commands.py`，逐行核对新增列、
+- [x] 更新 `tests/integration/rtthread/test_commands.py`，逐行核对新增列、
   waiter 名称、event mask/mode 和派生容量；
-- [ ] 更新 `tests/integration/rtthread/test_functions.py`，确认
+- [x] 更新 `tests/integration/rtthread/test_functions.py`，确认
   `$gdr_object()` 仍返回可继续访问底层字段的原始对象；
-- [ ] 更新 adapter/layout/navigation 单元测试，覆盖全部字段边界；
-- [ ] 使用 `ci/rt-thread/run-qemu-matrix.sh cortex-a9` 构建全部 tag，并在
+- [x] 更新 adapter/layout/navigation 单元测试，覆盖全部字段边界；
+- [x] 使用 `ci/rt-thread/run-qemu-matrix.sh cortex-a9` 构建全部 tag，并在
   `v3.1.0/v3.1.3/v3.1.5/v4.0.0/v4.0.2/v4.0.5/v4.1.1` 执行完整 QEMU 测试；
-- [ ] 使用 `ci/rt-thread/run-qemu-matrix.sh rv64` 验证 v4.0.4-v4.1.1 无回归；
-- [ ] runner 不重新引入自定义 `OUT_ELF/OUT_BIN`，继续通过统一
+- [x] 使用 `ci/rt-thread/run-qemu-matrix.sh rv64` 验证 v4.0.4-v4.1.1 无回归；
+- [x] runner 不重新引入自定义 `OUT_ELF/OUT_BIN`，继续通过统一
   `BUILD_DIR` 下的 BSP 默认产物和 `GDR_ELF_PATH/GDR_FIRMWARE_PATH` 定位；
 - [ ] 复用的 RT-Thread clone 每次构建前执行现有 `git reset --hard <ref>`
   和 `git clean -ffdx`，清除全部 SCons 输出和 ignored cache；

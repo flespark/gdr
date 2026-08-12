@@ -413,7 +413,10 @@ def test_rtt_mailbox_detail_shows_waiters(gdb):
     for label in ("Name:", "Address:", "Type:", "Entry:", "Size:", "MsgPool:"):
         assert label in output, output
     assert _PROFILE.mailbox_name in output
-    assert "OffsetCheck:" in output
+    # Valid ring offsets yield FIFO slot lines; OffsetCheck only appears when
+    # an offset is out of range (see the invalid-offset unit test).
+    assert "Slot[" in output
+    assert "OffsetCheck:" not in output
     assert "[gdr] error:" not in output, output
 
 
