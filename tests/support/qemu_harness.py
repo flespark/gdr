@@ -201,6 +201,10 @@ class GdbSession:
             self._proc.expect(_GDB_PROMPT, timeout=10)
             self.run("set pagination off")
             self.run("set style enabled off")
+            # Reason: table rendering is based on GDB's width. A fixed
+            # baseline keeps existing assertions deterministic while dedicated
+            # width tests explicitly set 80/120 and restore this value.
+            self.run("set width 160")
             self.run(f"set architecture {self.profile.gdb_architecture}")
             self.run(f"file {self.profile.elf_path}")
             self.run(f"target remote :{self._gdb_port}")

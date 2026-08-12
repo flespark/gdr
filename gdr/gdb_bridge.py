@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import functools
 import os
+import shutil
 import struct
 import traceback as _traceback
+from collections.abc import Sequence
 from dataclasses import dataclass
 from io import StringIO
 
@@ -21,6 +23,8 @@ try:
     import gdb
 except ImportError:
     gdb = None  # type: ignore[assignment]
+
+from gdr.table import format_table
 
 MAX_LIST_LEN = 4096
 
@@ -259,33 +263,82 @@ def make_pointer_array(values: list[gdb.Value]) -> gdb.Value:
     return gdb.Value(buf, elem_type.array(len(pointers) - 1))
 
 
-def print_table(rows: list[list[str]], headers: list[str]) -> None:
+def _gdb_width() -> int | None:
+    """Return GDB's ``width`` parameter when it is a positive int.
+
+    ``gdb.parameter("width")`` reports ``0`` for ``unlimited``; ``None`` or a
+    non-positive value means "no explicit width", so callers fall through to
+    terminal probing.
+    """
+    if gdb is None:
+        return None
+    try:
+        value = gdb.parameter("width")
+    except Exception:
+        return None
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def _system_columns() -> int | None:
+    """Return the detected terminal column count, or ``None`` when unknown."""
+    try:
+        size = shutil.get_terminal_size(fallback=(120, 24))
+    except (OSError, ValueError):
+        return None
+    columns = size.columns
+    return columns if isinstance(columns, int) and columns > 0 else None
+
+
+def terminal_width() -> int:
+    """Return the effective terminal width for list rendering.
+
+    Priority:
+    1. ``gdb.parameter("width")`` when it is a positive int (``set width N``);
+    2. ``shutil.get_terminal_size`` columns when GDB width is unlimited/None;
+    3. fallback to 120.
+
+    Terminal probing is separate from pure formatting (:func:`format_table`)
+    so unit tests can pin 80/100/120/160-character behavior.
+    """
+    gdb_width = _gdb_width()
+    if gdb_width is not None:
+        return gdb_width
+    return _system_columns() or 120
+
+
+def print_table(
+    rows: list[list[str]],
+    headers: list[str],
+    *,
+    elastic: Sequence[str] = (),
+    width: int | None = None,
+) -> None:
     """Print a formatted ASCII table to GDB stdout in one write.
 
     Args:
         rows: List of row lists; each row should have ``len(headers)`` cells.
         headers: Column header strings.
+        elastic: Headers of elastic text columns that may shrink when the
+            natural table width exceeds the terminal ``width``.
+        width: Explicit terminal width; ``None`` probes the active width.
+    """
+    _ensure_gdb()
+    if width is None:
+        width = terminal_width()
+    # Reason: one write prevents asynchronous GDB output from splitting rows.
+    gdb.write(format_table(rows, headers, elastic=elastic, width=width))
+
+
+def print_detail(pairs: Sequence[tuple[str, str]]) -> None:
+    """Print a vertical ``Key: Value`` detail block to GDB stdout in one write.
+
+    Args:
+        pairs: Ordered ``(key, value)`` pairs describing one object.
     """
     _ensure_gdb()
     output = StringIO()
-    if not rows:
-        output.write("(empty)\n")
-    else:
-        col_widths = [len(h) for h in headers]
-        for row in rows:
-            for i, cell in enumerate(row):
-                if i < len(col_widths):
-                    col_widths[i] = max(col_widths[i], len(str(cell)))
-
-        fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
-        output.write(f"{fmt.format(*headers)}\n")
-        output.write(f"{'  '.join('-' * w for w in col_widths)}\n")
-        for row in rows:
-            cells = [str(c) for c in row]
-            cells += [""] * (len(headers) - len(cells))
-            output.write(f"{fmt.format(*cells)}\n")
-
-    # Reason: one write prevents asynchronous GDB output from splitting rows.
+    for key, value in pairs:
+        output.write(f"{key}: {value}\n")
     gdb.write(output.getvalue())
 
 

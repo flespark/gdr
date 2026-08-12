@@ -1,694 +1,388 @@
-# GDR FreeRTOS 支持实施计划
+## 11. RT-Thread 内核对象打印完整性补强
 
-> 状态：Phase 1、Phase 2 已完成；Phase 3 待实施
-> 调研基线日期：2026-08-10
+> 状态：待实施
+> 调研基线日期：2026-08-11
+> 支持范围：RT-Thread `v3.1.0-v3.1.5`、`v4.0.0-v4.0.5`、
+> `v4.1.0-v4.1.1`
 
-## 1. 目标与已确认决策
+### 11.1 目标和边界
 
-在不破坏现有 RT-Thread 支持的前提下，为 GDR 增加独立的 FreeRTOS
-adapter，并完成：
+补齐 RT-Thread 聚合命令中对现场诊断有直接价值、但当前尚未显示的字段，
+重点覆盖 IPC 阻塞关系、优先级继承、容量耗尽、事件等待条件、定时器剩余
+时间和 SMP CPU 归属。
 
-- B-L475E-IOT01A + QEMU 的真实启动和 GDB 闭环；
-- FreeRTOS 任务、队列、信号量、互斥量和活动软件定时器的导航；
-- `tasks`、`system` 等聚合命令；
-- Queue Registry、活动 Timer、Pretty-printer 和 GDB convenience function；
-- FreeRTOS 多版本构建与 QEMU 测试矩阵；
-- 同时包含 RT-Thread 和 FreeRTOS 的统一发布包；
-- 英文文档、中文文档和架构说明；
-- 对 FreeRTOS 结构变化、配置变化和枚举能力边界的明确支持声明。
+实施必须遵守以下边界：
 
-首批版本优先级固定为：
+- 聚合表只显示可快速判断系统状态的摘要，不把内部链表节点和裸指针全部
+  塞入默认输出；
+- `$gdr_object()` 和 `$gdr_task()` 继续返回目标原生 `gdb.Value`，允许用户
+  使用 GDB 表达式检查任意底层字段；
+- 结构字段从目标 DWARF 和 layout 读取，禁止硬编码字节偏移；
+- 缺少某字段的旧版本必须显示 `N/A` 或省略对应能力，不能把“不支持”
+  错报为数值 `0`；
+- 等待线程数量统一通过链表遍历计算，不依赖已经被后续版本删除的缓存
+  count 字段；
+- 链表遍历必须有损坏检测和最大节点数限制，不能让 GDB 因坏链表死循环；
+- 保持 RTOS-neutral core 与 RT-Thread adapter 的职责边界，RT-Thread 结构名、
+  字段路径和版本条件只能位于 `rtthread/`。
 
-| 优先级 | 主基线 | 首批支持跨度 |
+### 11.2 Messagequeue 与 Mailbox 字段结论
+
+在全部目标版本中，`struct rt_messagequeue` 都不存在 `in_offset` 和
+`out_offset`。这两个字段属于 `struct rt_mailbox`。
+
+Mailbox 使用环形数组：
+
+- `msg_pool` 是消息槽数组；
+- `in_offset` 指向下一次写入位置；
+- `out_offset` 指向下一条待取消息；
+- `entry` 是当前消息数量，`size` 是总槽位数。
+
+GDR 已读取并打印 mailbox 的 `entry/size/in_offset/out_offset`。对默认汇总
+而言，`entry/size` 已足够判断空满；offset 对恢复实际 FIFO 顺序和诊断
+环形游标损坏仍有价值，因此保留现有列。
+
+Messagequeue 使用消息链表和空闲链表：
+
+```c
+void *msg_queue_head;
+void *msg_queue_tail;
+void *msg_queue_free;
+rt_uint16_t entry;
+```
+
+发送时从 `msg_queue_free` 取节点并挂入 `head/tail`，接收时从 `head`
+摘除节点并放回 free list。当前默认表中的 `entry/msg_size/max_msgs` 已足以
+判断队列负载、容量和单条消息大小，不得为 messagequeue 添加虚构的 offset
+字段。
+
+`msg_queue_head/tail/free` 对检查链表损坏、节点泄漏和消息内容有用，但应由
+原生 `$gdr_object()` 钻取或后续 detail/traversal 命令呈现，不作为默认表
+的裸指针列。
+
+### 11.3 打印缺口和字段分类
+
+RT-Thread 自带的 `list_sem/list_event/list_mutex/list_mailbox/list_msgqueue/`
+`list_mempool` 都把挂起线程数量和名称作为核心诊断信息。GDR 当前这些聚合
+表均未显示等待关系，这是优先级最高的缺口。
+
+字段分类固定为：
+
+- **关键字段**：对象列表必须保留，不因终端宽度自动删除。弹性字段中的关键
+  前缀不可丢失，例如 `Waiters` 中的等待数量；
+- **非关键单值字段**：按 120 字符终端预算评估。能够通过限制弹性文本宽度
+  容纳的，固定保留在紧凑列表中，不随实际终端宽度动态增删；
+- **非关键详情字段**：内部指针、可变数量的子项、等待条件和一致性检查，
+  只在 `rtt <object> <obj_name>` 或原生 `$gdr_object()` 中显示。
+
+列表字段集合必须稳定。实际终端宽度只影响弹性文本是否截断，不影响列是否
+存在。
+
+| 对象 | 新增字段 | 分类 | 紧凑列表决定 | Detail 补充 |
+|---|---|---|---|---|
+| Thread | `Addr` | 关键 | 固定增加 | 原始对象类型和地址 |
+| Thread | `BasePrio` | 非关键单值 | 120 列预算内保留 | 当前/基础优先级解释 |
+| Thread | `CPU` | SMP 下关键 | SMP 目标固定增加 | CPU sentinel 原始值 |
+| Thread | `Bind` | 非关键单值 | SMP 目标在 120 列预算内保留 | 绑定策略和 sentinel |
+| Thread | `Error/Remain` | 非关键详情 | 不进入列表 | 错误码和剩余时间片 |
+| Timer | `Addr` | 关键 | 固定增加 | 原始 timer 地址 |
+| Timer | `ExpiresIn` | 关键状态 | 固定增加，inactive 显示 `N/A` | tick 计算和回绕信息 |
+| Timer | `Parameter` | 非关键详情 | 不进入列表 | callback 参数指针 |
+| Semaphore | waiter count | 关键 | 固定增加到 `Waiters` | 完整等待线程对象 |
+| Semaphore | waiter names | 非关键弹性文本 | 保留，可截断 | 完整名称列表 |
+| Semaphore | `Policy` | 非关键单值 | 120 列预算内保留 | 原始 IPC flag |
+| Mutex | waiter count | 关键 | 固定增加到 `Waiters` | 完整等待线程对象 |
+| Mutex | waiter names | 非关键弹性文本 | 保留，可截断 | 完整名称列表 |
+| Mutex | `OriginalPrio` | 关键状态 | 固定增加 | owner 当前/原始优先级关联 |
+| Mutex | `Policy` | 非关键单值 | 120 列预算内保留 | 旧版可配置、新版强制 PRIO 的差异 |
+| Event | waiter count | 关键 | 固定增加到 `Waiters` | 完整等待线程对象 |
+| Event | waiter names | 非关键弹性文本 | 保留，可截断 | 每个 waiter 的完整名称 |
+| Event | `Policy` | 非关键单值 | 120 列预算内保留 | 原始 IPC flag |
+| Event | `event_set/event_info` | 非关键详情 | 不进入列表 | 每个 waiter 的 mask 和 AND/OR/CLEAR |
+| Mailbox | receiver/sender waiter count | 关键 | 固定增加 | 完整 RX/TX 等待线程对象 |
+| Mailbox | receiver/sender names | 非关键弹性文本 | 保留，可截断 | 完整 RX/TX 名称列表 |
+| Mailbox | `Free` | 非关键单值 | 120 列预算内保留 | `size-entry` 一致性 |
+| Mailbox | `Policy` | 非关键单值 | 120 列预算内保留 | 原始 IPC flag |
+| Mailbox | `msg_pool` 和消息槽 | 非关键详情 | 不进入列表 | FIFO 顺序、游标范围和槽内容 |
+| Messagequeue | receiver/sender waiter count | 关键 | 固定增加 | 完整 RX/TX 等待线程对象 |
+| Messagequeue | receiver/sender names | 非关键弹性文本 | 保留，可截断 | 完整 RX/TX 名称列表 |
+| Messagequeue | `Free` | 非关键单值 | 120 列预算内保留 | `max_msgs-entry` 一致性 |
+| Messagequeue | `Policy` | 非关键单值 | 120 列预算内保留 | 原始 IPC flag |
+| Messagequeue | `head/tail/free` 和消息节点 | 非关键详情 | 不进入列表 | payload 遍历和链表一致性 |
+| Mempool | waiter count | 关键 | 固定增加到 `Waiters` | 完整等待线程对象 |
+| Mempool | waiter names | 非关键弹性文本 | 保留，可截断 | 完整名称列表 |
+| Mempool | `Used` | 非关键单值 | 120 列预算内保留 | total/free/used 一致性和使用率 |
+| Mempool | pool 和 block-list 指针 | 非关键详情 | 不进入列表 | 范围、对齐和 free-list 检查 |
+
+上述 120 列评估以 64 位地址的最坏固定宽度为基线，并允许对
+`Name/Owner/Waiters/Callback/Entry` 设置合理的弹性宽度。数值、状态、数量
+和地址列不允许为了适配宽度而截断。预算评估使用 `Name=12`、`Owner=12`、
+每个 waiter cell `=18`、`Callback/Entry=20`、64 位 `Addr/SP=18` 和双空格
+列间距；这些只是设计估值，运行时仍根据真实内容重新计算。
+
+| 对象 | 计划紧凑列 | 64 位预算估值 | 120 字符结论 |
+|---|---|---:|---|
+| Thread | Name、State、Prio、BasePrio、SP、Stack、Used、HighWater、Entry、按能力 CPU/Bind、Addr | SMP 约 136 | 收缩 Name/Entry 后保留全部列；Error/Remain 进 detail |
+| Timer | Name、State、Mode、Type、InitTick、TimeoutTick、ExpiresIn、Callback、Addr | 约 117 | 保留全部列 |
+| Semaphore | Name、Value、Waiters、Policy、Addr | 约 67 | 保留全部列 |
+| Mutex | Name、Value、Hold、Owner、OriginalPrio、Waiters、Policy、Addr | 约 101 | 保留全部列 |
+| Event | Name、Set、Waiters、Policy、Addr | 约 72 | 保留全部列；waiter 条件进 detail |
+| Mailbox | Name、Entry、Size、Free、In、Out、RecvWait、SendWait、Policy、Addr | 约 109 | 保留全部列 |
+| Messagequeue | Name、Entry、MsgSize、MaxMsgs、Free、RecvWait、SendWait、Policy、Addr | 约 111 | 保留全部列 |
+| Mempool | Name、BlockSize、Total、Free、Used、Waiters、Addr | 约 82 | 保留全部列 |
+
+若真实数据超过上述估值，使用 Phase A 的运行时截断算法。不得为了追求严格
+120 字符而删除已经确认保留的非关键单值列。
+
+等待队列位置固定为：
+
+| 对象 | 接收/资源等待队列 | 发送等待队列 |
 |---|---|---|
-| P1 | `V10.3.1-kernel-only` | `V10.3.0` 至 `V10.3.1` |
-| P2 | `V10.6.2` | `V10.5.0` 至 `V10.6.2` |
-| P3 | `V11.1.0` | 首期 `V11.0.0` 至 `V11.1.0`，后续扩展到 `V11.3.0` |
+| Semaphore、Mutex、Event | `parent.suspend_thread` | 不适用 |
+| Mailbox | `parent.suspend_thread` | `suspend_sender_thread` |
+| Messagequeue | `parent.suspend_thread` | 版本支持时为 `suspend_sender_thread` |
+| Mempool | `suspend_thread` | 不适用 |
 
-FreeRTOS Kernel 仓库中没有标准的 `V10.3.1` tag，实际 tag 是
-`V10.3.1-kernel-only`。CI 和构建脚本必须使用真实 tag 或固定 commit，
-不能假定 `V10.3.1` tag 存在。
+Event 的等待条件不在 event 对象本身，而在挂起线程的 `event_set` 和
+`event_info` 中。只有把等待线程和这两个字段关联起来，才能解释线程等待的
+mask、AND/OR/CLEAR 模式以及为何当前 `event.set` 没有唤醒它。
 
-基础任务、队列、信号量、互斥量、定时器和事件组字段在 `V10.3.1`
-至 `V11.3.0` 间总体稳定。版本差异应通过 DWARF 字段路径、字段存在性
-和目标类型信息处理，禁止硬编码字节偏移。
+### 11.4 版本兼容边界
 
-FreeRTOS 不提供 RT-Thread 式统一对象注册表，因此功能语义固定为：
+Messagequeue sender wait list：
 
-- Task：可从调度器链表完整枚举；
-- Queue/Semaphore/Mutex：只能保证枚举已加入 Queue Registry 的对象；
-- Timer：只能保证枚举当前处于 active timer list 的软件定时器；
-- 未注册 Queue、已删除 Timer、尚未加入 active list 的 Timer 不承诺可见。
+- `v3.1.0-v3.1.3`：没有 `suspend_sender_thread`；
+- `v3.1.4-v3.1.5`：存在 `suspend_sender_thread`；
+- `v4.0.0-v4.0.1`：没有 `suspend_sender_thread`；
+- `v4.0.2-v4.1.1`：存在 `suspend_sender_thread`。
 
-初期 QEMU 闭环限定为单核 Cortex-M。FreeRTOS 11 SMP 先完成 layout 和
-编译覆盖，暂不宣称 QEMU 多核运行验证。
+Mempool suspend count：
 
-## 2. 调研结论
+- `v3.1.0-v3.1.3`、`v4.0.0-v4.0.1`：存在
+  `suspend_thread_count`；
+- `v3.1.4-v3.1.5`、`v4.0.2-v4.1.1`：该字段已删除；
+- 全部目标版本均有 `suspend_thread` 链表，因此统一遍历链表计数。
 
-### 2.1 QEMU 与板卡
+当前 `build_messagequeue_layout()` 无版本参数且无条件描述 sender list。
+实现等待者遍历时，应按上述版本边界构建字段，或基于目标 DWARF 字段存在性
+明确标记该能力。当前 mempool layout 还缺少 `block_list` 和
+`suspend_thread`，必须先补齐 `suspend_thread`；`block_list` 只为 detail
+检查保留，不要求进入默认表。
 
-首选板卡为 ST B-L475E-IOT01A：
+### 11.5 Thread/SMP 已确认缺陷
 
-- QEMU machine：`b-l475e-iot01a`；
-- CPU：Cortex-M4F，单核；
-- SDK：STM32CubeL4 `v1.18.2`；
-- SDK 中 FreeRTOS 子模块 commit：
-  `5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`；
-- 内核版本：ST 修改版 FreeRTOS `V10.3.1`；
-- QEMU 官方文档：
-  `https://www.qemu.org/docs/master/system/arm/b-l475e-iot01a.html`；
-- ST 官方示例：
-  `STM32CubeL4/Projects/B-L475E-IOT01A/Applications/FreeRTOS`；
-- QEMU 当前未实现 LPTIM，fixture 必须使用 Cortex-M SysTick 作为
-  FreeRTOS tick，并通过 USART 或 semihosting 输出启动标记。
+当前 thread converter 使用：
 
-第二候选为 AMD/Xilinx Zynq-7000：
-
-- QEMU machine：`xilinx-zynq-a9`；
-- SDK：Vitis/`embeddedsw`；
-- 存在 `ThirdParty/bsp/freertos10_xilinx`；
-- BSP 生成和 Vitis 工具链依赖更重，不作为首个闭环目标。
-
-### 2.2 SDK 与 FreeRTOS 版本证据
-
-| 厂商/SDK | 代表芯片 | 当前 SDK 线索 | FreeRTOS 证据与结论 |
-|---|---|---|---|
-| ST STM32CubeF1/F4/G4/H7/L4 | STM32 Cortex-M | 最新 tag 分别为 `v1.8.7`、`v1.28.3`、`v1.6.3`、`v1.13.0`、`v1.18.2` | 长期固化 ST FreeRTOS `V10.3.1` |
-| ST STM32CubeWB | STM32WB | `v1.24.0` | 内置 FreeRTOS `V10.6.2` |
-| ST STM32CubeU5 | STM32U5 | `v1.9.0` | 最新包未在同等位置提供 FreeRTOS Kernel，不作为首个目标 |
-| Infineon FreeRTOS fork | PSoC/XMC 等 | `release-v10.6.202` | `task.h` 声明 `V10.6.2` |
-| Renesas FSP | RA 系列 | `v6.5.1` | 包含 FreeRTOS port 和 FreeRTOS+ 组件，但 Kernel 通常由独立包管理，不能只凭 FSP 主仓库断言固定 tag |
-| Microchip Harmony 3 | SAM/PIC32 | Harmony core `v3.17.0` | 提供 FreeRTOS 配置器和 port，Kernel 版本由独立组件包管理 |
-| NXP MCUXpresso SDK | i.MX RT/LPC/Kinetis/MCX | `MCUX_2.16.100` 及 Real-Time Edge 日历 tag | Kernel 版本随具体 SDK manifest/包发布，不能把 SDK tag 直接视为 FreeRTOS tag |
-| TI SimpleLink | CC13xx/CC26xx/MSP432 等 | SimpleLink SDK 分支 | Kernel 由具体 SDK/组件提供，需按产品 SDK 固化版本 |
-| Raspberry Pi Pico SDK | RP2040/RP2350 | `2.3.0` | Pico SDK 不等于固定 vendored FreeRTOS Kernel，port/Kernel 多由独立组件提供 |
-| AMD/Xilinx Vitis | Zynq/ZynqMP/MicroBlaze | `embeddedsw` | 有 `freertos10_xilinx` BSP，版本受 Vitis/BSP 生成流程影响 |
-
-### 2.3 出货量证据口径
-
-公开资料大多不能精确拆到芯片家族，因此文档和后续调研记录必须区分
-“芯片出货量”和“公司营收/市场排名”：
-
-- ST：公开资料通常给出 STM32 累计出货量达到百亿级，但未按
-  F1/F4/G4/H7/L4/WB/U5 拆分年度颗数；STM32 生态和 SDK 覆盖面评为极高；
-- Renesas：公开资料曾给出公司级 MCU 年出货约数十亿颗量级，但不能
-  直接等价为 RA 系列出货量；
-- Microchip：公开的数十亿或数百亿级数字多为公司级或累计口径，不能
-  拆成 SAM/PIC32 家族年度颗数；
-- NXP、Infineon、TI、AMD/Xilinx：家族级 FreeRTOS MCU/SoC 颗数通常
-  未公开，应使用公司级数据、产品覆盖和 SDK 使用面作为定性权重；
-- Raspberry Pi：RP2040/Pico 有公开销售和累计数量线索，但必须标明
-  统计对象是 Raspberry Pi 产品或 RP2040，而不是整个 MCU 市场；
-- 不得使用营收数字冒充出货量。每条数据必须记录统计对象、年份、
-  是否累计、是否公司级、原始证据链接和证据等级。
-
-这些证据支持以下版本选择：
-
-- `V10.3.1` 覆盖 STM32 主流历史装机和大量长期维护 SDK；
-- `V10.6.x` 覆盖较新的 ST/Infineon 生态，并覆盖 10.5.x 结构代际；
-- `V11.x` 作为现代主线和 SMP 前瞻基线，优先验证 `V11.1.0`。
-
-### 2.4 内核结构兼容性结论
-
-#### V10.3.1 至 V10.4.0
-
-TCB 中任务通知由标量变为数组：
-
-```c
-/* V10.3.1 */
-volatile uint32_t ulNotifiedValue;
-volatile uint8_t ucNotifyState;
-
-/* V10.4.0+ */
-volatile uint32_t ulNotifiedValue[ configTASK_NOTIFICATION_ARRAY_ENTRIES ];
-volatile uint8_t ucNotifyState[ configTASK_NOTIFICATION_ARRAY_ENTRIES ];
+```python
+bind_cpu=read_int(...) or -1
+oncpu=read_int(...) or -1
 ```
 
-默认数组长度为 1，默认物理尺寸通常不变，但 GDB 字段类型从标量变为
-数组。若 GDR 展示通知值，必须处理标量和数组两种访问形式。
+合法 CPU 编号 `0` 会被当成假值并错误转换为 `-1`。必须改成显式区分
+`None` 和整数零。
 
-#### V10.4.5
+当前 task summary 还把选中的 current thread 固定标记成 core 0，没有使用
+线程的 `oncpu/bind_cpu`。SMP 输出应显示实际 CPU 归属；UP 目标仍可使用
+core 0/current marker。实现时还要确认各版本“未绑定”和“当前未运行”的
+sentinel 定义，不能把所有负值或最大无符号值直接当成有效 CPU。
 
-`TCB_t.ulRunTimeCounter` 和 `TaskStatus_t.ulRunTimeCounter` 从固定
-`uint32_t` 改为 `configRUN_TIME_COUNTER_TYPE`。默认仍是 `uint32_t`，
-但应用可设为 64 位并移动后续字段偏移。GDR 必须使用目标 DWARF 类型。
+`TaskSummary` 已有 `address/base_priority/current_core`，但通用 task renderer
+尚未显示地址和基础优先级。增加这些公共列会影响 FreeRTOS 输出和对应测试，
+必须同步验证两个 adapter；RT-Thread 特有的 `error/remaining_tick/bind_cpu`
+若进入公共 API，应使用可选字段，避免把 RT-Thread 语义硬编码进 core。
 
-#### V10.5.0
+### 11.6 实施 Phase A：宽度感知列表与对象 Detail
 
-- TCB 的可选 Newlib 字段由 `xNewLib_reent` 泛化为 `xTLSBlock`；
-- 新增 `configUSE_MINI_LIST_ITEM`；
-- StreamBuffer 可选增加实例级 send/receive callback 字段；
-- `TaskStatus_t` 可选增加 stack top/end 信息。
+本 Phase 是新增打印字段的前置工作，只实现 GDR 实际需要的最小表格能力，
+不引入 `prettytable` 等外部运行时依赖，也不复制 GEF 的平台相关表格代码。
+保留现有 ASCII 表格、双空格分列和单次 `gdb.write()` 行为。
 
-`configUSE_MINI_LIST_ITEM` 默认是 1。设为 0 时 `MiniListItem_t` 直接成为
-`ListItem_t`，使 `List_t.xListEnd` 变大，但链表遍历需要的字段路径保持
-不变。
+#### 11.6.1 终端宽度
 
-#### V10.5.0 至 V10.6.2
+每次渲染列表前检查当前终端宽度，优先级固定为：
 
-`Queue_t`、`Timer_t`、`EventGroup_t` 和调度链表没有目标字段级变化；
-`TCB_t` 公共字段保持一致。`V10.6.0` 的风险主要来自配置：
+1. `gdb.parameter("width")` 返回的正整数，即用户显式执行的
+   `set width N`；
+2. GDB width 为 unlimited/`None` 时，使用标准库
+   `shutil.get_terminal_size(fallback=(120, 24)).columns`；
+3. 无法取得有效正整数时回退为 120。
 
-- `configTICK_TYPE_WIDTH_IN_BITS` 允许 16/32/64 位 tick；
-- MPU wrapper v2 引入端口相关 `xMPU_SETTINGS` 和用户态 opaque handle；
-- Newlib/Picolibc TLS 配置方式调整，但最终 TCB 仍使用 `xTLSBlock`。
+格式化核心必须接受显式 `width` 参数，终端探测与纯格式化逻辑分离，以便
+单元测试稳定覆盖 80、100、120 和 160 字符。不得解析本地化的
+`show width` 文本，也不需要照搬 GEF 的 Unix `ioctl`/Windows API 分支。
 
-因此 `V10.5.x` 与 `V10.6.x` 共用主 profile；MPU v2 作为独立配置覆盖。
+#### 11.6.2 稳定紧凑表和截断算法
 
-#### V10.6.2 至 V11.0.0
+`rtt <objects>` 的列集合由第 11.3 节固定，不根据终端宽度隐藏或新增列。
+自然表格宽度计算为全部列宽之和，加相邻列之间的两个空格。
 
-SMP 合入主线，多核配置下 TCB 增加：
+当自然宽度超过当前终端宽度时：
 
-```c
-uxCoreAffinityMask
-xTaskRunState
-uxTaskAttributes
-xPreemptionDisable
-```
+1. 只允许收缩 `Name/Owner/Waiters/Callback/Entry` 等显式标记的弹性文本列；
+2. 收缩顺序为 `Waiters`、`Callback/Entry`、`Owner`、`Name`，同一优先级
+   先收缩当前最宽的列；
+3. 表头不截断。每个弹性列最小宽度为 `max(len(header), 5)`；
+4. 单元格超过分配宽度时输出 `text[:width-2] + ".."`；因此最短文本是
+   3 个原字符加 2 个点，禁止使用 Unicode 省略号；
+5. `Waiters` cell 必须把数量放在最前面，例如 `2:worker,logger`，保证截断
+   后仍优先保留关键 count；
+6. 数字、枚举状态、地址和表头不截断，也不自动删除任何列；
+7. 如果全部弹性列缩到最小后仍超过终端宽度，放弃本次全部截断结果，按
+   原始自然列宽输出。允许终端自行换行，不实现二次布局、纵向回退或隐藏列。
 
-当前任务入口从 `pxCurrentTCB` 变为
-`pxCurrentTCBs[ configNUMBER_OF_CORES ]`。当 `configNUMBER_OF_CORES == 1`
-时，SMP 字段不会进入 TCB，仍导出 `pxCurrentTCB`。
+120 字符只是设计紧凑列表字段集合时的基准，不是强制运行时宽度。80 字符
+终端可能触发截断，低于最小可表示宽度时按第 7 条保持原格式。
 
-#### V11.0.0 至 V11.0.1
+#### 11.6.3 单对象 Detail 命令
 
-没有目标内核对象结构变化，官方 changelog 只有 SBOM 更新。两个版本
-应位于同一支持区间。
-
-#### V11.0.1 至 V11.1.0
-
-`TCB_t`、`Queue_t`、`Timer_t`、`EventGroup_t` 不变；`StreamBuffer_t`
-末尾新增 `UBaseType_t uxNotificationIndex`。若支持 StreamBuffer，需区分
-`pre-11.1` 和 `11.1+` layout。
-
-#### V11.1.0 至 V11.2.0
-
-目标结构不变，但 Queue Set 类型码由与普通 Queue 共用的 `0` 改为独立
-值 `5`。如果 GDR 根据 `ucQueueType` 分类对象，`V11.2+` 必须使用新映射。
-
-#### V11.2.0 至 V11.3.0
-
-首期目标对象没有新增字段。加入 StreamBuffer 和 Queue Set 语义分支后，
-同一 V11 profile 可以延伸至 `V11.3.0`。
-
-## 3. Phase 1：板卡启动与通用 QEMU Harness
-
-### 3.1 目标
-
-先让 FreeRTOS fixture 在真实 QEMU machine 上启动，并建立与现有
-RT-Thread 测试等价的持久 GDB/QEMU 闭环。该阶段不实现 FreeRTOS 对象
-命令。
-
-### 3.2 代码和目录结构
-
-- 新增 `freertos/` adapter 包骨架；
-- 新增 `ci/freertos/`，存放构建脚本、fixture source/config 和版本补丁；
-- 新增 FreeRTOS profile 数据模块，定义 target、version、fixture 期望；
-- 将现有 `tests/conftest.py` 中 QEMU/GDB 生命周期抽成 RTOS 无关 harness；
-- 保留 RT-Thread profile 和行为，禁止 FreeRTOS 分支污染现有测试。
-
-建议目标结构：
+保留现有复数列表命令，并新增下列单数形式：
 
 ```text
-freertos/
-  __init__.py
-
-ci/freertos/
-  build-freertos.sh
-  run-qemu-matrix.sh
-  fixture/
-  patches/
-
-tests/
-  qemu_harness.py
-  freertos_profiles.py
+rtt thread <obj_name>
+rtt timer <obj_name>
+rtt semaphore <obj_name>
+rtt mutex <obj_name>
+rtt event <obj_name>
+rtt mailbox <obj_name>
+rtt messagequeue <obj_name>
+rtt mempool <obj_name>
 ```
 
-### 3.3 Fixture 与启动流程
-
-- 使用 STM32CubeL4 B-L475E-IOT01A startup、linker script、HAL/BSP 和
-  Cortex-M4 FreeRTOS port；
-- 使用 SysTick 产生 FreeRTOS tick，不使用 LPTIM；
-- 使用 USART 或 semihosting 输出 `GDR FreeRTOS fixture ready.`；
-- marker 只能在所有测试对象创建并完成注册后输出；
-- 使用 `-Og -g3`，禁用 LTO，保留局部静态变量和 DWARF；
-- ELF 用于 GDB 符号，QEMU firmware image 可与 ELF 分开配置；
-- fixture 最少创建三个不同优先级 Task、普通 Queue、Semaphore、Mutex、
-  已注册 Queue、未注册 Queue、active Timer 和未启动 Timer。
-
-QEMU/GDB 生命周期固定为：
-
-1. 分配空闲 GDB TCP 端口，避免固定 `1234` 导致并发冲突；
-2. 启动 `qemu-system-arm -M b-l475e-iot01a`；
-3. 将 serial 输出写入每个测试 session 独立的临时文件；
-4. 等待 ready marker，并在超时中打印 serial 和 QEMU 退出状态；
-5. 启动持久 GDB session；
-6. 设置 architecture、加载 ELF、连接 remote、`source gdr.py`；
-7. 所有测试复用该 GDB session；
-8. 测试结束后优雅关闭 GDB/QEMU，超时后再强制终止。
-
-### 3.4 公共 Harness 接口
-
-profile 至少提供：
-
-```text
-rtos
-version
-qemu_binary
-machine
-cpu/extra_args
-gdb_architecture
-elf_path
-firmware_path
-firmware_option
-ready_marker
-pointer_width
-```
-
-环境变量统一使用：
-
-```text
-GDR_RTOS
-GDR_VERSION
-GDR_QEMU_TARGET
-GDR_QEMU
-GDR_QEMU_MACHINE
-GDR_GDB
-GDR_ELF_PATH
-GDR_FIRMWARE_PATH
-GDR_BOOT_WAIT
-```
-
-保留现有 RT-Thread 兼容变量一个发布周期，再逐步迁移到统一变量。
-
-### 3.5 测试与验收
-
-- QEMU 能稳定启动，不依赖真实硬件；
-- GDB 能读取 `tskTaskControlBlock`、`QueueDefinition`、`tmrTimerControl`；
-- 持久 GDB session 能连续执行多条表达式；
-- `source gdr.py` 不报错；
-- 测试能区分 fixture 超时、QEMU 提前退出、GDB 连接失败和缺少工具；
-- ARM pointer width 断言为 4；
-- FreeRTOS 闭环测试和 RT-Thread 原有闭环测试同时通过。
-
-### 3.6 实施结果（2026-08-10）
-
-- 已新增 `freertos/` 包骨架、`ci/freertos/` fixture/build runner 和
-  独立的 `tests/freertos_profiles.py`；生产 adapter 尚未进入导航或命令实现。
-- `tests/qemu_harness.py` 已提取 RTOS 无关的 profile、动态 GDB port、
-  QEMU 进程日志、启动 marker 和持久 GDB 生命周期。RT-Thread 的 A9/RV64
-  profile 保留旧变量兼容；A9 fixture 不依赖 SD device 启动。
-- `ci/freertos/build-freertos.sh` 使用 STM32CubeL4 `v1.18.2`、其固定的
-  CMSIS device/FreeRTOS submodule commit，以及 Cortex-M4F SysTick port 构建
-  含 DWARF 的 ELF/BIN。fixture 创建三种优先级 Task、已注册/未注册 Queue、
-  Semaphore、Mutex、active/inactive Timer；ready marker 仅在 timer daemon
-  已处理 active timer 后经 QEMU semihosting 输出。
-- 已在 `qemu-system-arm -M b-l475e-iot01a` 上验证 marker、持久 GDB、
-  `struct tskTaskControlBlock`、`struct QueueDefinition`、
-  `struct tmrTimerControl` 与 32-bit pointer width。验证命令：
-  `bash ci/freertos/run-qemu-matrix.sh`。
-
-## 4. Phase 2：任务导航、Layout、RTOS 命令树
-
-### 4.1 目标
-
-先完成 FreeRTOS 最稳定、价值最高的任务导航和系统摘要。
-
-### 4.2 版本和配置模块
-
-新增 `freertos/version.py`：
-
-- 解析完整三段版本，例如 `10.3.1`；
-- 首期接受 `10.3.0-10.3.1`、`10.5.0-10.6.2`、
-  `11.0.0-11.1.0`；
-- 保留对 `10.4.x` 和 `11.2-11.3` 的内部 build/layout profile；
-- 对 unsupported version 给出明确支持范围；
-- 不使用移动的 `main` 作为兼容基线；
-- 当目标导出版本常量时比较目标版本，否则只告警，不猜测 RTOS。
-
-新增 `freertos/config.py`，通过 GDB symbol/type 探测：
-
-- 单核或 SMP；
-- Task notification 标量或数组及数组长度；
-- TickType 宽度；
-- runtime counter 宽度；
-- MiniList 开关；
-- TLS 字段；
-- stack growth 和 stack end 字段；
-- trace facility、Queue Registry、Timer、静态分配和 MPU wrapper v2。
-
-### 4.3 Layout
-
-新增 `freertos/layout.py`，作为 FreeRTOS 结构耦合的唯一 owner：
-
-- 描述 `tskTaskControlBlock/TCB_t`；
-- 描述 `List_t`、`ListItem_t`、`MiniListItem_t`；
-- 描述 `TaskStatus_t`；
-- 预留 Queue、Timer、EventGroup、StreamBuffer layout；
-- 所有字段使用 DWARF path，不保存固定 offset；
-- 条件字段由配置 factory 组合；
-- 仅在通知标量/数组、V11 SMP 和 Queue type code 等真实边界上分支。
-
-### 4.4 Task 导航
-
-新增 `freertos/navigation.py`：
-
-- 遍历 `pxReadyTasksLists[ configMAX_PRIORITIES ]`；
-- 遍历 `xDelayedTaskList1`、`xDelayedTaskList2`；
-- 识别 `pxDelayedTaskList` 和 `pxOverflowDelayedTaskList`；
-- 遍历 `xPendingReadyList`；
-- 按配置遍历 `xSuspendedTaskList`；
-- 按配置遍历 `xTasksWaitingTermination`；
-- 从 `xStateListItem.pvOwner` 获取 TCB；
-- 以目标地址去重，防止同一 Task 重复输出；
-- 单核读取 `pxCurrentTCB`；
-- SMP 读取 `pxCurrentTCBs[]`，但首期只做 layout/build 验证；
-- 根据所在 list、current TCB 和 SMP run state 映射 Running、Ready、
-  Blocked、Suspended、Deleted/Pending 状态；
-- 单个链表损坏时停止该链表遍历并警告，禁止无限循环或拖死 GDB。
-
-### 4.5 Adapter 和 Commands
-
-新增 `freertos/adapter.py` 的任务转换逻辑：
-
-- name；
-- state；
-- priority/base priority；
-- top-of-stack、stack base/end；
-- stack size/used/high-water mark；
-- runtime counter；
-- entry function；
-- current/core marker。
-
-入口和 RTOS 专属命令固定为：
-
-```gdb
-gdr init freertos 10.3.1
-freertos tasks
-freertos system
-```
-
-`rtthread` / `rtt` 保留其命令树；其中 `threads`、`semaphores`、`mutexes`、
-`timers`、`messagequeues`、`mailboxs` 和 `system` 直接使用 RT-Thread
-adapter 的能力，并提供 `tasks`、`sems`、`mtxs`、`msgs`、`mboxs` 短别名。
-`rtt objects` 不再注册。共享渲染器可以位于 `gdr/`，但不注册为 `gdr` 的
-数据打印子命令。
-`rtt system` 至少输出：
-
-- Kernel version；
-- 当前 Task；
-- Task 总数；
-- Tick count；
-- Scheduler state；
-- Ready/Delayed/Pending/Suspended/Termination 数量；
-- adapter 可可靠枚举的对象计数；
-- 能可靠读取时输出 heap summary，否则显示 unavailable，不猜测值。
-
-### 4.6 测试与验收
-
-- `freertos tasks` / `rtt threads` 列出所有 fixture Task；
-- 状态分类和当前任务标记正确；
-- 多链表重复 Task 不重复显示；
-- 空/损坏链表不会无限遍历；
-- RTOS 专属 `system` 命令的 tick、current task、task count 与原生 GDB 表达式一致；
-- `V10.3.1`、`V10.6.2` 单元/layout 测试通过；
-- `V10.4.0` 通知数组边界有 build/layout 覆盖；
-- SMP 配置完成 compile/layout test，但文档不宣称 QEMU runtime 支持。
-
-### 4.7 实施结果（2026-08-10）
-
-- 已新增 `freertos/version.py`、`config.py`、`layout.py`、`navigation.py` 和
-  `adapter.py`；版本检查不使用移动的 `main`，目标未导出
-  版本常量时只告警。
-- `gdr init freertos <version>` 已接入入口；`freertos tasks` 使用
-  ready/delayed/pending/suspended/termination 链表的
-  DWARF 字段路径遍历，并按 TCB 目标地址去重、限制损坏链表遍历长度。
-- `/workspace/ref/freertos` 作为结构和配置参考；V10.3.1 fixture 的真实
-  QEMU/GDB 回归验证 `3 passed`，任务、当前任务、tick、调度器和链表计数均
-  与目标原生值一致。Heap 在无法可靠读取时显示 `unavailable`。
-
-### 4.8 统一语义 API 重构（已完成）
-
-- `gdr/adapter_api.py`、`registry.py`、`functions.py` 和 `commands.py` 定义
-  只含语义的 active-adapter 协议、内部渲染器和 raw-value 函数。公开 task
-  函数固定为 `$gdr_task(name)` 和 `$gdr_tasks()`；`gdr` 公共命令只保留
-  `gdr init` 与 `gdr help`。返回值仍是目标原生 `gdb.Value`，不伪造统一 C 结构。
-- `$gdr_object(kind, name)` 统一使用小写语义种类。RT-Thread 可通过对象注册表
-  提供 task、semaphore、mutex、timer 等；FreeRTOS 在 Phase 2 仅声明 task，
-  其余种类在实现可靠枚举前返回 unavailable/null，不能把不可见对象误报为空。
-- RT-Thread 保留 `rtthread` / `rtt` 命令树，提供 `threads`、`semaphores`、
-  `mutexes`、`timers`、`messagequeues`、`mailboxs` 和 `system`，并提供
-  `tasks`、`sems`、`mtxs`、`msgs`、`mboxs` 短别名；删除冗余的
-  `rtt objects`。真实 QEMU 验证通过 `rtt timers` 检查完整定时器表。
-
-## 5. Phase 3：Queue Registry、活动 Timer、Pretty-printer 和便捷函数
-
-### 5.1 Queue Registry
-
-- 读取 `xQueueRegistry[ configQUEUE_REGISTRY_SIZE ]`；
-- 读取 `pcQueueName` 和 `xHandle`；
-- 跳过空 handle、空名称和已注销条目；
-- 按地址去重；
-- 不扫描 heap 推测未注册 Queue；
-- Registry 未启用时命令显示明确提示，而不是返回虚假的空系统。
-
-扩展 RTOS 专属对象命令：
-
-```gdb
-freertos queues
-freertos semaphores
-freertos mutexes
-freertos timers
-```
-
-### 5.2 Queue 和同步对象分类
-
-- trace facility 可用时读取 `ucQueueType`；
-- `10.x/11.0-11.1` 使用 Queue Set 值 `0`；
-- `11.2+` 使用 Queue Set 值 `5`；
-- 结合 `uxItemSize`、mutex holder、recursive count 等字段做安全 fallback；
-- 无法可靠区分时输出 `unknown`，不得猜测 Queue 类型；
-- Queue 行至少显示 name、type、length、item size、messages waiting、address；
-- Semaphore 显示 count/max count；
-- Mutex 显示 owner、recursive count、waiting task 数量。
-
-### 5.3 活动 Timer
-
-- 读取 `xActiveTimerList1` 和 `xActiveTimerList2`；
-- 读取 `pxCurrentTimerList` 和 `pxOverflowTimerList`；
-- 从 `Timer_t.xTimerListItem.pvOwner` 获取 Timer；
-- 展示 name、period、expiry tick、auto-reload、active 状态、callback；
-- callback 使用目标符号解析，同时保留原始地址 fallback；
-- 未启动、已删除、已过期并移出 active list 的 Timer 不保证可见。
-
-### 5.4 Pretty-printer
-
-新增目标类型摘要：
-
-- TCB/Task；
-- Queue；
-- Semaphore；
-- Mutex；
-- Timer；
-- EventGroup（目标启用且字段可读时）。
-
-只注册实际存在的 DWARF 类型。任一类型解析失败必须回退到 GDB 默认显示，
-不能导致 `source gdr.py` 或其他对象 printer 失效。
-
-### 5.5 Convenience Functions
-
-固定公共接口为：
-
-```gdb
-$gdr_task(name)
-$gdr_tasks()
-$gdr_object("queue", name)
-$gdr_object("timer", name)
-```
-
-- 返回原始 `gdb.Value` 或 GDB 原生指针数组；
-- 不建立第二套 Python 内核对象模型；
-- `$gdr_object("queue", ...)` 仅查 Queue Registry；
-- `$gdr_object("timer", ...)` 仅查 active timer list；
-- 查找失败返回 null/void 值并输出一致的错误信息；
-- 用户可继续用 `p`、字段访问、watch 和脚本处理返回值。
-
-### 5.6 测试与验收
-
-- 注册 Queue 可按名称检索；
-- 未注册 Queue 不被错误列入完整对象清单；
-- Queue、binary/counting semaphore、mutex 正确分类或明确标为 unknown；
-- active Timer 显示 callback 符号和 tick 信息；
-- 未启动 Timer 不被误报为 active；
-- Pretty-printer 在 `10.3.1`、`10.6.2`、`11.1.0` 输出稳定摘要；
-- convenience function 返回可继续用于 GDB 表达式的原始值；
-- fake tests 和 QEMU tests 同时覆盖成功、空集合、unknown type、
-  registry disabled、trace disabled 和损坏链表。
-
-## 6. Phase 4：完整矩阵、统一发布包和中英文文档
-
-### 6.1 版本矩阵
-
-Full QEMU 闭环：
-
-```text
-V10.3.1-kernel-only
-V10.6.2
-V11.1.0
-```
-
-快速 build/layout 覆盖：
-
-```text
-V10.3.0-kernel-only  # 10.3 下界
-V10.4.0-kernel-only  # notification array 边界
-V10.4.5              # configurable runtime counter 边界
-V10.5.0              # TLS/MiniList/StreamBuffer callback 边界
-V10.6.0              # tick width 和 MPU v2 边界
-V11.0.1              # SMP 主线稳定基线
-V11.2.0              # Queue Set type code 边界
-V11.3.0              # 最新稳定上界
-```
-
-配置矩阵：
-
-- notification array count 1/3；
-- runtime counter 32/64 bit；
-- MiniList 1/0；
-- tick width 16/32/64；
-- Queue Registry enabled/disabled；
-- trace facility enabled/disabled；
-- StreamBuffer callback enabled；
-- V11 `configNUMBER_OF_CORES=2` compile/layout；
-- 普通 port 和 MPU wrapper v2 compile/layout。
-
-### 6.2 CI
-
-- CNB `.cnb.yml` 增加 FreeRTOS build、QEMU、matrix job；
-- GitHub Actions 保留快速 Python/unit 检查，并增加可控 FreeRTOS smoke job；
-- 复用现有 QEMU/GDB/ARM GCC Docker image；
-- 固定 QEMU、GDB、GCC、SDK、FreeRTOS tag 和 commit；
-- 不从移动 `main` 构建 release；
-- cache key 包含 RTOS、tag、target、toolchain 和 fixture config hash；
-- CI 失败输出 Kernel tag/commit、compiler、QEMU、GDB、fixture config、
-  serial log 和 GDB transcript；
-- RT-Thread A9、RV64 和 GDB 12 兼容任务保持原有覆盖。
-
-### 6.3 统一发布包
-
-- 更新 `ci/create-release-archives.sh`，统一打包 `gdr/`、`rtthread/`、
-  `freertos/` 和单个 `gdr.py`；
-- 包内增加支持矩阵和版本 manifest；
-- 不携带完整 FreeRTOS/STM32Cube 源码，只携带 GDR adapter 和验证元数据；
-- archive 内容测试必须从临时目录加载，不依赖仓库 checkout；
-- 保证 GDB 12/Python 3.10 最低兼容基线；
-- release notes 明确新增 FreeRTOS、支持 tag、QEMU target 和已知限制。
-
-### 6.4 文档
-
-更新：
-
-- `README.md`；
-- `README.zh-CN.md`；
-- `docs/architecture.md`；
-- `CHANGELOG.md`；
-- 本 `PLAN.md` 的状态和实施结果。
-
-中英文文档必须同步包含：
-
-- `gdr init freertos <version>`；
-- `freertos tasks`、`freertos system` 及后续对象命令；
-- 全部 commands 和 convenience functions；
-- 支持版本表；
-- B-L475E-IOT01A QEMU 复现方法；
-- SDK/Kernel 固定版本和证据链接；
-- Task 完整枚举、Queue Registry 限定、active Timer 限定；
-- 单核 V11 runtime 与 SMP compile/layout 的区别；
-- unsupported configuration 和错误诊断方法。
-
-### 6.5 Phase 4 验收标准
-
-- 三个 Full QEMU tag 在 CI 中稳定通过；
-- build/layout 矩阵覆盖所有已识别结构边界；
-- RT-Thread 原有矩阵无回归；
-- `uv run pytest tests/ -v`、ruff check、ruff format check、pre-commit 全部通过；
-- release archive 同时包含两个 RTOS adapter 并可从干净目录加载；
-- 英文和中文文档的命令、版本跨度、限制和示例一致；
-- 每个矩阵失败可定位到 Kernel tag、配置、target、toolchain 和 GDB 输出。
-
-## 7. 测试组织
-
-建议新增：
-
-```text
-tests/test_freertos_version.py
-tests/test_freertos_config.py
-tests/test_freertos_layout.py
-tests/test_freertos_navigation.py
-tests/test_freertos_commands.py
-tests/test_freertos_printers.py
-tests/test_freertos_functions.py
-tests/freertos_profiles.py
-```
-
-测试原则：
-
-- 不得删除现有测试用例；若测试行为或接口发生变化，必须保留原有覆盖并更新断言或补充新用例。
-- 无 GDB 单元测试使用 fake `gdb.Value`/layout；
-- QEMU tests 只断言用户可观察行为；
-- fixture 期望值独立维护，禁止从生产 layout 自动生成测试期望；
-- 每个 layout-sensitive 字段至少有一个字段读取断言；
-- 每个版本语义映射至少有一个边界测试；
-- QEMU 测试复用持久 GDB session；
-- 测试失败必须打印完整命令输出，而不是只显示布尔断言。
-
-实施前基线为现有单元测试 `46 passed`。每个 Phase 完成时都应记录新的
-测试数量、QEMU target 和通过的 Kernel tag。
-
-## 8. 维护原则
-
-- `freertos/layout.py` 是 FreeRTOS 结构和配置差异的唯一 owner；
-- `freertos/navigation.py` 是 FreeRTOS 全局符号、链表和对象枚举的唯一 owner；
-- `freertos/version.py` 只维护版本范围和少量纯语义映射，不复制结构；
-- `gdr/` core 不包含 FreeRTOS 或 RT-Thread 类型名；
-- 每次 Kernel 字段变化必须更新 layout 单元测试和 QEMU/build fixture；
-- 每次支持新配置宏必须增加 compile/layout test；
-- 不扫描任意 heap 内存推测未注册 Queue 或 Timer；
-- 不加入 RTOS 自动检测；用户显式执行 `gdr init freertos <version>`；
-- 不将移动的 FreeRTOS `main` 声明为稳定兼容版本；
-- ESP32 不纳入首批调研、板卡、fixture 和 CI 矩阵。
-
-## 9. 首期交付后的支持声明
-
-首期正式文档声明：
-
-```text
-FreeRTOS:
-  V10.3.0 - V10.3.1
-  V10.5.0 - V10.6.2
-  V11.0.0 - V11.1.0
-
-QEMU closed-loop:
-  B-L475E-IOT01A / b-l475e-iot01a
-  V10.3.1-kernel-only
-  V10.6.2
-  V11.1.0
-
-FreeRTOS 11 SMP:
-  layout/build coverage only
-  QEMU multi-core runtime verification pending
-```
-
-在 `V11.2.0/V11.3.0` 的 Queue Set 类型映射、StreamBuffer 和 build/layout
-测试完成后，再将正式支持声明扩展到 `V11.3.0`。
-
-## 10. Phase 完成门槛
-
-每个 Phase 只有满足以下条件才能进入下一阶段：
-
-1. 该 Phase 的全部验收标准通过；
-2. 新增代码具有不依赖 GDB 的单元测试和必要的 QEMU smoke test；
-3. RT-Thread 现有功能无回归；
-4. ruff、format、pytest 和相关 CI 脚本通过；
-5. 架构或公开接口变化已同步到中英文文档草稿；
-6. 已知限制被明确记录，不使用“后续处理”掩盖当前错误行为。
+Detail 使用纵向 `Key: Value`，不受横向表格列宽限制。公共部分至少显示名称、
+地址、对象类型和列表中的全部字段；对象特有部分可显示内部指针、完整等待
+线程名称、Event 等待条件和一致性检查。对象不存在、对象类型未启用或字段在
+当前版本不可用时必须输出明确诊断。
+
+Detail 不替代 `$gdr_object()`：前者提供可读摘要和校验，后者继续返回原生
+`gdb.Value` 供任意表达式访问。内部链表遍历仍必须有节点上限和损坏保护。
+
+#### 11.6.4 Phase A TODO
+
+- [x] 在 `gdr/gdb_bridge.py` 增加可单元测试的终端宽度探测函数；
+- [x] 为 `print_table()` 增加显式 width 和弹性列元数据，保持旧调用兼容；
+- [x] 实现确定性的弹性列收缩、两个点截断和“最小仍超宽则恢复自然表格”；
+- [x] 保持空表输出和完整表格单次 `gdb.write()`；
+- [x] 在 `ObjectTable` 中表达弹性列，不依赖 renderer 猜测表头文本；
+- [x] 扩展 RT-Thread 命令解析，保留复数列表并支持单数 detail 语法；
+- [x] 增加纵向 key/value detail renderer，避免 RT-Thread 字段进入 generic
+  renderer；
+- [x] 单元测试覆盖显式 GDB width、unlimited width、系统终端回退和 120
+  默认值；
+- [x] 单元测试覆盖无需截断、单列截断、多列按优先级截断、最小宽度、表头
+  不截断、关键 count 保留和最小仍超宽时恢复原格式；
+- [x] 集成测试固定 GDB width 后验证 80/120 列输出以及 detail 命令；
+- [x] 文档说明列表输出可能被终端换行，但列集合不会随宽度变化。
+
+### 11.7 TODO：P0 阻塞关系和准确性
+
+- [ ] 在 `rtthread/navigation.py` 增加有界的 suspend-list 遍历辅助函数，
+  使用 `struct rt_thread.tlist` 恢复线程对象并返回稳定的名称列表；
+- [ ] 为等待列表增加坏指针、闭环异常和节点上限保护，错误时显示明确的
+  `<invalid>`/truncated 信息；
+- [ ] 在 semaphore 表增加 `count:names` 形式的等待线程摘要；
+- [ ] 在 mutex 表增加 `count:names` 形式的等待线程摘要；
+- [ ] 在 event 表增加 `count:names` 形式的等待线程摘要，并在 event detail
+  中显示每个 waiter 的 `event_set/event_info` 条件；
+- [ ] 在 mailbox 表分别增加 `count:names` 形式的 receiver 和 sender waiters；
+- [ ] 在 messagequeue 表分别增加 `count:names` 形式的 receiver 和 sender
+  waiters，旧版本没有 sender list 时显示 `N/A`，不能显示伪造的 `0`；
+- [ ] 在 mempool layout 增加 `suspend_thread` 并显示 `count:names` 摘要；
+- [ ] 所有 waiter count 通过链表遍历得出，不读取旧版
+  `suspend_thread_count`；
+- [ ] 为新增字段和版本条件添加 layout、navigation、adapter 单元测试。
+
+### 11.8 TODO：P1 默认表增强和缺陷修复
+
+- [ ] Mutex 打印 converter 已读取的 `original_priority`，用于分析 priority
+  inheritance 和 priority inversion；
+- [ ] Mailbox 增加派生 `Free = size - entry`；
+- [ ] Messagequeue 增加派生 `Free = max_msgs - entry`；
+- [ ] Mempool 增加派生 `Used = total - free`，必要时再增加使用率；
+- [ ] Timer 表增加 `Addr`；
+- [ ] Timer 增加回绕安全的 `ExpiresIn`，inactive timer 显示 `N/A`；
+- [ ] Task 表显示已有的 `Addr` 和 `BasePrio`，同步更新 FreeRTOS 单元与集成
+  测试；
+- [ ] 修复 `bind_cpu/oncpu` 将合法 CPU 0 转换为 `-1` 的问题；
+- [ ] SMP task summary 使用真实 `oncpu`，并按目标能力显示 `CPU/Bind`；
+- [ ] 在 120 列预算内增加 IPC `FIFO/PRIO` policy 列，确保 flag 解码覆盖
+  全部目标版本；
+- [ ] 为所有新增派生值覆盖空、满、inactive、tick 回绕和非法原始值边界。
+
+### 11.9 TODO：P2 Detail 和高级诊断
+
+- [ ] 为 Phase A 的 object detail 补齐各对象的特有字段和校验结果；
+- [ ] Timer detail 显示 callback `parameter`；
+- [ ] Messagequeue detail 从 `msg_queue_head` 有界遍历消息节点，并按目标版本
+  的节点头尺寸定位 payload；
+- [ ] Messagequeue detail 校验 `entry` 与活动链表节点数、free list 节点数及
+  `max_msgs` 的一致性；
+- [ ] Mailbox detail 根据 `out_offset/entry/size` 按 FIFO 顺序显示消息槽，
+  并校验 offset 范围；
+- [ ] Mempool detail 显示 `start_address/size/block_list`，校验池范围、块对齐
+  和 free count；
+- [ ] Thread detail 显示 `error/remaining_tick`，避免扩大通用任务表。
+
+### 11.10 Fixture 和 QEMU 闭环 TODO
+
+- [ ] 扩展 Cortex-A9 fixture，创建确定性阻塞线程：空 semaphore waiter、
+  mutex owner/waiter、event mask waiter、mailbox receiver/sender、messagequeue
+  receiver/sender、耗尽后的 mempool waiter；
+- [ ] 若同一 mailbox/messagequeue 无法同时稳定表示空等待和满等待，创建
+  独立的 RX/TX fixture 对象，不依赖测试执行过程中修改目标状态；
+- [ ] 对不支持 MQ sender wait list 的旧版本只验证 receiver waiters 和
+  `SendWaiters=N/A`；
+- [ ] fixture ready marker 只能在对象创建、线程进入预期阻塞状态后输出；
+- [ ] 测试期望继续存放于 `tests/support/rtthread_profiles.py` 和
+  `tests/support/rtthread_qemu_profiles.py`，禁止从生产 layout 自动生成；
+- [ ] 更新 `tests/integration/rtthread/test_commands.py`，逐行核对新增列、
+  waiter 名称、event mask/mode 和派生容量；
+- [ ] 更新 `tests/integration/rtthread/test_functions.py`，确认
+  `$gdr_object()` 仍返回可继续访问底层字段的原始对象；
+- [ ] 更新 adapter/layout/navigation 单元测试，覆盖全部字段边界；
+- [ ] 使用 `ci/rt-thread/run-qemu-matrix.sh cortex-a9` 构建全部 tag，并在
+  `v3.1.0/v3.1.3/v3.1.5/v4.0.0/v4.0.2/v4.0.5/v4.1.1` 执行完整 QEMU 测试；
+- [ ] 使用 `ci/rt-thread/run-qemu-matrix.sh rv64` 验证 v4.0.4-v4.1.1 无回归；
+- [ ] runner 不重新引入自定义 `OUT_ELF/OUT_BIN`，继续通过统一
+  `BUILD_DIR` 下的 BSP 默认产物和 `GDR_ELF_PATH/GDR_FIRMWARE_PATH` 定位；
+- [ ] 复用的 RT-Thread clone 每次构建前执行现有 `git reset --hard <ref>`
+  和 `git clean -ffdx`，清除全部 SCons 输出和 ignored cache；
+- [ ] patch 必须按实际 `main.c` 基线分组；公共 patch 无法跨版本干净应用时，
+  从对应 tag 的已修改源码重新提取包含 `main()` 的版本专用 patch。
+
+### 11.11 明确不进入默认表的字段
+
+以下字段默认不打印，只通过 `$gdr_object()` 或 P2 detail 功能访问：
+
+- messagequeue 的 `msg_queue_head/msg_queue_tail/msg_queue_free` 裸指针；
+- mailbox 的 `msg_pool` 裸指针和全部未使用槽位；
+- mempool 的 `start_address/size/block_list` 内部指针；
+- 通用 intrusive list 节点地址；
+- semaphore `reserved`；
+- timer callback `parameter`；
+- event waiter 的 `event_set/event_info` 条件信息。
+
+### 11.12 验收标准
+
+1. 所有 IPC/mempool 表均可显示接收或资源等待线程，mailbox/MQ 在版本支持
+   时可单独显示发送等待线程；
+2. Event detail 可以从当前 set 和 waiter 的 mask/mode 解释其未唤醒原因；
+3. Mutex 输出包含 owner、hold、原始优先级和等待者，可用于分析优先级继承；
+4. Messagequeue 不出现 `in_offset/out_offset`，mailbox 继续准确打印这两个
+   环形游标；
+5. Mempool waiter count 在有无 `suspend_thread_count` 的版本上结果一致；
+6. MQ sender list 缺失的旧版本显示 `N/A` 且不会触发 GDB field access error；
+7. SMP CPU 0 不再被显示为 `-1`，UP 输出无回归；
+8. 所有链表遍历面对损坏内存都能有界退出并给出诊断；
+9. 单元测试、ruff 和 format check 全部通过；
+10. Cortex-A9 全版本可构建，代表版本 QEMU 闭环全部通过，RV64 v4.0.4-v4.1.1
+    无回归；
+11. CI runner 保持统一 `BUILD_DIR` 工作目录，不依赖自定义
+    `OUT_ELF/OUT_BIN`；
+12. `rtt <objects>` 的列集合不随终端宽度变化，80/120/160 字符下的截断
+    行为符合 Phase A 定义；
+13. 弹性列最短显示 3 个原字符和 2 个点；最小仍超宽时恢复自然表格输出，
+    不隐藏列或切换其他布局；
+14. 所有支持对象均可通过 `rtt <object> <obj_name>` 查看纵向 detail，且
+    不影响 `$gdr_object()` 返回原生值；
+15. 中英文 README 和架构文档同步新增列、版本限制、waiter 语义、宽度处理
+    和 detail 能力边界。

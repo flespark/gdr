@@ -7,7 +7,12 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.commands import render_objects, render_system, render_tasks
+from gdr.commands import (
+    render_object_detail,
+    render_objects,
+    render_system,
+    render_tasks,
+)
 from gdr.gdb_bridge import info, warn
 
 _command_registered = False
@@ -21,6 +26,17 @@ _OBJECT_COMMANDS = {
     "messagequeues": "msgqueue",
     "mempools": "mempool",
     "timers": "timer",
+}
+# Singular forms render one object's vertical detail: ``rtt <object> <name>``.
+_SINGULAR_COMMANDS = {
+    "thread": "task",
+    "timer": "timer",
+    "semaphore": "semaphore",
+    "mutex": "mutex",
+    "event": "event",
+    "mailbox": "mailbox",
+    "messagequeue": "msgqueue",
+    "mempool": "mempool",
 }
 _COMMAND_ALIASES = {
     "tasks": "threads",
@@ -44,12 +60,27 @@ _COMMAND_DESCRIPTIONS = {
     "timers": "List timers",
     "system": "Show the system summary",
 }
+_DETAIL_DESCRIPTIONS = {
+    "thread": "Show one thread's detail (rtt thread <name>)",
+    "timer": "Show one timer's detail (rtt timer <name>)",
+    "semaphore": "Show one semaphore's detail (rtt semaphore <name>)",
+    "mutex": "Show one mutex's detail (rtt mutex <name>)",
+    "event": "Show one event's detail (rtt event <name>)",
+    "mailbox": "Show one mailbox's detail (rtt mailbox <name>)",
+    "messagequeue": "Show one message queue's detail (rtt messagequeue <name>)",
+    "mempool": "Show one memory pool's detail (rtt mempool <name>)",
+}
 _USAGE = "usage: rtthread <command> (run 'rtt help' for available commands)"
 _HELP = (
     "RT-Thread commands:\n"
     + "\n".join(
         f"  rtt {command:<14} {description}"
         for command, description in _COMMAND_DESCRIPTIONS.items()
+    )
+    + "\n\nSingle-object detail (rtt <object> <name>):\n"
+    + "\n".join(
+        f"  rtt {command:<14} {description}"
+        for command, description in _DETAIL_DESCRIPTIONS.items()
     )
     + "\n\nAliases:\n"
     + "\n".join(
@@ -65,7 +96,9 @@ def _invoke_command(argument: str) -> None:
         print(_HELP)
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
-    if len(args) != 1:
+    if len(args) == 2 and command in _SINGULAR_COMMANDS:
+        render_object_detail(_SINGULAR_COMMANDS[command], args[1])
+    elif len(args) != 1:
         warn(_USAGE)
     elif command == "threads":
         render_tasks()

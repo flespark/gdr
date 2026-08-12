@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import gdr.commands as commands
 import gdr.gdb_bridge as bridge
-from gdr.adapter_api import ObjectTable, SystemSummary, TaskSummary
+from gdr.adapter_api import ObjectDetail, ObjectTable, SystemSummary, TaskSummary
 
 
 @dataclass
@@ -14,6 +14,7 @@ class _Adapter:
     tasks: list[TaskSummary] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
     tables: dict[str, ObjectTable] = field(default_factory=dict)
+    details: dict[str, ObjectDetail] = field(default_factory=dict)
     summary: SystemSummary = field(default_factory=SystemSummary)
     count_calls: int = 0
 
@@ -29,6 +30,9 @@ class _Adapter:
 
     def object_table(self, kind: str) -> ObjectTable | None:
         return self.tables.get(kind)
+
+    def object_detail(self, kind: str, name: str) -> ObjectDetail | None:  # noqa: ARG002
+        return self.details.get(kind)
 
     def system_summary(self) -> SystemSummary:
         return self.summary
@@ -74,7 +78,7 @@ def test_tasks_renders_symbols_address_fallbacks_and_optional_values(monkeypatch
     monkeypatch.setattr(
         commands,
         "print_table",
-        lambda rows, headers: tables.append((rows, headers)),
+        lambda rows, headers, **_kwargs: tables.append((rows, headers)),
     )
 
     commands.render_tasks()
@@ -122,7 +126,7 @@ def test_tasks_renders_an_empty_adapter_without_target_access(monkeypatch):
     monkeypatch.setattr(
         commands,
         "print_table",
-        lambda rows, headers: tables.append((rows, headers)),
+        lambda rows, headers, **_kwargs: tables.append((rows, headers)),
     )
 
     commands.render_tasks()
@@ -191,24 +195,52 @@ def test_objects_normalizes_kind_and_renders_adapter_table(monkeypatch):
                 headers=["Name", "Callback"],
                 rows=[["heartbeat", "<tick>"]],
                 messages=["Kernel tick: 10"],
+                elastic=("Name", "Callback"),
             )
         },
     )
     messages: list[str] = []
-    tables: list[tuple[list[list[str]], list[str]]] = []
+    tables: list[tuple[list[list[str]], list[str], tuple[str, ...]]] = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
     monkeypatch.setattr(commands, "info", messages.append)
     monkeypatch.setattr(
         commands,
         "print_table",
-        lambda rows, headers: tables.append((rows, headers)),
+        lambda rows, headers, **_kwargs: tables.append(
+            (rows, headers, _kwargs.get("elastic", ()))
+        ),
     )
 
     commands.render_objects("timers")
 
     assert messages == ["Kernel tick: 10"]
-    assert tables == [([["heartbeat", "<tick>"]], ["Name", "Callback"])]
+    assert tables == [
+        ([["heartbeat", "<tick>"]], ["Name", "Callback"], ("Name", "Callback"))
+    ]
     assert adapter.count_calls == 0
+
+
+def test_tasks_renderer_passes_elastic_metadata(monkeypatch):
+    """The shared task renderer marks Name/Entry as shrinkable."""
+    adapter = _Adapter(
+        tasks=[
+            TaskSummary(name="worker1", state="Ready", priority=20),
+        ]
+    )
+    tables: list[tuple[list[list[str]], list[str], tuple[str, ...]]] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(commands, "lookup_symbol_at", lambda _address: None)
+    monkeypatch.setattr(
+        commands,
+        "print_table",
+        lambda rows, headers, **_kwargs: tables.append(
+            (rows, headers, _kwargs.get("elastic", ()))
+        ),
+    )
+
+    commands.render_tasks()
+
+    assert tables[0][2] == ("Name", "Entry")
 
 
 def test_objects_only_counts_when_no_detailed_table_is_available(monkeypatch):
@@ -219,7 +251,7 @@ def test_objects_only_counts_when_no_detailed_table_is_available(monkeypatch):
     monkeypatch.setattr(
         commands,
         "print_table",
-        lambda rows, headers: tables.append((rows, headers)),
+        lambda rows, headers, **_kwargs: tables.append((rows, headers)),
     )
 
     commands.render_objects("messagequeues")
@@ -242,3 +274,79 @@ def test_shared_renderer_guard_contains_unexpected_adapter_errors(monkeypatch):
 
     assert commands.render_tasks() is None
     assert errors == ["render_tasks: ValueError: corrupt task list"]
+
+
+def test_object_detail_renders_adapter_pairs(monkeypatch):
+    """A found object renders its adapter-supplied key/value pairs."""
+    adapter = _Adapter(
+        details={
+            "semaphore": ObjectDetail(pairs=[("Name", "test_sem"), ("Value", "3")])
+        }
+    )
+    written: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(commands, "print_detail", written.append)
+
+    commands.render_object_detail("semaphore", "test_sem")
+
+    assert written == [[("Name", "test_sem"), ("Value", "3")]]
+
+
+def test_object_detail_warns_when_kind_is_not_enumerable(monkeypatch):
+    """Adapters that cannot enumerate a kind produce an explicit warning."""
+    warnings: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: _Adapter())
+    monkeypatch.setattr(commands, "warn", warnings.append)
+    monkeypatch.setattr(
+        commands,
+        "print_detail",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected detail")),
+    )
+
+    commands.render_object_detail("mempool", "x")
+
+    assert warnings == ["object kind 'mempool' is not reliably enumerable"]
+
+
+def test_object_detail_warns_when_object_is_missing(monkeypatch):
+    """A missing or disabled object reports a clear not-found diagnostic."""
+    adapter = _Adapter(details={"semaphore": ObjectDetail(found=False)})
+    warnings: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(commands, "warn", warnings.append)
+    monkeypatch.setattr(
+        commands,
+        "print_detail",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected detail")),
+    )
+
+    commands.render_object_detail("semaphore", "missing")
+
+    assert warnings == ["semaphore 'missing': not found or type not enabled"]
+
+
+def test_object_detail_warns_before_initialization(monkeypatch):
+    """The detail renderer rejects use before an adapter has been selected."""
+    warnings: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: None)
+    monkeypatch.setattr(commands, "warn", warnings.append)
+
+    commands.render_object_detail("semaphore", "test_sem")
+
+    assert warnings == ["run `gdr init <rtos> <version>` first"]
+
+
+def test_object_detail_warns_for_an_empty_name(monkeypatch):
+    """A missing object name routes the user back to the command usage."""
+    warnings: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: _Adapter())
+    monkeypatch.setattr(commands, "warn", warnings.append)
+    monkeypatch.setattr(
+        commands,
+        "print_detail",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected detail")),
+    )
+
+    commands.render_object_detail("semaphore", "  ")
+
+    assert warnings == ["usage: rtt semaphore <name>"]

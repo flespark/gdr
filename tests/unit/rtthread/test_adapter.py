@@ -152,4 +152,90 @@ def test_ipc_object_tables_use_their_own_registry_route(
     assert table is not None
     assert table.headers == headers
     assert table.rows == [expected_row]
+    assert table.elastic == ("Name",)
     assert calls == [(type_code, layout)]
+
+
+def test_object_detail_returns_none_for_unknown_kind():
+    """A kind outside the adapter's tables is reported as not enumerable."""
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+    assert adapter.object_detail("device", "whatever") is None
+
+
+def test_object_detail_reports_not_found(monkeypatch):
+    """A missing object yields an explicit ``found=False`` result."""
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+    monkeypatch.setattr(adapter_module, "find_thread", lambda _name, _layout: None)
+
+    detail = adapter.object_detail("task", "missing")
+
+    assert detail is not None
+    assert detail.found is False
+
+
+def test_object_detail_task_uses_thread_builder(monkeypatch):
+    """Thread detail includes the public thread fields."""
+    thread = object()
+    detail_pairs = [("Name", "worker1"), ("Address", "0x1000")]
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+    monkeypatch.setattr(adapter_module, "find_thread", lambda _name, _layout: thread)
+    monkeypatch.setattr(
+        adapter_module, "value_to_thread", lambda _value, _layout: thread
+    )
+    monkeypatch.setattr(
+        adapter_module.rt_detail, "thread_detail", lambda _thread: detail_pairs
+    )
+
+    detail = adapter.object_detail("task", "worker1")
+
+    assert detail is not None
+    assert detail.found is True
+    assert detail.pairs == detail_pairs
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_pairs"),
+    (
+        ("semaphore", [("Value", "3")]),
+        ("mutex", [("Owner", "main")]),
+        ("event", [("Set", "0x3")]),
+        ("mailbox", [("Entry", "2")]),
+        ("msgqueue", [("MaxMsgs", "8")]),
+        ("mempool", [("Free", "4")]),
+    ),
+)
+def test_object_detail_ipc_kinds_use_their_converter_and_builder(
+    kind, expected_pairs, monkeypatch
+):
+    """Every IPC kind converts its value then builds its own detail pairs."""
+    layout = KernelLayout()
+    adapter = adapter_module.RtThreadAdapter(layout)
+    value = object()
+    converted = object()
+    type_code = 7
+    monkeypatch.setattr(
+        adapter_module,
+        "resolve_object_type_code",
+        lambda _kind, _layout: type_code,
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "find_rt_object",
+        lambda code, _name, _layout: value if code == type_code else None,
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "_DETAIL_BUILDERS",
+        {
+            kind: (
+                lambda _value, _layout: converted,
+                lambda _converted: expected_pairs,
+            )
+        },
+    )
+
+    detail = adapter.object_detail(kind, "obj")
+
+    assert detail is not None
+    assert detail.found is True
+    assert detail.pairs == expected_pairs

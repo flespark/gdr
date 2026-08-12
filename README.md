@@ -102,11 +102,22 @@ Set-Location .\gdr-rtthread
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
 | `gdr help` | Show GDR bootstrap usage |
 | `rtt help` | List RT-Thread commands and aliases |
+| `rtt <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
 | `freertos tasks` | List FreeRTOS tasks |
 | `freertos system` | Show the FreeRTOS system summary |
 
-Single-object inspection is delegated to convenience functions + GDB
-expressions, not dedicated commands.
+List commands (for example `rtt semaphores`, `rtt threads`, `rtt timers`)
+render ASCII tables sized to the current terminal width. The column set is
+stable and never changes with width; only marked elastic text columns
+(`Name`/`Owner`/`Waiters`/`Callback`/`Entry`) shrink when a table is too wide,
+truncating overlong cells with `..` (a leading waiter count is preserved). If
+even the minimum widths overflow, the natural table is printed and your
+terminal may wrap it.
+
+Single-object detail is also available as a command: `rtt <object> <name>`
+(e.g. `rtt semaphore my_sem`, `rtt thread worker1`). It prints a vertical
+`Key: Value` view of one object without disturbing `$gdr_object()`, which
+continues to return the raw `gdb.Value`.
 
 ## Convenience functions
 

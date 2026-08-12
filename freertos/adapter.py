@@ -11,7 +11,13 @@ except ImportError:
 
 from freertos.layout import FreeRtosLayout
 from freertos.navigation import iter_tasks, list_count, system_value
-from gdr.adapter_api import ObjectTable, RtosAdapter, SystemSummary, TaskSummary
+from gdr.adapter_api import (
+    ObjectDetail,
+    ObjectTable,
+    RtosAdapter,
+    SystemSummary,
+    TaskSummary,
+)
 from gdr.gdb_bridge import read_cstring, read_int
 from gdr.layout import read_field
 
@@ -120,6 +126,10 @@ class FreeRtosAdapter(RtosAdapter):
         return {"task": len(list(self.iter_tasks()))}
 
     def object_table(self, kind: str) -> ObjectTable | None:  # noqa: ARG002
+        return None
+
+    def object_detail(self, kind: str, name: str) -> ObjectDetail | None:  # noqa: ARG002
+        # Queue/timer enumeration and object detail are Phase 3 features.
         return None
 
     def iter_tasks(self):

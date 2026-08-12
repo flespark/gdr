@@ -127,6 +127,98 @@ def test_print_table_writes_empty_table_once(monkeypatch):
     assert fake_gdb.writes == ["(empty)\n"]
 
 
+class _WidthGdb:
+    """GDB stand-in exposing a mutable ``width`` parameter."""
+
+    class error(Exception):
+        pass
+
+    def __init__(self, width):
+        self.width = width
+
+    def parameter(self, name: str):
+        assert name == "width"
+        return self.width
+
+
+class _TerminalSize:
+    def __init__(self, columns: int):
+        self.columns = columns
+
+
+def test_terminal_width_uses_explicit_gdb_width(monkeypatch):
+    """``set width N`` beats terminal probing (priority 1)."""
+    monkeypatch.setattr(bridge, "gdb", _WidthGdb(100))
+    monkeypatch.setattr(
+        bridge.shutil,
+        "get_terminal_size",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("terminal unused")),
+    )
+
+    assert bridge.terminal_width() == 100
+
+
+def test_terminal_width_falls_back_to_terminal_columns_when_gdb_width_unlimited(
+    monkeypatch,
+):
+    """Unlimited GDB width delegates to the detected terminal columns."""
+    monkeypatch.setattr(bridge, "gdb", _WidthGdb(0))
+    monkeypatch.setattr(
+        bridge.shutil, "get_terminal_size", lambda **_kwargs: _TerminalSize(80)
+    )
+
+    assert bridge.terminal_width() == 80
+
+
+def test_terminal_width_falls_back_to_terminal_columns_when_gdb_width_missing(
+    monkeypatch,
+):
+    """An unavailable width parameter is treated like ``unlimited``."""
+    monkeypatch.setattr(bridge, "gdb", _WidthGdb(None))
+    monkeypatch.setattr(
+        bridge.shutil, "get_terminal_size", lambda **_kwargs: _TerminalSize(120)
+    )
+
+    assert bridge.terminal_width() == 120
+
+
+def test_terminal_width_defaults_to_120_when_everything_is_unavailable(monkeypatch):
+    """Terminal probing failures never crash list rendering (fallback 120)."""
+    monkeypatch.setattr(bridge, "gdb", _WidthGdb(0))
+
+    def no_terminal(*_args, **_kwargs):
+        raise OSError("no terminal")
+
+    monkeypatch.setattr(bridge.shutil, "get_terminal_size", no_terminal)
+
+    assert bridge.terminal_width() == 120
+
+
+def test_print_table_honors_explicit_width_with_elastic_columns(monkeypatch):
+    """Elastic columns shrink and truncate when the natural width exceeds."""
+    fake_gdb = _TableGdb()
+    monkeypatch.setattr(bridge, "gdb", fake_gdb)
+
+    bridge.print_table(
+        [["2:worker,logger", "3"]],
+        ["Waiters", "Value"],
+        elastic=("Waiters",),
+        width=14,
+    )
+
+    assert fake_gdb.writes == ["Waiters  Value\n-------  -----\n2:wor..  3    \n"]
+
+
+def test_print_detail_writes_key_value_pairs_once(monkeypatch):
+    """Detail output is one write with a stable ``Key: Value`` layout."""
+    fake_gdb = _TableGdb()
+    monkeypatch.setattr(bridge, "gdb", fake_gdb)
+
+    bridge.print_detail([("Name", "worker1"), ("Value", "3")])
+
+    assert fake_gdb.writes == ["Name: worker1\nValue: 3\n"]
+
+
 def test_gdb_command_guard_warns_for_target_errors(monkeypatch):
     """Expected target failures are downgraded to concise warnings."""
     fake_gdb = _FakeArchGdb(4, "The target is set to little endian.")

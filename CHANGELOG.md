@@ -8,6 +8,14 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- Width-aware ASCII table rendering: lists probe the current GDB/terminal
+  width and shrink only marked elastic text columns (`Name`/`Owner`/`Waiters`/
+  `Callback`/`Entry`) with two-dot truncation. The column set never changes
+  with width, and tables restore the natural layout when minimum elastic
+  widths still overflow.
+- Singular object detail commands: `rtt thread|timer|semaphore|mutex|event|
+  mailbox|messagequeue|mempool <name>` render one object as a vertical
+  `Key: Value` block via the adapter-owned `object_detail` contract.
 - RTOS-neutral profile-driven QEMU/GDB harness with dynamic GDB ports,
   session-local logs, persistent GDB connections, and actionable boot errors.
 - FreeRTOS Phase 1 package and a B-L475E-IOT01A QEMU fixture built

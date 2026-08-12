@@ -142,6 +142,28 @@ inspection is left to `$gdr_task(name)` + `p $gdr_task(name).field`. This
 keeps the command set small and avoids commands silently breaking when a field
 is renamed (the function returns the raw `gdb.Value`).
 
+List commands may also offer a **singular detail form**
+(`rtt semaphore <name>`) that renders one object as a vertical `Key: Value`
+block. The adapter builds neutral pairs; the generic renderer never sees
+adapter field names, so a future adapter can reuse it unchanged.
+
+### Table width handling
+
+List tables render at the current terminal width using a fixed priority:
+
+1. `gdb.parameter("width")` when it is a positive int (`set width N`);
+2. `shutil.get_terminal_size` columns when GDB width is unlimited/None;
+3. fallback to 120.
+
+The column set is stable: `rtt <objects>` never adds or hides columns based on
+width. When the natural table is wider than the terminal, only explicitly
+marked elastic text columns (`Name`/`Owner`/`Waiters`/`Callback`/`Entry`)
+shrink, in a fixed order, truncating overlong cells with `..` (right-side, so
+a leading `Waiters` count survives). If even minimum elastic widths overflow,
+the natural table is printed unchanged and the terminal may wrap it. Elastic
+metadata lives in `ObjectTable.elastic`, owned by the adapter, so renderers
+never guess it from header text.
+
 ## Closed-loop verification
 
 GDB helpers degrade silently: the script runs but output is wrong. To

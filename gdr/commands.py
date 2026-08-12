@@ -6,6 +6,7 @@ from gdr.gdb_bridge import (
     gdb_command_guard,
     info,
     lookup_symbol_at,
+    print_detail,
     print_table,
     warn,
 )
@@ -48,7 +49,33 @@ def render_tasks() -> None:
     print_table(
         rows,
         ["Name", "State", "Prio", "SP", "Stack", "Used", "HighWater", "Entry"],
+        elastic=("Name", "Entry"),
     )
+
+
+@gdb_command_guard
+def render_object_detail(kind: str, name: str) -> None:
+    """Render one object as a vertical key/value detail block.
+
+    The adapter supplies RTOS-neutral ``(key, value)`` pairs so no adapter
+    field names leak into the generic renderer.
+    """
+    adapter = active()
+    if adapter is None:
+        warn("run `gdr init <rtos> <version>` first")
+        return
+    requested = _canonical_kind(kind)
+    if not name.strip():
+        warn(f"usage: rtt {requested} <name>")
+        return
+    detail = adapter.object_detail(requested, name)
+    if detail is None:
+        warn(f"object kind {requested!r} is not reliably enumerable")
+        return
+    if not detail.found:
+        warn(f"{requested} {name!r}: not found or type not enabled")
+        return
+    print_detail(detail.pairs)
 
 
 @gdb_command_guard
@@ -95,7 +122,7 @@ def render_objects(kind: str = "") -> None:
         if table is not None:
             for message in table.messages:
                 info(message)
-            print_table(table.rows, table.headers)
+            print_table(table.rows, table.headers, elastic=table.elastic)
             return
         counts = adapter.object_counts()
         if requested not in counts:

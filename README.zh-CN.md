@@ -96,10 +96,19 @@ Set-Location .\gdr-rtthread
 | `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
 | `gdr help` | 显示 GDR 启动用法 |
 | `rtt help` | 列出 RT-Thread 子命令和别名 |
+| `rtt <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
 | `freertos tasks` | 列出 FreeRTOS 任务 |
 | `freertos system` | 输出 FreeRTOS 系统摘要 |
 
-单个对象的检查交给便捷函数 + GDB 表达式，不提供专用命令。
+列表命令（如 `rtt semaphores`、`rtt threads`、`rtt timers`）会按当前终端
+宽度渲染 ASCII 表格。列集合是稳定的，绝不随终端宽度增删；只有显式标记
+的弹性文本列（`Name`/`Owner`/`Waiters`/`Callback`/`Entry`）在表格过宽时
+收缩，超长单元格用 `..` 截断（等待者数量在开头，截断后仍保留）。若弹性
+列缩到最小宽度后仍超宽，则输出原始自然表格，允许终端自行换行。
+
+单个对象的详情也可以通过命令查看：`rtt <object> <name>`
+（如 `rtt semaphore my_sem`、`rtt thread worker1`），以纵向 `Key: Value`
+呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。
 
 ## 便捷函数
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
@@ -250,3 +251,77 @@ def test_rtt_timer_command_lists_fixture_data(rtt_outputs):
     assert "periodic" in timer_row.lower()
     assert "soft" in timer_row.lower()
     assert "<test_timer_timeout" in timer_row
+
+
+@contextlib.contextmanager
+def _with_width(gdb, width: int):
+    """Set a GDB width, restoring the harness baseline on exit."""
+    gdb.run(f"set width {width}")
+    try:
+        yield
+    finally:
+        gdb.run("set width 160")
+
+
+def test_rtt_tables_keep_column_set_at_80_columns(gdb):
+    """A narrow GDB width never removes columns; only elastic text shrinks."""
+    with _with_width(gdb, 80):
+        for command, required in (
+            ("rtt semaphores", ("Name", "Value", "Addr")),
+            ("rtt threads", ("Name", "State", "Prio", "SP", "Stack", "Entry")),
+            ("rtt mutexes", ("Name", "Value", "Hold", "Owner", "Addr")),
+        ):
+            output = gdb.run(command, timeout=20)
+            assert "usage: rtthread" not in output, output
+            assert "[gdr] error:" not in output, output
+            for header in required:
+                assert header in output, f"{command} missing {header!r}:\n{output}"
+
+
+def test_rtt_tables_keep_column_set_at_120_columns(gdb):
+    """The 120-character baseline keeps the full column set intact."""
+    with _with_width(gdb, 120):
+        output = gdb.run("rtt threads", timeout=20)
+        for header in (
+            "Name",
+            "State",
+            "Prio",
+            "SP",
+            "Stack",
+            "Used",
+            "HighWater",
+            "Entry",
+        ):
+            assert header in output, output
+
+
+def test_rtt_thread_detail_shows_public_fields(gdb):
+    """``rtt thread <name>`` renders a vertical key/value detail."""
+    output = gdb.run("rtt thread worker1", timeout=20)
+    for label in ("Name:", "Address:", "Type:", "State:", "Priority:", "Entry:"):
+        assert label in output, output
+    assert "worker1" in output
+
+
+def test_rtt_semaphore_detail_shows_fixture_value(gdb):
+    """``rtt semaphore <name>`` renders the fixture's public fields."""
+    output = gdb.run(f"rtt semaphore {_PROFILE.semaphore_name}", timeout=20)
+    for label in ("Name:", "Address:", "Type:", "Value:"):
+        assert label in output, output
+    assert _PROFILE.semaphore_name in output
+
+
+def test_rtt_timer_detail_shows_fixture_timer(gdb):
+    """``rtt timer <name>`` renders the fixture timer's callback symbol."""
+    output = gdb.run(f"rtt timer {_PROFILE.timer_name}", timeout=20)
+    for label in ("Name:", "Address:", "Type:", "State:", "Callback:"):
+        assert label in output, output
+    assert _PROFILE.timer_name in output
+
+
+def test_rtt_detail_reports_missing_objects(gdb):
+    """Unknown object names produce a clear diagnostic, not a crash."""
+    output = gdb.run("rtt semaphore no_such_object", timeout=20)
+    assert "not found or type not enabled" in output, output
+    assert "[gdr] error:" not in output, output
+    assert "Traceback" not in output, output

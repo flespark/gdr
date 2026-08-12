@@ -15,7 +15,7 @@ Design follows the Asterinas principle:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 try:
     import gdb
@@ -32,7 +32,13 @@ from gdr.abstractions import (
     Thread,
     Timer,
 )
-from gdr.adapter_api import ObjectTable, RtosAdapter, SystemSummary, TaskSummary
+from gdr.adapter_api import (
+    ObjectDetail,
+    ObjectTable,
+    RtosAdapter,
+    SystemSummary,
+    TaskSummary,
+)
 from gdr.gdb_bridge import (
     eval_safe,
     lookup_symbol_at,
@@ -41,6 +47,7 @@ from gdr.gdb_bridge import (
     read_int,
 )
 from gdr.layout import KernelLayout, read_field
+from rtthread import detail as rt_detail
 from rtthread.layout import (
     RT_THREAD_STACK_FILL,
     RT_TIMER_FLAG_ACTIVATED,
@@ -244,6 +251,16 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # ---------------------------------------------------------------------------
 
 
+_DETAIL_BUILDERS: dict[str, tuple[Callable, Callable]] = {
+    "semaphore": (value_to_semaphore, rt_detail.semaphore_detail),
+    "mutex": (value_to_mutex, rt_detail.mutex_detail),
+    "event": (value_to_event, rt_detail.event_detail),
+    "mailbox": (value_to_mailbox, rt_detail.mailbox_detail),
+    "msgqueue": (value_to_messagequeue, rt_detail.messagequeue_detail),
+    "mempool": (value_to_mempool, rt_detail.memorypool_detail),
+}
+
+
 class RtThreadAdapter(RtosAdapter):
     """Expose RT-Thread navigation through GDR's semantic adapter contract."""
 
@@ -292,7 +309,7 @@ class RtThreadAdapter(RtosAdapter):
                 rows.append(
                     [semaphore.name, str(semaphore.value), hex(semaphore.address)]
                 )
-            return ObjectTable(["Name", "Value", "Addr"], rows)
+            return ObjectTable(["Name", "Value", "Addr"], rows, elastic=("Name",))
         if kind == "mutex":
             values = self._registered_objects("mutex", "struct rt_mutex")
             if values is None:
@@ -309,7 +326,11 @@ class RtThreadAdapter(RtosAdapter):
                         hex(mutex.address),
                     ]
                 )
-            return ObjectTable(["Name", "Value", "Hold", "Owner", "Addr"], rows)
+            return ObjectTable(
+                ["Name", "Value", "Hold", "Owner", "Addr"],
+                rows,
+                elastic=("Name", "Owner"),
+            )
         if kind == "event":
             values = self._registered_objects("event", "struct rt_event")
             if values is None:
@@ -318,7 +339,7 @@ class RtThreadAdapter(RtosAdapter):
             for value in values:
                 event = value_to_event(value, self.layout)
                 rows.append([event.name, hex(event.set), hex(event.address)])
-            return ObjectTable(["Name", "Set", "Addr"], rows)
+            return ObjectTable(["Name", "Set", "Addr"], rows, elastic=("Name",))
         if kind == "mailbox":
             values = self._registered_objects("mailbox", "struct rt_mailbox")
             if values is None:
@@ -336,7 +357,11 @@ class RtThreadAdapter(RtosAdapter):
                         hex(mailbox.address),
                     ]
                 )
-            return ObjectTable(["Name", "Entry", "Size", "In", "Out", "Addr"], rows)
+            return ObjectTable(
+                ["Name", "Entry", "Size", "In", "Out", "Addr"],
+                rows,
+                elastic=("Name",),
+            )
         if kind == "msgqueue":
             values = self._registered_objects("msgqueue", "struct rt_messagequeue")
             if values is None:
@@ -353,7 +378,11 @@ class RtThreadAdapter(RtosAdapter):
                         hex(msgqueue.address),
                     ]
                 )
-            return ObjectTable(["Name", "Entry", "MsgSize", "MaxMsgs", "Addr"], rows)
+            return ObjectTable(
+                ["Name", "Entry", "MsgSize", "MaxMsgs", "Addr"],
+                rows,
+                elastic=("Name",),
+            )
         if kind == "mempool":
             values = self._registered_objects("mempool", "struct rt_mempool")
             if values is None:
@@ -370,7 +399,11 @@ class RtThreadAdapter(RtosAdapter):
                         hex(mempool.address),
                     ]
                 )
-            return ObjectTable(["Name", "BlockSize", "Total", "Free", "Addr"], rows)
+            return ObjectTable(
+                ["Name", "BlockSize", "Total", "Free", "Addr"],
+                rows,
+                elastic=("Name",),
+            )
         if kind == "timer":
             rows = []
             for value in iter_timers(self.layout):
@@ -400,8 +433,42 @@ class RtThreadAdapter(RtosAdapter):
                 ],
                 rows,
                 [f"Kernel tick: {tick if tick is not None else 'N/A'}"],
+                elastic=("Name", "Callback"),
             )
         return None
+
+    def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
+        """Return vertical detail pairs for one named object.
+
+        ``None`` means the kind is not reliably enumerable; ``ObjectDetail``
+        carries ``found=False`` when the object is missing or its type is not
+        enabled.
+        """
+        if kind == "task":
+            value = find_thread(name, self.layout)
+            if value is None:
+                return ObjectDetail(found=False)
+            return ObjectDetail(
+                pairs=rt_detail.thread_detail(value_to_thread(value, self.layout))
+            )
+        if kind == "timer":
+            for value in iter_timers(self.layout):
+                timer = value_to_timer(value, self.layout)
+                if timer.name == name:
+                    return ObjectDetail(pairs=rt_detail.timer_detail(timer))
+            return ObjectDetail(found=False)
+
+        type_code = resolve_object_type_code(kind, self.layout)
+        if type_code is None:
+            return None
+        value = find_rt_object(type_code, name, self.layout)
+        if value is None:
+            return ObjectDetail(found=False)
+        entry = _DETAIL_BUILDERS.get(kind)
+        if entry is None:
+            return None
+        converter, builder = entry
+        return ObjectDetail(pairs=builder(converter(value, self.layout)))
 
     def iter_tasks(self):
         yield from iter_threads(self.layout)

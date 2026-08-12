@@ -49,11 +49,29 @@ class SystemSummary:
 
 @dataclass
 class ObjectTable:
-    """Adapter-provided rows for a reliably enumerable object kind."""
+    """Adapter-provided rows for a reliably enumerable object kind.
+
+    ``elastic`` lists the headers that may shrink when the natural table
+    width exceeds the terminal width (see ``gdr.gdb_bridge.print_table``).
+    Adapters own this metadata so renderers never guess it from header text.
+    """
 
     headers: list[str] = field(default_factory=list)
     rows: list[list[str]] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
+    elastic: tuple[str, ...] = ()
+
+
+@dataclass
+class ObjectDetail:
+    """Vertical key/value detail for one named object.
+
+    ``found`` is ``False`` when the object does not exist or its type is not
+    enabled in the current target configuration.
+    """
+
+    pairs: list[tuple[str, str]] = field(default_factory=list)
+    found: bool = True
 
 
 class RtosAdapter(Protocol):
@@ -66,6 +84,8 @@ class RtosAdapter(Protocol):
     def object_counts(self) -> dict[str, int]: ...
 
     def object_table(self, kind: str) -> ObjectTable | None: ...
+
+    def object_detail(self, kind: str, name: str) -> ObjectDetail | None: ...
 
     def iter_tasks(self) -> Iterator[gdb.Value]: ...
 

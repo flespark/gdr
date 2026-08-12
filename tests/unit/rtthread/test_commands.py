@@ -89,3 +89,55 @@ def test_unknown_or_extra_arguments_refer_to_help(monkeypatch):
 
     assert warnings == [commands._USAGE] * 3
     assert "rtt help" in commands._USAGE
+
+
+@pytest.mark.parametrize(
+    ("command", "name", "expected_kind"),
+    (
+        ("thread", "worker1", "task"),
+        ("timer", "test_timer", "timer"),
+        ("semaphore", "test_sem", "semaphore"),
+        ("mutex", "test_mutex", "mutex"),
+        ("event", "test_event", "event"),
+        ("mailbox", "test_mailbox", "mailbox"),
+        ("messagequeue", "test_msgqueue", "msgqueue"),
+        ("mempool", "test_mempool", "mempool"),
+    ),
+)
+def test_singular_commands_route_to_object_detail(
+    command, name, expected_kind, monkeypatch
+):
+    """``rtt <object> <name>`` dispatches to the detail renderer."""
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        commands,
+        "render_object_detail",
+        lambda kind, obj_name: calls.append((kind, obj_name)),
+    )
+
+    commands._invoke_command(f"{command} {name}")
+
+    assert calls == [(expected_kind, name)]
+
+
+def test_singular_command_without_name_refers_to_help(monkeypatch):
+    """A bare singular object name without a detail argument is rejected."""
+    warnings: list[str] = []
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(commands, "warn", warnings.append)
+    monkeypatch.setattr(commands, "render_object_detail", calls.append)
+
+    commands._invoke_command("thread")
+
+    assert calls == []
+    assert warnings == [commands._USAGE]
+
+
+def test_help_documents_singular_detail_syntax(capsys):
+    """Help lists every singular detail form with its canonical kind."""
+    commands._invoke_command("help")
+
+    help_output = capsys.readouterr().out
+    for command in commands._SINGULAR_COMMANDS:
+        assert f"rtt {command}" in help_output
+    assert "Single-object detail" in help_output
