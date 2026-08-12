@@ -325,14 +325,14 @@ Detail 不替代 `$gdr_object()`：前者提供可读摘要和校验，后者继
 
 ### 11.10 Fixture 和 QEMU 闭环 TODO
 
-- [ ] 扩展 Cortex-A9 fixture，创建确定性阻塞线程：空 semaphore waiter、
+- [x] 扩展 Cortex-A9 fixture，创建确定性阻塞线程：空 semaphore waiter、
   mutex owner/waiter、event mask waiter、mailbox receiver/sender、messagequeue
   receiver/sender、耗尽后的 mempool waiter；
-- [ ] 若同一 mailbox/messagequeue 无法同时稳定表示空等待和满等待，创建
+- [x] 若同一 mailbox/messagequeue 无法同时稳定表示空等待和满等待，创建
   独立的 RX/TX fixture 对象，不依赖测试执行过程中修改目标状态；
-- [ ] 对不支持 MQ sender wait list 的旧版本只验证 receiver waiters 和
+- [x] 对不支持 MQ sender wait list 的旧版本只验证 receiver waiters 和
   `SendWaiters=N/A`；
-- [ ] fixture ready marker 只能在对象创建、线程进入预期阻塞状态后输出；
+- [x] fixture ready marker 只能在对象创建、线程进入预期阻塞状态后输出；
 - [x] 测试期望继续存放于 `tests/support/rtthread_profiles.py` 和
   `tests/support/rtthread_qemu_profiles.py`，禁止从生产 layout 自动生成；
 - [x] 更新 `tests/integration/rtthread/test_commands.py`，逐行核对新增列、
@@ -345,9 +345,9 @@ Detail 不替代 `$gdr_object()`：前者提供可读摘要和校验，后者继
 - [x] 使用 `ci/rt-thread/run-qemu-matrix.sh rv64` 验证 v4.0.4-v4.1.1 无回归；
 - [x] runner 不重新引入自定义 `OUT_ELF/OUT_BIN`，继续通过统一
   `BUILD_DIR` 下的 BSP 默认产物和 `GDR_ELF_PATH/GDR_FIRMWARE_PATH` 定位；
-- [ ] 复用的 RT-Thread clone 每次构建前执行现有 `git reset --hard <ref>`
+- [x] 复用的 RT-Thread clone 每次构建前执行现有 `git reset --hard <ref>`
   和 `git clean -ffdx`，清除全部 SCons 输出和 ignored cache；
-- [ ] patch 必须按实际 `main.c` 基线分组；公共 patch 无法跨版本干净应用时，
+- [x] patch 必须按实际 `main.c` 基线分组；公共 patch 无法跨版本干净应用时，
   从对应 tag 的已修改源码重新提取包含 `main()` 的版本专用 patch。
 
 ### 11.11 明确不进入默认表的字段

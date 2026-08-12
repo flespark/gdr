@@ -1,12 +1,33 @@
 diff --git a/bsp/qemu-vexpress-a9/applications/main.c b/bsp/qemu-vexpress-a9/applications/main.c
-index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..ecf8c40142721973c05a6afb78e5119b629a66a9 100644
+index d59513b..ad3e1aa 100644
 --- a/bsp/qemu-vexpress-a9/applications/main.c
 +++ b/bsp/qemu-vexpress-a9/applications/main.c
-@@ -1,11 +1,130 @@
+@@ -1,11 +1,350 @@
 -#include <stdint.h>
 -#include <stdio.h>
 -#include <stdlib.h>
-+/* GDR test fixture: creates known kernel objects for QEMU smoke tests. */
++/*
++ * GDR test fixture: creates known kernel objects for QEMU smoke tests.
++ *
++ * When the system reaches the idle loop, the following objects exist:
++ * - Threads: "main" (finishes quickly), "locker" (holds wait_mutex),
++ *   "worker1".."worker3"
++ * - Semaphores: "test_sem" (value=1), "wait_sem" (empty, worker4 waits)
++ * - Mutexes: "test_mutex" (held by worker1), "wait_mutex" (held by locker,
++ *   worker5 waits)
++ * - Events: "test_event" (set=0x5), "wait_event" (worker6 waits on a mask)
++ * - Mailboxes: "test_mailbox" (one queued value), "wait_mb_recv" (empty,
++ *   worker7 waits), "wait_mb_send" (full, worker8 send-waits)
++ * - Message queues: "test_msgqueue" (one queued message), "wait_mq_recv"
++ *   (empty, worker9 waits). No sender waiter: this kernel version has no
++ *   rt_mq_send_wait (see PLAN 11.4), so SendWaiters renders N/A.
++ * - Memory pools: "test_mempool" (one allocated block), "wait_mp"
++ *   (exhausted; worker11 alloc-waits)
++ * - Timers: "test_timer" (periodic, 100 ticks)
++ *
++ * The GDB test suite stops at rt_thread_idle_excute and asserts these
++ * objects are visible via $gdr_thread(), rtthread threads, etc.
++ */
 +
 +#include <rtthread.h>
 +
@@ -19,34 +40,70 @@ index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..ecf8c40142721973c05a6afb78e5119b
 +#define MEMPOOL_BLOCK_SIZE 32
 +
 +static struct rt_semaphore test_sem;
++static struct rt_semaphore wait_sem;
 +static struct rt_mutex test_mutex;
++static struct rt_mutex wait_mutex;
 +static struct rt_timer test_timer;
 +static struct rt_event test_event;
++static struct rt_event wait_event;
 +static struct rt_mailbox test_mailbox;
++static struct rt_mailbox wait_mb_recv;
++static struct rt_mailbox wait_mb_send;
 +static struct rt_messagequeue test_msgqueue;
++static struct rt_messagequeue wait_mq_recv;
 +static struct rt_mempool test_mempool;
++static struct rt_mempool wait_mp;
 +
 +static rt_ubase_t test_mailbox_pool[MAILBOX_SIZE];
++static rt_ubase_t wait_mb_recv_pool[MAILBOX_SIZE];
++static rt_ubase_t wait_mb_send_pool[MAILBOX_SIZE];
 +static rt_ubase_t test_msgqueue_pool[MQ_POOL_WORDS];
++static rt_ubase_t wait_mq_recv_pool[MQ_POOL_WORDS];
 +static rt_ubase_t test_mempool_pool[MEMPOOL_WORDS];
++static rt_ubase_t wait_mp_pool[MEMPOOL_WORDS];
 +static rt_uint8_t test_message[MESSAGE_SIZE] = {0, 1, 2, 3, 4, 5, 6, 7};
 +static void *test_mempool_block;
++static void *wait_mp_block[64];
 +
++static rt_uint8_t locker_stack[THREAD_STACK_SIZE];
 +static rt_uint8_t worker1_stack[THREAD_STACK_SIZE];
 +static rt_uint8_t worker2_stack[THREAD_STACK_SIZE];
 +static rt_uint8_t worker3_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker4_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker5_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker6_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker7_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker8_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker9_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker11_stack[THREAD_STACK_SIZE];
 +
++static struct rt_thread locker_thread;
 +static struct rt_thread worker1_thread;
 +static struct rt_thread worker2_thread;
 +static struct rt_thread worker3_thread;
-+
-+static volatile int worker1_running = 0;
-+static volatile int worker2_running = 0;
-+static volatile int worker3_running = 0;
++static struct rt_thread worker4_thread;
++static struct rt_thread worker5_thread;
++static struct rt_thread worker6_thread;
++static struct rt_thread worker7_thread;
++static struct rt_thread worker8_thread;
++static struct rt_thread worker9_thread;
++static struct rt_thread worker11_thread;
 +
 +static void test_timer_timeout(void *parameter)
 +{
 +    (void)parameter;
++}
++
++/* locker: holds wait_mutex forever so worker5 can wait on it. */
++static void locker_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_mutex_take(&wait_mutex, RT_WAITING_FOREVER);
++    while (1)
++    {
++        rt_thread_mdelay(200);
++    }
 +}
 +
 +static void worker1_entry(void *parameter)
@@ -54,9 +111,6 @@ index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..ecf8c40142721973c05a6afb78e5119b
 +    (void)parameter;
 +
 +    rt_mutex_take(&test_mutex, RT_WAITING_FOREVER);
-+    worker1_running = 1;
-+    rt_kprintf("GDR test fixture ready.\n");
-+
 +    while (1)
 +    {
 +        rt_thread_mdelay(100);
@@ -66,8 +120,6 @@ index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..ecf8c40142721973c05a6afb78e5119b
 +static void worker2_entry(void *parameter)
 +{
 +    (void)parameter;
-+
-+    worker2_running = 1;
 +
 +    while (1)
 +    {
@@ -80,30 +132,138 @@ index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..ecf8c40142721973c05a6afb78e5119b
 +{
 +    (void)parameter;
 +
-+    worker3_running = 1;
-+
 +    while (1)
 +    {
 +        rt_thread_mdelay(200);
 +    }
 +}
--
 +
++/* worker4: permanently waits on the empty wait_sem -> semaphore waiter. */
++static void worker4_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_sem_take(&wait_sem, RT_WAITING_FOREVER);
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++/* worker5: permanently waits on the held wait_mutex -> mutex waiter. */
++static void worker5_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_mutex_take(&wait_mutex, RT_WAITING_FOREVER);
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++/* worker6: waits on an unsatisfiable event mask -> event waiter. */
++static void worker6_entry(void *parameter)
++{
++    (void)parameter;
++
++    {
++        rt_uint32_t recved;
++        rt_event_recv(&wait_event, 0x40,
++                      RT_EVENT_FLAG_AND | RT_EVENT_FLAG_CLEAR, RT_WAITING_FOREVER,
++                      &recved);
++    }
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++/* worker7: waits on the empty wait_mb_recv -> mailbox receiver. */
++static void worker7_entry(void *parameter)
++{
++    (void)parameter;
++
++    {
++        rt_ubase_t value;
++        rt_mb_recv(&wait_mb_recv, &value, RT_WAITING_FOREVER);
++    }
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++/* worker8: send-waits on the full wait_mb_send -> mailbox sender. */
++static void worker8_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_mb_send_wait(&wait_mb_send, 0x9999, RT_WAITING_FOREVER);
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++/* worker9: waits on the empty wait_mq_recv -> messagequeue receiver. */
++static void worker9_entry(void *parameter)
++{
++    (void)parameter;
++
++    {
++        char buffer[MESSAGE_SIZE];
++        rt_mq_recv(&wait_mq_recv, buffer, sizeof(buffer), RT_WAITING_FOREVER);
++    }
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
++
++
++/* worker11: alloc-waits on the exhausted wait_mp -> mempool waiter. */
++static void worker11_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_mp_alloc(&wait_mp, RT_WAITING_FOREVER);
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
+ 
  int main(void)
  {
 -    printf("hello rt-thread\n");
 +    rt_kprintf("GDR test fixture starting...\n");
 +
++    /* Create IPC objects */
 +    rt_sem_init(&test_sem, "test_sem", 1, RT_IPC_FLAG_FIFO);
++    rt_sem_init(&wait_sem, "wait_sem", 0, RT_IPC_FLAG_FIFO);
 +    rt_mutex_init(&test_mutex, "test_mutex", RT_IPC_FLAG_FIFO);
-+
++    rt_mutex_init(&wait_mutex, "wait_mutex", RT_IPC_FLAG_FIFO);
 +    RT_ASSERT(rt_event_init(&test_event, "test_event",
 +                            RT_IPC_FLAG_FIFO) == RT_EOK);
 +    RT_ASSERT(rt_event_send(&test_event, 0x5) == RT_EOK);
++    RT_ASSERT(rt_event_init(&wait_event, "wait_event",
++                            RT_IPC_FLAG_FIFO) == RT_EOK);
 +
 +    RT_ASSERT(rt_mb_init(&test_mailbox, "test_mailbox", test_mailbox_pool,
 +                         MAILBOX_SIZE, RT_IPC_FLAG_FIFO) == RT_EOK);
 +    RT_ASSERT(rt_mb_send(&test_mailbox, 0x1234) == RT_EOK);
++
++    /* wait_mb_recv stays empty so worker7 blocks as a receiver. */
++    RT_ASSERT(rt_mb_init(&wait_mb_recv, "wait_mb_recv", wait_mb_recv_pool,
++                         MAILBOX_SIZE, RT_IPC_FLAG_FIFO) == RT_EOK);
++    /* wait_mb_send fills every slot so worker8 send-waits. */
++    RT_ASSERT(rt_mb_init(&wait_mb_send, "wait_mb_send", wait_mb_send_pool,
++                         MAILBOX_SIZE, RT_IPC_FLAG_FIFO) == RT_EOK);
++    RT_ASSERT(rt_mb_send(&wait_mb_send, 0x1111) == RT_EOK);
++    RT_ASSERT(rt_mb_send(&wait_mb_send, 0x2222) == RT_EOK);
++    RT_ASSERT(rt_mb_send(&wait_mb_send, 0x3333) == RT_EOK);
++    RT_ASSERT(rt_mb_send(&wait_mb_send, 0x4444) == RT_EOK);
 +
 +    RT_ASSERT(rt_mq_init(&test_msgqueue, "test_msgqueue", test_msgqueue_pool,
 +                         sizeof(test_message), sizeof(test_msgqueue_pool),
@@ -111,16 +271,40 @@ index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..ecf8c40142721973c05a6afb78e5119b
 +    RT_ASSERT(rt_mq_send(&test_msgqueue, test_message,
 +                         sizeof(test_message)) == RT_EOK);
 +
++    /* wait_mq_recv stays empty so worker9 blocks as a receiver. */
++    RT_ASSERT(rt_mq_init(&wait_mq_recv, "wait_mq_recv", wait_mq_recv_pool,
++                         sizeof(test_message), sizeof(wait_mq_recv_pool),
++                         RT_IPC_FLAG_FIFO) == RT_EOK);
++
 +    RT_ASSERT(rt_mp_init(&test_mempool, "test_mempool", test_mempool_pool,
 +                         sizeof(test_mempool_pool),
 +                         MEMPOOL_BLOCK_SIZE) == RT_EOK);
 +    test_mempool_block = rt_mp_alloc(&test_mempool, RT_WAITING_NO);
 +    RT_ASSERT(test_mempool_block != RT_NULL);
 +
++    /* wait_mp is exhausted: allocate every block so worker11 alloc-waits. */
++    RT_ASSERT(rt_mp_init(&wait_mp, "wait_mp", wait_mp_pool,
++                         sizeof(wait_mp_pool),
++                         MEMPOOL_BLOCK_SIZE) == RT_EOK);
++    {
++        rt_size_t i;
++        for (i = 0; i < sizeof(wait_mp_block) / sizeof(wait_mp_block[0]); i++)
++        {
++            wait_mp_block[i] = rt_mp_alloc(&wait_mp, RT_WAITING_NO);
++            if (wait_mp_block[i] == RT_NULL)
++                break;
++        }
++    }
++
++    /* Create timer (periodic, 100 ticks) */
 +    rt_timer_init(&test_timer, "test_timer", test_timer_timeout, RT_NULL,
 +                  100, RT_TIMER_FLAG_PERIODIC | RT_TIMER_FLAG_SOFT_TIMER);
 +    rt_timer_start(&test_timer);
 +
++    /* Create worker threads */
++    rt_thread_init(&locker_thread, "locker", locker_entry, RT_NULL,
++                   locker_stack, sizeof(locker_stack),
++                   THREAD_PRIORITY, 10);
 +    rt_thread_init(&worker1_thread, "worker1", worker1_entry, RT_NULL,
 +                   worker1_stack, sizeof(worker1_stack),
 +                   THREAD_PRIORITY, 10);
@@ -130,13 +314,47 @@ index d59513bce87ec6d98d1b704ffb8ada261ce7acc3..ecf8c40142721973c05a6afb78e5119b
 +    rt_thread_init(&worker3_thread, "worker3", worker3_entry, RT_NULL,
 +                   worker3_stack, sizeof(worker3_stack),
 +                   THREAD_PRIORITY + 2, 10);
++    rt_thread_init(&worker4_thread, "worker4", worker4_entry, RT_NULL,
++                   worker4_stack, sizeof(worker4_stack),
++                   THREAD_PRIORITY + 3, 10);
++    rt_thread_init(&worker5_thread, "worker5", worker5_entry, RT_NULL,
++                   worker5_stack, sizeof(worker5_stack),
++                   THREAD_PRIORITY + 4, 10);
++    rt_thread_init(&worker6_thread, "worker6", worker6_entry, RT_NULL,
++                   worker6_stack, sizeof(worker6_stack),
++                   THREAD_PRIORITY + 5, 10);
++    rt_thread_init(&worker7_thread, "worker7", worker7_entry, RT_NULL,
++                   worker7_stack, sizeof(worker7_stack),
++                   THREAD_PRIORITY + 6, 10);
++    rt_thread_init(&worker8_thread, "worker8", worker8_entry, RT_NULL,
++                   worker8_stack, sizeof(worker8_stack),
++                   THREAD_PRIORITY + 7, 10);
++    rt_thread_init(&worker9_thread, "worker9", worker9_entry, RT_NULL,
++                   worker9_stack, sizeof(worker9_stack),
++                   THREAD_PRIORITY + 8, 10);
++    rt_thread_init(&worker11_thread, "worker11", worker11_entry, RT_NULL,
++                   worker11_stack, sizeof(worker11_stack),
++                   THREAD_PRIORITY + 10, 10);
 +
++    rt_thread_startup(&locker_thread);
 +    rt_thread_startup(&worker1_thread);
 +    rt_thread_startup(&worker2_thread);
 +    rt_thread_startup(&worker3_thread);
++    rt_thread_startup(&worker4_thread);
++    rt_thread_startup(&worker5_thread);
++    rt_thread_startup(&worker6_thread);
++    rt_thread_startup(&worker7_thread);
++    rt_thread_startup(&worker8_thread);
++    rt_thread_startup(&worker9_thread);
++    rt_thread_startup(&worker11_thread);
 +
--
++    /* Allow every waiter to reach its blocked state before announcing
++     * readiness. main() yields via mdelay so lower-priority workers run and
++     * block on their IPC objects first. */
++    rt_thread_mdelay(20);
 +
++    rt_kprintf("GDR test fixture ready.\n");
+ 
      return 0;
  }
 -

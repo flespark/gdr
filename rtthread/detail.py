@@ -28,10 +28,10 @@ from gdr.gdb_bridge import get_arch_info, lookup_symbol_at, read_bytes, read_int
 from gdr.layout import KernelLayout, read_field
 from rtthread.layout import ThreadState
 
-# RT-Thread message-queue node header: ``struct rt_mq_message`` embeds an
-# ``rt_list_t parent`` before the payload. On every supported version the
-# payload starts right after the two-pointer list node.
-_MQ_HEADER_POINTERS = 2
+# RT-Thread message-queue node header: ``struct rt_mq_message`` embeds a
+# single ``next`` pointer before the payload. Verified on 3.1.0/3.1.5/4.0.5/
+# 4.1.1: the payload starts right after the one-pointer node header.
+_MQ_HEADER_POINTERS = 1
 # Bounds for any raw kernel-memory walk performed by detail diagnostics.
 _MAX_WALK = 4096
 

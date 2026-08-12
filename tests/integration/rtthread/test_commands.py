@@ -141,7 +141,9 @@ print(f"max_stack_used={value.max_stack_used}")
     assert "<worker1_entry" in output
 
     worker_row = next(
-        line for line in output.splitlines() if line.lstrip().startswith("worker1")
+        line
+        for line in output.splitlines()
+        if line.lstrip().startswith("worker1 ") or line.lstrip().startswith("worker1*")
     )
     fields = worker_row.split()
     assert stack_used in fields
@@ -186,6 +188,67 @@ def test_rtt_semaphore_command_lists_fixture_data(rtt_outputs):
     assert "Value" in output
     assert "Policy" in output
     assert "Addr" in output
+
+
+def test_rtt_semaphore_waiter_summary(rtt_outputs):
+    """An empty semaphore shows its waiting thread by name (PLAN 11.10)."""
+    output = rtt_outputs["semaphores"]
+    row = _fixture_row(output, _PROFILE.wait_semaphore_name)
+    assert row[0] == _PROFILE.wait_semaphore_name
+    assert row[1] == "0"
+    assert row[3] == f"1:{_PROFILE.sem_waiter_thread}"
+
+
+def test_rtt_mutex_waiter_and_owner(rtt_outputs):
+    """A held mutex shows its locker owner and its waiting thread."""
+    output = rtt_outputs["mutexes"]
+    row = _fixture_row(output, _PROFILE.wait_mutex_name)
+    assert row[0] == _PROFILE.wait_mutex_name
+    assert row[4] == _PROFILE.locker_thread_name
+    assert row[6] == f"1:{_PROFILE.mutex_waiter_thread}"
+
+
+def test_rtt_event_waiter_summary(rtt_outputs):
+    """An event with an unsatisfied waiter lists that thread by name."""
+    output = rtt_outputs["events"]
+    row = _fixture_row(output, _PROFILE.wait_event_name)
+    assert row[0] == _PROFILE.wait_event_name
+    assert row[3] == f"1:{_PROFILE.event_waiter_thread}"
+
+
+def test_rtt_mailbox_receiver_and_sender_waiters(rtt_outputs):
+    """Empty and full mailboxes show their receiver and sender waiters."""
+    output = rtt_outputs["mailboxs"]
+    recv_row = _fixture_row(output, _PROFILE.wait_mailbox_recv_name)
+    assert recv_row[0] == _PROFILE.wait_mailbox_recv_name
+    assert recv_row[7] == f"1:{_PROFILE.mailbox_recv_thread}"
+    assert recv_row[8] == "0"
+
+    send_row = _fixture_row(output, _PROFILE.wait_mailbox_send_name)
+    assert send_row[0] == _PROFILE.wait_mailbox_send_name
+    assert send_row[7] == "0"
+    assert send_row[8] == f"1:{_PROFILE.mailbox_send_thread}"
+
+
+def test_rtt_messagequeue_receiver_and_sender_waiters(rtt_outputs):
+    """Empty and full message queues show receiver and sender waiters."""
+    output = rtt_outputs["messagequeues"]
+    recv_row = _fixture_row(output, _PROFILE.wait_msgqueue_recv_name)
+    assert recv_row[0] == _PROFILE.wait_msgqueue_recv_name
+    assert recv_row[6] == f"1:{_PROFILE.msgqueue_recv_thread}"
+
+    if _PROFILE.mq_sender_list:
+        send_row = _fixture_row(output, _PROFILE.wait_msgqueue_send_name)
+        assert send_row[0] == _PROFILE.wait_msgqueue_send_name
+        assert send_row[7] == f"1:{_PROFILE.msgqueue_send_thread}"
+
+
+def test_rtt_mempool_waiter_summary(rtt_outputs):
+    """An exhausted memory pool lists its alloc-waiting thread."""
+    output = rtt_outputs["mempools"]
+    row = _fixture_row(output, _PROFILE.wait_mempool_name)
+    assert row[0] == _PROFILE.wait_mempool_name
+    assert row[5] == f"1:{_PROFILE.mempool_waiter_thread}"
 
 
 def test_rtt_event_command_matches_target_memory(rtt_outputs, ipc_fixture_values):

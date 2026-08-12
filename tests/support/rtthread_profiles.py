@@ -23,6 +23,25 @@ class RtThreadTestProfile:
     msgqueue_name: str = "test_msgqueue"
     mempool_name: str = "test_mempool"
     timer_name: str = "test_timer"
+    # Blocking-waiter fixture objects (created only on fixture revisions that
+    # include the PLAN 11.10 deterministic blocking threads).
+    wait_semaphore_name: str = "wait_sem"
+    wait_mutex_name: str = "wait_mutex"
+    wait_event_name: str = "wait_event"
+    wait_mailbox_recv_name: str = "wait_mb_recv"
+    wait_mailbox_send_name: str = "wait_mb_send"
+    wait_msgqueue_recv_name: str = "wait_mq_recv"
+    wait_msgqueue_send_name: str = "wait_mq_send"
+    wait_mempool_name: str = "wait_mp"
+    locker_thread_name: str = "locker"
+    sem_waiter_thread: str = "worker4"
+    mutex_waiter_thread: str = "worker5"
+    event_waiter_thread: str = "worker6"
+    mailbox_recv_thread: str = "worker7"
+    mailbox_send_thread: str = "worker8"
+    msgqueue_recv_thread: str = "worker9"
+    msgqueue_send_thread: str = "worker10"
+    mempool_waiter_thread: str = "worker11"
     current_thread_expression: str = "rt_current_thread"
     mq_sender_list: bool = True
 
