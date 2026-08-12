@@ -91,6 +91,7 @@ class Timer(KernelObject):
     init_tick: int = 0
     timeout_tick: int = 0
     callback: int = 0
+    parameter: int = 0
 
 
 @dataclass

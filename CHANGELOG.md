@@ -31,6 +31,12 @@ All notable changes to GDR are documented in this file.
 - Task lists add `BasePrio` and `Addr`; SMP targets show `CPU`/`Bind` with
   the current task's real `oncpu`, and the CPU-0-to-`-1` coercion bug is
   fixed so CPU 0 is a valid value.
+- Object detail diagnostics: thread detail shows `error`/`remaining_tick`,
+  timer detail shows the callback `parameter`, message queues walk their
+  message/free chains and verify `entry`/`max_msgs`, mailboxes list FIFO
+  slots and validate ring offsets, and memory pools report pool range, block
+  alignment, and free-list consistency. All walks are bounded and
+  corruption-guarded.
 - RTOS-neutral profile-driven QEMU/GDB harness with dynamic GDB ports,
   session-local logs, persistent GDB connections, and actionable boot errors.
 - FreeRTOS Phase 1 package and a B-L475E-IOT01A QEMU fixture built

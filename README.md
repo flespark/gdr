@@ -134,7 +134,12 @@ Single-object detail is also available as a command: `rtt <object> <name>`
 `Key: Value` view of one object without disturbing `$gdr_object()`, which
 continues to return the raw `gdb.Value`. Event detail additionally pairs each
 waiter with its `event_set` mask and AND/OR/CLEAR mode so you can see why the
-current event set did not wake it.
+current event set did not wake it. Detail goes beyond the list columns with
+kernel-memory diagnostics: thread detail shows `Error`/`RemainingTick`, timer
+detail shows the callback `Parameter`, message queues walk their message and
+free chains to verify `entry`/`max_msgs`, mailboxes list their FIFO slots and
+validate ring offsets, and memory pools report pool range, block alignment,
+and free-list consistency. Every walk is bounded and corruption-guarded.
 
 ## Convenience functions
 

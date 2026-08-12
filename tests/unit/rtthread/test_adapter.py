@@ -291,7 +291,7 @@ def test_object_detail_ipc_kinds_use_their_converter_and_builder(
         {
             kind: (
                 lambda _value, _layout: converted,
-                lambda _converted: expected_pairs,
+                lambda _converted, *_raw: expected_pairs,
             )
         },
     )

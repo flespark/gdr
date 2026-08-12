@@ -601,6 +601,9 @@ def build_mempool_layout(object_type_names: dict[int, str]) -> StructLayout:
     sl.fields["block_free_count"] = StructField(
         "block_free_count", ("block_free_count",), summary=True
     )
+    # Reason: block_list is the free-block singly-linked list head; it is only
+    # consumed by detail diagnostics, never by the default table.
+    sl.fields["block_list"] = StructField("block_list", ("block_list",), kind="ptr")
     # Reason: waiters are counted by traversing the suspend list on every
     # version; the cached suspend_thread_count was removed in later releases
     # so the layout must describe the list itself.

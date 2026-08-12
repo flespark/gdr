@@ -179,6 +179,27 @@ hardcoded core 0, and CPU 0 is a legal value — the adapter distinguishes
 "no SMP field / unbound / not running" (`None`) from a genuine CPU index. UP
 targets keep the current marker on core 0 and never fabricate CPU columns.
 
+### Object detail diagnostics
+
+The singular `rtt <object> <name>` detail extends beyond the list columns with
+kernel-memory walks and consistency checks, all bounded and corruption-guarded
+so a bad pointer cannot hang GDB:
+
+- Thread detail keeps `error`/`remaining_tick` out of the shared task table.
+- Timer detail adds the callback `parameter` pointer.
+- Message-queue detail walks the active chain from `msg_queue_head`, decodes
+  each node's payload (payload starts after the two-pointer header), walks the
+  free chain from `msg_queue_free`, and cross-checks `entry`, active node
+  count, free node count, and `max_msgs`.
+- Mailbox detail reads the FIFO message slots starting at `out_offset` and
+  validates `in_offset`/`out_offset`/`entry` against `size`.
+- Memory-pool detail shows `start_address`/`size`/`block_list`, verifies block
+  alignment, and compares the traversed free-list length against the cached
+  `block_free_count`.
+
+These builders receive the raw `gdb.Value` plus the active layout, so field
+paths and version conditionals stay in the adapter.
+
 ### Table width handling
 
 List tables render at the current terminal width using a fixed priority:

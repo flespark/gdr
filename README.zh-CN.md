@@ -122,7 +122,11 @@ IPC 与内存池列表以 `count:names` 摘要显示等待线程：信号量、�
 （如 `rtt semaphore my_sem`、`rtt thread worker1`），以纵向 `Key: Value`
 呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。事件详情还会
 把每个等待线程与它的 `event_set` 掩码和 AND/OR/CLEAR 模式关联，帮助解释
-当前事件集为何没有唤醒它。
+当前事件集为何没有唤醒它。detail 还包含超越列表列的底层诊断：线程详情
+显示 `Error`/`RemainingTick`，定时器详情显示回调 `Parameter`，消息队列遍历
+消息链与空闲链以校验 `entry`/`max_msgs`，邮箱列出 FIFO 消息槽并校验环形
+偏移，内存池报告池范围、块对齐与空闲链表一致性。所有遍历都有界且带损坏
+保护。
 
 ## 便捷函数
 

@@ -375,7 +375,16 @@ def test_rtt_tables_keep_column_set_at_120_columns(gdb):
 def test_rtt_thread_detail_shows_public_fields(gdb):
     """``rtt thread <name>`` renders a vertical key/value detail."""
     output = gdb.run("rtt thread worker1", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "State:", "Priority:", "Entry:"):
+    for label in (
+        "Name:",
+        "Address:",
+        "Type:",
+        "State:",
+        "Priority:",
+        "Entry:",
+        "Error:",
+        "RemainingTick:",
+    ):
         assert label in output, output
     assert "worker1" in output
 
@@ -399,27 +408,53 @@ def test_rtt_event_detail_shows_waiter_conditions(gdb):
 
 
 def test_rtt_mailbox_detail_shows_waiters(gdb):
-    """``rtt mailbox <name>`` renders the fixture's public fields."""
+    """``rtt mailbox <name>`` renders the fixture's public fields and slots."""
     output = gdb.run(f"rtt mailbox {_PROFILE.mailbox_name}", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "Entry:", "Size:"):
+    for label in ("Name:", "Address:", "Type:", "Entry:", "Size:", "MsgPool:"):
         assert label in output, output
     assert _PROFILE.mailbox_name in output
+    assert "OffsetCheck:" in output
     assert "[gdr] error:" not in output, output
 
 
 def test_rtt_messagequeue_detail_shows_waiters(gdb):
-    """``rtt messagequeue <name>`` renders capacity and waiter fields."""
+    """``rtt messagequeue <name>`` renders capacity, nodes, and consistency."""
     output = gdb.run(f"rtt messagequeue {_PROFILE.msgqueue_name}", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "MaxMsgs:"):
+    for label in ("Name:", "Address:", "Type:", "MaxMsgs:", "MsgPool:", "Consistency:"):
         assert label in output, output
     assert _PROFILE.msgqueue_name in output
+    assert "[gdr] error:" not in output, output
+
+
+def test_rtt_mempool_detail_shows_block_diagnostics(gdb):
+    """``rtt mempool <name>`` renders pool range, alignment, and free count."""
+    output = gdb.run(f"rtt mempool {_PROFILE.mempool_name}", timeout=20)
+    for label in (
+        "Name:",
+        "Address:",
+        "Type:",
+        "StartAddress:",
+        "PoolSize:",
+        "BlockList:",
+        "AlignmentCheck:",
+        "FreeCountCheck:",
+    ):
+        assert label in output, output
+    assert _PROFILE.mempool_name in output
     assert "[gdr] error:" not in output, output
 
 
 def test_rtt_timer_detail_shows_fixture_timer(gdb):
     """``rtt timer <name>`` renders the fixture timer's callback symbol."""
     output = gdb.run(f"rtt timer {_PROFILE.timer_name}", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "State:", "Callback:"):
+    for label in (
+        "Name:",
+        "Address:",
+        "Type:",
+        "State:",
+        "Callback:",
+        "Parameter:",
+    ):
         assert label in output, output
     assert _PROFILE.timer_name in output
 

@@ -311,17 +311,17 @@ Detail 不替代 `$gdr_object()`：前者提供可读摘要和校验，后者继
 
 ### 11.9 TODO：P2 Detail 和高级诊断
 
-- [ ] 为 Phase A 的 object detail 补齐各对象的特有字段和校验结果；
-- [ ] Timer detail 显示 callback `parameter`；
-- [ ] Messagequeue detail 从 `msg_queue_head` 有界遍历消息节点，并按目标版本
+- [x] 为 Phase A 的 object detail 补齐各对象的特有字段和校验结果；
+- [x] Timer detail 显示 callback `parameter`；
+- [x] Messagequeue detail 从 `msg_queue_head` 有界遍历消息节点，并按目标版本
   的节点头尺寸定位 payload；
-- [ ] Messagequeue detail 校验 `entry` 与活动链表节点数、free list 节点数及
+- [x] Messagequeue detail 校验 `entry` 与活动链表节点数、free list 节点数及
   `max_msgs` 的一致性；
-- [ ] Mailbox detail 根据 `out_offset/entry/size` 按 FIFO 顺序显示消息槽，
+- [x] Mailbox detail 根据 `out_offset/entry/size` 按 FIFO 顺序显示消息槽，
   并校验 offset 范围；
-- [ ] Mempool detail 显示 `start_address/size/block_list`，校验池范围、块对齐
+- [x] Mempool detail 显示 `start_address/size/block_list`，校验池范围、块对齐
   和 free count；
-- [ ] Thread detail 显示 `error/remaining_tick`，避免扩大通用任务表。
+- [x] Thread detail 显示 `error/remaining_tick`，避免扩大通用任务表。
 
 ### 11.10 Fixture 和 QEMU 闭环 TODO
 

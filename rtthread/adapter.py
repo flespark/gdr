@@ -200,6 +200,7 @@ def value_to_timer(val: gdb.Value, layout: KernelLayout) -> Timer:
         init_tick=read_int(read_field(val, sl, "init_tick")) or 0,
         timeout_tick=read_int(read_field(val, sl, "timeout_tick")) or 0,
         callback=read_int(read_field(val, sl, "timeout_func")) or 0,
+        parameter=read_int(read_field(val, sl, "parameter")) or 0,
     )
 
 
@@ -713,7 +714,12 @@ class RtThreadAdapter(RtosAdapter):
         if entry is None:
             return None
         converter, builder = entry
-        return ObjectDetail(pairs=builder(converter(value, self.layout)))
+        converted = converter(value, self.layout)
+        if kind in ("mailbox", "msgqueue", "mempool"):
+            # Advanced detail walks kernel memory for slots/nodes/free-list
+            # validation, so it needs the raw value plus the active layout.
+            return ObjectDetail(pairs=builder(converted, value, self.layout))
+        return ObjectDetail(pairs=builder(converted))
 
     def iter_tasks(self):
         yield from iter_threads(self.layout)

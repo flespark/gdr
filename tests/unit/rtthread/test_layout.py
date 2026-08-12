@@ -102,3 +102,21 @@ def test_mempool_layout_describes_suspend_thread_list():
     assert mempool["suspend_thread"].kind == "list"
     # The old cached count field is deliberately not part of the layout.
     assert "suspend_thread_count" not in mempool
+
+
+def test_mempool_layout_describes_block_list_for_detail():
+    """block_list exists for detail diagnostics, not the default table."""
+    layout = build_layouts(RtConfig(using_mempool=True), (4, 1, 1))
+    mempool = layout.structs["struct rt_mempool"].fields
+
+    assert mempool["block_list"].path == ("block_list",)
+    assert mempool["block_list"].kind == "ptr"
+
+
+def test_timer_layout_describes_parameter_field():
+    """Timer detail exposes the callback parameter pointer."""
+    layout = build_layouts(RtConfig(), (4, 1, 1))
+    timer = layout.structs["struct rt_timer"].fields
+
+    assert timer["parameter"].path == ("parameter",)
+    assert timer["parameter"].kind == "ptr"
