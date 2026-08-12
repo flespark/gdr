@@ -19,13 +19,21 @@ from __future__ import annotations
 import os
 import sys
 
+# Reason: GDB's Python interpreter does not add the script directory to
+# sys.path, so `source gdr.py` from an arbitrary cwd would fail on the first
+# `import gdr.*`. Prepend this file's directory so the project packages are
+# importable without requiring PYTHONPATH or a cwd change.
+_GDR_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _GDR_ROOT not in sys.path:
+    sys.path.insert(0, _GDR_ROOT)
+
 try:
     import gdb
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import info, warn
-from gdr.printers import register_printers
+from gdr.gdb_bridge import info, warn  # noqa: E402
+from gdr.printers import register_printers  # noqa: E402
 
 
 def _parse_args() -> dict[str, str]:
