@@ -1,4 +1,11 @@
-"""Real QEMU checks for the RT-Thread command tree."""
+"""Real QEMU checks for the RT-Thread command tree.
+
+COUPLED: fixture object names, waiter relationships, capacities, timer mode and
+callback symbols are supplied by the matching patch under
+``ci/rt-thread/patches/<target>/<version>/``. Keep changes to those patches and
+these assertions synchronized; layout/diagnostic behavior that is independent
+of the fixture belongs in unit tests instead.
+"""
 
 from __future__ import annotations
 
@@ -77,15 +84,31 @@ def _fixture_row(output: str, name: str) -> list[str]:
     )
 
 
+def _assert_clean_command_output(output: str) -> None:
+    """Reject GDB/Python failures that can leave partial command output."""
+    for marker in (
+        "usage: rtthread",
+        "[gdr] error:",
+        "Traceback (most recent call last)",
+        "Python Exception",
+    ):
+        assert marker not in output, output
+
+
+def _detail_pairs(output: str) -> dict[str, str]:
+    """Parse stable ``Key: Value`` detail output without table assumptions."""
+    return {
+        key: value
+        for line in output.splitlines()
+        if ": " in line
+        for key, value in (line.split(": ", 1),)
+    }
+
+
 def test_all_rtt_commands_are_available(rtt_outputs):
     """Every public route completes without usage or Python error output."""
-    for command, output in rtt_outputs.items():
-        assert "usage: rtthread" not in output, f"rtt {command}:\n{output}"
-        assert "[gdr] error:" not in output, f"rtt {command}:\n{output}"
-        assert "Traceback (most recent call last)" not in output, (
-            f"rtt {command}:\n{output}"
-        )
-        assert "Python Exception" not in output, f"rtt {command}:\n{output}"
+    for output in rtt_outputs.values():
+        _assert_clean_command_output(output)
 
 
 def test_rtt_help_lists_commands_and_aliases(rtt_outputs):
@@ -403,19 +426,75 @@ def test_rtt_tables_keep_column_set_at_80_columns(gdb):
     """A narrow GDB width never removes columns; only elastic text shrinks."""
     with _with_width(gdb, 80):
         for command, required in (
-            ("rtt semaphores", ("Name", "Value", "Policy", "Addr")),
+            ("rtt semaphores", ("Name", "Value", "Policy", "Waiters", "Addr")),
             (
                 "rtt threads",
                 ("Name", "State", "Prio", "BasePrio", "SP", "Stack", "Entry", "Addr"),
             ),
             (
                 "rtt mutexes",
-                ("Name", "Value", "Hold", "OrigPrio", "Owner", "Policy", "Addr"),
+                (
+                    "Name",
+                    "Value",
+                    "Hold",
+                    "OrigPrio",
+                    "Owner",
+                    "Policy",
+                    "Waiters",
+                    "Addr",
+                ),
+            ),
+            ("rtt events", ("Name", "Set", "Policy", "Waiters", "Addr")),
+            (
+                "rtt mailboxs",
+                (
+                    "Name",
+                    "Entry",
+                    "Size",
+                    "Free",
+                    "In",
+                    "Out",
+                    "Policy",
+                    "RecvWait",
+                    "SendWait",
+                    "Addr",
+                ),
+            ),
+            (
+                "rtt messagequeues",
+                (
+                    "Name",
+                    "Entry",
+                    "MsgSize",
+                    "MaxMsgs",
+                    "Free",
+                    "Policy",
+                    "RecvWait",
+                    "SendWait",
+                    "Addr",
+                ),
+            ),
+            (
+                "rtt mempools",
+                ("Name", "BlockSize", "Total", "Free", "Used", "Waiters", "Addr"),
+            ),
+            (
+                "rtt timers",
+                (
+                    "Name",
+                    "State",
+                    "Mode",
+                    "Type",
+                    "InitTick",
+                    "TimeoutTick",
+                    "ExpiresIn",
+                    "Callback",
+                    "Addr",
+                ),
             ),
         ):
             output = gdb.run(command, timeout=20)
-            assert "usage: rtthread" not in output, output
-            assert "[gdr] error:" not in output, output
+            _assert_clean_command_output(output)
             for header in required:
                 assert header in output, f"{command} missing {header!r}:\n{output}"
 
@@ -462,14 +541,46 @@ def test_rtt_semaphore_detail_shows_fixture_value(gdb):
     assert _PROFILE.semaphore_name in output
 
 
+def test_rtt_mutex_detail_shows_priority_inheritance_fields(gdb):
+    """Mutex detail retains owner, original priority, policy, and waiters."""
+    output = gdb.run(f"rtt mutex {_PROFILE.wait_mutex_name}", timeout=20)
+    for label in (
+        "Name:",
+        "Address:",
+        "Type: Mutex",
+        "Value:",
+        "Hold:",
+        f"Owner: {_PROFILE.locker_thread_name}",
+        "OriginalPriority:",
+        "Waiters: 1:",
+    ):
+        assert label in output, output
+    # RT-Thread v3 retains the configured FIFO flag while newer kernels force
+    # mutex inheritance to PRIO. Both are target-valid policy renderings.
+    assert _detail_pairs(output)["Policy"] in {"FIFO", "PRIO"}, output
+    assert _PROFILE.mutex_waiter_thread in output
+    _assert_clean_command_output(output)
+
+
+def test_rtt_semaphore_detail_shows_policy_and_waiters(gdb):
+    """Semaphore detail includes the scheduler policy and blocking relation."""
+    output = gdb.run(f"rtt semaphore {_PROFILE.wait_semaphore_name}", timeout=20)
+    for label in ("Policy: FIFO", "Waiters: 1:"):
+        assert label in output, output
+    assert _PROFILE.sem_waiter_thread in output
+
+
 def test_rtt_event_detail_shows_waiter_conditions(gdb):
     """``rtt event <name>`` pairs each waiter with its mask and mode."""
-    output = gdb.run(f"rtt event {_PROFILE.event_name}", timeout=20)
+    output = gdb.run(f"rtt event {_PROFILE.wait_event_name}", timeout=20)
     for label in ("Name:", "Address:", "Type:", "Set:"):
         assert label in output, output
-    assert _PROFILE.event_name in output
-    assert "[gdr] error:" not in output, output
-    assert "Traceback" not in output, output
+    assert _PROFILE.wait_event_name in output
+    assert "Policy: FIFO" in output
+    assert "Waiters: 1:" in output
+    assert _PROFILE.event_waiter_thread in output
+    assert f"Waiter: {_PROFILE.event_waiter_thread}: set=0x40 mode=AND|CLEAR" in output
+    _assert_clean_command_output(output)
 
 
 def test_rtt_mailbox_detail_shows_waiters(gdb):
@@ -478,11 +589,28 @@ def test_rtt_mailbox_detail_shows_waiters(gdb):
     for label in ("Name:", "Address:", "Type:", "Entry:", "Size:", "MsgPool:"):
         assert label in output, output
     assert _PROFILE.mailbox_name in output
-    # Valid ring offsets yield FIFO slot lines; OffsetCheck only appears when
-    # an offset is out of range (see the invalid-offset unit test).
+    # Valid ring offsets yield FIFO slot lines and an explicit successful
+    # verdict; invalid offsets carry their reason in the same stable field.
     assert "Slot[" in output
-    assert "OffsetCheck:" not in output
+    assert "OffsetCheck: ok" in output
     assert "[gdr] error:" not in output, output
+
+
+def test_rtt_mailbox_detail_shows_receiver_and_sender_waiters(gdb):
+    """Mailbox detail distinguishes receive and send blocking lists."""
+    recv = gdb.run(f"rtt mailbox {_PROFILE.wait_mailbox_recv_name}", timeout=20)
+    send = gdb.run(f"rtt mailbox {_PROFILE.wait_mailbox_send_name}", timeout=20)
+    assert "RecvWait: 1:" in recv, recv
+    assert _PROFILE.mailbox_recv_thread in recv, recv
+    assert "Entry: 0" in recv, recv
+    assert "OffsetCheck: ok" in recv, recv
+    assert "SendWait: 1:" in send, send
+    assert _PROFILE.mailbox_send_thread in send, send
+    assert "Entry: 4" in send, send
+    for slot in range(4):
+        assert f"Slot[{slot}]:" in send, send
+    _assert_clean_command_output(recv)
+    _assert_clean_command_output(send)
 
 
 def test_rtt_messagequeue_detail_shows_waiters(gdb):
@@ -492,6 +620,41 @@ def test_rtt_messagequeue_detail_shows_waiters(gdb):
         assert label in output, output
     assert _PROFILE.msgqueue_name in output
     assert "[gdr] error:" not in output, output
+
+
+def test_rtt_messagequeue_detail_shows_node_counts_and_waiters(gdb):
+    """Message-queue detail combines memory consistency and blocking data."""
+    recv = gdb.run(f"rtt messagequeue {_PROFILE.wait_msgqueue_recv_name}", timeout=20)
+    recv_pairs = _detail_pairs(recv)
+    max_msgs = int(recv_pairs["MaxMsgs"])
+    assert recv_pairs["Entry"] == "0", recv
+    assert recv_pairs["ActiveNodes"] == "0", recv
+    assert recv_pairs["FreeNodes"] == str(max_msgs), recv
+    assert (
+        recv_pairs["Consistency"] == f"ok (entry=0, free={max_msgs}, max={max_msgs})"
+    ), recv
+    assert "RecvWait: 1:" in recv, recv
+    assert _PROFILE.msgqueue_recv_thread in recv, recv
+
+    if not _PROFILE.mq_sender_list:
+        # COUPLED: pre-v3.1.4 and v4.0.0-v4.0.1 fixture patches intentionally
+        # omit wait_mq_send because their kernel has no sender wait list.
+        assert recv_pairs["SendWait"] == "N/A", recv
+        _assert_clean_command_output(recv)
+        return
+
+    send = gdb.run(f"rtt messagequeue {_PROFILE.wait_msgqueue_send_name}", timeout=20)
+    send_pairs = _detail_pairs(send)
+    assert int(send_pairs["Entry"]) == max_msgs, send
+    assert send_pairs["ActiveNodes"] == str(max_msgs), send
+    assert send_pairs["FreeNodes"] == "0", send
+    assert (
+        send_pairs["Consistency"] == f"ok (entry={max_msgs}, free=0, max={max_msgs})"
+    ), send
+    assert "SendWait: 1:" in send, send
+    assert _PROFILE.msgqueue_send_thread in send, send
+    _assert_clean_command_output(recv)
+    _assert_clean_command_output(send)
 
 
 def test_rtt_mempool_detail_shows_block_diagnostics(gdb):
@@ -512,6 +675,16 @@ def test_rtt_mempool_detail_shows_block_diagnostics(gdb):
     assert "[gdr] error:" not in output, output
 
 
+def test_rtt_mempool_detail_shows_waiters(gdb):
+    """Memory-pool detail includes the blocking-thread relation."""
+    output = gdb.run(f"rtt mempool {_PROFILE.wait_mempool_name}", timeout=20)
+    assert "Free: 0" in output, output
+    assert "FreeCountCheck: ok (0)" in output, output
+    assert "Waiters: 1:" in output, output
+    assert _PROFILE.mempool_waiter_thread in output, output
+    _assert_clean_command_output(output)
+
+
 def test_rtt_timer_detail_shows_fixture_timer(gdb):
     """``rtt timer <name>`` renders the fixture timer's callback symbol."""
     output = gdb.run(f"rtt timer {_PROFILE.timer_name}", timeout=20)
@@ -522,9 +695,38 @@ def test_rtt_timer_detail_shows_fixture_timer(gdb):
         "State:",
         "Callback:",
         "Parameter:",
+        "KernelTick:",
+        "ExpiresIn:",
     ):
         assert label in output, output
     assert _PROFILE.timer_name in output
+    assert "Mode: periodic" in output, output
+    assert "TimerType: soft" in output, output
+    assert "Callback: <test_timer_timeout" in output, output
+    assert "Parameter: N/A" in output, output
+    kernel_tick = next(
+        line.split(":", 1)[1].strip()
+        for line in output.splitlines()
+        if line.startswith("KernelTick:")
+    )
+    assert kernel_tick.isdecimal(), output
+    state = next(
+        line.split(":", 1)[1].strip().lower()
+        for line in output.splitlines()
+        if line.startswith("State:")
+    )
+    expires_in = next(
+        line.split(":", 1)[1].strip()
+        for line in output.splitlines()
+        if line.startswith("ExpiresIn:")
+    )
+    # QEMU keeps advancing between commands. Assert the dynamic contract, not
+    # a particular tick snapshot; an inactive timer legitimately reports N/A.
+    if state == "inactive":
+        assert expires_in == "N/A", output
+    else:
+        assert expires_in.isdecimal() and int(expires_in) >= 0, output
+    _assert_clean_command_output(output)
 
 
 def test_rtt_detail_reports_missing_objects(gdb):

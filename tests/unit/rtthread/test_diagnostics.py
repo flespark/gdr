@@ -43,6 +43,7 @@ def test_timer_detail_shows_parameter(monkeypatch):
 
     assert pairs["Parameter"] == "0x3000"
     assert pairs["Callback"] == "0x2000"
+    assert pairs["TimerType"] == "hard"
 
 
 def test_mailbox_detail_without_raw_value_omits_slots():
@@ -88,7 +89,7 @@ def test_mailbox_detail_validates_offsets_and_walks_slots(monkeypatch):
     assert pairs["MsgPool"] == "0x8000"
     assert pairs["Slot[1]"] == "0x1"
     assert pairs["Slot[2]"] == "0x1"
-    assert "OffsetCheck" not in pairs
+    assert pairs["OffsetCheck"] == "ok"
     assert read_calls == [(0x8000 + 1 * 4, 4), (0x8000 + 2 * 4, 4)]
 
 
@@ -110,6 +111,22 @@ def test_mailbox_detail_reports_out_of_range_offsets(monkeypatch):
     assert "OffsetCheck" in pairs
     assert "out_offset 4 >= size 4" in pairs["OffsetCheck"]
     assert "entry 8 > size 4" in pairs["OffsetCheck"]
+
+
+def test_mailbox_detail_reports_unavailable_slot_memory(monkeypatch):
+    """An unreadable message pool preserves the offset verdict and slot status."""
+    mailbox = Mailbox(name="input", entry=1, size=4, address=0x1000)
+    layout = KernelLayout(
+        structs={"struct rt_mailbox": StructLayout("struct rt_mailbox")}
+    )
+    monkeypatch.setattr(detail, "read_field", lambda _v, _sl, _f: None)
+    monkeypatch.setattr(detail, "read_int", lambda field: field)
+
+    pairs = dict(detail.mailbox_detail(mailbox, object(), layout))
+
+    assert pairs["OffsetCheck"] == "ok"
+    assert pairs["MsgPool"] == "N/A"
+    assert pairs["SlotCheck"] == "N/A"
 
 
 def test_messagequeue_detail_validates_node_counts(monkeypatch):
@@ -160,6 +177,7 @@ def test_messagequeue_detail_validates_node_counts(monkeypatch):
     pairs = dict(detail.messagequeue_detail(msgqueue, object(), layout))
 
     assert pairs["Consistency"] == "ok (entry=2, free=6, max=8)"
+    assert pairs["ActiveNodes"] == "2"
     assert pairs["FreeNodes"] == "6"
     assert "Msg[0]" in pairs
     assert "Msg[1]" in pairs
@@ -193,6 +211,23 @@ def test_messagequeue_detail_flags_entry_mismatch(monkeypatch):
 
     assert pairs["Consistency"].startswith("mismatch:")
     assert "entry 5 != active nodes 1" in pairs["Consistency"]
+
+
+def test_messagequeue_detail_reports_unavailable_list_pointers(monkeypatch):
+    """Unreadable active/free heads are not misreported as empty lists."""
+    msgqueue = MessageQueue(name="work", entry=0, max_msgs=8, address=0x2000)
+    layout = KernelLayout(
+        structs={"struct rt_messagequeue": StructLayout("struct rt_messagequeue")}
+    )
+    monkeypatch.setattr(detail, "read_field", lambda _v, _sl, _f: None)
+    monkeypatch.setattr(detail, "read_int", lambda field: field)
+    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+
+    pairs = dict(detail.messagequeue_detail(msgqueue, object(), layout))
+
+    assert pairs["ActiveNodes"] == "N/A"
+    assert pairs["FreeNodes"] == "N/A"
+    assert pairs["Consistency"] == "N/A (message-list pointers unavailable)"
 
 
 def test_messagequeue_consistency_verdict():

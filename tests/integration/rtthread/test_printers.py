@@ -3,6 +3,10 @@
 Uses the stable convenience functions (``$gdr_task``, ``$gdr_object``) to
 obtain struct values, then verifies ``p`` output contains the folded
 format ``TypeName(field=value, ...)`` with the expected summary fields.
+
+COUPLED: fixture object names, timer flags and owner relationships come from
+the matching patch in ``ci/rt-thread/patches/<target>/<version>/``. Changes to
+those patches require reviewing these assertions together.
 """
 
 from __future__ import annotations

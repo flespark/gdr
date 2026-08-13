@@ -37,11 +37,11 @@ All notable changes to GDR are documented in this file.
   the current task's real `oncpu`, and the CPU-0-to-`-1` coercion bug is
   fixed so CPU 0 is a valid value.
 - Object detail diagnostics: thread detail shows `error`/`remaining_tick`,
-  timer detail shows the callback `parameter`, message queues walk their
-  message/free chains and verify `entry`/`max_msgs`, mailboxes list FIFO
-  slots and validate ring offsets, and memory pools report pool range, block
-  alignment, and free-list consistency. All walks are bounded and
-  corruption-guarded.
+  timer detail shows the callback `parameter` and tick-based expiry,
+  IPC/mempool detail includes policy and waiter relationships, message queues
+  walk and count their message/free chains, mailboxes list FIFO slots with a
+  stable offset verdict, and memory pools report pool range, block alignment,
+  and free-list consistency. All walks are bounded and corruption-guarded.
 - RTOS-neutral profile-driven QEMU/GDB harness with dynamic GDB ports,
   session-local logs, persistent GDB connections, and actionable boot errors.
 - FreeRTOS package and a B-L475E-IOT01A QEMU fixture built
@@ -61,6 +61,10 @@ All notable changes to GDR are documented in this file.
 
 - Completed RT-Thread command routing and object tables for events, mailboxes,
   message queues, and memory pools.
+- Singular RT-Thread detail commands now retain policy, waiter and consistency
+  diagnostics even when the inspected object has no error or active waiter;
+  unavailable raw-memory fields are reported explicitly instead of silently
+  disappearing.
 
 ## [2026.01] - 2026-07-29
 

@@ -230,16 +230,28 @@ kernel-memory walks and consistency checks, all bounded and corruption-guarded
 so a bad pointer cannot hang GDB:
 
 - Thread detail keeps `error`/`remaining_tick` out of the RT-Thread task table.
-- Timer detail adds the callback `parameter` pointer.
+- IPC detail repeats the decoded `FIFO`/`PRIO` policy and bounded waiter
+  summaries (`Waiters`, or separate `RecvWait`/`SendWait` fields) so a
+  singular detail command explains blocking relationships without requiring a
+  separate table command. Event detail additionally expands each waiter with
+  its `event_set` mask and `event_info` mode.
+- Timer detail adds the callback `parameter` pointer, a `KernelTick` snapshot,
+  and wrap-safe `ExpiresIn` for active timers.
 - Message-queue detail walks the active chain from `msg_queue_head`, decodes
   each node's payload (payload starts after the one-pointer header), walks the
   free chain from `msg_queue_free`, and cross-checks `entry`, active node
   count, free node count, and `max_msgs`.
 - Mailbox detail reads the FIFO message slots starting at `out_offset` and
-  validates `in_offset`/`out_offset`/`entry` against `size`.
+  always reports an `OffsetCheck` verdict while validating
+  `in_offset`/`out_offset`/`entry` against `size`.
 - Memory-pool detail shows `start_address`/`size`/`block_list`, verifies block
-  alignment, and compares the traversed free-list length against the cached
-  `block_free_count`.
+  alignment, compares the traversed free-list length against the cached
+  `block_free_count`, and includes the pool's waiter summary.
+
+Raw-memory diagnostic fields use stable labels: unavailable pointers are
+rendered as `N/A`, while an available and consistent structure reports an
+explicit `ok` verdict. Message-list counts likewise distinguish an empty list
+from an unavailable list pointer during manual smoke testing.
 
 These builders receive the raw `gdb.Value` plus the active layout, so field
 paths and version conditionals stay in the adapter.

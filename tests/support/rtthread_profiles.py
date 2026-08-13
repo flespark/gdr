@@ -1,4 +1,10 @@
-"""Independent RT-Thread fixture expectations for QEMU integration tests."""
+"""Independent RT-Thread fixture expectations for QEMU integration tests.
+
+COUPLED: the canonical names, blocking-thread relationships, capacities and
+version capabilities below describe the matching fixture patches under
+``ci/rt-thread/patches/<target>/<version>/``. Keep this contract synchronized
+with those patches, but do not derive it from production layout metadata.
+"""
 
 from __future__ import annotations
 

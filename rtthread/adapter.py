@@ -401,6 +401,49 @@ def _waiter_summary(
     return f"{len(names)}:{','.join(names)}"
 
 
+def _waiter_detail_pairs(
+    value: gdb.Value,
+    layout: KernelLayout,
+    struct_name: str,
+    wait_lists: tuple[tuple[str, str], ...],
+) -> list[tuple[str, str]]:
+    """Build stable waiter fields for one object's detail view."""
+    struct_layout = layout.structs.get(struct_name)
+    return [
+        (
+            label,
+            _waiter_summary(
+                value,
+                layout,
+                struct_name,
+                field_name,
+                available=(
+                    struct_layout is not None and field_name in struct_layout.fields
+                ),
+            ),
+        )
+        for label, field_name in wait_lists
+    ]
+
+
+def _ipc_detail_pairs(
+    value: gdb.Value,
+    layout: KernelLayout,
+    struct_name: str,
+    wait_lists: tuple[tuple[str, str], ...],
+) -> list[tuple[str, str]]:
+    """Build scheduling-policy and waiter diagnostics for an IPC object."""
+    struct_layout = layout.structs.get(struct_name)
+    flag = (
+        read_int(read_field(value, struct_layout, "flag"))
+        if struct_layout is not None
+        else None
+    )
+    return [("Policy", _ipc_policy(flag))] + _waiter_detail_pairs(
+        value, layout, struct_name, wait_lists
+    )
+
+
 def _event_mode(info: int) -> str:
     """Decode RT-Thread event wait-mode bits for a waiter's event_info."""
     modes = []
@@ -424,6 +467,12 @@ def _event_detail_with_waiters(
     it.
     """
     pairs = diagnostics.event_detail(value_to_event(value, layout))
+    pairs += _ipc_detail_pairs(
+        value,
+        layout,
+        "struct rt_event",
+        (("Waiters", "suspend_thread"),),
+    )
     thread_layout = layout.structs.get("struct rt_thread")
     event_layout = layout.structs.get("struct rt_event")
     if thread_layout is None or event_layout is None:
@@ -447,7 +496,6 @@ def _event_detail_with_waiters(
 _DETAIL_BUILDERS: dict[str, tuple[Callable, Callable]] = {
     "semaphore": (value_to_semaphore, diagnostics.semaphore_detail),
     "mutex": (value_to_mutex, diagnostics.mutex_detail),
-    "event": (value_to_event, diagnostics.event_detail),
     "mailbox": (value_to_mailbox, diagnostics.mailbox_detail),
     "msgqueue": (value_to_messagequeue, diagnostics.messagequeue_detail),
     "mempool": (value_to_mempool, diagnostics.memorypool_detail),
@@ -769,10 +817,24 @@ class RtThreadAdapter(RtosAdapter):
                 pairs=diagnostics.thread_detail(value_to_thread(value, self.layout))
             )
         if kind == "timer":
+            current_tick = get_tick()
             for value in iter_timers(self.layout):
                 timer = value_to_timer(value, self.layout)
                 if timer.name == name:
-                    return ObjectDetail(pairs=diagnostics.timer_detail(timer))
+                    pairs = diagnostics.timer_detail(timer)
+                    pairs += [
+                        ("KernelTick", format_optional_int(current_tick)),
+                        (
+                            "ExpiresIn",
+                            (
+                                _timer_expires_in(timer.timeout_tick, current_tick)
+                                or "N/A"
+                            )
+                            if timer.active
+                            else "N/A",
+                        ),
+                    ]
+                    return ObjectDetail(pairs=pairs)
             return ObjectDetail(found=False)
 
         type_code = resolve_object_type_code(kind, self.layout)
@@ -791,8 +853,30 @@ class RtThreadAdapter(RtosAdapter):
         if kind in ("mailbox", "msgqueue", "mempool"):
             # Advanced detail walks kernel memory for slots/nodes/free-list
             # validation, so it needs the raw value plus the active layout.
-            return ObjectDetail(pairs=builder(converted, value, self.layout))
-        return ObjectDetail(pairs=builder(converted))
+            pairs = builder(converted, value, self.layout)
+        else:
+            pairs = builder(converted)
+        struct_name = {
+            "semaphore": "struct rt_semaphore",
+            "mutex": "struct rt_mutex",
+            "mailbox": "struct rt_mailbox",
+            "msgqueue": "struct rt_messagequeue",
+        }.get(kind)
+        if struct_name is not None:
+            wait_lists = (
+                (("RecvWait", "suspend_thread"), ("SendWait", "suspend_sender_thread"))
+                if kind in ("mailbox", "msgqueue")
+                else (("Waiters", "suspend_thread"),)
+            )
+            pairs += _ipc_detail_pairs(value, self.layout, struct_name, wait_lists)
+        elif kind == "mempool":
+            pairs += _waiter_detail_pairs(
+                value,
+                self.layout,
+                "struct rt_mempool",
+                (("Waiters", "suspend_thread"),),
+            )
+        return ObjectDetail(pairs=pairs)
 
     def iter_tasks(self):
         yield from iter_threads(self.layout)

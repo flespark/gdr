@@ -1,4 +1,9 @@
-"""RT-Thread QEMU launch profiles kept separate from fixture assertions."""
+"""RT-Thread QEMU launch profiles kept separate from fixture assertions.
+
+COUPLED: each target/version selected here must have a corresponding fixture
+patch set under ``ci/rt-thread/patches/`` and a matching expectation profile in
+``tests/support/rtthread_profiles.py``.
+"""
 
 from __future__ import annotations
 

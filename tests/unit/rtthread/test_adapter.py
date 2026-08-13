@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import rtthread.adapter as adapter_module
-from gdr.layout import KernelLayout, StructLayout
+from gdr.layout import KernelLayout, StructField, StructLayout
 from rtthread.adapter import Event, Mailbox, MemoryPool, MessageQueue, Timer
 
 
@@ -296,6 +296,8 @@ def test_object_detail_ipc_kinds_use_their_converter_and_builder(
             )
         },
     )
+    monkeypatch.setattr(adapter_module, "_ipc_detail_pairs", lambda *_args: [])
+    monkeypatch.setattr(adapter_module, "_waiter_detail_pairs", lambda *_args: [])
 
     detail = adapter.object_detail(kind, "obj")
 
@@ -340,6 +342,66 @@ def test_event_detail_appends_waiter_conditions(monkeypatch):
         ("Waiter: t1", "set=0x3 mode=AND"),
         ("Waiter: t2", "set=0x1 mode=OR|CLEAR"),
     ]
+
+
+def test_ipc_detail_pairs_include_policy_and_waiters(monkeypatch):
+    """Singular IPC detail reuses table policy and waiter diagnostics."""
+    layout = KernelLayout(
+        structs={
+            "struct rt_semaphore": StructLayout(
+                "struct rt_semaphore",
+                fields={
+                    "flag": StructField("flag", ("flag",)),
+                    "suspend_thread": StructField(
+                        "suspend_thread", ("suspend_thread",)
+                    ),
+                },
+            )
+        }
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "read_field",
+        lambda _value, _layout, field: 1 if field == "flag" else None,
+    )
+    monkeypatch.setattr(adapter_module, "read_int", lambda value: value)
+    monkeypatch.setattr(
+        adapter_module,
+        "suspend_thread_names",
+        lambda _value, _layout, _struct, _field: ["worker4"],
+    )
+
+    pairs = dict(
+        adapter_module._ipc_detail_pairs(
+            object(),
+            layout,
+            "struct rt_semaphore",
+            (("Waiters", "suspend_thread"),),
+        )
+    )
+
+    assert pairs == {"Policy": "PRIO", "Waiters": "1:worker4"}
+
+
+def test_timer_detail_includes_tick_diagnostics(monkeypatch):
+    """Timer detail reports the tick snapshot used for its expiry calculation."""
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+    value = object()
+    timer = Timer(name="heartbeat", active=True, timeout_tick=125)
+    monkeypatch.setattr(adapter_module, "iter_timers", lambda _layout: iter((value,)))
+    monkeypatch.setattr(adapter_module, "value_to_timer", lambda _v, _l: timer)
+    monkeypatch.setattr(adapter_module, "get_tick", lambda: 100)
+    monkeypatch.setattr(
+        adapter_module.diagnostics,
+        "timer_detail",
+        lambda _timer: [("Name", "heartbeat")],
+    )
+
+    detail = adapter.object_detail("timer", "heartbeat")
+
+    assert detail is not None
+    assert dict(detail.pairs)["KernelTick"] == "100"
+    assert dict(detail.pairs)["ExpiresIn"] == "25"
 
 
 def test_event_mode_decodes_and_or_clear_bits():

@@ -122,13 +122,14 @@ IPC 与内存池列表以 `count:names` 摘要显示等待线程：信号量、�
 
 单个对象的详情也可以通过命令查看：`rtt <object> <name>`
 （如 `rtt semaphore my_sem`、`rtt thread worker1`），以纵向 `Key: Value`
-呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。事件详情还会
-把每个等待线程与它的 `event_set` 掩码和 AND/OR/CLEAR 模式关联，帮助解释
-当前事件集为何没有唤醒它。detail 还包含超越列表列的底层诊断：线程详情
-显示 `Error`/`RemainingTick`，定时器详情显示回调 `Parameter`，消息队列遍历
-消息链与空闲链以校验 `entry`/`max_msgs`，邮箱列出 FIFO 消息槽并校验环形
-偏移，内存池报告池范围、块对齐与空闲链表一致性。所有遍历都有界且带损坏
-保护。
+呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。IPC 详情会显示
+解码后的 `FIFO`/`PRIO` 策略和等待者摘要；邮箱和消息队列会区分接收与发送
+等待。事件详情还会把每个等待线程与它的 `event_set` 掩码和 AND/OR/CLEAR
+模式关联，帮助解释当前事件集为何没有唤醒它。detail 还包含超越列表列的
+底层诊断：线程详情显示 `Error`/`RemainingTick`，定时器详情显示 `Parameter`
+及 `KernelTick`/`ExpiresIn`，消息队列遍历并统计消息链与空闲链，邮箱列出 FIFO
+消息槽并给出稳定的偏移检查结果，内存池报告池范围、块对齐、空闲链表一致性
+及等待者。所有遍历都有界且带损坏保护。
 
 ## 便捷函数
 
@@ -167,6 +168,17 @@ $3 = Thread(name="worker", stat=READY, current_priority=5)
 
 RT-Thread 3.1.x 仅在 Cortex-A9 QEMU BSP 上验证。上游 QEMU RV64 BSP
 从 RT-Thread 4.0.4 起提供，因此 RV64 验证覆盖 4.0.4 到 4.1.1。
+
+若已有编译好的 RT-Thread fixture，可设置 `RT_THREAD_FIXTURE_DIR` 跳过
+RT-Thread 编译。目录布局为
+`<base>/<target>/<version>/rtthread_qemu.elf`；RV64 还需
+`rtthread_qemu.bin`。基目录中缺少 target 或 version fixture 时只会警告并
+跳过，因此可以使用不完整的本地缓存：
+
+```bash
+RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh rv64
+```
 
 ## 维护说明（COUPLED）
 

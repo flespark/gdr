@@ -136,7 +136,7 @@ def timer_detail(timer: Timer) -> list[tuple[str, str]]:
     return _common_pairs(timer) + [
         ("State", "active" if timer.active else "inactive"),
         ("Mode", "periodic" if timer.periodic else "one-shot"),
-        ("Type", "soft" if timer.soft_timer else "hard"),
+        ("TimerType", "soft" if timer.soft_timer else "hard"),
         ("InitTick", str(timer.init_tick)),
         ("TimeoutTick", str(timer.timeout_tick)),
         ("Callback", _symbol_or_hex(timer.callback)),
@@ -184,21 +184,24 @@ def _mailbox_slot_pairs(
 ) -> list[tuple[str, str]]:
     """Walk mailbox slots in FIFO order and validate the ring offsets."""
     msg_pool = _read_ptr(value, layout, "struct rt_mailbox", "msg_pool")
-    if msg_pool is None:
-        return [("SlotCheck", "N/A")]
-    ptrsize, endian = _arch()
     checks: list[str] = []
+    if mailbox.size <= 0:
+        checks.append(f"size {mailbox.size} must be positive")
     if mailbox.in_offset >= mailbox.size:
         checks.append(f"in_offset {mailbox.in_offset} >= size {mailbox.size}")
     if mailbox.out_offset >= mailbox.size:
         checks.append(f"out_offset {mailbox.out_offset} >= size {mailbox.size}")
     if mailbox.entry > mailbox.size:
         checks.append(f"entry {mailbox.entry} > size {mailbox.size}")
-    pairs: list[tuple[str, str]] = []
-    if checks:
-        pairs.append(("OffsetCheck", "; ".join(checks)))
-    pairs.append(("MsgPool", hex(msg_pool)))
-    for i in range(mailbox.entry):
+    pairs: list[tuple[str, str]] = [
+        ("OffsetCheck", "; ".join(checks) if checks else "ok")
+    ]
+    pairs.append(("MsgPool", hex(msg_pool) if msg_pool is not None else "N/A"))
+    if msg_pool is None:
+        pairs.append(("SlotCheck", "N/A"))
+        return pairs
+    ptrsize, endian = _arch()
+    for i in range(mailbox.entry if mailbox.size > 0 else 0):
         slot = (mailbox.out_offset + i) % mailbox.size
         pairs.append(
             (f"Slot[{slot}]", _read_slot(msg_pool + slot * ptrsize, ptrsize, endian))
@@ -247,15 +250,21 @@ def _messagequeue_node_pairs(
             pairs.append((f"Msg[{index}]", f"@{hex(node)} payload={payload}"))
     else:
         active = []
+    pairs.append(("ActiveNodes", str(len(active)) if head is not None else "N/A"))
 
     if free is not None:
         free_nodes = _walk_list(free, ptrsize, endian, MAX_TRAVERSAL_COUNT)
         pairs.append(("FreeNodes", str(len(free_nodes))))
     else:
         free_nodes = []
+        pairs.append(("FreeNodes", "N/A"))
 
-    consistency = _messagequeue_consistency(
-        msgqueue.entry, len(active), len(free_nodes), msgqueue.max_msgs
+    consistency = (
+        _messagequeue_consistency(
+            msgqueue.entry, len(active), len(free_nodes), msgqueue.max_msgs
+        )
+        if head is not None and free is not None
+        else "N/A (message-list pointers unavailable)"
     )
     pairs.append(("Consistency", consistency))
     return pairs

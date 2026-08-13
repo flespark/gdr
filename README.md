@@ -135,14 +135,16 @@ adapter-provided tables.
 Single-object detail is also available as a command: `rtt <object> <name>`
 (e.g. `rtt semaphore my_sem`, `rtt thread worker1`). It prints a vertical
 `Key: Value` view of one object without disturbing `$gdr_object()`, which
-continues to return the raw `gdb.Value`. Event detail additionally pairs each
-waiter with its `event_set` mask and AND/OR/CLEAR mode so you can see why the
-current event set did not wake it. Detail goes beyond the list columns with
-kernel-memory diagnostics: thread detail shows `Error`/`RemainingTick`, timer
-detail shows the callback `Parameter`, message queues walk their message and
-free chains to verify `entry`/`max_msgs`, mailboxes list their FIFO slots and
-validate ring offsets, and memory pools report pool range, block alignment,
-and free-list consistency. Every walk is bounded and corruption-guarded.
+continues to return the raw `gdb.Value`. IPC detail includes the decoded
+`FIFO`/`PRIO` policy and waiter summaries; mailboxes and message queues split
+receiver and sender waits. Event detail additionally pairs each waiter with
+its `event_set` mask and AND/OR/CLEAR mode so you can see why the current event
+set did not wake it. Detail goes beyond the list columns with kernel-memory
+diagnostics: thread detail shows `Error`/`RemainingTick`, timer detail shows
+`Parameter` plus `KernelTick`/`ExpiresIn`, message queues walk and count their
+message/free chains, mailboxes list FIFO slots with an explicit offset verdict,
+and memory pools report pool range, block alignment, free-list consistency and
+waiters. Every walk is bounded and corruption-guarded.
 
 ## Convenience functions
 
@@ -183,6 +185,17 @@ presence at startup.
 RT-Thread 3.1.x is verified on the Cortex-A9 QEMU BSP only. The upstream
 QEMU RV64 BSP starts at RT-Thread 4.0.4, so RV64 verification covers 4.0.4
 through 4.1.1.
+
+To rerun a QEMU matrix from an existing fixture cache without compiling
+RT-Thread, set `RT_THREAD_FIXTURE_DIR`. Its layout is
+`<base>/<target>/<version>/rtthread_qemu.elf`, plus `rtthread_qemu.bin` for
+RV64. Missing target/version artifacts are reported as warnings and skipped,
+which makes partial local caches usable:
+
+```bash
+RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh rv64
+```
 
 ## Maintenance notes (COUPLED)
 
