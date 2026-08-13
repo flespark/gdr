@@ -10,29 +10,16 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.layout import FreeRtosLayout
-from gdr.gdb_bridge import lookup_symbol, read_int, warn
-
-
-def _safe_int(value) -> int | None:
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
-def _addr(value) -> int:
-    try:
-        address = value.address
-        return _safe_int(address) or 0
-    except Exception:
-        return 0
-
-
-def _deref(pointer):
-    try:
-        return pointer.dereference() if pointer is not None and int(pointer) else None
-    except Exception:
-        return None
+from gdr.constants import MAX_TRAVERSAL_COUNT
+from gdr.gdb_bridge import (
+    lookup_symbol,
+    read_int,
+    safe_dereference,
+    safe_int,
+    value_address,
+    warn,
+)
+from gdr.layout import read_field
 
 
 def _owner_task(pointer):
@@ -53,38 +40,36 @@ def _array_item(value, index):
         return None
 
 
-def _list_value(name: str, index: int | None = None):
-    value = lookup_symbol(name)
-    if value is None:
-        return None
-    return _array_item(value, index) if index is not None else value
-
-
-def _iter_list(head, max_count: int = 4096) -> Iterator:
+def _iter_list(
+    head, layout: FreeRtosLayout, max_count: int = MAX_TRAVERSAL_COUNT
+) -> Iterator:
     """Yield TCBs from a List_t, stopping on corruption or a bounded count."""
     if head is None:
         return
     try:
-        end = head["xListEnd"]
-        end_addr = _addr(end)
-        node = end["pxNext"]
+        list_layout = layout.structs["struct xLIST"]
+        end = read_field(head, list_layout, "end")
+        end_addr = value_address(end)
+        mini_layout = layout.structs["struct xMINI_LIST_ITEM"]
+        node = read_field(end, mini_layout, "next")
         seen: set[int] = set()
         for _ in range(max_count):
-            node_addr = _safe_int(node)
+            node_addr = safe_int(node)
             if not node_addr or node_addr == end_addr:
                 return
             if node_addr in seen:
                 warn(f"FreeRTOS list traversal stopped at repeated node {node_addr:#x}")
                 return
             seen.add(node_addr)
-            item = _deref(node)
+            item = safe_dereference(node)
             if item is None:
                 warn(f"FreeRTOS list traversal stopped at invalid node {node_addr:#x}")
                 return
-            owner = _owner_task(item["pvOwner"])
+            item_layout = layout.structs["struct xLIST_ITEM"]
+            owner = _owner_task(read_field(item, item_layout, "owner"))
             if owner is not None:
                 yield owner
-            node = item["pxNext"]
+            node = read_field(item, item_layout, "next")
         warn(f"FreeRTOS list traversal truncated after {max_count} nodes")
     except Exception:
         warn("FreeRTOS list traversal stopped because list data is unreadable")
@@ -109,7 +94,7 @@ def _ready_heads(layout: FreeRtosLayout) -> Iterator:
 def _head(name: str, layout: FreeRtosLayout):
     value = lookup_symbol(layout.lists[name])
     if name in ("delayed_current", "delayed_overflow"):
-        return _deref(value)
+        return safe_dereference(value)
     return value
 
 
@@ -117,7 +102,7 @@ def iter_tasks(layout: FreeRtosLayout) -> Iterator[tuple[object, str, int | None
     """Yield ``(TCB, list-state, core)`` exactly once per target address."""
     seen: set[int] = set()
     sources: list[tuple[Iterator, str]] = []
-    sources.extend((_iter_list(head), "Ready") for head in _ready_heads(layout))
+    sources.extend((_iter_list(head, layout), "Ready") for head in _ready_heads(layout))
     for key, state in (
         ("delayed_1", "Blocked"),
         ("delayed_2", "Blocked"),
@@ -129,12 +114,12 @@ def iter_tasks(layout: FreeRtosLayout) -> Iterator[tuple[object, str, int | None
     ):
         head = _head(key, layout)
         if head is not None:
-            sources.append((_iter_list(head), state))
+            sources.append((_iter_list(head, layout), state))
     current = current_tasks(layout)
     current_addrs = {address: core for core, address in current}
     for iterator, state in sources:
         for task in iterator:
-            address = _addr(task)
+            address = value_address(task)
             if not address or address in seen:
                 continue
             seen.add(address)
@@ -148,12 +133,12 @@ def current_tasks(layout: FreeRtosLayout) -> list[tuple[int, int]]:
         result = []
         for core in range(layout.config.number_of_cores):
             pointer = _array_item(value, core)
-            task = _deref(pointer)
+            task = safe_dereference(pointer)
             if task is not None:
-                result.append((core, _addr(task)))
+                result.append((core, value_address(task)))
         return result
-    task = _deref(lookup_symbol("pxCurrentTCB"))
-    return [(0, _addr(task))] if task is not None else []
+    task = safe_dereference(lookup_symbol("pxCurrentTCB"))
+    return [(0, value_address(task))] if task is not None else []
 
 
 def system_value(name: str) -> int | None:
@@ -165,6 +150,6 @@ def list_count(name: str, layout: FreeRtosLayout) -> int | None:
     if head is None:
         return None
     try:
-        return read_int(head["uxNumberOfItems"])
+        return read_int(read_field(head, layout.structs["struct xLIST"], "count"))
     except Exception:
         return None

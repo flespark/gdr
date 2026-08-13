@@ -104,7 +104,6 @@ MAX_SUSPEND_THREADS = 256
 
 def iter_suspend_threads(
     head_value: gdb.Value,
-    kl: KernelLayout,  # noqa: ARG001
 ) -> Iterator[gdb.Value]:
     """Iterate threads linked through one wait-list head.
 
@@ -146,7 +145,7 @@ def suspend_thread_names(
     if head is None:
         return []
     names: list[str] = []
-    for thread in iter_suspend_threads(head, kl):
+    for thread in iter_suspend_threads(head):
         name = read_cstring(read_field(thread, thread_layout, "name"))
         names.append(name or "<invalid>")
     return names

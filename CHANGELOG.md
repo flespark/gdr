@@ -8,6 +8,11 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- Architecture governance: shared formatting/version helpers, adapter-owned
+  task tables, layout-driven FreeRTOS navigation, and RT-Thread diagnostics
+  separated from command routing. The public GDB command and raw-value APIs
+  remain unchanged; FreeRTOS task columns now reflect target capabilities.
+
 - Width-aware ASCII table rendering: lists probe the current GDB/terminal
   width and shrink only marked elastic text columns (`Name`/`Owner`/`Waiters`/
   `Callback`/`Entry`) with two-dot truncation. The column set never changes
@@ -39,12 +44,12 @@ All notable changes to GDR are documented in this file.
   corruption-guarded.
 - RTOS-neutral profile-driven QEMU/GDB harness with dynamic GDB ports,
   session-local logs, persistent GDB connections, and actionable boot errors.
-- FreeRTOS Phase 1 package and a B-L475E-IOT01A QEMU fixture built
+- FreeRTOS package and a B-L475E-IOT01A QEMU fixture built
   from STM32CubeL4 v1.18.2 and its pinned FreeRTOS V10.3.1 submodule.
 - RTOS-neutral semantic adapter API with raw-value `$gdr_task`, `$gdr_tasks`,
   and `$gdr_object(kind, name)` convenience functions. The `gdr` command is
   limited to `init` and `help`.
-- FreeRTOS Phase 2 version/config probes, DWARF task layouts, safe scheduler
+- FreeRTOS version/config probes, DWARF task layouts, safe scheduler
   navigation, and the RTOS-specific `freertos tasks/system` commands.
 - RT-Thread `rtthread` / `rtt` command tree for task, system, semaphore, mutex,
   timer, and IPC object output, with an `rtt help` command that lists supported

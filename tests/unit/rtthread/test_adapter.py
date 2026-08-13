@@ -5,12 +5,11 @@ from __future__ import annotations
 import pytest
 
 import rtthread.adapter as adapter_module
-from gdr.abstractions import Event, Mailbox, MemoryPool, MessageQueue, Timer
-from gdr.adapter_api import TaskSummary
 from gdr.layout import KernelLayout, StructLayout
+from rtthread.adapter import Event, Mailbox, MemoryPool, MessageQueue, Timer
 
 
-def test_task_summaries_read_current_task_once(monkeypatch):
+def test_task_table_reads_current_task_once(monkeypatch):
     """RT-Thread does not re-read the current task for every rendered row."""
     current_reads = 0
     converted: list[tuple[object, int]] = []
@@ -24,23 +23,27 @@ def test_task_summaries_read_current_task_once(monkeypatch):
 
     def summarize(value, current_address):
         converted.append((value, current_address))
-        return TaskSummary(name=f"task-{len(converted)}")
+        return (
+            adapter_module.Thread(name=f"task-{len(converted)}"),
+            "Ready",
+            None,
+        )
 
     monkeypatch.setattr(adapter_module, "get_current_thread", current_task)
     monkeypatch.setattr(adapter_module, "_get_addr", lambda _value: 0x1234)
     monkeypatch.setattr(adapter_module, "iter_threads", lambda _layout: iter(values))
-    monkeypatch.setattr(adapter, "_summarize_task", summarize)
+    monkeypatch.setattr(adapter, "_task_view", summarize)
 
-    summaries = list(adapter.iter_task_summaries())
+    table = adapter.task_table()
 
     assert current_reads == 1
-    assert [summary.name for summary in summaries] == ["task-1", "task-2", "task-3"]
+    assert [row[0] for row in table.rows] == ["task-1", "task-2", "task-3"]
     assert converted == [(value, 0x1234) for value in values]
 
 
 def test_smp_task_summary_uses_real_oncpu(monkeypatch):
     """The current task reports its actual CPU, not a hardcoded core 0."""
-    from gdr.abstractions import Thread
+    from rtthread.adapter import Thread
 
     current_value = object()
     current_thread = Thread(
@@ -56,16 +59,16 @@ def test_smp_task_summary_uses_real_oncpu(monkeypatch):
         adapter_module, "value_to_thread", lambda _value, _layout: current_thread
     )
 
-    summary = adapter._summarize_task(current_value, 0x2000)
+    thread, _state, current_core = adapter._task_view(current_value, 0x2000)
 
-    assert summary.current_core == 1
-    assert summary.oncpu == 1
-    assert summary.bind_cpu == 0
+    assert current_core == 1
+    assert thread.oncpu == 1
+    assert thread.bind_cpu == 0
 
 
 def test_up_task_summary_keeps_core_zero_marker(monkeypatch):
     """UP targets keep the current marker on core 0 without SMP fields."""
-    from gdr.abstractions import Thread
+    from rtthread.adapter import Thread
 
     current_thread = Thread(name="main", address=0x3000, oncpu=None, bind_cpu=None)
     adapter = adapter_module.RtThreadAdapter(KernelLayout())
@@ -73,11 +76,9 @@ def test_up_task_summary_keeps_core_zero_marker(monkeypatch):
         adapter_module, "value_to_thread", lambda _value, _layout: current_thread
     )
 
-    summary = adapter._summarize_task(object(), 0x3000)
+    _thread, _state, current_core = adapter._task_view(object(), 0x3000)
 
-    assert summary.current_core == 0
-    assert summary.oncpu is None
-    assert summary.bind_cpu is None
+    assert current_core == 0
 
 
 def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
@@ -246,7 +247,7 @@ def test_object_detail_task_uses_thread_builder(monkeypatch):
         adapter_module, "value_to_thread", lambda _value, _layout: thread
     )
     monkeypatch.setattr(
-        adapter_module.rt_detail, "thread_detail", lambda _thread: detail_pairs
+        adapter_module.diagnostics, "thread_detail", lambda _thread: detail_pairs
     )
 
     detail = adapter.object_detail("task", "worker1")

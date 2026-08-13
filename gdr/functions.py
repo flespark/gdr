@@ -7,8 +7,8 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
+from gdr.adapter_api import active
 from gdr.gdb_bridge import make_pointer_array, read_cstring
-from gdr.registry import active
 
 _registered_functions: set[str] = set()
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import rtthread.adapter as adapter
 from rtthread.layout import (
     RT_OBJECT_CLASS_THREAD,
     RtConfig,
@@ -46,7 +45,6 @@ def test_legacy_31_profile_uses_pre_null_object_codes_and_flags_field():
 
     assert resolve_object_type_code("semaphore", layout) == 1
     assert resolve_object_type_code("SEMAPHORE", layout) == 1
-    assert adapter._type_code(layout, "semaphore") == 1
 
 
 def test_resolve_object_type_code_accepts_display_and_semantic_names():

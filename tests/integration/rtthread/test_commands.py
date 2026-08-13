@@ -9,7 +9,9 @@ import pytest
 
 from tests.support.rtthread_profiles import get_rtthread_test_profile
 
-_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+_VERSION = os.environ.get(
+    "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+)
 _TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
 _PROFILE = get_rtthread_test_profile(_VERSION, _TARGET)
 
@@ -100,7 +102,7 @@ def test_rtt_threads_render_normalized_fixture_tasks(gdb, rtt_outputs):
     converted = gdb.run_python(
         """
 import gdb
-from gdr.registry import active
+from gdr.adapter_api import active
 from rtthread import adapter
 
 thread = gdb.parse_and_eval('$gdr_task("worker1")')

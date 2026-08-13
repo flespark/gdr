@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from .constants import MAX_TRAVERSAL_COUNT
 from .gdb_bridge import warn
 
 try:
@@ -37,7 +38,6 @@ class StructField:
             to reach the value.  E.g. ``("parent", "name")`` for a field
             inherited via an embedded ``parent`` struct, or ``("row", 0)``
             for the first element of an array member.
-        optional: ``True`` if the field may not exist (config-conditional).
         kind: Hint for the adapter layer: ``"string"``, ``"ptr"``, ``"list"``,
             ``"enum"``, ``"flags"``, or ``""`` (default, treated as int).
         summary: ``True`` if this field should appear in the one-line
@@ -54,7 +54,6 @@ class StructField:
 
     name: str
     path: tuple[str | int, ...]
-    optional: bool = False
     kind: str = ""
     summary: bool = False
     enum_map: dict[int, str] | None = None
@@ -75,10 +74,6 @@ class StructLayout:
     struct_name: str
     fields: dict[str, StructField] = field(default_factory=dict)
     display_name: str | None = None
-
-    def add(self, f_name: str, path: tuple[str | int, ...], **kw) -> None:
-        """Add a field with the given logical name and access path."""
-        self.fields[f_name] = StructField(f_name, path, **kw)
 
 
 @dataclass
@@ -241,7 +236,9 @@ def read_field(
 
 
 def iter_list(
-    head_value: gdb.Value, hook: ListHook, max_count: int = 4096
+    head_value: gdb.Value,
+    hook: ListHook,
+    max_count: int = MAX_TRAVERSAL_COUNT,
 ) -> Iterator[gdb.Value]:
     """Iterate a doubly-linked list, yielding container ``gdb.Value`` objects.
 

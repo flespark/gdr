@@ -1,8 +1,9 @@
 """RT-Thread single-object detail builders.
 
 Produces vertical ``(key, value)`` pairs for the ``rtt <object> <name>``
-detail commands. Field names and version conditionals stay in the RT-Thread
-adapter; the generic renderer in ``gdr.commands`` only prints the pairs.
+detail commands. It consumes intermediate models owned by ``adapter.py``;
+field names and version conditionals stay in the RT-Thread package, while the
+generic renderer in ``gdr.commands`` only prints the pairs.
 
 The advanced builders (mailbox slots, message-queue nodes, memory-pool free
 list) take the raw ``gdb.Value`` plus the active ``KernelLayout`` so they can
@@ -12,39 +13,37 @@ consistency checks alongside the readable summary.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from gdr.abstractions import (
-    Event,
-    Mailbox,
-    MemoryPool,
-    MessageQueue,
-    Mutex,
-    Semaphore,
-    Thread,
-    Timer,
-)
+from gdr.constants import MAX_TRAVERSAL_COUNT
+from gdr.formatting import format_optional_int, format_symbol_or_address
 from gdr.gdb_bridge import get_arch_info, lookup_symbol_at, read_bytes, read_int
 from gdr.layout import KernelLayout, read_field
 from rtthread.layout import ThreadState
+
+if TYPE_CHECKING:
+    from rtthread.adapter import (
+        Event,
+        Mailbox,
+        MemoryPool,
+        MessageQueue,
+        Mutex,
+        Semaphore,
+        Thread,
+        Timer,
+    )
 
 # RT-Thread message-queue node header: ``struct rt_mq_message`` embeds a
 # single ``next`` pointer before the payload. Verified on 3.1.0/3.1.5/4.0.5/
 # 4.1.1: the payload starts right after the one-pointer node header.
 _MQ_HEADER_POINTERS = 1
+
+
 # Bounds for any raw kernel-memory walk performed by detail diagnostics.
-_MAX_WALK = 4096
-
-
 def _symbol_or_hex(address: int) -> str:
     """Render an address as ``<symbol+0>`` when symbolised, else hex."""
     symbol = lookup_symbol_at(address) if address else None
-    return f"<{symbol}>" if symbol else hex(address)
-
-
-def _optional_int(value: int | None) -> str:
-    """Render an optional int as its value or ``N/A``."""
-    return str(value) if value is not None else "N/A"
+    return format_symbol_or_address(address, symbol)
 
 
 def _common_pairs(obj) -> list[tuple[str, str]]:
@@ -117,8 +116,8 @@ def thread_detail(thread: Thread) -> list[tuple[str, str]]:
         ("SP", hex(thread.sp)),
         ("Stack", hex(thread.stack_addr)),
         ("StackSize", str(thread.stack_size)),
-        ("Used", _optional_int(thread.stack_used)),
-        ("HighWater", _optional_int(thread.max_stack_used)),
+        ("Used", format_optional_int(thread.stack_used)),
+        ("HighWater", format_optional_int(thread.max_stack_used)),
         ("Entry", _symbol_or_hex(thread.entry)),
         # Error/remaining tick stay in detail; they must not widen the shared
         # task table.
@@ -227,7 +226,7 @@ def _messagequeue_node_pairs(
     """Walk the active and free message nodes and validate their counts.
 
     Nodes are ``struct rt_mq_message`` whose ``parent.next`` (the first
-    pointer) links to the next node; the payload follows the two-pointer
+    pointer) links to the next node; the payload follows the one-pointer
     header. Active nodes form the head→tail chain, free nodes the free chain.
     """
     ptrsize, endian = _arch()
@@ -239,7 +238,7 @@ def _messagequeue_node_pairs(
     ]
 
     if head is not None:
-        active = _walk_list(head, ptrsize, endian, _MAX_WALK)
+        active = _walk_list(head, ptrsize, endian, MAX_TRAVERSAL_COUNT)
         header_bytes = ptrsize * _MQ_HEADER_POINTERS
         payload_size = min(msgqueue.msg_size, 64)
         for index, node in enumerate(active[: max(msgqueue.max_msgs, 1)]):
@@ -250,7 +249,7 @@ def _messagequeue_node_pairs(
         active = []
 
     if free is not None:
-        free_nodes = _walk_list(free, ptrsize, endian, _MAX_WALK)
+        free_nodes = _walk_list(free, ptrsize, endian, MAX_TRAVERSAL_COUNT)
         pairs.append(("FreeNodes", str(len(free_nodes))))
     else:
         free_nodes = []

@@ -24,9 +24,8 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.table import format_table
-
-MAX_LIST_LEN = 4096
+from gdr.constants import DEFAULT_TERMINAL_WIDTH, MAX_CSTRING_LENGTH
+from gdr.formatting import format_table
 
 
 @dataclass(frozen=True)
@@ -46,6 +45,30 @@ def _ensure_gdb() -> None:
     """Raise RuntimeError if not running inside GDB."""
     if gdb is None:
         raise RuntimeError("not running inside GDB")
+
+
+def safe_int(value) -> int | None:
+    """Convert a GDB-like scalar to int, returning ``None`` on failure."""
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def value_address(value) -> int:
+    """Return a GDB-like value's address, or zero when it is unavailable."""
+    try:
+        return safe_int(value.address) or 0
+    except Exception:
+        return 0
+
+
+def safe_dereference(pointer):
+    """Dereference a non-null GDB-like pointer without propagating errors."""
+    try:
+        return pointer.dereference() if safe_int(pointer) else None
+    except Exception:
+        return None
 
 
 def get_arch_info() -> ArchInfo | None:
@@ -173,7 +196,9 @@ def read_int(value: gdb.Value | None) -> int | None:
         return None
 
 
-def read_cstring(value: gdb.Value | None, max_len: int = 256) -> str | None:
+def read_cstring(
+    value: gdb.Value | None, max_len: int = MAX_CSTRING_LENGTH
+) -> str | None:
     """Read a C string (``char*`` or ``char[]``) from a ``gdb.Value``.
 
     For ``char[]`` arrays, GDB auto-detects the null terminator; for
@@ -282,7 +307,7 @@ def _gdb_width() -> int | None:
 def _system_columns() -> int | None:
     """Return the detected terminal column count, or ``None`` when unknown."""
     try:
-        size = shutil.get_terminal_size(fallback=(120, 24))
+        size = shutil.get_terminal_size(fallback=(DEFAULT_TERMINAL_WIDTH, 24))
     except (OSError, ValueError):
         return None
     columns = size.columns
@@ -303,7 +328,7 @@ def terminal_width() -> int:
     gdb_width = _gdb_width()
     if gdb_width is not None:
         return gdb_width
-    return _system_columns() or 120
+    return _system_columns() or DEFAULT_TERMINAL_WIDTH
 
 
 def print_table(

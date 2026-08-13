@@ -18,6 +18,36 @@ class _FakeGdb:
         return self._output
 
 
+class _Pointer:
+    def __init__(self, address: int, value=None, *, broken: bool = False):
+        self.address = address
+        self.value = value
+        self.broken = broken
+
+    def __int__(self) -> int:
+        if self.broken:
+            raise RuntimeError("unreadable pointer")
+        return self.address
+
+    def dereference(self):
+        if self.broken:
+            raise RuntimeError("invalid memory")
+        return self.value
+
+
+def test_safe_value_helpers_contain_unreadable_gdb_values():
+    value = object()
+    pointer = _Pointer(0x1000, value)
+
+    assert bridge.safe_int(pointer) == 0x1000
+    assert bridge.safe_int(_Pointer(1, broken=True)) is None
+    assert bridge.value_address(type("Value", (), {"address": pointer})()) == 0x1000
+    assert bridge.value_address(object()) == 0
+    assert bridge.safe_dereference(pointer) is value
+    assert bridge.safe_dereference(_Pointer(0)) is None
+    assert bridge.safe_dereference(_Pointer(1, broken=True)) is None
+
+
 class _TableGdb:
     """Minimal GDB stand-in that records complete writes."""
 

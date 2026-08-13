@@ -1,10 +1,16 @@
-"""Unit tests for RT-Thread single-object detail builders."""
+"""Unit tests for RT-Thread single-object diagnostics."""
 
 from __future__ import annotations
 
-import rtthread.detail as detail
-from gdr.abstractions import Mailbox, MemoryPool, MessageQueue, Thread, Timer
+import rtthread.diagnostics as detail
 from gdr.layout import KernelLayout, StructLayout
+from rtthread.adapter import (
+    Mailbox,
+    MemoryPool,
+    MessageQueue,
+    Thread,
+    Timer,
+)
 from rtthread.layout import ThreadState
 
 

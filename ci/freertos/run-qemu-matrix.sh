@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and run the Phase 1 FreeRTOS QEMU closed-loop smoke test.
+# Build and run the FreeRTOS QEMU closed-loop smoke test.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

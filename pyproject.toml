@@ -89,9 +89,15 @@ addopts = "-ra"
 [tool.coverage.run]
 branch = true
 source = [
-    "gdr.abstractions",
+    "gdr.adapter_api",
     "gdr.commands",
-    "gdr.registry",
+    "gdr.constants",
+    "gdr.formatting",
+    "gdr.version",
+    "freertos.adapter",
+    "freertos.version",
+    "rtthread.diagnostics",
+    "rtthread.version",
 ]
 
 [tool.coverage.report]

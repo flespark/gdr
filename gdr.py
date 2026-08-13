@@ -110,8 +110,8 @@ def _setup_rtthread(version: str) -> None:
     Args:
         version: Full RT-Thread version string (e.g. ``"4.0.5"``).
     """
+    from gdr.adapter_api import is_initialized, register
     from gdr.functions import register_functions
-    from gdr.registry import is_initialized, register
     from rtthread.adapter import RtThreadAdapter
     from rtthread.commands import register_commands
     from rtthread.layout import build_layouts, detect_config
@@ -144,32 +144,14 @@ def _setup_rtthread(version: str) -> None:
     info("RT-Thread support ready. Type 'rtt help' for commands.")
 
 
-def _setup_rtos(rtos: str, version: str) -> None:
-    """Dispatch to the appropriate RTOS setup function.
-
-    Args:
-        rtos: RTOS name (e.g. ``"rtthread"``).
-        version: Full RTOS version string.
-    """
-    if rtos == "rtthread" or rtos == "rt-thread" or rtos == "rtt":
-        _setup_rtthread(version)
-    elif rtos == "freertos" or rtos == "frt":
-        _setup_freertos(version)
-    else:
-        warn(f"unsupported RTOS: {rtos!r}")
-        warn("currently supported: rtthread, freertos")
-        raise SystemExit(1)
-
-
 def _setup_freertos(version: str) -> None:
     """Initialise FreeRTOS support for the current GDB target."""
     from freertos.adapter import FreeRtosAdapter
     from freertos.commands import register_commands
-    from freertos.config import detect_config
-    from freertos.layout import build_layout
+    from freertos.layout import build_layout, detect_config
     from freertos.version import check_version
+    from gdr.adapter_api import is_initialized, register
     from gdr.functions import register_functions
-    from gdr.registry import is_initialized, register
 
     if is_initialized():
         warn(
@@ -192,6 +174,23 @@ def _setup_freertos(version: str) -> None:
     register_commands()
     register(adapter)
     info("FreeRTOS support ready. Type 'freertos help' for commands.")
+
+
+def _setup_rtos(rtos: str, version: str) -> None:
+    """Dispatch to the appropriate RTOS setup function.
+
+    Args:
+        rtos: RTOS name (e.g. ``"rtthread"``).
+        version: Full RTOS version string.
+    """
+    if rtos == "rtthread" or rtos == "rt-thread" or rtos == "rtt":
+        _setup_rtthread(version)
+    elif rtos == "freertos" or rtos == "frt":
+        _setup_freertos(version)
+    else:
+        warn(f"unsupported RTOS: {rtos!r}")
+        warn("currently supported: rtthread, freertos")
+        raise SystemExit(1)
 
 
 def initialize() -> None:

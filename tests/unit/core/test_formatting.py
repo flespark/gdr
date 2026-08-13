@@ -1,8 +1,9 @@
-"""Unit tests for the width-aware table formatting core."""
+"""Unit tests for shared value and width-aware table formatting."""
 
 from __future__ import annotations
 
-from gdr.table import DEFAULT_WIDTH, format_table
+from gdr.constants import DEFAULT_TERMINAL_WIDTH as DEFAULT_WIDTH
+from gdr.formatting import format_table
 
 
 def test_empty_table_renders_as_empty():
@@ -67,12 +68,12 @@ def test_multi_column_priority_truncation_shrinks_waiters_before_name():
     assert "2:wor.." in out
 
 
-def test_same_priority_shrinks_widest_column_first():
-    """Callback and Entry share a rank; the wider one is cut first."""
+def test_elastic_order_defines_adapter_owned_shrink_priority():
+    """The adapter-provided order, not a core header map, selects first shrink."""
     rows = [["aaaaaaaa", "bbbbbbbbbb"]]
     headers = ["Callback", "Entry"]
-    out = format_table(rows, headers, elastic=("Callback", "Entry"), width=18)
-    # Callback cannot shrink below its 8-char header; Entry (rank 1) shrinks.
+    out = format_table(rows, headers, elastic=("Entry", "Callback"), width=18)
+    # Entry is first priority and shrinks; the core has no Callback/Entry policy.
     assert "aaaaaaaa" in out
     assert "bbbbbb.." in out
 

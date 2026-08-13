@@ -1,4 +1,4 @@
-"""Phase 1 closed-loop checks for the FreeRTOS B-L475E-IOT01A fixture."""
+"""Closed-loop checks for the FreeRTOS B-L475E-IOT01A fixture."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_freertos_kernel_types_are_visible_to_gdb(gdb_session):
-    """The fixture retains DWARF for all three Phase 1 kernel structures."""
+    """The fixture retains DWARF for all three required kernel structures."""
     output = gdb_session.run_many(
         "ptype struct tskTaskControlBlock",
         "ptype struct QueueDefinition",
@@ -39,7 +39,7 @@ def test_freertos_profile_uses_32_bit_pointers_and_persistent_gdb(
 
 
 def test_freertos_tasks_and_system_commands_navigate_fixture(gdb_session):
-    """Phase 2 commands enumerate scheduler lists through DWARF ownership."""
+    """Commands enumerate scheduler lists through DWARF ownership."""
     tasks = gdb_session.run("freertos tasks", timeout=20)
     system = gdb_session.run("freertos system", timeout=20)
 

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+import gdr.adapter_api as adapter_api
 import gdr.functions as functions
 import gdr.printers as printers
-import gdr.registry as registry
-from gdr.adapter_api import RtosAdapter
+from gdr.adapter_api import ObjectTable, RtosAdapter
 from gdr.layout import KernelLayout
 
 
@@ -34,8 +34,8 @@ class _Adapter(RtosAdapter):
     def iter_tasks(self):
         return iter(())
 
-    def iter_task_summaries(self):
-        return iter(())
+    def task_table(self):
+        return ObjectTable()
 
     def system_summary(self):
         raise AssertionError("not called")
@@ -59,13 +59,15 @@ def test_unregister_printers_preserves_non_gdr_lookups(monkeypatch):
     assert fake_gdb.pretty_printers == [external_lookup]
 
 
-def test_registry_preserves_the_first_active_adapter(monkeypatch):
+def test_adapter_api_rejects_replacing_the_active_adapter(monkeypatch):
     first = _Adapter()
     second = _Adapter()
-    monkeypatch.setattr(registry, "_active", None)
-    registry.register(first)
-    registry.register(second)
-    assert registry.active() is first
+    monkeypatch.setattr(adapter_api, "_active", None)
+    adapter_api.register(first)
+    adapter_api.register(first)
+    with pytest.raises(RuntimeError, match="already initialized"):
+        adapter_api.register(second)
+    assert adapter_api.active() is first
 
 
 def test_register_functions_resumes_after_a_partial_failure(monkeypatch):

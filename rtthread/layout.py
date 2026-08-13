@@ -447,16 +447,12 @@ def build_thread_layout(
 
     # Optional config-conditional fields
     if cfg.using_event:
-        f["event_set"] = StructField("event_set", ("event_set",), optional=True)
-        f["event_info"] = StructField("event_info", ("event_info",), optional=True)
+        f["event_set"] = StructField("event_set", ("event_set",))
+        f["event_info"] = StructField("event_info", ("event_info",))
     if cfg.using_cpu_usage:
-        f["duration_tick"] = StructField(
-            "duration_tick", ("duration_tick",), optional=True
-        )
+        f["duration_tick"] = StructField("duration_tick", ("duration_tick",))
     if cfg.thread_has_pthread_data:
-        f["pthread_data"] = StructField(
-            "pthread_data", ("pthread_data",), kind="ptr", optional=True
-        )
+        f["pthread_data"] = StructField("pthread_data", ("pthread_data",), kind="ptr")
 
     return sl
 

@@ -24,15 +24,16 @@ the [Asterinas GDB helper](#acknowledgements):
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | V10.3.1 fixture baseline | Phase 2 task navigation and `freertos tasks/system` verified on QEMU B-L475E-IOT01A |
+| FreeRTOS | V10.3.1 fixture baseline | Task navigation and adapter-owned `freertos tasks/system` verified on QEMU B-L475E-IOT01A |
 
 Core implementation complete: GDB bridge, layout engine,
 pretty-printers, convenience functions, RTOS command trees, and QEMU
 closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
 
-FreeRTOS Phase 2 adds explicit version/config probing, DWARF-path task layouts,
-scheduler-list navigation, and the `freertos tasks` / `freertos system` commands.
-Queue and timer object enumeration remains a Phase 3 feature. The `gdr`
+FreeRTOS support adds explicit version/config probing, DWARF-path task layouts,
+scheduler-list navigation, and adapter-owned `freertos tasks` / `freertos system`
+output. Task columns follow fields available in the current target; queue and
+timer object enumeration remains a later adapter feature. The `gdr`
 command is intentionally limited to `gdr init` and `gdr help`; raw-value
 convenience functions remain RTOS-neutral.
 
@@ -103,8 +104,8 @@ Set-Location .\gdr-rtthread
 | `gdr help` | Show GDR bootstrap usage |
 | `rtt help` | List RT-Thread commands and aliases |
 | `rtt <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
-| `freertos tasks` | List FreeRTOS tasks |
-| `freertos system` | Show the FreeRTOS system summary |
+| `frt tasks` | List FreeRTOS tasks |
+| `frt system` | Show the FreeRTOS system summary |
 
 List commands (for example `rtt semaphores`, `rtt threads`, `rtt timers`)
 render ASCII tables sized to the current terminal width. The column set is
@@ -126,8 +127,10 @@ and message queues show `Free = capacity - entry`, memory pools show
 `Used = total - free`, and IPC objects carry a `FIFO`/`PRIO` policy column.
 Mutex rows include `OrigPrio` for priority-inheritance analysis, and timers
 show `Addr` plus a wrap-safe `ExpiresIn` (inactive timers render `N/A`). Task
-lists add `BasePrio` and `Addr`; SMP targets additionally show `CPU`/`Bind`,
-where the current task reports its real `oncpu` and CPU 0 is a valid value.
+RT-Thread task lists add `BasePrio` and `Addr`; SMP targets additionally show
+`CPU`/`Bind`. FreeRTOS task lists use capability-driven columns and include
+runtime counters when the TCB exposes them. The shared renderer only prints
+adapter-provided tables.
 
 Single-object detail is also available as a command: `rtt <object> <name>`
 (e.g. `rtt semaphore my_sem`, `rtt thread worker1`). It prints a vertical
@@ -186,7 +189,9 @@ through 4.1.1.
 `rtthread/layout.py` is the single place that knows RT-Thread struct
 layouts. When an RT-Thread kernel struct changes (new field, renamed
 member, shifted offset), that file — and its QEMU smoke test — must be
-reviewed together. See `docs/architecture.md` for the rationale.
+reviewed together. RT-Thread intermediate presentation models and their
+`gdb.Value` converters live in `rtthread/adapter.py`; they are not ABI layout
+descriptions. See `docs/architecture.md` for the rationale.
 
 ## Development
 
@@ -198,7 +203,7 @@ uv run pytest tests/unit --cov
 uv run pytest tests/integration -v  # runs when QEMU fixtures are available
 ```
 
-The FreeRTOS Phase 1 smoke test builds the locked STM32CubeL4 `v1.18.2`
+The FreeRTOS smoke test builds the locked STM32CubeL4 `v1.18.2`
 B-L475E-IOT01A fixture (whose FreeRTOS submodule is commit
 `5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`) and runs it under QEMU:
 

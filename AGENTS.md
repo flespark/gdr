@@ -13,17 +13,26 @@ pretty-printers, convenience functions and RTOS-specific command trees.
 ```text
 gdr.py                 entry point: parse args, load RTOS package, register
 gdr/                   RTOS-agnostic core
-  gdb_bridge.py        GDB Python API wrappers (register, table, error guard)
-  layout.py            generic StructLayout dataclass + field/list accessors
+  gdb_bridge.py        GDB Python API wrappers and error/output guards
+  constants.py         shared traversal, string and table defaults
+  formatting.py        pure optional/address/symbol/table formatting
+  version.py           shared version parsing and numeric decoding
+  layout.py            generic StructLayout + field/list accessors
   printers.py          wrapper-type pretty-printer registration
-  abstractions.py      neutral table-output dataclasses
-rtthread/              RT-Thread v4.x adapter
-  layout.py            dataclass field descriptions + build_layouts(config)
+  adapter_api.py       adapter protocol, tables, details and active session
+rtthread/              RT-Thread 3.1.x/4.x adapter
+  layout.py            RT-Thread ABI field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
   navigation.py        RT-Thread symbols and object navigation
-  adapter.py           value→dataclass converters + semantic adapter contract
+  adapter.py           intermediate models, value converters, summaries and tables
+  diagnostics.py       bounded raw-memory walks and consistency diagnostics
+  version.py           RT-Thread version policy and target symbols
   commands.py          RT-Thread command tree (`rtt threads`, `rtt timers`, ...)
 freertos/              FreeRTOS adapter
+  layout.py            merged config probes, DWARF paths and capability metadata
+  navigation.py        layout-driven scheduler-list traversal
+  adapter.py           complete task model, conversion, summaries and tables
+  version.py           FreeRTOS version policy and target symbols
   commands.py          FreeRTOS command tree (`frt tasks`, `frt system`)
 gdr/                   semantic command/function core ($gdr_task, $gdr_tasks,
                        $gdr_object; internal renderers, not gdr subcommands)
@@ -80,7 +89,7 @@ replacement and the only formatter used.
 ## Conventions
 
 - Python 3.10+, PEP8, type hints, Google-style docstrings.
-- Files <= 500 lines; split when approaching the limit.
+- Files <= 1000 lines; split when approaching the limit.
 - Relative imports within packages.
 - No external runtime dependencies (GDB Python API only). Dev tools
   (ruff/pytest/pytest-cov/pre-commit/pexpect) live in `[dependency-groups].dev`.

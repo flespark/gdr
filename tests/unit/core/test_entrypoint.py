@@ -8,8 +8,7 @@ from pathlib import Path
 import pytest
 
 import rtthread.version as version
-from freertos.config import FreeRtosConfig
-from freertos.layout import FreeRtosLayout
+from freertos.layout import FreeRtosConfig, FreeRtosLayout
 from gdr.layout import KernelLayout
 from rtthread.layout import RtConfig
 
@@ -37,7 +36,7 @@ def test_setup_rtthread_skips_an_existing_initialization(monkeypatch):
     entrypoint = _load_entrypoint()
     warnings: list[str] = []
     version_checks: list[str] = []
-    monkeypatch.setattr("gdr.registry.is_initialized", lambda: True)
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: True)
     monkeypatch.setattr(version, "check_version", version_checks.append)
     monkeypatch.setattr(entrypoint, "warn", warnings.append)
 
@@ -54,7 +53,7 @@ def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch)
     """The layout factory receives the selected RT-Thread compatibility profile."""
     entrypoint = _load_entrypoint()
     received: list[tuple[int, int, int]] = []
-    monkeypatch.setattr("gdr.registry.is_initialized", lambda: False)
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
     monkeypatch.setattr(version, "check_version", lambda _value: (3, 1, 3))
     monkeypatch.setattr(entrypoint, "info", lambda _message: None)
     monkeypatch.setattr("rtthread.layout.detect_config", RtConfig)
@@ -66,7 +65,7 @@ def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch)
     )
     monkeypatch.setattr("gdr.functions.register_functions", lambda: None)
     monkeypatch.setattr("rtthread.commands.register_commands", lambda: None)
-    monkeypatch.setattr("gdr.registry.register", lambda _adapter: None)
+    monkeypatch.setattr("gdr.adapter_api.register", lambda _adapter: None)
     monkeypatch.setattr(entrypoint, "register_printers", lambda _layout: None)
 
     entrypoint._setup_rtthread("3.1.3")
@@ -91,8 +90,8 @@ def test_setup_rtthread_commits_only_after_all_registration_steps(
         if name == failure_stage and attempts[name] == 1:
             raise RuntimeError(f"{name} registration interrupted")
 
-    monkeypatch.setattr("gdr.registry.is_initialized", lambda: bool(registrations))
-    monkeypatch.setattr("gdr.registry.register", registrations.append)
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: bool(registrations))
+    monkeypatch.setattr("gdr.adapter_api.register", registrations.append)
     monkeypatch.setattr(version, "check_version", lambda _value: (4, 0, 5))
     monkeypatch.setattr(entrypoint, "info", lambda _message: None)
     monkeypatch.setattr("rtthread.layout.detect_config", RtConfig)
@@ -127,12 +126,12 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
     adapter_instance = object()
     layout = FreeRtosLayout(config=FreeRtosConfig(), version=(10, 3, 1))
 
-    monkeypatch.setattr("gdr.registry.is_initialized", lambda: False)
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
     monkeypatch.setattr(
-        "gdr.registry.register", lambda selected: events.append(("active", selected))
+        "gdr.adapter_api.register", lambda selected: events.append(("active", selected))
     )
     monkeypatch.setattr("freertos.version.check_version", lambda _value: (10, 3, 1))
-    monkeypatch.setattr("freertos.config.detect_config", FreeRtosConfig)
+    monkeypatch.setattr("freertos.layout.detect_config", FreeRtosConfig)
     monkeypatch.setattr(
         "freertos.layout.build_layout", lambda _config, _version: layout
     )

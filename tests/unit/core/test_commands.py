@@ -6,12 +6,12 @@ from dataclasses import dataclass, field
 
 import gdr.commands as commands
 import gdr.gdb_bridge as bridge
-from gdr.adapter_api import ObjectDetail, ObjectTable, SystemSummary, TaskSummary
+from gdr.adapter_api import ObjectDetail, ObjectTable, SystemSummary
 
 
 @dataclass
 class _Adapter:
-    tasks: list[TaskSummary] = field(default_factory=list)
+    task_output: ObjectTable = field(default_factory=ObjectTable)
     counts: dict[str, int] = field(default_factory=dict)
     tables: dict[str, ObjectTable] = field(default_factory=dict)
     details: dict[str, ObjectDetail] = field(default_factory=dict)
@@ -21,8 +21,8 @@ class _Adapter:
     def iter_tasks(self):
         raise AssertionError("raw task iteration is not used for rendering")
 
-    def iter_task_summaries(self):
-        return iter(self.tasks)
+    def task_table(self):
+        return self.task_output
 
     def object_counts(self) -> dict[str, int]:
         self.count_calls += 1
@@ -38,107 +38,31 @@ class _Adapter:
         return self.summary
 
 
-def test_tasks_renders_symbols_address_fallbacks_and_optional_values(monkeypatch):
-    """Task rows preserve symbols, raw addresses, nulls, and numeric zeroes."""
+def test_tasks_renders_adapter_owned_table(monkeypatch):
+    """The shared renderer forwards an adapter-owned task table unchanged."""
     adapter = _Adapter(
-        tasks=[
-            TaskSummary(
-                name="symbolized",
-                state="Ready",
-                priority=20,
-                base_priority=20,
-                stack_pointer=0x3000,
-                stack_size=1024,
-                stack_used=128,
-                high_water_mark=256,
-                entry=0x1000,
-                address=0x4000,
-                current_core=0,
-            ),
-            TaskSummary(name="unknown", state="Suspend", entry=0x2000),
-            TaskSummary(
-                name="zero",
-                state="Unknown",
-                priority=0,
-                stack_size=0,
-                stack_used=0,
-                high_water_mark=0,
-            ),
-        ]
+        task_output=ObjectTable(
+            headers=["Task", "Runtime"],
+            rows=[["worker *", "0"]],
+            messages=["snapshot complete"],
+            elastic=("Task",),
+        )
     )
-    tables: list[tuple[list[list[str]], list[str]]] = []
-    looked_up: list[int] = []
+    tables = []
+    messages = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(
-        commands,
-        "lookup_symbol_at",
-        lambda address: (
-            looked_up.append(address)
-            or ("worker_entry+0" if address == 0x1000 else None)
-        ),
-    )
+    monkeypatch.setattr(commands, "info", messages.append)
     monkeypatch.setattr(
         commands,
         "print_table",
-        lambda rows, headers, **_kwargs: tables.append((rows, headers)),
+        lambda rows, headers, **kwargs: tables.append((rows, headers, kwargs)),
     )
 
     commands.render_tasks()
 
-    assert looked_up == [0x1000, 0x2000]
+    assert messages == ["snapshot complete"]
     assert tables == [
-        (
-            [
-                [
-                    "symbolized *",
-                    "Ready",
-                    "20",
-                    "20",
-                    "0x3000",
-                    "1024",
-                    "128",
-                    "256",
-                    "<worker_entry+0>",
-                    "0x4000",
-                ],
-                [
-                    "unknown",
-                    "Suspend",
-                    "N/A",
-                    "N/A",
-                    "N/A",
-                    "N/A",
-                    "N/A",
-                    "N/A",
-                    "0x2000",
-                    "N/A",
-                ],
-                [
-                    "zero",
-                    "Unknown",
-                    "0",
-                    "N/A",
-                    "N/A",
-                    "0",
-                    "0",
-                    "0",
-                    "N/A",
-                    "N/A",
-                ],
-            ],
-            [
-                "Name",
-                "State",
-                "Prio",
-                "BasePrio",
-                "SP",
-                "Stack",
-                "Used",
-                "HighWater",
-                "Entry",
-                "Addr",
-            ],
-        )
+        ([["worker *", "0"]], ["Task", "Runtime"], {"elastic": ("Task",)})
     ]
 
 
@@ -146,11 +70,6 @@ def test_tasks_renders_an_empty_adapter_without_target_access(monkeypatch):
     """An initialized adapter with no tasks still emits an empty table."""
     tables: list[tuple[list[list[str]], list[str]]] = []
     monkeypatch.setattr(commands, "active", _Adapter)
-    monkeypatch.setattr(
-        commands,
-        "lookup_symbol_at",
-        lambda _address: (_ for _ in ()).throw(AssertionError("unexpected lookup")),
-    )
     monkeypatch.setattr(
         commands,
         "print_table",
@@ -239,110 +158,13 @@ def test_objects_normalizes_kind_and_renders_adapter_table(monkeypatch):
         ),
     )
 
-    commands.render_objects("timers")
+    commands.render_objects("timer")
 
     assert messages == ["Kernel tick: 10"]
     assert tables == [
         ([["heartbeat", "<tick>"]], ["Name", "Callback"], ("Name", "Callback"))
     ]
     assert adapter.count_calls == 0
-
-
-def test_tasks_renderer_passes_elastic_metadata(monkeypatch):
-    """The shared task renderer marks Name/Entry as shrinkable."""
-    adapter = _Adapter(
-        tasks=[
-            TaskSummary(name="worker1", state="Ready", priority=20),
-        ]
-    )
-    tables: list[tuple[list[list[str]], list[str], tuple[str, ...]]] = []
-    monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(commands, "lookup_symbol_at", lambda _address: None)
-    monkeypatch.setattr(
-        commands,
-        "print_table",
-        lambda rows, headers, **_kwargs: tables.append(
-            (rows, headers, _kwargs.get("elastic", ()))
-        ),
-    )
-
-    commands.render_tasks()
-
-    assert tables[0][2] == ("Name", "Entry")
-
-
-def test_tasks_renderer_adds_cpu_and_bind_for_smp(monkeypatch):
-    """SMP adapters surface CPU/Bind columns with the real CPU placement."""
-    adapter = _Adapter(
-        tasks=[
-            TaskSummary(
-                name="worker1",
-                state="Running",
-                priority=20,
-                current_core=1,
-                oncpu=1,
-                bind_cpu=0,
-                address=0x1000,
-            ),
-            TaskSummary(name="worker2", state="Ready", priority=21, address=0x2000),
-        ]
-    )
-    tables: list[tuple[list[list[str]], list[str]]] = []
-    monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(commands, "lookup_symbol_at", lambda _address: None)
-    monkeypatch.setattr(
-        commands,
-        "print_table",
-        lambda rows, headers, **_kwargs: tables.append((rows, headers)),
-    )
-
-    commands.render_tasks()
-
-    headers = tables[0][1]
-    assert headers == [
-        "Name",
-        "State",
-        "Prio",
-        "BasePrio",
-        "SP",
-        "Stack",
-        "Used",
-        "HighWater",
-        "Entry",
-        "CPU",
-        "Bind",
-        "Addr",
-    ]
-    assert tables[0][0] == [
-        [
-            "worker1 *",
-            "Running",
-            "20",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "1",
-            "0",
-            "0x1000",
-        ],
-        [
-            "worker2",
-            "Ready",
-            "21",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "N/A",
-            "0x2000",
-        ],
-    ]
 
 
 def test_objects_only_counts_when_no_detailed_table_is_available(monkeypatch):
@@ -356,7 +178,7 @@ def test_objects_only_counts_when_no_detailed_table_is_available(monkeypatch):
         lambda rows, headers, **_kwargs: tables.append((rows, headers)),
     )
 
-    commands.render_objects("messagequeues")
+    commands.render_objects("msgqueue")
 
     assert adapter.count_calls == 1
     assert tables == [([["msgqueue", "2"]], ["Kind", "Count"])]
@@ -367,7 +189,7 @@ def test_shared_renderer_guard_contains_unexpected_adapter_errors(monkeypatch):
     errors: list[str] = []
 
     class _BrokenAdapter(_Adapter):
-        def iter_task_summaries(self):
+        def task_table(self):
             raise ValueError("corrupt task list")
 
     monkeypatch.setattr(commands, "active", _BrokenAdapter)
@@ -439,7 +261,7 @@ def test_object_detail_warns_before_initialization(monkeypatch):
 
 
 def test_object_detail_warns_for_an_empty_name(monkeypatch):
-    """A missing object name routes the user back to the command usage."""
+    """A missing object name receives a generic renderer diagnostic."""
     warnings: list[str] = []
     monkeypatch.setattr(commands, "active", lambda: _Adapter())
     monkeypatch.setattr(commands, "warn", warnings.append)
@@ -451,4 +273,4 @@ def test_object_detail_warns_for_an_empty_name(monkeypatch):
 
     commands.render_object_detail("semaphore", "  ")
 
-    assert warnings == ["usage: rtt semaphore <name>"]
+    assert warnings == ["object name must not be empty"]

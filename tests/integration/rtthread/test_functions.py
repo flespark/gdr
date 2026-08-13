@@ -8,7 +8,9 @@ import pytest
 
 from tests.support.rtthread_profiles import get_rtthread_test_profile
 
-_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+_VERSION = os.environ.get(
+    "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
+)
 _TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
 _PROFILE = get_rtthread_test_profile(_VERSION, _TARGET)
 _DEFAULT_POINTER_BYTES = "8" if _TARGET == "rv64" else "4"

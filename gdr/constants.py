@@ -1,0 +1,9 @@
+"""Shared limits and presentation defaults for the RTOS-neutral core."""
+
+MAX_TRAVERSAL_COUNT = 4096
+MAX_CSTRING_LENGTH = 256
+
+DEFAULT_TERMINAL_WIDTH = 120
+TABLE_COLUMN_GAP = 2
+MIN_ELASTIC_COLUMN_WIDTH = 5
+TABLE_TRUNCATION_SUFFIX = ".."

@@ -13,31 +13,6 @@ except ImportError:
 
 
 @dataclass
-class TaskSummary:
-    """A normalized task view used only for generic command output.
-
-    ``value`` remains target-native and is returned by convenience functions;
-    no adapter ABI is hidden behind this presentation model.
-    """
-
-    name: str = ""
-    address: int = 0
-    state: str = "Unknown"
-    priority: int | None = None
-    base_priority: int | None = None
-    stack_pointer: int = 0
-    stack_size: int | None = None
-    stack_used: int | None = None
-    high_water_mark: int | None = None
-    entry: int = 0
-    current_core: int | None = None
-    # SMP capability fields stay optional so UP adapters and renderers never
-    # fabricate a CPU that the target does not expose.
-    bind_cpu: int | None = None
-    oncpu: int | None = None
-
-
-@dataclass
 class SystemSummary:
     """RTOS-neutral system data for an adapter-owned system command."""
 
@@ -56,8 +31,9 @@ class ObjectTable:
     """Adapter-provided rows for a reliably enumerable object kind.
 
     ``elastic`` lists the headers that may shrink when the natural table
-    width exceeds the terminal width (see ``gdr.gdb_bridge.print_table``).
-    Adapters own this metadata so renderers never guess it from header text.
+    width exceeds the terminal width (see ``gdr.gdb_bridge.print_table``),
+    ordered from first to last shrink priority. Adapters own this metadata so
+    renderers never guess it from header text.
     """
 
     headers: list[str] = field(default_factory=list)
@@ -78,6 +54,26 @@ class ObjectDetail:
     found: bool = True
 
 
+_active: RtosAdapter | None = None
+
+
+def register(adapter: RtosAdapter) -> None:
+    """Register one session adapter and reject replacement by another."""
+    global _active
+    if _active is None:
+        _active = adapter
+    elif _active is not adapter:
+        raise RuntimeError("an RTOS adapter is already initialized")
+
+
+def active() -> RtosAdapter | None:
+    return _active
+
+
+def is_initialized() -> bool:
+    return _active is not None
+
+
 class RtosAdapter(Protocol):
     """Operations required by the stable generic GDB API."""
 
@@ -93,6 +89,6 @@ class RtosAdapter(Protocol):
 
     def iter_tasks(self) -> Iterator[gdb.Value]: ...
 
-    def iter_task_summaries(self) -> Iterator[TaskSummary]: ...
+    def task_table(self) -> ObjectTable: ...
 
     def system_summary(self) -> SystemSummary: ...

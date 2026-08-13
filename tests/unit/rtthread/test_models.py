@@ -1,8 +1,8 @@
-"""Unit tests for RTOS-agnostic object abstractions."""
+"""Unit tests for RT-Thread-specific object models."""
 
 from __future__ import annotations
 
-from gdr.abstractions import Thread
+from rtthread.adapter import Thread
 
 
 def test_thread_stack_used_uses_a_valid_downward_stack_pointer():

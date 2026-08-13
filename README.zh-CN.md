@@ -22,15 +22,16 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 | RTOS | 版本 | 状态 |
 |------|------|------|
 | RT-Thread | 3.1.x、4.0.x、4.1.x | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起 |
-| FreeRTOS | V10.3.1 fixture 基线 | Phase 2 任务导航及 `freertos tasks/system` 已在 QEMU B-L475E-IOT01A 验证 |
+| FreeRTOS | V10.3.1 fixture 基线 | 任务导航及 adapter 自有的 `freertos tasks/system` 已在 QEMU B-L475E-IOT01A 验证 |
 
 核心实现已完成：GDB bridge、layout 引擎、pretty-printers、便捷函数、
 RTOS 命令树，以及 Cortex-A9 与 RISC-V RV64 目标上的 QEMU 闭环验证。
 
-FreeRTOS Phase 2 已加入显式版本/配置探测、基于 DWARF 字段路径的任务布局、
-调度器链表导航，以及 `freertos tasks`、`freertos system` 命令。队列和
-定时器对象枚举仍属于 Phase 3。`gdr` 命令有意只保留 `gdr init` 和
-`gdr help`；原始值便捷函数仍保持 RTOS 无关。
+FreeRTOS 支持显式版本/配置探测、基于 DWARF 字段路径的任务布局、
+调度器链表导航，以及 adapter 自有的 `freertos tasks`、`freertos system`
+输出。任务列按当前目标实际字段决定；队列和定时器对象枚举仍属于后续功能。
+`gdr` 命令有意只保留 `gdr init` 和 `gdr help`；原始值便捷函数仍保持
+RTOS 无关。
 
 ## 快速开始
 
@@ -115,8 +116,9 @@ IPC 与内存池列表以 `count:names` 摘要显示等待线程：信号量、�
 `Free = capacity - entry`，内存池显示 `Used = total - free`，IPC 对象带有由
 对象 flag 解码的 `FIFO`/`PRIO` 策略列。互斥量行包含 `OrigPrio` 用于优先级
 继承分析，定时器显示 `Addr` 与回绕安全的 `ExpiresIn`（非活动定时器显示
-`N/A`）。任务列表增加 `BasePrio` 与 `Addr`；SMP 目标还会显示 `CPU`/`Bind`，
-当前任务报告真实的 `oncpu`，且 CPU 0 是合法值。
+`N/A`）。RT-Thread 任务列表增加 `BasePrio` 与 `Addr`；SMP 目标还会显示
+`CPU`/`Bind`。FreeRTOS 任务列表使用自己的能力列，并在 TCB 提供时显示运行时间计数。
+共享 renderer 只负责输出 adapter 提供的表格。
 
 单个对象的详情也可以通过命令查看：`rtt <object> <name>`
 （如 `rtt semaphore my_sem`、`rtt thread worker1`），以纵向 `Key: Value`
@@ -170,8 +172,9 @@ RT-Thread 3.1.x 仅在 Cortex-A9 QEMU BSP 上验证。上游 QEMU RV64 BSP
 
 `rtthread/layout.py` 是唯一知晓 RT-Thread 结构体布局的地方。当
 RT-Thread 内核结构体发生变化（新增字段、成员重命名、偏移移动）时，
-该文件及其 QEMU smoke 测试必须一并审查。设计理由见
-`docs/architecture.md`。
+该文件及其 QEMU smoke 测试必须一并审查。RT-Thread 中间展示模型及其
+`gdb.Value` 转换器归 `rtthread/adapter.py` 所有，它们不是 ABI 布局描述。
+设计理由见 `docs/architecture.md`。
 
 ## 开发
 
@@ -183,7 +186,7 @@ uv run pytest tests/unit --cov
 uv run pytest tests/integration -v  # QEMU fixture 可用时运行
 ```
 
-FreeRTOS Phase 1 smoke test 会构建锁定的 STM32CubeL4 `v1.18.2`
+FreeRTOS smoke test 会构建锁定的 STM32CubeL4 `v1.18.2`
 B-L475E-IOT01A fixture（其中 FreeRTOS submodule 固定为 commit
 `5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`），并在 QEMU 中运行：
 

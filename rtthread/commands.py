@@ -7,6 +7,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
+from gdr.adapter_api import active
 from gdr.commands import (
     render_object_detail,
     render_objects,
@@ -14,7 +15,6 @@ from gdr.commands import (
     render_tasks,
 )
 from gdr.gdb_bridge import info, warn
-from gdr.registry import active
 from rtthread.adapter import RtThreadAdapter
 from rtthread.navigation import iter_object_names
 

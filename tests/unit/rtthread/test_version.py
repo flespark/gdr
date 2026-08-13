@@ -30,3 +30,23 @@ def test_check_version_returns_the_parsed_target_profile(monkeypatch):
     monkeypatch.setattr(version, "warn", lambda _message: None)
 
     assert version.check_version("3.1.3") == (3, 1, 3)
+
+
+def test_detect_target_version_uses_declared_packed_hex_encoding(monkeypatch):
+    monkeypatch.setattr(
+        version, "eval_safe", lambda name: 0x40005 if name == "RT_VER_NUM" else None
+    )
+    monkeypatch.setattr(version, "read_int", lambda value: value)
+
+    assert version.detect_target_version() == (4, 0, 5)
+
+
+def test_check_version_rejects_a_target_mismatch(monkeypatch):
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "detect_target_version", lambda: (4, 0, 5))
+
+    with pytest.raises(SystemExit):
+        version.check_version("3.1.3")
+
+    assert "version mismatch" in warnings[-1]

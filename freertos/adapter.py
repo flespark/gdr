@@ -16,9 +16,9 @@ from gdr.adapter_api import (
     ObjectTable,
     RtosAdapter,
     SystemSummary,
-    TaskSummary,
 )
-from gdr.gdb_bridge import read_cstring, read_int
+from gdr.formatting import format_address, format_optional_int
+from gdr.gdb_bridge import read_cstring, read_int, value_address
 from gdr.layout import read_field
 
 
@@ -38,13 +38,7 @@ class FreeRtosTask:
     runtime_counter: int | None = None
     entry: int = 0
     core: int | None = None
-
-
-def _address(value) -> int:
-    try:
-        return int(value.address)
-    except Exception:
-        return 0
+    core_affinity: int | None = None
 
 
 def _ptr(value) -> int:
@@ -64,7 +58,7 @@ def value_to_task(
     entry = _ptr(read_field(value, sl, "entry"))
     return FreeRtosTask(
         name=read_cstring(read_field(value, sl, "name")) or "",
-        address=_address(value),
+        address=value_address(value),
         state=state,
         current_priority=read_int(read_field(value, sl, "current_priority")) or 0,
         base_priority=read_int(read_field(value, sl, "base_priority")) or 0,
@@ -77,28 +71,13 @@ def value_to_task(
         runtime_counter=runtime,
         entry=entry,
         core=core,
+        core_affinity=read_int(read_field(value, sl, "core_affinity")),
     )
 
 
 def iter_converted_tasks(layout: FreeRtosLayout):
     for value, state, core in iter_tasks(layout):
         yield value_to_task(value, state, core, layout)
-
-
-def _task_summary(task: FreeRtosTask) -> TaskSummary:
-    return TaskSummary(
-        name=task.name,
-        address=task.address,
-        state=task.state,
-        priority=task.current_priority,
-        base_priority=task.base_priority,
-        stack_pointer=task.top_of_stack,
-        stack_size=task.stack_size,
-        stack_used=task.stack_used,
-        high_water_mark=task.high_water_mark,
-        entry=task.entry,
-        current_core=task.core,
-    )
 
 
 def find_task(name: str, layout: FreeRtosLayout):
@@ -119,7 +98,7 @@ class FreeRtosAdapter(RtosAdapter):
         return find_task(name, self.layout)
 
     def find_object(self, kind: str, name: str) -> gdb.Value | None:  # noqa: ARG002
-        # Queue Registry and active-timer traversal are Phase 3 features.
+        # Queue Registry and active-timer traversal are not implemented.
         return None
 
     def object_counts(self) -> dict[str, int]:
@@ -129,22 +108,63 @@ class FreeRtosAdapter(RtosAdapter):
         return None
 
     def object_detail(self, kind: str, name: str) -> ObjectDetail | None:  # noqa: ARG002
-        # Queue/timer enumeration and object detail are Phase 3 features.
+        # Queue/timer enumeration and object detail are not implemented.
         return None
 
     def iter_tasks(self):
         for value, _state, _core in iter_tasks(self.layout):
             yield value
 
-    def iter_task_summaries(self):
+    def task_table(self) -> ObjectTable:
+        fields = self.layout.structs["struct tskTaskControlBlock"].fields
+        show_base_priority = "base_priority" in fields
+        show_stack = "stack_end" in fields
+        show_runtime = "runtime_counter" in fields
+        show_smp = self.layout.config.smp
+        show_affinity = "core_affinity" in fields
+
+        headers = ["Name", "State", "Prio"]
+        if show_base_priority:
+            headers.append("BasePrio")
+        headers.append("SP")
+        if show_stack:
+            headers += ["Stack", "Used"]
+        if show_runtime:
+            headers.append("Runtime")
+        if show_smp:
+            headers.append("CPU")
+        if show_affinity:
+            headers.append("Affinity")
+        headers.append("Addr")
+
+        rows = []
         for task in iter_converted_tasks(self.layout):
-            yield _task_summary(task)
+            row = [
+                task.name + (" *" if task.core is not None else ""),
+                task.state,
+                str(task.current_priority),
+            ]
+            if show_base_priority:
+                row.append(str(task.base_priority))
+            row.append(format_address(task.top_of_stack))
+            if show_stack:
+                row += [
+                    format_optional_int(task.stack_size),
+                    format_optional_int(task.stack_used),
+                ]
+            if show_runtime:
+                row.append(format_optional_int(task.runtime_counter))
+            if show_smp:
+                row.append(format_optional_int(task.core))
+            if show_affinity:
+                row.append(format_optional_int(task.core_affinity))
+            row.append(format_address(task.address))
+            rows.append(row)
+        return ObjectTable(headers=headers, rows=rows, elastic=("Name",))
 
     def system_summary(self) -> SystemSummary:
-        tasks = list(self.iter_task_summaries())
-        current = next(
-            (task.name for task in tasks if task.current_core is not None), None
-        )
+        tasks = list(iter_converted_tasks(self.layout))
+        current = next((task.name for task in tasks if task.core is not None), None)
         delayed = [list_count(key, self.layout) for key in ("delayed_1", "delayed_2")]
         counts = {
             "Ready": list_count("ready", self.layout),

@@ -96,7 +96,7 @@ def test_suspend_thread_names_recovers_thread_names_via_tlist(monkeypatch):
     monkeypatch.setattr(
         navigation,
         "iter_suspend_threads",
-        lambda _head, _layout: iter(waiter_values),
+        lambda _head: iter(waiter_values),
     )
     monkeypatch.setattr(
         navigation,
@@ -122,7 +122,7 @@ def test_suspend_thread_names_renders_invalid_for_unreadable_names(monkeypatch):
     )
     monkeypatch.setattr(navigation, "read_field", lambda _v, _sl, _f: object())
     monkeypatch.setattr(
-        navigation, "iter_suspend_threads", lambda _head, _layout: iter([object()])
+        navigation, "iter_suspend_threads", lambda _head: iter([object()])
     )
     monkeypatch.setattr(navigation, "read_cstring", lambda _value: None)
 
@@ -146,9 +146,6 @@ def test_suspend_thread_names_returns_empty_when_layout_missing():
 
 def test_iter_suspend_threads_uses_tlist_container_hook(monkeypatch):
     """The suspend hook recovers threads from their embedded ``tlist`` node."""
-    layout = navigation.KernelLayout(
-        structs={"struct rt_thread": StructLayout("struct rt_thread")}
-    )
     head = object()
     captured: list[tuple[object, object]] = []
 
@@ -162,7 +159,7 @@ def test_iter_suspend_threads_uses_tlist_container_hook(monkeypatch):
 
     monkeypatch.setattr(navigation, "iter_list", fake_iter_list)
 
-    result = list(navigation.iter_suspend_threads(head, layout))
+    result = list(navigation.iter_suspend_threads(head))
 
     assert len(result) == 1
     assert captured == [(head, object())] or len(captured) == 1

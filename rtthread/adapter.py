@@ -1,43 +1,39 @@
 """RT-Thread adapter: gdb.Value conversion and semantic capability provider.
 
-Converts raw ``gdb.Value`` objects into lightweight dataclasses for generic
-command tables and implements the RTOS-neutral task/object contract. The core
-registers the public GDB functions, which return raw target values for native
-GDB expression drilling.
+Owns RT-Thread's intermediate object models, converts raw ``gdb.Value``
+objects into those models for command tables and diagnostics, and implements
+the RTOS-neutral task/object contract. The core registers the public GDB
+functions, which return raw target values for native GDB expression drilling.
 
 Design follows the Asterinas principle:
 - **Navigation belongs to helpers** — convenience functions locate objects
   and return raw ``gdb.Value`` so users can inspect any field with native
   GDB expressions.
 - **Display belongs to GDB** — pretty-printers (registered separately) fold
-  wrapper types; the dataclasses here are only for command table output.
+  wrapper types; the dataclasses here support aggregate command tables and
+  adapter-owned detail diagnostics rather than native GDB inspection.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 
 try:
     import gdb
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.abstractions import (
-    Event,
-    Mailbox,
-    MemoryPool,
-    MessageQueue,
-    Mutex,
-    Semaphore,
-    Thread,
-    Timer,
-)
 from gdr.adapter_api import (
     ObjectDetail,
     ObjectTable,
     RtosAdapter,
     SystemSummary,
-    TaskSummary,
+)
+from gdr.formatting import (
+    format_address,
+    format_optional_int,
+    format_symbol_or_address,
 )
 from gdr.gdb_bridge import (
     eval_safe,
@@ -45,9 +41,10 @@ from gdr.gdb_bridge import (
     read_bytes,
     read_cstring,
     read_int,
+    value_address,
 )
 from gdr.layout import KernelLayout, read_field
-from rtthread import detail as rt_detail
+from rtthread import diagnostics
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
     RT_EVENT_FLAG_CLEAR,
@@ -75,24 +72,108 @@ from rtthread.navigation import (
     suspend_thread_names,
 )
 
-
-def _type_code(layout: KernelLayout, name: str) -> int:
-    """Return an active target's numeric code for a semantic object name."""
-    return layout.object_codes[name]
-
-
 # ---------------------------------------------------------------------------
+# Adapter-owned intermediate objects. These are semantic values assembled from
+# raw target objects for tables and detail renderers; they are not ABI layout
+# descriptions and therefore live with the converters that create them.
+
+
+@dataclass
+class KernelObject:
+    """Common RT-Thread object fields used by adapter presentations."""
+
+    name: str = ""
+    address: int = 0
+
+
+@dataclass
+class Thread(KernelObject):
+    state: int = -1
+    current_priority: int = 0
+    init_priority: int = 0
+    sp: int = 0
+    stack_addr: int = 0
+    stack_size: int = 0
+    stack_grows_up: bool | None = None
+    max_stack_used: int | None = None
+    entry: int = 0
+    error: int = 0
+    remaining_tick: int = 0
+    bind_cpu: int | None = None
+    oncpu: int | None = None
+
+    @property
+    def stack_used(self) -> int | None:
+        if not self.stack_addr or not self.stack_size or not self.sp:
+            return None
+        if self.stack_grows_up is None:
+            return None
+        used = (
+            self.sp - self.stack_addr
+            if self.stack_grows_up
+            else self.stack_size - (self.sp - self.stack_addr)
+        )
+        return used if 0 <= used <= self.stack_size else None
+
+
+@dataclass
+class Semaphore(KernelObject):
+    value: int = 0
+
+
+@dataclass
+class Mutex(KernelObject):
+    value: int = 0
+    hold: int = 0
+    owner: str = ""
+    original_priority: int = 0
+
+
+@dataclass
+class Timer(KernelObject):
+    active: bool = False
+    periodic: bool = False
+    soft_timer: bool = False
+    init_tick: int = 0
+    timeout_tick: int = 0
+    callback: int = 0
+    parameter: int = 0
+
+
+@dataclass
+class Event(KernelObject):
+    set: int = 0
+
+
+@dataclass
+class Mailbox(KernelObject):
+    size: int = 0
+    entry: int = 0
+    in_offset: int = 0
+    out_offset: int = 0
+
+
+@dataclass
+class MessageQueue(KernelObject):
+    msg_size: int = 0
+    max_msgs: int = 0
+    entry: int = 0
+
+
+@dataclass
+class MemoryPool(KernelObject):
+    block_size: int = 0
+    block_total_count: int = 0
+    block_free_count: int = 0
+
+
 # Value → dataclass converters
 # ---------------------------------------------------------------------------
 
 
 def _get_addr(val: gdb.Value) -> int:
     """Get the address of a gdb.Value as int, or 0 if not addressable."""
-    try:
-        addr = val.address
-        return int(addr) if addr is not None else 0
-    except (gdb.error, TypeError):
-        return 0
+    return value_address(val)
 
 
 def _infer_stack_grows_up(stack: bytes) -> bool | None:
@@ -133,7 +214,6 @@ def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
     return Thread(
         name=name,
         address=_get_addr(val),
-        type_code=_type_code(layout, "thread"),
         state=int(state),
         current_priority=read_int(read_field(val, sl, "current_priority")) or 0,
         init_priority=read_int(read_field(val, sl, "init_priority")) or 0,
@@ -158,7 +238,6 @@ def value_to_semaphore(val: gdb.Value, layout: KernelLayout) -> Semaphore:
     return Semaphore(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=_type_code(layout, "semaphore"),
         value=read_int(read_field(val, sl, "value")) or 0,
     )
 
@@ -177,7 +256,6 @@ def value_to_mutex(val: gdb.Value, layout: KernelLayout) -> Mutex:
     return Mutex(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=_type_code(layout, "mutex"),
         value=read_int(read_field(val, sl, "value")) or 0,
         hold=read_int(read_field(val, sl, "hold")) or 0,
         owner=owner_name,
@@ -193,7 +271,6 @@ def value_to_timer(val: gdb.Value, layout: KernelLayout) -> Timer:
     return Timer(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=_type_code(layout, "timer"),
         active=bool(flag & RT_TIMER_FLAG_ACTIVATED),
         periodic=bool(flag & RT_TIMER_FLAG_PERIODIC),
         soft_timer=bool(flag & RT_TIMER_FLAG_SOFT_TIMER),
@@ -210,7 +287,6 @@ def value_to_event(val: gdb.Value, layout: KernelLayout) -> Event:
     return Event(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=_type_code(layout, "event"),
         set=read_int(read_field(val, sl, "set")) or 0,
     )
 
@@ -221,7 +297,6 @@ def value_to_mailbox(val: gdb.Value, layout: KernelLayout) -> Mailbox:
     return Mailbox(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=_type_code(layout, "mailbox"),
         size=read_int(read_field(val, sl, "size")) or 0,
         entry=read_int(read_field(val, sl, "entry")) or 0,
         in_offset=read_int(read_field(val, sl, "in_offset")) or 0,
@@ -236,7 +311,6 @@ def value_to_messagequeue(val: gdb.Value, layout: KernelLayout) -> MessageQueue:
     return MessageQueue(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=_type_code(layout, "msgqueue"),
         msg_size=read_int(read_field(val, sl, "msg_size")) or 0,
         max_msgs=read_int(read_field(val, sl, "max_msgs")) or 0,
         entry=read_int(read_field(val, sl, "entry")) or 0,
@@ -249,7 +323,6 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
     return MemoryPool(
         name=read_cstring(read_field(val, sl, "name")) or "",
         address=_get_addr(val),
-        type_code=_type_code(layout, "mempool"),
         block_size=read_int(read_field(val, sl, "block_size")) or 0,
         block_total_count=read_int(read_field(val, sl, "block_total_count")) or 0,
         block_free_count=read_int(read_field(val, sl, "block_free_count")) or 0,
@@ -350,7 +423,7 @@ def _event_detail_with_waiters(
     them with the waiter explains why the current ``event.set`` did not wake
     it.
     """
-    pairs = rt_detail.event_detail(value_to_event(value, layout))
+    pairs = diagnostics.event_detail(value_to_event(value, layout))
     thread_layout = layout.structs.get("struct rt_thread")
     event_layout = layout.structs.get("struct rt_event")
     if thread_layout is None or event_layout is None:
@@ -358,7 +431,7 @@ def _event_detail_with_waiters(
     head = read_field(value, event_layout, "suspend_thread")
     if head is None:
         return pairs
-    for thread in iter_suspend_threads(head, layout):
+    for thread in iter_suspend_threads(head):
         name = read_cstring(read_field(thread, thread_layout, "name")) or "<invalid>"
         event_set = read_int(read_field(thread, thread_layout, "event_set")) or 0
         event_info = read_int(read_field(thread, thread_layout, "event_info")) or 0
@@ -372,12 +445,12 @@ def _event_detail_with_waiters(
 
 
 _DETAIL_BUILDERS: dict[str, tuple[Callable, Callable]] = {
-    "semaphore": (value_to_semaphore, rt_detail.semaphore_detail),
-    "mutex": (value_to_mutex, rt_detail.mutex_detail),
-    "event": (value_to_event, rt_detail.event_detail),
-    "mailbox": (value_to_mailbox, rt_detail.mailbox_detail),
-    "msgqueue": (value_to_messagequeue, rt_detail.messagequeue_detail),
-    "mempool": (value_to_mempool, rt_detail.memorypool_detail),
+    "semaphore": (value_to_semaphore, diagnostics.semaphore_detail),
+    "mutex": (value_to_mutex, diagnostics.mutex_detail),
+    "event": (value_to_event, diagnostics.event_detail),
+    "mailbox": (value_to_mailbox, diagnostics.mailbox_detail),
+    "msgqueue": (value_to_messagequeue, diagnostics.messagequeue_detail),
+    "mempool": (value_to_mempool, diagnostics.memorypool_detail),
 }
 
 
@@ -445,7 +518,7 @@ class RtThreadAdapter(RtosAdapter):
             return ObjectTable(
                 ["Name", "Value", "Policy", "Waiters", "Addr"],
                 rows,
-                elastic=("Name", "Waiters"),
+                elastic=("Waiters", "Name"),
             )
         if kind == "mutex":
             values = self._registered_objects("mutex", "struct rt_mutex")
@@ -483,7 +556,7 @@ class RtThreadAdapter(RtosAdapter):
                     "Addr",
                 ],
                 rows,
-                elastic=("Name", "Owner", "Waiters"),
+                elastic=("Waiters", "Owner", "Name"),
             )
         if kind == "event":
             values = self._registered_objects("event", "struct rt_event")
@@ -509,7 +582,7 @@ class RtThreadAdapter(RtosAdapter):
             return ObjectTable(
                 ["Name", "Set", "Policy", "Waiters", "Addr"],
                 rows,
-                elastic=("Name", "Waiters"),
+                elastic=("Waiters", "Name"),
             )
         if kind == "mailbox":
             values = self._registered_objects("mailbox", "struct rt_mailbox")
@@ -556,7 +629,7 @@ class RtThreadAdapter(RtosAdapter):
                     "Addr",
                 ],
                 rows,
-                elastic=("Name", "RecvWait", "SendWait"),
+                elastic=("RecvWait", "SendWait", "Name"),
             )
         if kind == "msgqueue":
             values = self._registered_objects("msgqueue", "struct rt_messagequeue")
@@ -613,7 +686,7 @@ class RtThreadAdapter(RtosAdapter):
                     "Addr",
                 ],
                 rows,
-                elastic=("Name", "RecvWait", "SendWait"),
+                elastic=("RecvWait", "SendWait", "Name"),
             )
         if kind == "mempool":
             values = self._registered_objects("mempool", "struct rt_mempool")
@@ -640,7 +713,7 @@ class RtThreadAdapter(RtosAdapter):
             return ObjectTable(
                 ["Name", "BlockSize", "Total", "Free", "Used", "Waiters", "Addr"],
                 rows,
-                elastic=("Name", "Waiters"),
+                elastic=("Waiters", "Name"),
             )
         if kind == "timer":
             rows = []
@@ -677,7 +750,7 @@ class RtThreadAdapter(RtosAdapter):
                 ],
                 rows,
                 [f"Kernel tick: {current_tick if current_tick is not None else 'N/A'}"],
-                elastic=("Name", "Callback"),
+                elastic=("Callback", "Name"),
             )
         return None
 
@@ -693,13 +766,13 @@ class RtThreadAdapter(RtosAdapter):
             if value is None:
                 return ObjectDetail(found=False)
             return ObjectDetail(
-                pairs=rt_detail.thread_detail(value_to_thread(value, self.layout))
+                pairs=diagnostics.thread_detail(value_to_thread(value, self.layout))
             )
         if kind == "timer":
             for value in iter_timers(self.layout):
                 timer = value_to_timer(value, self.layout)
                 if timer.name == name:
-                    return ObjectDetail(pairs=rt_detail.timer_detail(timer))
+                    return ObjectDetail(pairs=diagnostics.timer_detail(timer))
             return ObjectDetail(found=False)
 
         type_code = resolve_object_type_code(kind, self.layout)
@@ -724,14 +797,15 @@ class RtThreadAdapter(RtosAdapter):
     def iter_tasks(self):
         yield from iter_threads(self.layout)
 
-    def _summarize_task(self, value: gdb.Value, current_address: int) -> TaskSummary:
+    def _task_view(
+        self, value: gdb.Value, current_address: int
+    ) -> tuple[Thread, str, int | None]:
         thread = value_to_thread(value, self.layout)
         try:
             state = ThreadState(thread.state).name.title()
         except ValueError:
             state = "Unknown"
         is_current = current_address == thread.address and thread.address
-        # SMP reports the real CPU; UP keeps the current marker on core 0.
         current_core = (
             thread.oncpu
             if is_current and thread.oncpu is not None
@@ -739,35 +813,70 @@ class RtThreadAdapter(RtosAdapter):
             if is_current
             else None
         )
-        return TaskSummary(
-            name=thread.name,
-            address=thread.address,
-            state=state,
-            priority=thread.current_priority,
-            base_priority=thread.init_priority,
-            stack_pointer=thread.sp,
-            stack_size=thread.stack_size or None,
-            stack_used=thread.stack_used,
-            high_water_mark=thread.max_stack_used,
-            entry=thread.entry,
-            current_core=current_core,
-            bind_cpu=thread.bind_cpu,
-            oncpu=thread.oncpu,
-        )
+        return thread, state, current_core
 
-    def iter_task_summaries(self):
+    def _task_views(self):
         current = get_current_thread()
         current_address = _get_addr(current) if current is not None else 0
         for value in iter_threads(self.layout):
-            yield self._summarize_task(value, current_address)
+            yield self._task_view(value, current_address)
+
+    def task_table(self) -> ObjectTable:
+        thread_layout = self.layout.structs.get("struct rt_thread")
+        smp = bool(
+            thread_layout
+            and ("oncpu" in thread_layout.fields or "bind_cpu" in thread_layout.fields)
+        )
+        headers = [
+            "Name",
+            "State",
+            "Prio",
+            "BasePrio",
+            "SP",
+            "Stack",
+            "Used",
+            "HighWater",
+            "Entry",
+        ]
+        if smp:
+            headers += ["CPU", "Bind"]
+        headers.append("Addr")
+
+        rows = []
+        for thread, state, current_core in self._task_views():
+            symbol = lookup_symbol_at(thread.entry) if thread.entry else None
+            row = [
+                thread.name + (" *" if current_core is not None else ""),
+                state,
+                str(thread.current_priority),
+                str(thread.init_priority),
+                format_address(thread.sp),
+                format_optional_int(thread.stack_size or None),
+                format_optional_int(thread.stack_used),
+                format_optional_int(thread.max_stack_used),
+                format_symbol_or_address(thread.entry, symbol),
+            ]
+            if smp:
+                row += [
+                    format_optional_int(thread.oncpu),
+                    format_optional_int(thread.bind_cpu),
+                ]
+            row.append(format_address(thread.address))
+            rows.append(row)
+        return ObjectTable(headers=headers, rows=rows, elastic=("Entry", "Name"))
 
     def system_summary(self) -> SystemSummary:
-        tasks = list(self.iter_task_summaries())
+        tasks = list(self._task_views())
         states: dict[str, int] = {}
-        for task in tasks:
-            states[task.state] = states.get(task.state, 0) + 1
+        for _thread, state, _current_core in tasks:
+            states[state] = states.get(state, 0) + 1
         current = next(
-            (task.name for task in tasks if task.current_core is not None), None
+            (
+                thread.name
+                for thread, _state, current_core in tasks
+                if current_core is not None
+            ),
+            None,
         )
         used = read_int(eval_safe("(int)rt_memory_info(0)"))
         return SystemSummary(
