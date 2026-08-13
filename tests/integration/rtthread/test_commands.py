@@ -191,7 +191,7 @@ def test_rtt_semaphore_command_lists_fixture_data(rtt_outputs):
 
 
 def test_rtt_semaphore_waiter_summary(rtt_outputs):
-    """An empty semaphore shows its waiting thread by name (PLAN 11.10)."""
+    """An empty semaphore shows its waiting thread by name."""
     output = rtt_outputs["semaphores"]
     row = _fixture_row(output, _PROFILE.wait_semaphore_name)
     assert row[0] == _PROFILE.wait_semaphore_name

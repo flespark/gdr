@@ -20,7 +20,7 @@ index d59513b..ad3e1aa 100644
 + *   worker7 waits), "wait_mb_send" (full, worker8 send-waits)
 + * - Message queues: "test_msgqueue" (one queued message), "wait_mq_recv"
 + *   (empty, worker9 waits). No sender waiter: this kernel version has no
-+ *   rt_mq_send_wait (see PLAN 11.4), so SendWaiters renders N/A.
++ *   rt_mq_send_wait, so SendWaiters renders N/A.
 + * - Memory pools: "test_mempool" (one allocated block), "wait_mp"
 + *   (exhausted; worker11 alloc-waits)
 + * - Timers: "test_timer" (periodic, 100 ticks)

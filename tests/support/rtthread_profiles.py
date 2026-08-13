@@ -24,7 +24,7 @@ class RtThreadTestProfile:
     mempool_name: str = "test_mempool"
     timer_name: str = "test_timer"
     # Blocking-waiter fixture objects (created only on fixture revisions that
-    # include the PLAN 11.10 deterministic blocking threads).
+    # include deterministic blocking threads).
     wait_semaphore_name: str = "wait_sem"
     wait_mutex_name: str = "wait_mutex"
     wait_event_name: str = "wait_event"
