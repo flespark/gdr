@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import gdr.gdb_bridge as bridge
 
 
@@ -179,11 +181,13 @@ class _TerminalSize:
 def test_terminal_width_uses_explicit_gdb_width(monkeypatch):
     """``set width N`` beats terminal probing (priority 1)."""
     monkeypatch.setattr(bridge, "gdb", _WidthGdb(100))
-    monkeypatch.setattr(
-        bridge.shutil,
-        "get_terminal_size",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("terminal unused")),
-    )
+
+    def unused_terminal():
+        raise AssertionError("terminal unused")
+
+    # Reason: patch the local helper, not stdlib shutil. pytest -v probes
+    # shutil.get_terminal_size while reporting, and a leaked mock crashes CI.
+    monkeypatch.setattr(bridge, "_system_columns", unused_terminal)
 
     assert bridge.terminal_width() == 100
 
@@ -193,9 +197,7 @@ def test_terminal_width_falls_back_to_terminal_columns_when_gdb_width_unlimited(
 ):
     """Unlimited GDB width delegates to the detected terminal columns."""
     monkeypatch.setattr(bridge, "gdb", _WidthGdb(0))
-    monkeypatch.setattr(
-        bridge.shutil, "get_terminal_size", lambda **_kwargs: _TerminalSize(80)
-    )
+    monkeypatch.setattr(bridge, "_system_columns", lambda: 80)
 
     assert bridge.terminal_width() == 80
 
@@ -205,9 +207,7 @@ def test_terminal_width_falls_back_to_terminal_columns_when_gdb_width_missing(
 ):
     """An unavailable width parameter is treated like ``unlimited``."""
     monkeypatch.setattr(bridge, "gdb", _WidthGdb(None))
-    monkeypatch.setattr(
-        bridge.shutil, "get_terminal_size", lambda **_kwargs: _TerminalSize(120)
-    )
+    monkeypatch.setattr(bridge, "_system_columns", lambda: 120)
 
     assert bridge.terminal_width() == 120
 
@@ -215,13 +215,25 @@ def test_terminal_width_falls_back_to_terminal_columns_when_gdb_width_missing(
 def test_terminal_width_defaults_to_120_when_everything_is_unavailable(monkeypatch):
     """Terminal probing failures never crash list rendering (fallback 120)."""
     monkeypatch.setattr(bridge, "gdb", _WidthGdb(0))
-
-    def no_terminal(*_args, **_kwargs):
-        raise OSError("no terminal")
-
-    monkeypatch.setattr(bridge.shutil, "get_terminal_size", no_terminal)
+    monkeypatch.setattr(bridge, "_system_columns", lambda: None)
 
     assert bridge.terminal_width() == 120
+
+
+def test_system_columns_reads_detected_terminal_width():
+    """``_system_columns`` forwards a positive shutil column count."""
+    with patch.object(
+        bridge.shutil, "get_terminal_size", return_value=_TerminalSize(80)
+    ):
+        assert bridge._system_columns() == 80
+
+
+def test_system_columns_returns_none_when_terminal_probe_fails():
+    """OSError from shutil is contained so list rendering can fall back."""
+    with patch.object(
+        bridge.shutil, "get_terminal_size", side_effect=OSError("no terminal")
+    ):
+        assert bridge._system_columns() is None
 
 
 def test_print_table_honors_explicit_width_with_elastic_columns(monkeypatch):

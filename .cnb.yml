@@ -1,13 +1,14 @@
 # CNB pipeline for GDR.
 #
-# Seven pipelines:
-#  1. validate  — ruff check/format and unit-test coverage (no QEMU)
-#  2. publish-qemu-matrix-image — timestamped QEMU matrix image
-#  3. publish-gdb12-compat-image — timestamped GDB 12 compatibility image
-#  4. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
-#  5. qemu-test-a9 — Cortex-A9 closed-loop test
-#  6. qemu-test-rv64 — RISC-V RV64 closed-loop test
-#  7. release — source archives and a CNB Release on every pushed tag
+# Eight pipelines:
+#  1. validate-py310 — ruff + unit coverage on Python 3.10
+#  2. validate-py314 — same checks on Python 3.14
+#  3. publish-qemu-matrix-image — timestamped QEMU matrix image
+#  4. publish-gdb12-compat-image — timestamped GDB 12 compatibility image
+#  5. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
+#  6. qemu-test-a9 — Cortex-A9 closed-loop test
+#  7. qemu-test-rv64 — RISC-V RV64 closed-loop test
+#  8. release — source archives and a CNB Release on every pushed tag
 #
 # The QEMU jobs use `docker.build` with their respective CI Dockerfiles; the
 # resulting images are cached by hash on the CNB artifact registry, so later
@@ -24,27 +25,38 @@
 # An arm64 host gains nothing for either cross-ISA target, so amd64 is simplest.
 # Ref: https://docs.cnb.cool/zh/build/build-node.html
 
+# Shared with GitHub `.github/workflows/ci.yml` validate: lockfile ruff +
+# `uv run pytest tests/unit -v --cov` on the 3.10/3.14 boundaries. GitHub
+# additionally runs non-ruff pre-commit hooks. Official `python:` images are
+# used because the CNB default image has no pip.
+.validate-stages: &validate-stages
+  - name: install
+    script: |
+      pip install --quiet uv
+      uv sync --locked --group dev
+  - name: ruff check
+    script: uv run ruff check .
+  - name: ruff format check
+    script: uv run ruff format --check .
+  - name: unit test coverage
+    script: uv run pytest tests/unit -v --cov
+
+.validate-py310: &validate-py310
+  name: validate-py310
+  docker:
+    image: python:3.10
+  stages: *validate-stages
+
+.validate-py314: &validate-py314
+  name: validate-py314
+  docker:
+    image: python:3.14
+  stages: *validate-stages
+
 main: # branch: main
   push:
-    # ---------------------------------------------------------------
-    # validate: static checks and unit coverage. Uses python:3.12 because the CNB default image
-    # `cnbcool/default-build-env` only ships git/jq/rsync/curl — no pip.
-    # ---------------------------------------------------------------
-    - name: validate
-      docker:
-        image: python:3.12
-      stages:
-        - name: ruff check
-          script: |
-            pip install --quiet "ruff>=0.11"
-            ruff check .
-        - name: ruff format check
-          script: ruff format --check .
-        - name: unit test coverage
-          script: |
-            pip install --quiet uv
-            uv sync --locked --group dev
-            uv run pytest tests/unit --cov
+    - <<: *validate-py310
+    - <<: *validate-py314
 
     # `docker.build` cache tags are content hashes under `dockerfile-caches`.
     # Publish stable aliases separately so the two large CI images have clear
@@ -173,21 +185,8 @@ main: # branch: main
 
   pull_request:
     # Mirror of the push pipelines, for pre-merge feedback on PRs.
-    - name: validate
-      docker:
-        image: python:3.12
-      stages:
-        - name: ruff check
-          script: |
-            pip install --quiet "ruff>=0.11"
-            ruff check .
-        - name: ruff format check
-          script: ruff format --check .
-        - name: unit test coverage
-          script: |
-            pip install --quiet uv
-            uv sync --locked --group dev
-            uv run pytest tests/unit --cov
+    - <<: *validate-py310
+    - <<: *validate-py314
 
     - name: gdb12-compat-a9
       runner:
