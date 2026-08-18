@@ -173,7 +173,7 @@ def _setup_freertos(version: str) -> None:
     register_functions()
     register_commands()
     register(adapter)
-    info("FreeRTOS support ready. Type 'freertos help' for commands.")
+    info("FreeRTOS support ready. Type 'freertos help' (alias: frt) for commands.")
 
 
 def _setup_rtos(rtos: str, version: str) -> None:
