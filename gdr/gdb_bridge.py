@@ -24,7 +24,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.constants import DEFAULT_TERMINAL_WIDTH, MAX_CSTRING_LENGTH
+from gdr.constants import GDR_DEFAULT_TERMINAL_WIDTH, GDR_MAX_CSTRING_LENGTH
 from gdr.formatting import format_table
 
 
@@ -197,7 +197,7 @@ def read_int(value: gdb.Value | None) -> int | None:
 
 
 def read_cstring(
-    value: gdb.Value | None, max_len: int = MAX_CSTRING_LENGTH
+    value: gdb.Value | None, max_len: int = GDR_MAX_CSTRING_LENGTH
 ) -> str | None:
     """Read a C string (``char*`` or ``char[]``) from a ``gdb.Value``.
 
@@ -307,7 +307,7 @@ def _gdb_width() -> int | None:
 def _system_columns() -> int | None:
     """Return the detected terminal column count, or ``None`` when unknown."""
     try:
-        size = shutil.get_terminal_size(fallback=(DEFAULT_TERMINAL_WIDTH, 24))
+        size = shutil.get_terminal_size(fallback=(GDR_DEFAULT_TERMINAL_WIDTH, 24))
     except (OSError, ValueError):
         return None
     columns = size.columns
@@ -328,7 +328,7 @@ def terminal_width() -> int:
     gdb_width = _gdb_width()
     if gdb_width is not None:
         return gdb_width
-    return _system_columns() or DEFAULT_TERMINAL_WIDTH
+    return _system_columns() or GDR_DEFAULT_TERMINAL_WIDTH
 
 
 def print_table(

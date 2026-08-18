@@ -6,10 +6,10 @@ from collections.abc import Sequence
 from io import StringIO
 
 from .constants import (
-    DEFAULT_TERMINAL_WIDTH,
-    MIN_ELASTIC_COLUMN_WIDTH,
-    TABLE_COLUMN_GAP,
-    TABLE_TRUNCATION_SUFFIX,
+    GDR_DEFAULT_TERMINAL_WIDTH,
+    GDR_MIN_ELASTIC_COLUMN_WIDTH,
+    GDR_TABLE_COLUMN_GAP,
+    GDR_TABLE_TRUNCATION_SUFFIX,
 )
 
 
@@ -38,7 +38,7 @@ def _natural_widths(rows: Sequence[Sequence[str]], headers: Sequence[str]) -> li
 
 
 def _total_width(widths: Sequence[int]) -> int:
-    return sum(widths) + TABLE_COLUMN_GAP * (len(widths) - 1)
+    return sum(widths) + GDR_TABLE_COLUMN_GAP * (len(widths) - 1)
 
 
 def _elastic_indexes(headers: Sequence[str], elastic: Sequence[str]) -> list[int]:
@@ -73,7 +73,7 @@ def _shrink_to_fit(
     indexes = _elastic_indexes(headers, elastic)
     priorities = {index: elastic.index(headers[index]) for index in indexes}
     minimums = {
-        index: max(len(str(headers[index])), MIN_ELASTIC_COLUMN_WIDTH)
+        index: max(len(str(headers[index])), GDR_MIN_ELASTIC_COLUMN_WIDTH)
         for index in indexes
     }
     widths = list(natural)
@@ -95,7 +95,9 @@ def _shrink_to_fit(
 def _truncate_cell(text: str, width: int) -> str:
     if len(text) <= width:
         return text
-    return text[: width - len(TABLE_TRUNCATION_SUFFIX)] + TABLE_TRUNCATION_SUFFIX
+    return (
+        text[: width - len(GDR_TABLE_TRUNCATION_SUFFIX)] + GDR_TABLE_TRUNCATION_SUFFIX
+    )
 
 
 def _render_table(
@@ -122,7 +124,7 @@ def format_table(
     headers: Sequence[str],
     *,
     elastic: Sequence[str] = (),
-    width: int = DEFAULT_TERMINAL_WIDTH,
+    width: int = GDR_DEFAULT_TERMINAL_WIDTH,
 ) -> str:
     """Format rows as a fixed-column ASCII table within a target width."""
     if not rows:

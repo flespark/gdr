@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from gdr.constants import MAX_TRAVERSAL_COUNT
+from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.formatting import format_optional_int, format_symbol_or_address
 from gdr.gdb_bridge import get_arch_info, lookup_symbol_at, read_bytes, read_int
 from gdr.layout import KernelLayout, read_field
@@ -241,7 +241,7 @@ def _messagequeue_node_pairs(
     ]
 
     if head is not None:
-        active = _walk_list(head, ptrsize, endian, MAX_TRAVERSAL_COUNT)
+        active = _walk_list(head, ptrsize, endian, GDR_MAX_TRAVERSAL_COUNT)
         header_bytes = ptrsize * _MQ_HEADER_POINTERS
         payload_size = min(msgqueue.msg_size, 64)
         for index, node in enumerate(active[: max(msgqueue.max_msgs, 1)]):
@@ -253,7 +253,7 @@ def _messagequeue_node_pairs(
     pairs.append(("ActiveNodes", str(len(active)) if head is not None else "N/A"))
 
     if free is not None:
-        free_nodes = _walk_list(free, ptrsize, endian, MAX_TRAVERSAL_COUNT)
+        free_nodes = _walk_list(free, ptrsize, endian, GDR_MAX_TRAVERSAL_COUNT)
         pairs.append(("FreeNodes", str(len(free_nodes))))
     else:
         free_nodes = []

@@ -10,7 +10,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.layout import FreeRtosLayout
-from gdr.constants import MAX_TRAVERSAL_COUNT
+from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.gdb_bridge import (
     lookup_symbol,
     read_int,
@@ -41,7 +41,7 @@ def _array_item(value, index):
 
 
 def _iter_list(
-    head, layout: FreeRtosLayout, max_count: int = MAX_TRAVERSAL_COUNT
+    head, layout: FreeRtosLayout, max_count: int = GDR_MAX_TRAVERSAL_COUNT
 ) -> Iterator:
     """Yield TCBs from a List_t, stopping on corruption or a bounded count."""
     if head is None:

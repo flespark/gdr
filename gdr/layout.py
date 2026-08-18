@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
-from .constants import MAX_TRAVERSAL_COUNT
+from .constants import GDR_MAX_TRAVERSAL_COUNT
 from .gdb_bridge import warn
 
 try:
@@ -57,6 +57,7 @@ class StructField:
             as an ``enum_map``.
     """
 
+    # TODO: StructField attributes simplify
     name: str
     path: tuple[str | int, ...]
     kind: str = ""
@@ -244,7 +245,7 @@ def read_field(
 def iter_list(
     head_value: gdb.Value,
     hook: ListHook,
-    max_count: int = MAX_TRAVERSAL_COUNT,
+    max_count: int = GDR_MAX_TRAVERSAL_COUNT,
 ) -> Iterator[gdb.Value]:
     """Iterate a doubly-linked list, yielding container ``gdb.Value`` objects.
 

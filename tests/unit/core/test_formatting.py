@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gdr.constants import DEFAULT_TERMINAL_WIDTH as DEFAULT_WIDTH
+from gdr.constants import GDR_DEFAULT_TERMINAL_WIDTH as DEFAULT_WIDTH
 from gdr.formatting import format_table
 
 
