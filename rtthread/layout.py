@@ -375,6 +375,15 @@ def _ipc_fields(object_type_names: dict[int, str]) -> dict[str, StructField]:
     fields["suspend_thread"] = StructField(
         "suspend_thread", ("parent", "suspend_thread"), kind="list"
     )
+    # Reason: IPC scheduling policy lives in ``rt_object.flag`` (0=FIFO, 1=PRIO).
+    # Decoding stays in the adapter's ``_ipc_policy``; the pretty-printer calls
+    # it through ``StructField.formatter`` so the RTOS-neutral core reuses the
+    # same decoder instead of duplicating the mapping as an enum_map.
+    fields["policy"] = StructField(
+        "policy",
+        ("parent", "parent", "flag"),
+        summary=True,
+    )
     return fields
 
 
@@ -404,11 +413,11 @@ def build_thread_layout(
     f["tlist"] = StructField("tlist", ("tlist",), kind="list")
 
     # Stack and entry
-    f["sp"] = StructField("sp", ("sp",), kind="ptr")
-    f["entry"] = StructField("entry", ("entry",), kind="ptr")
+    f["sp"] = StructField("sp", ("sp",), kind="ptr", summary=True)
+    f["entry"] = StructField("entry", ("entry",), kind="ptr", summary=True)
     f["parameter"] = StructField("parameter", ("parameter",), kind="ptr")
     f["stack_addr"] = StructField("stack_addr", ("stack_addr",), kind="ptr")
-    f["stack_size"] = StructField("stack_size", ("stack_size",))
+    f["stack_size"] = StructField("stack_size", ("stack_size",), summary=True)
 
     # Error and state
     f["error"] = StructField("error", ("error",))
@@ -418,8 +427,8 @@ def build_thread_layout(
 
     # SMP-conditional fields
     if cfg.smp:
-        f["bind_cpu"] = StructField("bind_cpu", ("bind_cpu",))
-        f["oncpu"] = StructField("oncpu", ("oncpu",))
+        f["bind_cpu"] = StructField("bind_cpu", ("bind_cpu",), summary=True)
+        f["oncpu"] = StructField("oncpu", ("oncpu",), summary=True)
         f["scheduler_lock_nest"] = StructField(
             "scheduler_lock_nest", ("scheduler_lock_nest",)
         )
@@ -433,7 +442,9 @@ def build_thread_layout(
         "current_priority", ("current_priority",), summary=True
     )
     if cfg.thread_has_init_priority:
-        f["init_priority"] = StructField("init_priority", ("init_priority",))
+        f["init_priority"] = StructField(
+            "init_priority", ("init_priority",), summary=True
+        )
     f["number_mask"] = StructField("number_mask", ("number_mask",))
 
     # Ticks
@@ -475,7 +486,7 @@ def build_timer_layout(object_type_names: dict[int, str]) -> StructLayout:
         "row", ("row", 0), kind="list"
     )  # row[0] for skip-list level 1
     sl.fields["timeout_func"] = StructField(
-        "timeout_func", ("timeout_func",), kind="ptr"
+        "timeout_func", ("timeout_func",), kind="ptr", summary=True
     )
     sl.fields["parameter"] = StructField("parameter", ("parameter",), kind="ptr")
     sl.fields["init_tick"] = StructField("init_tick", ("init_tick",), summary=True)
@@ -503,7 +514,7 @@ def build_mutex_layout(object_type_names: dict[int, str]) -> StructLayout:
     sl.fields.update(_ipc_fields(object_type_names))
     sl.fields["value"] = StructField("value", ("value",), summary=True)
     sl.fields["original_priority"] = StructField(
-        "original_priority", ("original_priority",)
+        "original_priority", ("original_priority",), summary=True
     )
     sl.fields["hold"] = StructField("hold", ("hold",), summary=True)
     sl.fields["owner"] = StructField(
@@ -520,7 +531,9 @@ def build_event_layout(object_type_names: dict[int, str]) -> StructLayout:
     """Build ``rt_event`` layout (COUPLED: rtdef.h struct rt_event)."""
     sl = StructLayout("struct rt_event", display_name="Event")
     sl.fields.update(_ipc_fields(object_type_names))
-    sl.fields["set"] = StructField("set", ("set",), summary=True)
+    # Reason: the event bit-set is a mask, so hex keeps the individual bits
+    # readable and matches the ``rtt events`` table's ``Set`` column.
+    sl.fields["set"] = StructField("set", ("set",), kind="hex", summary=True)
     return sl
 
 
@@ -531,8 +544,8 @@ def build_mailbox_layout(object_type_names: dict[int, str]) -> StructLayout:
     sl.fields["msg_pool"] = StructField("msg_pool", ("msg_pool",), kind="ptr")
     sl.fields["size"] = StructField("size", ("size",), summary=True)
     sl.fields["entry"] = StructField("entry", ("entry",), summary=True)
-    sl.fields["in_offset"] = StructField("in_offset", ("in_offset",))
-    sl.fields["out_offset"] = StructField("out_offset", ("out_offset",))
+    sl.fields["in_offset"] = StructField("in_offset", ("in_offset",), summary=True)
+    sl.fields["out_offset"] = StructField("out_offset", ("out_offset",), summary=True)
     sl.fields["suspend_sender_thread"] = StructField(
         "suspend_sender_thread", ("suspend_sender_thread",), kind="list"
     )
@@ -550,7 +563,7 @@ def build_messagequeue_layout(
     sl = StructLayout("struct rt_messagequeue", display_name="MsgQueue")
     sl.fields.update(_ipc_fields(object_type_names))
     sl.fields["msg_pool"] = StructField("msg_pool", ("msg_pool",), kind="ptr")
-    sl.fields["msg_size"] = StructField("msg_size", ("msg_size",))
+    sl.fields["msg_size"] = StructField("msg_size", ("msg_size",), summary=True)
     sl.fields["max_msgs"] = StructField("max_msgs", ("max_msgs",), summary=True)
     sl.fields["entry"] = StructField("entry", ("entry",), summary=True)
     sl.fields["msg_queue_head"] = StructField(
@@ -589,8 +602,8 @@ def build_mempool_layout(object_type_names: dict[int, str]) -> StructLayout:
     sl.fields["start_address"] = StructField(
         "start_address", ("start_address",), kind="ptr"
     )
-    sl.fields["size"] = StructField("size", ("size",))
-    sl.fields["block_size"] = StructField("block_size", ("block_size",))
+    sl.fields["size"] = StructField("size", ("size",), summary=True)
+    sl.fields["block_size"] = StructField("block_size", ("block_size",), summary=True)
     sl.fields["block_total_count"] = StructField(
         "block_total_count", ("block_total_count",), summary=True
     )

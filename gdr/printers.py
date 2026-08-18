@@ -40,6 +40,9 @@ def _format_field(value, field: StructField) -> str:
 
     kind = field.kind
 
+    if field.formatter is not None:
+        return field.formatter(read_int(value))
+
     if kind == "string":
         s = read_cstring(value)
         return f'"{s}"' if s else "N/A"
@@ -83,6 +86,12 @@ def _format_field(value, field: StructField) -> str:
             names = [n for bit, n in field.enum_map.items() if val & bit]
             if names:
                 return "|".join(names)
+        return hex(val)
+
+    if kind == "hex":
+        val = read_int(value)
+        if val is None:
+            return "N/A"
         return hex(val)
 
     # Default: plain integer

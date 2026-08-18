@@ -110,13 +110,13 @@ warning: target RT-Thread version not exported; cannot verify version
 
 ```gdb
 (gdb) p spi1_mtx
-$1 = Mutex(name="spi1_mtx", value=0, hold=1, owner="main")
+$1 = Mutex(name="spi1_mtx", policy=PRIO, value=0, original_priority=20, hold=1, owner="main")
 
 (gdb) p rx_sem
-$2 = Semaphore(name="rx_sem", value=3)
+$2 = Semaphore(name="rx_sem", policy=FIFO, value=3)
 
 (gdb) p pm_task
-$3 = Thread(name="pm_task", stat=READY, current_priority=5)
+$3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, stack_size=2048, stat=READY, current_priority=5, init_priority=5)
 ```
 
 ## 注意

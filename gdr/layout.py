@@ -11,7 +11,7 @@ are only called inside a GDB session.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from .constants import MAX_TRAVERSAL_COUNT
@@ -50,6 +50,11 @@ class StructField:
         pointee_string_path: Optional path to a C string in the dereferenced
             value. This lets an adapter opt into useful pointer summaries
             without teaching the generic printer a target's struct layout.
+        formatter: Optional callable that maps the field's raw integer value
+            to a display string.  Adapters attach their own decoding functions
+            here (for example an IPC policy decode) so the RTOS-neutral
+            printer can reuse existing adapter logic instead of duplicating it
+            as an ``enum_map``.
     """
 
     name: str
@@ -58,6 +63,7 @@ class StructField:
     summary: bool = False
     enum_map: dict[int, str] | None = None
     pointee_string_path: tuple[str | int, ...] | None = None
+    formatter: Callable[[int | None], str] | None = None
 
 
 @dataclass

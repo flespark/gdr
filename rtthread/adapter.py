@@ -507,6 +507,13 @@ class RtThreadAdapter(RtosAdapter):
 
     def __init__(self, layout: KernelLayout) -> None:
         self.layout = layout
+        # Reason: IPC policy decoding lives in ``_ipc_policy``; expose it to the
+        # RTOS-neutral pretty-printer through the layout's formatter hook so the
+        # core reuses the same decoder rather than a duplicated enum_map.
+        for struct in layout.structs.values():
+            policy = struct.fields.get("policy")
+            if policy is not None:
+                policy.formatter = _ipc_policy
 
     def find_task(self, name: str) -> gdb.Value | None:
         return find_thread(name, self.layout)
