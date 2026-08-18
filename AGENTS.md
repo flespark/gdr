@@ -86,6 +86,67 @@ All commands run via `uv run` (auto-activates the `.venv`):
 There is **no separate `black` tool**; `ruff format` is the drop-in
 replacement and the only formatter used.
 
+## Verification and CI
+
+### RT-Thread QEMU test
+
+`bash ci/rtthread/run-qemu-matrix.sh` apply series arch/version triage patches
+to RT-thread repo and build firmware for QEMU test.
+
+QEMU fixture patches are grouped by platform first:
+`ci/rt-thread/patches/cortex-a9/<version>/` and
+`ci/rt-thread/patches/rv64/<version>/`. Do not share a patch across those
+directories unless it applies cleanly to both BSP paths and toolchains.
+
+The integration harness resolves fixture paths by default to the repo
+sibling directory `<repo>/../fixture/<target>/<version>/rtthread_qemu.elf`
+(plus `rtthread_qemu.bin` for RV64), or to explicit overrides when
+`GDR_ELF_PATH` and `GDR_FIRMWARE_PATH` are set. Missing tools or fixture
+artifacts are skipped per test via `pytest.skip` (see
+`tests/support/qemu_harness.py`), so partial local caches stay usable.
+
+```bash
+# Run the Cortex-A9 matrix against a local fixture cache without rebuilding.
+GDR_GDB=gdb-multiarch GDR_QEMU_TARGET=cortex-a9 \
+  uv run pytest tests/integration/rtthread -v
+```
+
+RT-Thread 3.1.x is verified on the Cortex-A9 QEMU BSP only; the upstream
+QEMU RV64 BSP starts at RT-Thread 4.0.4, so the RV64 matrix covers 4.0.4
+through 4.1.1 (`bsp/qemu-virt64-riscv` from 4.1.1).
+
+The RV64 target uses `qemu-system-riscv64 -machine virt` and boots
+`rtthread.bin` as BIOS; GDB reads the separate `rtthread.elf`.
+
+### FreeRTOS smoke test
+
+`bash ci/freertos/run-qemu-matrix.sh` builds the locked STM32CubeL4 `v1.18.2`
+B-L475E-IOT01A fixture (whose FreeRTOS submodule is commit
+`5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`) and runs it under QEMU:
+
+```bash
+bash ci/freertos/run-qemu-matrix.sh
+```
+
+The fixture uses the Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU
+semihosting, not the board's unsupported LPTIM. Fixture sources live in
+`ci/freertos/fixture/`; the build is defined in `ci/freertos/build-freertos.sh`.
+
+### CI pipelines
+
+CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
+defined in `.cnb.yml` (ruff + unit coverage on Python 3.10/3.14, the GDB 12
+compatibility baseline, and Cortex-A9 and RV64 QEMU matrices). GitHub Actions
+mirrors the validate jobs in `.github/workflows/ci.yml`. To reproduce the
+current ARM and RV64 QEMU matrices locally in a Podman machine:
+
+```bash
+ci/validate-podman.sh
+```
+
+The script builds `ci/Dockerfile` for `linux/amd64` and uses the pinned xPack
+toolchains. Start a Podman machine before running it.
+
 ## Conventions
 
 - Python 3.10+, PEP8, type hints, Google-style docstrings.
@@ -97,13 +158,6 @@ replacement and the only formatter used.
 - Add `# Reason:` inline comments for non-obvious *why* decisions.
 - When a layout-sensitive struct field changes in `rtthread/layout.py`,
   add or update the corresponding test assertion in `tests/`.
-- QEMU fixture patches are grouped by platform first:
-  `ci/rt-thread/patches/cortex-a9/<version>/` and
-  `ci/rt-thread/patches/rv64/<version>/`. Do not share a patch across those
-  directories unless it applies cleanly to both BSP paths and toolchains.
-- RV64 uses `qemu-system-riscv64 -machine virt` and boots `rtthread.bin` as
-  BIOS; GDB reads the separate `rtthread.elf`. It is supported from RT-Thread
-  v4.0.4 onward; v4.1.1 renames its BSP to `qemu-virt64-riscv`.
 
 ## Workflow
 

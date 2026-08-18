@@ -7,7 +7,7 @@ firmware in GDB by:
 
 - Folding noisy wrapper-type output (pretty-printers).
 - Solving object navigation once (convenience functions).
-- Aggregating multi-object state into tables (commands).
+- Aggregating multi-object state and Debug orientated diagnostics data gather (commands).
 
 Non-goals: replacing GDB expressions, wrapping QEMU monitor commands, or
 duplicating what `rust-gdb` / `gdb` already display well.
@@ -66,19 +66,11 @@ duplicating what `rust-gdb` / `gdb` already display well.
 Previous versions attempted to detect the RTOS and parse its version string
 from symbols, then match struct patterns. This was fragile (failed on
 attach, failed across remote configs) and duplicated logic. Users now
-specify the RTOS and exact version, for example
-`gdr init rtthread 4.0.5`. The RT-Thread adapter validates the explicitly
-verified `3.1.0-3.1.5` and `4.0.0-4.1.1` intervals, while layout differences
-are still handled by probing target symbols and DWARF rather than branching on
-every patch version. The sole retained version-level layout branch is the
-RT-Thread 3.1.3 insertion of `Null = 0` in `rt_object_class_type`: it shifts
-every object type code, so the active `KernelLayout` owns the semantic-name to
-numeric-code mapping. RT-Thread 3.1 thread object flags are likewise mapped to
-their actual `flags` member.
+specify the RTOS and exact version, for example `gdr init rtthread 4.0.5`.
 
 ### Config features are probed, not specified
 
-RT-Thread kernels vary by *configuration* far more than by version:
+RTOS kernels vary by *configuration* far more than by version. For RT-Thread:
 `RT_USING_SMP` adds `oncpu` to `rt_thread`; the heap manager
 (`small_mem` / `slab` / `memheap`) changes the heap data structures
 entirely; IPC components (`RT_USING_MUTEX`, etc.) may be absent.
@@ -86,37 +78,6 @@ Probing these by symbol presence (`rt_cpu_index`, `rt_sem_init`,
 `rt_mutex_take`, ...) is reliable and cheap, and spares users from
 reciting their `.config`. Probing falls back to safe defaults with a
 warning when a symbol is ambiguous.
-
-### Wrapper types first, per adapter
-
-"Wrapper-first" is an adapter-level prioritisation rule, not a global list
-of types. An adapter should first identify values whose default GDB display
-is dominated by implementation detail before the logical value: wrappers,
-handles, synchronisation objects, references, or other frequently inspected
-implementation-heavy types. The relevant types depend on the RTOS, source
-language, toolchain, but printers already supplied by GDB. An adapter need
-not add a printer when native GDB output is already useful.
-
-The core does not identify wrapper types or prescribe their type names,
-labels, or field paths. `gdr.printers` renders only metadata supplied by the
-active adapter, letting each target improve `p`, `bt full`, `info locals`, and
-watchpoint output without leaking one RTOS's type taxonomy into another.
-
-"Wrapper-first" describes priority, not scope: it does not request another
-Python model around every kernel object. Convenience functions solve target-
-specific navigation and return raw `gdb.Value` objects or GDB-native
-collections of raw pointers. GDB expressions and pretty-printers remain
-responsible for inspecting and presenting those values. Commands own display
-aggregation -- tables, trees, and derived summaries -- for collections that
-are awkward to express in GDB.
-
-### Shared version algorithms, RTOS-owned policy
-
-`gdr/version.py` owns strict parsing, formatting, range membership and
-declared decimal/packed-hex decoding. `rtthread/version.py` and
-`freertos/version.py` only declare their supported ranges, target symbols,
-encoding order and user-facing warning text. The core never contains an RTOS
-version range or target symbol.
 
 ### Adapter-owned dataclass layouts, not YAML schemas
 
@@ -134,14 +95,6 @@ Considered an external YAML schema + loader. Rejected because:
   encodings, target symbols, and object-registry traversal. The core only
   consumes generic layout metadata, so another RTOS can use different
   wrappers and object types without changing `gdr/`.
-
-FreeRTOS has an independent adapter under `freertos/`. It owns version and
-configuration probes, DWARF-path layouts, scheduler-list navigation, the
-complete `FreeRtosTask` intermediate model, an adapter-owned task table, and
-the `freertos tasks/system` command tree. Its task table adds BasePrio,
-Stack/Used, Runtime and SMP CPU/Affinity only when target capability permits.
-Queue and timer enumeration remains deferred; the core `gdr/` package stays
-generic.
 
 ### Coupling is explicit and localised
 
@@ -176,103 +129,91 @@ inspection is left to `$gdr_task(name)` + `p $gdr_task(name).field`. This
 keeps the command set small and avoids commands silently breaking when a field
 is renamed (the function returns the raw `gdb.Value`).
 
-### Adapter-owned task tables
+## Main design
 
-`ObjectTable` is the shared output protocol, not a shared task schema.
-`render_tasks()` only checks initialization, forwards adapter messages, and
-prints the adapter's headers, rows and elastic metadata. Each RTOS owns its
-columns, state names, current-task marker and capability-dependent fields.
-This avoids a growing cross-RTOS `TaskSummary` union and preserves scheduler
-information that is meaningful only to one RTOS.
+### Unified routing through the active adapter
 
-List commands may also offer a **singular detail form**
-(`rtt semaphore <name>`) that renders one object as a vertical `Key: Value`
-block. The adapter builds neutral pairs; the generic renderer never sees
-adapter field names, so a future adapter can reuse it unchanged. Event detail
-goes further and pairs each waiting thread with its `event_set`/`event_info`
-condition, explaining why the current event set did not wake it.
+`gdr/commands.py` holds the shared renderers, but every renderer resolves the
+target through `adapter_api.active()` and dispatches on the active adapter's
+`RtosAdapter` protocol (`task_table`, `object_table`, `object_detail`,
+`system_summary`, `find_task`, `find_object`, `iter_tasks`). There is exactly
+one routing entry point — the session adapter selected by `gdr init` — so
+`gdr/` never branches on an RTOS name or hardcodes a command vocabulary. A new
+RTOS only needs to implement the protocol to obtain the shared command tree,
+pretty-printers and convenience functions unchanged.
 
-### Blocking relations and accuracy
+### `gdb_command_guard` for kernel data collection
 
-IPC and mempool lists show a `count:names` waiter summary per wait list
-(semaphore/mutex/event/mempool: one `Waiters` column; mailbox and message
-queue: separate `RecvWait` and `SendWait` columns). Waiter counts always come
-from traversing the suspend list, never from the `suspend_thread_count` cache
-that was removed in later kernels. When a version has no sender wait list
-(e.g. message queues before v3.1.4 or in v4.0.0-v4.0.1), the column renders
-`N/A` rather than a fabricated `0`.
+RTOS debugging routinely touches target memory through GDB, and any read can
+raise `gdb.error` / `gdb.MemoryError` (target halted, unmapped memory, remote
+link dropped). Without a guard these bubble up as GDB "Python Exception"
+noise and abort the rest of the command. Every command body in `gdr/commands.py`
+is therefore wrapped with `@gdb_command_guard`, which:
 
-Waiter traversal is bounded and corruption-guarded: it recovers threads via
-`struct rt_thread.tlist`, caps the walk, detects cycles, and renders unreadable
-names as `<invalid>`. The layout drives both the field paths and the version
-boundaries, so adapter code never hardcodes offsets.
+- converts `gdb.error` / `gdb.MemoryError` into a `warn()` (recoverable, the
+  command reports and continues);
+- converts any other `Exception` into `err()`, including a full traceback
+  only when `GDR_DEBUG` is set.
 
-### Default-table enhancements
+This keeps derived-data collection resilient: one bad read degrades to a
+stable one-line diagnostic instead of aborting the whole command tree.
 
-IPC and mempool tables derive capacity from the kernel's own counters:
-mailboxes and message queues show `Free = capacity - entry`, memory pools show
-`Used = total - free`, and IPC objects carry a `FIFO`/`PRIO` policy column
-decoded from the object flag. Mutex rows include the owner's
-`original_priority` for priority-inheritance analysis, and timer rows add the
-object `Addr` plus a wrap-safe `ExpiresIn` (inactive timers render `N/A`).
+### Derived data and state for debugging targets
 
-RT-Thread task tables include `BasePrio`, stack usage/high-water data, entry
-and `Addr`; SMP layouts add `CPU`/`Bind`. FreeRTOS starts with
-`Name/State/Prio/SP/Addr` and conditionally adds base priority, stack usage,
-runtime, CPU and affinity only when the detected TCB/config exposes them.
-CPU 0 remains a valid value. The core never infers task columns from current
-row values.
+List and detail output supplement raw kernel fields with derived state that
+has direct diagnostic value, always computed from the target's own structures
+rather than hardcoded assumptions:
 
-### Object detail diagnostics
+- **Field Symbolization** dereference address, flag or bit mask value to
+  meaningful symbol as possible. Otherwise roll back to hex number regard
+  gdb output-radix setting.
+- **IPC waiter summaries** are derived by traversing each suspend list
+  (`count:names`), never from cached counters that's unstable over kernels.
+  A version without a sender wait list renders `N/A`, never a fabricated `0`.
+- **Capacity and policy columns** derive from kernel counters and object
+  flags: `Free = capacity - entry`, `Used = total - free`, and a
+  `FIFO`/`PRIO` policy decoded from the IPC flag.
+- **Detail diagnostics** extend the list columns with bounded, corruption-
+  guarded raw-memory walks and consistency verdicts (event waiter
+  `event_set`/mode pairing, mailbox FIFO offset check, message-queue chain
+  counts, memory-pool free-list and alignment checks, timer wrap-safe
+  `ExpiresIn`).
 
-The singular `rtt <object> <name>` detail extends beyond the list columns with
-kernel-memory walks and consistency checks, all bounded and corruption-guarded
-so a bad pointer cannot hang GDB:
+### Width-adaptive lists
 
-- Thread detail keeps `error`/`remaining_tick` out of the RT-Thread task table.
-- IPC detail repeats the decoded `FIFO`/`PRIO` policy and bounded waiter
-  summaries (`Waiters`, or separate `RecvWait`/`SendWait` fields) so a
-  singular detail command explains blocking relationships without requiring a
-  separate table command. Event detail additionally expands each waiter with
-  its `event_set` mask and `event_info` mode.
-- Timer detail adds the callback `parameter` pointer, a `KernelTick` snapshot,
-  and wrap-safe `ExpiresIn` for active timers.
-- Message-queue detail walks the active chain from `msg_queue_head`, decodes
-  each node's payload (payload starts after the one-pointer header), walks the
-  free chain from `msg_queue_free`, and cross-checks `entry`, active node
-  count, free node count, and `max_msgs`.
-- Mailbox detail reads the FIFO message slots starting at `out_offset` and
-  always reports an `OffsetCheck` verdict while validating
-  `in_offset`/`out_offset`/`entry` against `size`.
-- Memory-pool detail shows `start_address`/`size`/`block_list`, verifies block
-  alignment, compares the traversed free-list length against the cached
-  `block_free_count`, and includes the pool's waiter summary.
+`rtos <objects>` tables adapt to the current terminal width without ever
+changing their column set. The effective width is probed in priority order
+(`set width`, `shutil.get_terminal_size`, fallback 120) in
+`gdb.gdb_bridge.terminal_width`, while pure formatting lives in
+`gdr.formatting.format_table` so unit tests can pin 80/100/120/160 columns.
+When the natural table is too wide, only text columns explicitly marked
+`elastic` by the adapter shrink, in adapter-provided priority order, and
+overlong cells truncate with `..` while preserving a leading waiter count. If
+even the minimum elastic widths overflow, the natural table is printed
+unchanged and the terminal may wrap it. Numeric, state, and address cells are
+never truncated or dropped.
 
-Raw-memory diagnostic fields use stable labels: unavailable pointers are
-rendered as `N/A`, while an available and consistent structure reports an
-explicit `ok` verdict. Message-list counts likewise distinguish an empty list
-from an unavailable list pointer during manual smoke testing.
+### Critical vs non-critical field placement
 
-These builders receive the raw `gdb.Value` plus the active layout, so field
-paths and version conditionals stay in the adapter.
+Kernel fields are classified by diagnostic value, and that classification
+fixes where each field may appear:
 
-### Table width handling
+- **Critical fields** (waiter counts, `Addr`, `ExpiresIn`, `OrigPrio`,
+  SMP `CPU`/`Bind`) are mandatory in list output and survive any width
+  adaptation; their meaning must never be silently truncated away.
+- **Non-critical single-value fields** (`Policy`, `Free`, `Used`) stay in the
+  compact list when the 120-column budget allows, without adding rows.
+- **Non-critical detail fields** (internal pointers, per-waiter conditions,
+  consistency checks, thread `error`/`remaining_tick`) appear only in the
+  singular `rtt <object> <name>` detail, or via native `$gdr_object()` /
+  GDB expressions.
 
-List tables render at the current terminal width using a fixed priority:
+This mirrors the field taxonomy described earlier in this document: the list
+column set is stable, and deep or verbose state is reached through the detail
+command or raw `gdb.Value` inspection rather than by widening the default
+table.
 
-1. `gdb.parameter("width")` when it is a positive int (`set width N`);
-2. `shutil.get_terminal_size` columns when GDB width is unlimited/None;
-3. fallback to 120.
-
-The column set is stable: `rtt <objects>` never adds or hides columns based on
-width. When the natural table is wider than the terminal, only text columns
-listed in `ObjectTable.elastic` shrink, in the adapter-provided priority order,
-and overlong cells truncate with `..` on the right. If even minimum elastic
-widths overflow, the natural table is printed unchanged and the terminal may
-wrap it. The core has no header-name priority map and never guesses elastic
-metadata from display text.
-
-### Runtime data flows
+## Runtime data flows
 
 Initialization selects the adapter and builds its layout before registration:
 

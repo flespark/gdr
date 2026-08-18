@@ -9,8 +9,8 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 
 1. **RTOS 命令** — 每个 adapter 自己提供命令树（例如
    `rtt threads`、`rtt timers`）和对应的表格输出。
-2. **Pretty-printers** — 将复杂的内核对象（`rt_mutex`、`rt_semaphore`、
-   `rt_thread`）显示为一行摘要，使 `p`、`bt full`、`info locals` 更易读。
+2. **Pretty-printers** — 将复杂的内核对象 显示为一行摘要，使 `p ui_task`、
+   `bt full`、`info locals` 更易读。
 3. **便捷函数** — `$gdr_task("main")`、`$gdr_tasks()`、
    `$gdr_object(kind, name)` 返回 `gdb.Value`，便于继续用原生 GDB
    表达式做字段级检查。
@@ -23,15 +23,6 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 |------|------|------|
 | RT-Thread | 3.1.x、4.0.x、4.1.x | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起 |
 | FreeRTOS | V10.3.1 fixture 基线 | 任务导航及 adapter 自有的 `freertos tasks/system` 已在 QEMU B-L475E-IOT01A 验证 |
-
-核心实现已完成：GDB bridge、layout 引擎、pretty-printers、便捷函数、
-RTOS 命令树，以及 Cortex-A9 与 RISC-V RV64 目标上的 QEMU 闭环验证。
-
-FreeRTOS 支持显式版本/配置探测、基于 DWARF 字段路径的任务布局、
-调度器链表导航，以及 adapter 自有的 `freertos tasks`、`freertos system`
-输出。任务列按当前目标实际字段决定；队列和定时器对象枚举仍属于后续功能。
-`gdr` 命令有意只保留 `gdr init` 和 `gdr help`；原始值便捷函数仍保持
-RTOS 无关。
 
 ## 快速开始
 
@@ -77,17 +68,22 @@ Set-Location .\gdr-rtthread
 
 ```gdb
 (gdb) source gdr.py
+[gdr] GDR loaded. Run `gdr init <rtos> <version>` to initialise support.
 (gdb) gdr init rtthread 4.0.5
+warning: target RT-Thread version not exported; cannot verify version
 [gdr] setting up RT-Thread v4.0.5...
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
 [gdr]   layout: 10 structs, 2 list hooks
 [gdr] rtthread commands registered (alias: rtt)
 [gdr] RT-Thread support ready. Type 'rtt help' for commands.
-
 (gdb) rtt threads
-(gdb) rtt timers
+...
 (gdb) rtt system
-(gdb) p $gdr_task("worker1")
+...
+(gdb) rtt event test_event
+...
+(gdb) p test_mutex
+...
 ```
 
 ## 命令
@@ -95,41 +91,10 @@ Set-Location .\gdr-rtthread
 | 命令 | 说明 |
 |------|------|
 | `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
-| `gdr help` | 显示 GDR 启动用法 |
-| `rtt help` | 列出 RT-Thread 子命令和别名 |
+| `rtt <objects>` | 列表形式展示指定内核对象的总体状态 |
 | `rtt <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
-| `freertos tasks` | 列出 FreeRTOS 任务 |
-| `freertos system` | 输出 FreeRTOS 系统摘要 |
-
-列表命令（如 `rtt semaphores`、`rtt threads`、`rtt timers`）会按当前终端
-宽度渲染 ASCII 表格。列集合是稳定的，绝不随终端宽度增删；只有显式标记
-的弹性文本列（`Name`/`Owner`/`Waiters`/`Callback`/`Entry`）在表格过宽时
-收缩，超长单元格用 `..` 截断（等待者数量在开头，截断后仍保留）。若弹性
-列缩到最小宽度后仍超宽，则输出原始自然表格，允许终端自行换行。
-
-IPC 与内存池列表以 `count:names` 摘要显示等待线程：信号量、互斥量、事件
-和内存池有 `Waiters` 列，邮箱与消息队列拆分为 `RecvWait`/`SendWait`。
-等待数量一律通过遍历挂起链表得出（不读旧版本才有的缓存计数），没有发送
-等待链表的版本显示 `N/A` 而不是伪造的 `0`。
-
-默认表还会从内核自身计数派生容量：邮箱与消息队列显示
-`Free = capacity - entry`，内存池显示 `Used = total - free`，IPC 对象带有由
-对象 flag 解码的 `FIFO`/`PRIO` 策略列。互斥量行包含 `OrigPrio` 用于优先级
-继承分析，定时器显示 `Addr` 与回绕安全的 `ExpiresIn`（非活动定时器显示
-`N/A`）。RT-Thread 任务列表增加 `BasePrio` 与 `Addr`；SMP 目标还会显示
-`CPU`/`Bind`。FreeRTOS 任务列表使用自己的能力列，并在 TCB 提供时显示运行时间计数。
-共享 renderer 只负责输出 adapter 提供的表格。
-
-单个对象的详情也可以通过命令查看：`rtt <object> <name>`
-（如 `rtt semaphore my_sem`、`rtt thread worker1`），以纵向 `Key: Value`
-呈现，不干扰 `$gdr_object()` 仍返回原始 `gdb.Value` 的行为。IPC 详情会显示
-解码后的 `FIFO`/`PRIO` 策略和等待者摘要；邮箱和消息队列会区分接收与发送
-等待。事件详情还会把每个等待线程与它的 `event_set` 掩码和 AND/OR/CLEAR
-模式关联，帮助解释当前事件集为何没有唤醒它。detail 还包含超越列表列的
-底层诊断：线程详情显示 `Error`/`RemainingTick`，定时器详情显示 `Parameter`
-及 `KernelTick`/`ExpiresIn`，消息队列遍历并统计消息链与空闲链，邮箱列出 FIFO
-消息槽并给出稳定的偏移检查结果，内存池报告池范围、块对齐、空闲链表一致性
-及等待者。所有遍历都有界且带损坏保护。
+| `frt tasks` | 列出 FreeRTOS 任务 |
+| `frt system` | 输出 FreeRTOS 系统摘要 |
 
 ## 便捷函数
 
@@ -139,87 +104,36 @@ IPC 与内存池列表以 `count:names` 摘要显示等待线程：信号量、�
 | `$gdr_tasks()` | 目标原生任务指针数组 | `p $gdr_tasks()` / `p *$gdr_tasks()[0]` |
 | `$gdr_object(kind, name)` | 目标原生对象 `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |
 
-脚本与自动化请使用小写语义对象种类，例如
-`$gdr_object("semaphore", "my_sem")`。返回 null 表示对象不存在，或当前
-adapter 不能可靠枚举该种类。
-
 ## Pretty-printers
 
-在 `source gdr.py` 时自动注册。内核包装类型会根据 layout 的
-`summary` 字段折叠为一行摘要：
+内核对象会根据 layout 的 `summary` 字段折叠为一行摘要：
 
 ```gdb
-(gdb) p mutex
-$1 = Mutex(name="lock1", value=0, hold=1, owner="main")
+(gdb) p spi1_mtx
+$1 = Mutex(name="spi1_mtx", value=0, hold=1, owner="main")
 
-(gdb) p semaphore
-$2 = Semaphore(name="sem1", value=3)
+(gdb) p rx_sem
+$2 = Semaphore(name="rx_sem", value=3)
 
-(gdb) p thread
-$3 = Thread(name="worker", stat=READY, current_priority=5)
+(gdb) p pm_task
+$3 = Thread(name="pm_task", stat=READY, current_priority=5)
 ```
 
-## 配置
+## 注意
 
-用户需显式指定 RTOS 与主版本；**不会**自动检测 RTOS 类型或版本
-（在 attach / remote 场景下检测逻辑很脆弱）。内核 *配置特性*
-（SMP、堆管理器类型、已启用的 IPC 组件）会在启动时通过符号是否存在
-自动探测。
+GDR 认为运行时内存中的数据结构和代码是一致的，没有考虑经过编译优化产生偏差的情况。
+且部分信息依据代码中的宏定义，所以最好使用如下调试优化的编译选项：
 
-RT-Thread 3.1.x 仅在 Cortex-A9 QEMU BSP 上验证。上游 QEMU RV64 BSP
-从 RT-Thread 4.0.4 起提供，因此 RV64 验证覆盖 4.0.4 到 4.1.1。
-
-若已有编译好的 RT-Thread fixture，可设置 `RT_THREAD_FIXTURE_DIR` 跳过
-RT-Thread 编译。目录布局为
-`<base>/<target>/<version>/rtthread_qemu.elf`；RV64 还需
-`rtthread_qemu.bin`。基目录中缺少 target 或 version fixture 时只会警告并
-跳过，因此可以使用不完整的本地缓存：
-
-```bash
-RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
-RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh rv64
+```cmake
+add_compile_options(-O0 -ggdb3)
 ```
 
-## 维护说明（COUPLED）
+使用 GDR 时，用户需显式指定 RTOS 与版本；GDR **不会**自动检测 RTOS 类型或版本
+（考虑 RTOS 实现和编译配置的差异， 可能无法从 ELF 推断出准确的 RTOS 版本）。
+内核 *配置特性* （SMP、堆管理器类型、已启用的 IPC 组件）会在启动时通过符号是否
+存在自动探测。
 
-`rtthread/layout.py` 是唯一知晓 RT-Thread 结构体布局的地方。当
-RT-Thread 内核结构体发生变化（新增字段、成员重命名、偏移移动）时，
-该文件及其 QEMU smoke 测试必须一并审查。RT-Thread 中间展示模型及其
-`gdb.Value` 转换器归 `rtthread/adapter.py` 所有，它们不是 ABI 布局描述。
-设计理由见 `docs/architecture.md`。
-
-## 开发
-
-```bash
-uv sync --group dev          # 创建 .venv 并安装开发依赖
-uv run pre-commit install    # 启用 git hooks
-uv run ruff check . && uv run ruff format --check .
-uv run pytest tests/unit --cov
-uv run pytest tests/integration -v  # QEMU fixture 可用时运行
-```
-
-FreeRTOS smoke test 会构建锁定的 STM32CubeL4 `v1.18.2`
-B-L475E-IOT01A fixture（其中 FreeRTOS submodule 固定为 commit
-`5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`），并在 QEMU 中运行：
-
-```bash
-bash ci/freertos/run-qemu-matrix.sh
-```
-
-该命令需要 `qemu-system-arm`、启用 Python 的 `gdb-multiarch` 与
-`arm-none-eabi-gcc`。fixture 使用 Cortex-M SysTick port 与 QEMU semihosting，
-不依赖该板卡 QEMU 尚未实现的 LPTIM。
-
-CI 运行在 [CNB](https://cnb.cool/)（Cloud Native Build）平台上，流水线定义于
-`.cnb.yml`（含 lint、GDB 12 最低兼容基线，以及 Cortex-A9 与 RV64 QEMU
-矩阵）。若要在本地 Podman machine 中复现当前的 ARM 与 RV64 QEMU 矩阵：
-
-```bash
-ci/validate-podman.sh
-```
-
-该脚本会为 `linux/amd64` 构建 `ci/Dockerfile`，并使用固定版本的
-xPack 工具链。运行前请先启动 Podman machine。
+## 贡献
 
 完整贡献指南见 `AGENTS.md`。
 

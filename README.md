@@ -10,9 +10,8 @@ the [Asterinas GDB helper](#acknowledgements):
 
 1. **RTOS commands** — each adapter owns its command tree (for example,
    `rtt threads` and `rtt timers`) and the corresponding table output.
-2. **Pretty-printers** — fold noisy kernel object (`rt_mutex`, `rt_semaphore`,
-   `rt_thread`) into one-line summaries so `p`, `bt full` and `info locals`
-   stay readable.
+2. **Pretty-printers** — fold noisy kernel object into one-line summaries
+   so `p ui_task`, `bt full` and `info locals` stay readable.
 3. **Convenience functions** — `$gdr_task("main")`, `$gdr_tasks()`,
    `$gdr_object(kind, name)` return `gdb.Value` so you can keep using native
    GDB expressions for the actual field inspection.
@@ -25,17 +24,6 @@ the [Asterinas GDB helper](#acknowledgements):
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
 | FreeRTOS | V10.3.1 fixture baseline | Task navigation and adapter-owned `freertos tasks/system` verified on QEMU B-L475E-IOT01A |
-
-Core implementation complete: GDB bridge, layout engine,
-pretty-printers, convenience functions, RTOS command trees, and QEMU
-closed-loop verification on Cortex-A9 and RISC-V RV64 targets.
-
-FreeRTOS support adds explicit version/config probing, DWARF-path task layouts,
-scheduler-list navigation, and adapter-owned `freertos tasks` / `freertos system`
-output. Task columns follow fields available in the current target; queue and
-timer object enumeration remains a later adapter feature. The `gdr`
-command is intentionally limited to `gdr init` and `gdr help`; raw-value
-convenience functions remain RTOS-neutral.
 
 ## Quick start
 
@@ -83,17 +71,22 @@ Set-Location .\gdr-rtthread
 
 ```gdb
 (gdb) source gdr.py
+[gdr] GDR loaded. Run `gdr init <rtos> <version>` to initialise support.
 (gdb) gdr init rtthread 4.0.5
+warning: target RT-Thread version not exported; cannot verify version
 [gdr] setting up RT-Thread v4.0.5...
 [gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
 [gdr]   layout: 10 structs, 2 list hooks
 [gdr] rtthread commands registered (alias: rtt)
 [gdr] RT-Thread support ready. Type 'rtt help' for commands.
-
 (gdb) rtt threads
-(gdb) rtt timers
+...
 (gdb) rtt system
-(gdb) p $gdr_task("worker1")
+...
+(gdb) rtt event test_event
+...
+(gdb) p test_mutex
+...
 ```
 
 ## Commands
@@ -101,50 +94,10 @@ Set-Location .\gdr-rtthread
 | Command | Description |
 |---------|-------------|
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
-| `gdr help` | Show GDR bootstrap usage |
-| `rtt help` | List RT-Thread commands and aliases |
+| `rtt <objects>` | List the kernel object type collective status |
 | `rtt <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
 | `frt tasks` | List FreeRTOS tasks |
 | `frt system` | Show the FreeRTOS system summary |
-
-List commands (for example `rtt semaphores`, `rtt threads`, `rtt timers`)
-render ASCII tables sized to the current terminal width. The column set is
-stable and never changes with width; only marked elastic text columns
-(`Name`/`Owner`/`Waiters`/`Callback`/`Entry`) shrink when a table is too wide,
-truncating overlong cells with `..` (a leading waiter count is preserved). If
-even the minimum widths overflow, the natural table is printed and your
-terminal may wrap it.
-
-IPC and memory-pool lists show waiting threads as `count:names` summaries:
-semaphores, mutexes, events, and memory pools carry a `Waiters` column, while
-mailboxes and message queues split `RecvWait`/`SendWait`. Counts are derived
-by traversing each suspend list (never a cached counter that later kernels
-removed), and versions without a sender wait list show `N/A` instead of a
-fabricated `0`.
-
-Default tables also derive capacity from the kernel's own counters: mailboxes
-and message queues show `Free = capacity - entry`, memory pools show
-`Used = total - free`, and IPC objects carry a `FIFO`/`PRIO` policy column.
-Mutex rows include `OrigPrio` for priority-inheritance analysis, and timers
-show `Addr` plus a wrap-safe `ExpiresIn` (inactive timers render `N/A`). Task
-RT-Thread task lists add `BasePrio` and `Addr`; SMP targets additionally show
-`CPU`/`Bind`. FreeRTOS task lists use capability-driven columns and include
-runtime counters when the TCB exposes them. The shared renderer only prints
-adapter-provided tables.
-
-Single-object detail is also available as a command: `rtt <object> <name>`
-(e.g. `rtt semaphore my_sem`, `rtt thread worker1`). It prints a vertical
-`Key: Value` view of one object without disturbing `$gdr_object()`, which
-continues to return the raw `gdb.Value`. IPC detail includes the decoded
-`FIFO`/`PRIO` policy and waiter summaries; mailboxes and message queues split
-receiver and sender waits. Event detail additionally pairs each waiter with
-its `event_set` mask and AND/OR/CLEAR mode so you can see why the current event
-set did not wake it. Detail goes beyond the list columns with kernel-memory
-diagnostics: thread detail shows `Error`/`RemainingTick`, timer detail shows
-`Parameter` plus `KernelTick`/`ExpiresIn`, message queues walk and count their
-message/free chains, mailboxes list FIFO slots with an explicit offset verdict,
-and memory pools report pool range, block alignment, free-list consistency and
-waiters. Every walk is bounded and corruption-guarded.
 
 ## Convenience functions
 
@@ -154,91 +107,38 @@ waiters. Every walk is bounded and corruption-guarded.
 | `$gdr_tasks()` | target-native task pointer array | `p $gdr_tasks()` / `p *$gdr_tasks()[0]` |
 | `$gdr_object(kind, name)` | target-native object `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |
 
-Use lower-case semantic object kinds in scripts and automation, such as
-`$gdr_object("semaphore", "my_sem")`. A null result means that the object was
-not found or that the selected adapter cannot reliably enumerate that kind.
-
 ## Pretty-printers
 
-Registered automatically on `source gdr.py`. Kernel wrapper types are
-folded into one-line summaries based on layout `summary` fields:
+Kernel object types are folded into one-line summaries based on layout `summary` fields:
 
 ```gdb
-(gdb) p mutex
-$1 = Mutex(name="lock1", value=0, hold=1, owner="main")
+(gdb) p spi1_mtx
+$1 = Mutex(name="spi1_mtx", value=0, hold=1, owner="main")
 
-(gdb) p semaphore
-$2 = Semaphore(name="sem1", value=3)
+(gdb) p rx_sem
+$2 = Semaphore(name="rx_sem", value=3)
 
-(gdb) p thread
-$3 = Thread(name="worker", stat=READY, current_priority=5)
+(gdb) p pm_task
+$3 = Thread(name="pm_task", stat=READY, current_priority=5)
 ```
 
-## Configuration
+## Note
 
-Users specify the RTOS and major version explicitly; there is **no
-auto-detection** of the RTOS type or version (detection logic is fragile
-across attach/remote scenarios). Kernel *config features* (SMP, heap
+GDR insist on data struct keep align between code and runtime memory. But there
+maybe bias due to compiler optimization. GDR also extract info from macros in
+code. Fellow debug optimized compilation options is recommend:
+
+```cmake
+add_compile_options(-O0 -ggdb3)
+```
+
+Users must specify the RTOS and major version explicitly when using GDR;
+there is **no auto-detection** of the RTOS type or version (Consider variance of
+version declare in RTOS and ELF compilation). Kernel *config features* (SMP, heap
 manager kind, enabled IPC components) are probed automatically by symbol
 presence at startup.
 
-RT-Thread 3.1.x is verified on the Cortex-A9 QEMU BSP only. The upstream
-QEMU RV64 BSP starts at RT-Thread 4.0.4, so RV64 verification covers 4.0.4
-through 4.1.1.
-
-To rerun a QEMU matrix from an existing fixture cache without compiling
-RT-Thread, set `RT_THREAD_FIXTURE_DIR`. Its layout is
-`<base>/<target>/<version>/rtthread_qemu.elf`, plus `rtthread_qemu.bin` for
-RV64. Missing target/version artifacts are reported as warnings and skipped,
-which makes partial local caches usable:
-
-```bash
-RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
-RT_THREAD_FIXTURE_DIR=../fixture bash ci/rt-thread/run-qemu-matrix.sh rv64
-```
-
-## Maintenance notes (COUPLED)
-
-`rtthread/layout.py` is the single place that knows RT-Thread struct
-layouts. When an RT-Thread kernel struct changes (new field, renamed
-member, shifted offset), that file — and its QEMU smoke test — must be
-reviewed together. RT-Thread intermediate presentation models and their
-`gdb.Value` converters live in `rtthread/adapter.py`; they are not ABI layout
-descriptions. See `docs/architecture.md` for the rationale.
-
-## Development
-
-```bash
-uv sync --group dev          # create .venv and install dev dependencies
-uv run pre-commit install    # activate git hooks
-uv run ruff check . && uv run ruff format --check .
-uv run pytest tests/unit --cov
-uv run pytest tests/integration -v  # runs when QEMU fixtures are available
-```
-
-The FreeRTOS smoke test builds the locked STM32CubeL4 `v1.18.2`
-B-L475E-IOT01A fixture (whose FreeRTOS submodule is commit
-`5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`) and runs it under QEMU:
-
-```bash
-bash ci/freertos/run-qemu-matrix.sh
-```
-
-It needs `qemu-system-arm`, a Python-enabled `gdb-multiarch`, and an
-`arm-none-eabi-gcc` toolchain. The fixture uses the Cortex-M SysTick port and
-QEMU semihosting, not the board's unsupported LPTIM.
-
-CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
-defined in `.cnb.yml` (lint, the GDB 12 compatibility baseline, and Cortex-A9
-and RV64 QEMU matrices). To reproduce the current ARM and RV64 QEMU matrices
-locally in a Podman machine:
-
-```bash
-ci/validate-podman.sh
-```
-
-The script builds `ci/Dockerfile` for `linux/amd64` and uses the pinned xPack
-toolchains. Start a Podman machine before running it.
+## Contribute
 
 See `AGENTS.md` for the full contributor guide.
 
