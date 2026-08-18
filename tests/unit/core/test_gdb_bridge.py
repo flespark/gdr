@@ -242,23 +242,23 @@ def test_print_table_honors_explicit_width_with_elastic_columns(monkeypatch):
     monkeypatch.setattr(bridge, "gdb", fake_gdb)
 
     bridge.print_table(
-        [["2:worker,logger", "3"]],
+        [["2@worker,logger", "3"]],
         ["Waiters", "Value"],
         elastic=("Waiters",),
         width=14,
     )
 
-    assert fake_gdb.writes == ["Waiters  Value\n-------  -----\n2:wor..  3    \n"]
+    assert fake_gdb.writes == ["Waiters  Value\n-------  -----\n2@wor..  3    \n"]
 
 
 def test_print_detail_writes_key_value_pairs_once(monkeypatch):
-    """Detail output is one write with a stable ``Key: Value`` layout."""
+    """Detail output is one write with a colon-aligned ``Key: Value`` layout."""
     fake_gdb = _TableGdb()
     monkeypatch.setattr(bridge, "gdb", fake_gdb)
 
     bridge.print_detail([("Name", "worker1"), ("Value", "3")])
 
-    assert fake_gdb.writes == ["Name: worker1\nValue: 3\n"]
+    assert fake_gdb.writes == [" Name: worker1\nValue: 3\n"]
 
 
 def test_gdb_command_guard_warns_for_target_errors(monkeypatch):

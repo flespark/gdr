@@ -357,13 +357,16 @@ def print_table(
 def print_detail(pairs: Sequence[tuple[str, str]]) -> None:
     """Print a vertical ``Key: Value`` detail block to GDB stdout in one write.
 
-    Args:
+    Keys are right-aligned to a shared column so the colons line up vertically,
+    which makes values easier to scan.  Args:
         pairs: Ordered ``(key, value)`` pairs describing one object.
     """
     _ensure_gdb()
     output = StringIO()
-    for key, value in pairs:
-        output.write(f"{key}: {value}\n")
+    if pairs:
+        width = max(len(key) for key, _value in pairs)
+        for key, value in pairs:
+            output.write(f"{key:>{width}}: {value}\n")
     gdb.write(output.getvalue())
 
 

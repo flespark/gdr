@@ -98,7 +98,7 @@ def _assert_clean_command_output(output: str) -> None:
 def _detail_pairs(output: str) -> dict[str, str]:
     """Parse stable ``Key: Value`` detail output without table assumptions."""
     return {
-        key: value
+        key.strip(): value
         for line in output.splitlines()
         if ": " in line
         for key, value in (line.split(": ", 1),)
@@ -221,7 +221,7 @@ def test_rtt_semaphore_waiter_summary(rtt_outputs):
     row = _fixture_row(output, _PROFILE.wait_semaphore_name)
     assert row[0] == _PROFILE.wait_semaphore_name
     assert row[1] == "0"
-    assert row[3] == f"1:{_PROFILE.sem_waiter_thread}"
+    assert row[3] == f"1@{_PROFILE.sem_waiter_thread}"
 
 
 def test_rtt_mutex_waiter_and_owner(rtt_outputs):
@@ -230,7 +230,7 @@ def test_rtt_mutex_waiter_and_owner(rtt_outputs):
     row = _fixture_row(output, _PROFILE.wait_mutex_name)
     assert row[0] == _PROFILE.wait_mutex_name
     assert row[4] == _PROFILE.locker_thread_name
-    assert row[6] == f"1:{_PROFILE.mutex_waiter_thread}"
+    assert row[6] == f"1@{_PROFILE.mutex_waiter_thread}"
 
 
 def test_rtt_event_waiter_summary(rtt_outputs):
@@ -238,7 +238,7 @@ def test_rtt_event_waiter_summary(rtt_outputs):
     output = rtt_outputs["events"]
     row = _fixture_row(output, _PROFILE.wait_event_name)
     assert row[0] == _PROFILE.wait_event_name
-    assert row[3] == f"1:{_PROFILE.event_waiter_thread}"
+    assert row[3] == f"1@{_PROFILE.event_waiter_thread}"
 
 
 def test_rtt_mailbox_receiver_and_sender_waiters(rtt_outputs):
@@ -246,13 +246,13 @@ def test_rtt_mailbox_receiver_and_sender_waiters(rtt_outputs):
     output = rtt_outputs["mailboxs"]
     recv_row = _fixture_row(output, _PROFILE.wait_mailbox_recv_name)
     assert recv_row[0] == _PROFILE.wait_mailbox_recv_name
-    assert recv_row[7] == f"1:{_PROFILE.mailbox_recv_thread}"
+    assert recv_row[7] == f"1@{_PROFILE.mailbox_recv_thread}"
     assert recv_row[8] == "0"
 
     send_row = _fixture_row(output, _PROFILE.wait_mailbox_send_name)
     assert send_row[0] == _PROFILE.wait_mailbox_send_name
     assert send_row[7] == "0"
-    assert send_row[8] == f"1:{_PROFILE.mailbox_send_thread}"
+    assert send_row[8] == f"1@{_PROFILE.mailbox_send_thread}"
 
 
 def test_rtt_messagequeue_receiver_and_sender_waiters(rtt_outputs):
@@ -260,12 +260,12 @@ def test_rtt_messagequeue_receiver_and_sender_waiters(rtt_outputs):
     output = rtt_outputs["messagequeues"]
     recv_row = _fixture_row(output, _PROFILE.wait_msgqueue_recv_name)
     assert recv_row[0] == _PROFILE.wait_msgqueue_recv_name
-    assert recv_row[6] == f"1:{_PROFILE.msgqueue_recv_thread}"
+    assert recv_row[6] == f"1@{_PROFILE.msgqueue_recv_thread}"
 
     if _PROFILE.mq_sender_list:
         send_row = _fixture_row(output, _PROFILE.wait_msgqueue_send_name)
         assert send_row[0] == _PROFILE.wait_msgqueue_send_name
-        assert send_row[7] == f"1:{_PROFILE.msgqueue_send_thread}"
+        assert send_row[7] == f"1@{_PROFILE.msgqueue_send_thread}"
 
 
 def test_rtt_mempool_waiter_summary(rtt_outputs):
@@ -273,7 +273,7 @@ def test_rtt_mempool_waiter_summary(rtt_outputs):
     output = rtt_outputs["mempools"]
     row = _fixture_row(output, _PROFILE.wait_mempool_name)
     assert row[0] == _PROFILE.wait_mempool_name
-    assert row[5] == f"1:{_PROFILE.mempool_waiter_thread}"
+    assert row[5] == f"1@{_PROFILE.mempool_waiter_thread}"
 
 
 def test_rtt_event_command_matches_target_memory(rtt_outputs, ipc_fixture_values):
@@ -552,7 +552,7 @@ def test_rtt_mutex_detail_shows_priority_inheritance_fields(gdb):
         "Hold:",
         f"Owner: {_PROFILE.locker_thread_name}",
         "OriginalPriority:",
-        "Waiters: 1:",
+        "Waiters: 1@",
     ):
         assert label in output, output
     # RT-Thread v3 retains the configured FIFO flag while newer kernels force
@@ -565,7 +565,7 @@ def test_rtt_mutex_detail_shows_priority_inheritance_fields(gdb):
 def test_rtt_semaphore_detail_shows_policy_and_waiters(gdb):
     """Semaphore detail includes the scheduler policy and blocking relation."""
     output = gdb.run(f"rtt semaphore {_PROFILE.wait_semaphore_name}", timeout=20)
-    for label in ("Policy: FIFO", "Waiters: 1:"):
+    for label in ("Policy: FIFO", "Waiters: 1@"):
         assert label in output, output
     assert _PROFILE.sem_waiter_thread in output
 
@@ -577,7 +577,7 @@ def test_rtt_event_detail_shows_waiter_conditions(gdb):
         assert label in output, output
     assert _PROFILE.wait_event_name in output
     assert "Policy: FIFO" in output
-    assert "Waiters: 1:" in output
+    assert "Waiters: 1@" in output
     assert _PROFILE.event_waiter_thread in output
     assert f"Waiter: {_PROFILE.event_waiter_thread}: set=0x40 mode=AND|CLEAR" in output
     _assert_clean_command_output(output)
@@ -600,11 +600,11 @@ def test_rtt_mailbox_detail_shows_receiver_and_sender_waiters(gdb):
     """Mailbox detail distinguishes receive and send blocking lists."""
     recv = gdb.run(f"rtt mailbox {_PROFILE.wait_mailbox_recv_name}", timeout=20)
     send = gdb.run(f"rtt mailbox {_PROFILE.wait_mailbox_send_name}", timeout=20)
-    assert "RecvWait: 1:" in recv, recv
+    assert "RecvWait: 1@" in recv, recv
     assert _PROFILE.mailbox_recv_thread in recv, recv
     assert "Entry: 0" in recv, recv
     assert "OffsetCheck: ok" in recv, recv
-    assert "SendWait: 1:" in send, send
+    assert "SendWait: 1@" in send, send
     assert _PROFILE.mailbox_send_thread in send, send
     assert "Entry: 4" in send, send
     for slot in range(4):
@@ -633,7 +633,7 @@ def test_rtt_messagequeue_detail_shows_node_counts_and_waiters(gdb):
     assert (
         recv_pairs["Consistency"] == f"ok (entry=0, free={max_msgs}, max={max_msgs})"
     ), recv
-    assert "RecvWait: 1:" in recv, recv
+    assert "RecvWait: 1@" in recv, recv
     assert _PROFILE.msgqueue_recv_thread in recv, recv
 
     if not _PROFILE.mq_sender_list:
@@ -651,7 +651,7 @@ def test_rtt_messagequeue_detail_shows_node_counts_and_waiters(gdb):
     assert (
         send_pairs["Consistency"] == f"ok (entry={max_msgs}, free=0, max={max_msgs})"
     ), send
-    assert "SendWait: 1:" in send, send
+    assert "SendWait: 1@" in send, send
     assert _PROFILE.msgqueue_send_thread in send, send
     _assert_clean_command_output(recv)
     _assert_clean_command_output(send)
@@ -680,7 +680,7 @@ def test_rtt_mempool_detail_shows_waiters(gdb):
     output = gdb.run(f"rtt mempool {_PROFILE.wait_mempool_name}", timeout=20)
     assert "Free: 0" in output, output
     assert "FreeCountCheck: ok (0)" in output, output
-    assert "Waiters: 1:" in output, output
+    assert "Waiters: 1@" in output, output
     assert _PROFILE.mempool_waiter_thread in output, output
     _assert_clean_command_output(output)
 
@@ -707,18 +707,18 @@ def test_rtt_timer_detail_shows_fixture_timer(gdb):
     kernel_tick = next(
         line.split(":", 1)[1].strip()
         for line in output.splitlines()
-        if line.startswith("KernelTick:")
+        if line.strip().startswith("KernelTick:")
     )
     assert kernel_tick.isdecimal(), output
     state = next(
         line.split(":", 1)[1].strip().lower()
         for line in output.splitlines()
-        if line.startswith("State:")
+        if line.strip().startswith("State:")
     )
     expires_in = next(
         line.split(":", 1)[1].strip()
         for line in output.splitlines()
-        if line.startswith("ExpiresIn:")
+        if line.strip().startswith("ExpiresIn:")
     )
     # QEMU keeps advancing between commands. Assert the dynamic contract, not
     # a particular tick snapshot; an inactive timer legitimately reports N/A.

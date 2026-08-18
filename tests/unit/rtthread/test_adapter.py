@@ -380,7 +380,7 @@ def test_ipc_detail_pairs_include_policy_and_waiters(monkeypatch):
         )
     )
 
-    assert pairs == {"Policy": "PRIO", "Waiters": "1:worker4"}
+    assert pairs == {"Policy": "PRIO", "Waiters": "1@worker4"}
 
 
 def test_timer_detail_includes_tick_diagnostics(monkeypatch):
@@ -414,7 +414,7 @@ def test_event_mode_decodes_and_or_clear_bits():
 
 
 def test_waiter_summary_leads_with_count(monkeypatch):
-    """The ``count:names`` summary keeps the count first for truncation."""
+    """The ``count@names`` summary keeps the count first for truncation."""
     layout = KernelLayout()
     value = object()
     monkeypatch.setattr(
@@ -427,7 +427,7 @@ def test_waiter_summary_leads_with_count(monkeypatch):
         value, layout, "struct rt_semaphore", "suspend_thread"
     )
 
-    assert summary == "2:worker1,worker2"
+    assert summary == "2@worker1,worker2"
 
 
 def test_waiter_summary_shows_zero_for_an_empty_list(monkeypatch):
@@ -500,7 +500,7 @@ def test_mailbox_table_splits_receiver_and_sender_waiters(monkeypatch):
         "Addr",
     ]
     assert table.rows == [
-        ["input", "0", "0", "0", "0", "0", "N/A", "1:recv1", "2:send1,send2", "0x2000"]
+        ["input", "0", "0", "0", "0", "0", "N/A", "1@recv1", "2@send1,send2", "0x2000"]
     ]
 
 
@@ -532,7 +532,7 @@ def test_messagequeue_table_honors_sender_list_availability(monkeypatch):
 
     assert table is not None
     assert table.rows == [
-        ["work", "0", "0", "0", "0", "N/A", "1:recv1", "N/A", "0x3000"]
+        ["work", "0", "0", "0", "0", "N/A", "1@recv1", "N/A", "0x3000"]
     ]
 
 

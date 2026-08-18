@@ -124,9 +124,13 @@ class LayoutPrinter:
             parts.append(f"{f_name}={formatted}")
         return f"{self.display_name}({', '.join(parts)})"
 
-    def display_hint(self) -> str:
-        """Hint GDB that this is a one-line aggregate."""
-        return "string"
+    def display_hint(self) -> None:
+        """Return no hint so GDB prints the fold directly, unquoted.
+
+        A ``"string"`` hint would make GDB print ``to_string()`` as a quoted
+        string literal, escaping every inner quote (``name=\\"worker1\\"``).
+        Returning ``None`` keeps the fold readable: ``name="worker1"``.
+        """
 
 
 def _make_lookup_function(kl: KernelLayout):

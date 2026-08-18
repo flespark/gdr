@@ -72,7 +72,7 @@ class TestPrinters:
         out = gdb_session.run(f'p $gdr_object("mutex", "{_PROFILE.mutex_name}")')
         assert "Mutex(" in out, f"expected Mutex( fold, got:\n{out}"
         assert "name=" in out, f"expected name= field, got:\n{out}"
-        assert 'owner=\\"worker1\\"' in out, f"expected dereferenced owner, got:\n{out}"
+        assert 'owner="worker1"' in out, f"expected dereferenced owner, got:\n{out}"
 
     def test_function_pointer_symbolic(self, gdb_session):
         """A function pointer is rendered as its symbol and offset."""

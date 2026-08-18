@@ -168,7 +168,7 @@ rather than hardcoded assumptions:
   meaningful symbol as possible. Otherwise roll back to hex number regard
   gdb output-radix setting.
 - **IPC waiter summaries** are derived by traversing each suspend list
-  (`count:names`), never from cached counters that's unstable over kernels.
+  (`count@names`), never from cached counters that's unstable over kernels.
   A version without a sender wait list renders `N/A`, never a fabricated `0`.
 - **Capacity and policy columns** derive from kernel counters and object
   flags: `Free = capacity - entry`, `Used = total - free`, and a

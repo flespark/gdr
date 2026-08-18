@@ -381,7 +381,7 @@ def _waiter_summary(
     *,
     available: bool = True,
 ) -> str:
-    """Return a ``count:names`` waiter summary for one object's wait list.
+    """Return a ``count@names`` waiter summary for one object's wait list.
 
     Args:
         value: The object whose wait list is inspected.
@@ -398,7 +398,7 @@ def _waiter_summary(
     names = suspend_thread_names(value, layout, struct_name, field_name)
     if not names:
         return "0"
-    return f"{len(names)}:{','.join(names)}"
+    return f"{len(names)}@{','.join(names)}"
 
 
 def _waiter_detail_pairs(
