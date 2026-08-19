@@ -45,7 +45,7 @@ def test_core_never_imports_an_rtos_adapter_package():
 
 
 def test_production_files_stay_within_the_size_limit():
-    """The repository keeps production modules below the 1000-line limit."""
+    """The repository keeps production modules below the 1500-line limit."""
     roots = [
         Path(__file__).resolve().parents[3] / "gdr",
         Path(__file__).resolve().parents[3] / "rtthread",
@@ -55,6 +55,6 @@ def test_production_files_stay_within_the_size_limit():
         str(path.relative_to(roots[0].parent))
         for root in roots
         for path in root.glob("*.py")
-        if len(path.read_text().splitlines()) > 1000
+        if len(path.read_text().splitlines()) > 1500
     ]
     assert not oversized

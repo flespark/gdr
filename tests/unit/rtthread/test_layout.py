@@ -2,12 +2,78 @@
 
 from __future__ import annotations
 
+import rtthread.layout as layout_module
 from rtthread.layout import (
     RT_OBJECT_CLASS_THREAD,
     RtConfig,
     ThreadState,
     build_layouts,
 )
+
+
+class _FakeGdb:
+    """GDB constants needed by the heap-type probe."""
+
+    TYPE_CODE_TYPEDEF = 1
+    TYPE_CODE_PTR = 2
+    TYPE_CODE_STRUCT = 3
+
+    class error(Exception):
+        pass
+
+
+class _Handle:
+    """Minimal ``system_heap`` handle stand-in with a GDB-like type."""
+
+    def __init__(self, type_obj):
+        self.type = type_obj
+
+
+class _TypedefType:
+    """``TYPE_CODE_TYPEDEF`` wrapper; the alias name lives here, not on the PTR."""
+
+    def __init__(self, name: str, stripped):
+        self.code = _FakeGdb.TYPE_CODE_TYPEDEF
+        self.name = name
+        self.tag = None
+        self._stripped = stripped
+
+    def strip_typedefs(self):
+        return self._stripped
+
+
+class _PointerType:
+    """Nameless pointer after ``strip_typedefs()``, matching real GDB."""
+
+    def __init__(self, target):
+        self.code = _FakeGdb.TYPE_CODE_PTR
+        self.name = None
+        self.tag = None
+        self._target = target
+
+    def target(self):
+        return self._target
+
+    def strip_typedefs(self):
+        return self
+
+
+class _StructType:
+    def __init__(self, name: str | None, tag: str | None = None):
+        self.name = name
+        self.tag = name if tag is None else tag
+        self.code = _FakeGdb.TYPE_CODE_STRUCT
+
+    def strip_typedefs(self):
+        return self
+
+    def fields(self):
+        return ()
+
+
+def _typedef_ptr_handle(typedef_name: str, target_name: str = "rt_memory") -> _Handle:
+    """Build a 4.1 ``rt_smem_t`` / ``rt_slab_t`` system_heap handle."""
+    return _Handle(_TypedefType(typedef_name, _PointerType(_StructType(target_name))))
 
 
 def test_layout_retains_probed_stack_direction():
@@ -123,3 +189,169 @@ def test_timer_layout_describes_parameter_field():
 
     assert timer["parameter"].path == ("parameter",)
     assert timer["parameter"].kind == "ptr"
+
+
+def test_system_heap_algorithm_returns_none_without_a_handle():
+    """No ``system_heap`` symbol means the 4.0 globals decide."""
+    assert layout_module._system_heap_algorithm(None, lambda _name: False) is None
+
+
+def test_system_heap_algorithm_classifies_memheap_value(monkeypatch):
+    """A plain ``struct rt_memheap`` system_heap handle is memheap."""
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+    handle = _Handle(_StructType("rt_memheap"))
+
+    assert (
+        layout_module._system_heap_algorithm(handle, lambda _name: False) == "memheap"
+    )
+
+
+def test_system_heap_algorithm_classifies_memheap_from_type_tag(monkeypatch):
+    """Some GDB builds expose the struct identity on ``tag`` only."""
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+    handle = _Handle(_StructType(None, tag="rt_memheap"))
+
+    assert (
+        layout_module._system_heap_algorithm(handle, lambda _name: False) == "memheap"
+    )
+
+
+def test_system_heap_algorithm_classifies_slab_typedef(monkeypatch):
+    """A ``rt_slab_t`` typedef wins over the shared ``struct rt_memory *`` shape."""
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+    handle = _typedef_ptr_handle("rt_slab_t")
+
+    assert layout_module._system_heap_algorithm(handle, lambda _name: False) == "slab"
+
+
+def test_system_heap_algorithm_defaults_to_small_mem_for_memory_pointer(monkeypatch):
+    """A ``rt_smem_t`` typedef to ``struct rt_memory *`` classifies as small_mem."""
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+    handle = _typedef_ptr_handle("rt_smem_t")
+
+    assert (
+        layout_module._system_heap_algorithm(handle, lambda _name: False) == "small_mem"
+    )
+
+
+def test_detect_config_uses_heap_end_for_40_small_mem(monkeypatch):
+    """4.0 kernels expose the system heap as static globals, not a handle."""
+    import gdr.gdb_bridge as bridge
+
+    present = {"heap_end", "heap_ptr", "used_mem"}
+    monkeypatch.setattr(bridge, "symbol_exists", lambda name: name in present)
+    monkeypatch.setattr(
+        bridge, "lookup_symbol", lambda name: object() if name in present else None
+    )
+    monkeypatch.setattr(bridge, "lookup_type", lambda _name: None)
+    monkeypatch.setattr(bridge, "macro_defined", lambda _name: False)
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+
+    cfg = layout_module.detect_config()
+
+    assert cfg.heap_type == "small_mem"
+
+
+def test_detect_config_prefers_system_heap_type_over_init_symbols(monkeypatch):
+    """A 4.1 ``system_heap`` handle wins even when several allocators compile.
+
+    The QEMU 4.1 fixture compiles ``rt_smem_init``, ``rt_slab_init`` and
+    ``rt_memheap_init`` together, so the init symbols alone cannot select the
+    active ``*_AS_HEAP``; the ``system_heap`` handle must decide.
+    """
+    import gdr.gdb_bridge as bridge
+
+    present = {"rt_smem_init", "rt_slab_init", "rt_memheap_init"}
+    handle = _typedef_ptr_handle("rt_smem_t")
+    monkeypatch.setattr(bridge, "symbol_exists", lambda name: name in present)
+    monkeypatch.setattr(
+        bridge, "lookup_symbol", lambda name: handle if name == "system_heap" else None
+    )
+    monkeypatch.setattr(bridge, "lookup_type", lambda _name: None)
+    monkeypatch.setattr(bridge, "macro_defined", lambda _name: False)
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+
+    cfg = layout_module.detect_config()
+
+    assert cfg.heap_type == "small_mem"
+
+
+def test_detect_config_classifies_slab_typedef_despite_smem_init(monkeypatch):
+    """``rt_slab_t system_heap`` wins even when ``rt_smem_init`` is also linked."""
+    import gdr.gdb_bridge as bridge
+
+    present = {"rt_smem_init", "rt_slab_init", "rt_memheap_init"}
+    handle = _typedef_ptr_handle("rt_slab_t")
+    monkeypatch.setattr(bridge, "symbol_exists", lambda name: name in present)
+    monkeypatch.setattr(
+        bridge, "lookup_symbol", lambda name: handle if name == "system_heap" else None
+    )
+    monkeypatch.setattr(bridge, "lookup_type", lambda _name: None)
+    monkeypatch.setattr(bridge, "macro_defined", lambda _name: False)
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+
+    cfg = layout_module.detect_config()
+
+    assert cfg.heap_type == "slab"
+
+
+def test_detect_config_probes_memtrace_from_block_header(monkeypatch):
+    """MEMTRACE is proven by a block-header owner field, not a FINSH symbol."""
+    import gdr.gdb_bridge as bridge
+
+    present = {"heap_end"}
+    monkeypatch.setattr(bridge, "symbol_exists", lambda name: name in present)
+    monkeypatch.setattr(
+        bridge, "lookup_symbol", lambda name: object() if name in present else None
+    )
+
+    class _Field:
+        def __init__(self, name: str):
+            self.name = name
+
+    def fake_lookup_type(name: str):
+        if name == "struct heap_mem":
+            return type(
+                "_T",
+                (),
+                {"fields": lambda _self=None: [_Field("magic"), _Field("thread")]},
+            )()
+        return None
+
+    monkeypatch.setattr(bridge, "lookup_type", fake_lookup_type)
+    monkeypatch.setattr(bridge, "macro_defined", lambda _name: False)
+    monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
+
+    cfg = layout_module.detect_config()
+
+    assert cfg.using_memtrace is True
+
+
+def test_build_layouts_adds_heap_block_headers_for_the_probed_algorithm():
+    """Only the active system-heap ABI is described; MEMTRACE fields stay optional."""
+    small_40 = build_layouts(RtConfig(heap_type="small_mem", using_memtrace=True))
+    assert "struct heap_mem" in small_40.structs
+    assert "struct rt_small_mem" not in small_40.structs
+    assert "thread" in small_40.structs["struct heap_mem"].fields
+
+    small_41 = build_layouts(
+        RtConfig(heap_type="small_mem", using_memory_object=True, using_memtrace=True)
+    )
+    assert "struct rt_small_mem" in small_41.structs
+    assert "struct rt_small_mem_item" in small_41.structs
+    assert "struct heap_mem" not in small_41.structs
+    assert "thread" in small_41.structs["struct rt_small_mem_item"].fields
+
+    memheap = build_layouts(RtConfig(heap_type="memheap", using_memtrace=True))
+    assert "struct rt_memheap_item" in memheap.structs
+    assert "owner_thread_name" in memheap.structs["struct rt_memheap_item"].fields
+    assert "struct heap_mem" not in memheap.structs
+
+    slab = build_layouts(RtConfig(heap_type="slab", using_memory_object=True))
+    assert "struct rt_slab" in slab.structs
+    assert "struct heap_mem" not in slab.structs
+
+    unused = build_layouts(RtConfig())
+    assert "struct heap_mem" not in unused.structs
+    assert "struct rt_memheap_item" not in unused.structs
+    assert "struct rt_slab" not in unused.structs

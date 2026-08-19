@@ -383,7 +383,7 @@ def test_ipc_detail_pairs_include_policy_and_waiters(monkeypatch):
     assert pairs == {"Policy": "PRIO", "Waiters": "1@worker4"}
 
 
-def test_timer_detail_includes_tick_diagnostics(monkeypatch):
+def test_timer_detail_includes_tick_detail(monkeypatch):
     """Timer detail reports the tick snapshot used for its expiry calculation."""
     adapter = adapter_module.RtThreadAdapter(KernelLayout())
     value = object()
@@ -562,17 +562,164 @@ def test_timer_expires_in_wraps_safely():
     assert adapter_module._timer_expires_in(100, None) is None
 
 
-def test_heap_summary_formats_used_bytes(monkeypatch):
-    """System summary renders the static heap snapshot as a used-bytes line."""
-    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
-    monkeypatch.setattr(adapter_module, "get_heap_used", lambda _type, _layout: 4096)
+def test_heap_summary_formats_algorithm_used_and_total(monkeypatch):
+    """System summary renders the probed algorithm plus used/total."""
+    from rtthread.navigation import HeapSnapshot
 
-    assert adapter._heap_summary() == "4096 bytes used"
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(
+            algorithm="small_mem", used=4096, total=65536
+        ),
+    )
+
+    assert adapter._heap_summary() == "small_mem  4096/65536"
 
 
 def test_heap_summary_is_unavailable_without_target_state(monkeypatch):
     """Missing heap symbols do not fall back to calling ``rt_memory_info``."""
+    from rtthread.navigation import HeapSnapshot
+
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
-    monkeypatch.setattr(adapter_module, "get_heap_used", lambda _type, _layout: None)
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
+    )
 
     assert adapter._heap_summary() == "unavailable"
+
+
+def test_heap_summary_formats_partial_used_or_total(monkeypatch):
+    """A one-sided snapshot still names the algorithm; the missing side is N/A."""
+    from rtthread.navigation import HeapSnapshot
+
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(algorithm="small_mem", total=65536),
+    )
+    assert adapter._heap_summary() == "small_mem  NA/65536"
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(algorithm="small_mem", used=0),
+    )
+    assert adapter._heap_summary() == "small_mem  0/NA"
+
+
+def test_holes_line_formats_free_blocks():
+    """The Holes line follows ``N free, largest, three smallest`` exactly."""
+    assert adapter_module._holes_line([2048, 4, 16, 16]) == (
+        "4 free, largest: 2048, smallest: 4, 16, 16"
+    )
+    assert adapter_module._holes_line([64]) == "1 free, largest: 64, smallest: 64"
+    assert adapter_module._holes_line([]) == "0 free"
+
+
+def test_heap_basic_pairs_report_na_missing_values(monkeypatch):
+    """Basics render missing counters as N/A and MEMTRACE status explicitly."""
+    from rtthread.navigation import HeapSnapshot
+
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="none")
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(algorithm="none"),
+    )
+    monkeypatch.setattr(
+        adapter_module.RtThreadAdapter, "_memtrace_enabled", lambda _s: False
+    )
+
+    pairs = dict(adapter.heap_basic_pairs())
+
+    assert pairs == {
+        "Algorithm": "none",
+        "TotalSize": "N/A",
+        "UsedSize": "N/A",
+        "MaxUsed": "N/A",
+        "MemTrace": "unavailable",
+    }
+
+
+def test_heap_basic_pairs_report_enabled_memtrace(monkeypatch):
+    """MEMTRACE renders ``enabled`` when a block header carries owner names."""
+    from rtthread.navigation import HeapSnapshot
+
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(algorithm="small_mem", total=100),
+    )
+    monkeypatch.setattr(
+        adapter_module.RtThreadAdapter, "_memtrace_enabled", lambda _s: True
+    )
+
+    pairs = dict(adapter.heap_basic_pairs())
+
+    assert pairs["MemTrace"] == "enabled"
+    assert pairs["TotalSize"] == "100"
+
+
+def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):
+    """The walk assembly keeps Blocks/Holes pairs plus sorted occupancy rows."""
+    from rtthread.diagnostics import HeapWalk
+
+    layout = KernelLayout()
+    adapter = adapter_module.RtThreadAdapter(layout, heap_type="small_mem")
+    monkeypatch.setattr(
+        adapter_module.diagnostics,
+        "walk_system_heap",
+        lambda _heap_type, _kl: HeapWalk(
+            used_blocks=12,
+            free_blocks=5,
+            hole_sizes=[2048, 4, 16, 16, 8],
+            occupancy=[("main", 8, 4096), ("worker1", 4, 1024)],
+        ),
+    )
+
+    result = adapter.heap_detail()
+
+    assert result is not None
+    assert result.pairs == [
+        ("Blocks", "12 used, 5 free, 17 total"),
+        ("Holes", "5 free, largest: 2048, smallest: 4, 8, 16"),
+    ]
+    assert result.occupancy == [
+        ["main", "8", "4096"],
+        ["worker1", "4", "1024"],
+    ]
+
+
+def test_heap_detail_is_none_when_walk_unresolvable(monkeypatch):
+    """An unresolvable block chain keeps the snapshot but no walk result."""
+    layout = KernelLayout()
+    adapter = adapter_module.RtThreadAdapter(layout, heap_type="small_mem")
+    monkeypatch.setattr(
+        adapter_module.diagnostics, "walk_system_heap", lambda _t, _kl: None
+    )
+
+    assert adapter.heap_detail() is None
+
+
+def test_heap_detail_marks_corrupt_walks(monkeypatch):
+    """Corrupt walks report the corrupt suffix on the Blocks line."""
+    from rtthread.diagnostics import HeapWalk
+
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="memheap")
+    monkeypatch.setattr(
+        adapter_module.diagnostics,
+        "walk_system_heap",
+        lambda _t, _kl: HeapWalk(
+            used_blocks=1, free_blocks=0, hole_sizes=[], occupancy=[], corrupt=True
+        ),
+    )
+
+    result = adapter.heap_detail()
+
+    assert result is not None
+    assert result.pairs[0][1] == "1 used, 0 free, 1 total (corrupt)"

@@ -1,13 +1,15 @@
 """RT-Thread kernel object navigation.
 
-This module owns RT-Thread's global symbols, object registry, and traversal
-policy. It returns raw ``gdb.Value`` objects so callers can continue with
-native GDB expressions and layout-driven pretty-printers.
+This module owns RT-Thread's global symbols, object registry, traversal
+policy, and the halted system-heap snapshot. It returns raw ``gdb.Value``
+objects so callers can continue with native GDB expressions and
+layout-driven pretty-printers.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 try:
     import gdb
@@ -15,7 +17,14 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.gdb_bridge import lookup_symbol, read_cstring, read_int
-from gdr.layout import KernelLayout, ListHook, iter_list, read_field, resolve_list_head
+from gdr.layout import (
+    KernelLayout,
+    ListHook,
+    StructLayout,
+    iter_list,
+    read_field,
+    resolve_list_head,
+)
 from rtthread.layout import object_information_layout
 
 
@@ -349,56 +358,118 @@ def get_tick() -> int | None:
     return None
 
 
-def _memheap_used(kl: KernelLayout) -> int | None:
-    """Return used bytes from ``_heap`` when memheap is the system heap."""
-    heap = lookup_symbol("_heap")
+@dataclass
+class HeapSnapshot:
+    """Halted-state system-heap summary for ``rtt system`` and ``rtt heap``.
+
+    ``algorithm`` is the probed allocator name; ``used``/``total``/``max_used``
+    are ``None`` when the target does not expose the corresponding counter.
+    """
+
+    algorithm: str  # "small_mem", "slab", "memheap", "none"
+    used: int | None = None
+    total: int | None = None
+    max_used: int | None = None
+
+
+def _deref_system_heap() -> gdb.Value | None:
+    """Return the dereferenced ``system_heap`` handle, or the value itself.
+
+    4.1 small_mem/slab declare ``system_heap`` as a pointer typedef while
+    memheap-as-heap declares it as a plain ``struct rt_memheap`` value.
+    """
+    heap = lookup_symbol("system_heap")
     if heap is None:
         return None
-    layout = kl.structs.get("struct rt_memheap")
-    if layout is not None:
-        pool = read_int(read_field(heap, layout, "pool_size"))
-        available = read_int(read_field(heap, layout, "available_size"))
-    else:
-        try:
-            pool = read_int(heap["pool_size"])
-            available = read_int(heap["available_size"])
-        except (TypeError, ValueError, KeyError, IndexError):
-            return None
-    if pool is None or available is None:
+    try:
+        if heap.type.strip_typedefs().code == gdb.TYPE_CODE_PTR and int(heap) != 0:
+            return heap.dereference()
+        return heap
+    except (gdb.error, gdb.MemoryError, TypeError, ValueError):
         return None
-    return max(pool - available, 0)
 
 
-def _memory_object_used(kl: KernelLayout) -> int | None:
-    """Sum ``used`` across 4.1 ``struct rt_memory`` heap objects."""
-    type_code = kl.object_codes.get("memory")
-    layout = kl.structs.get("struct rt_memory")
-    if type_code is None or layout is None:
-        return None
-    total = 0
-    found = False
-    for value in iter_objects(type_code, kl):
-        used = read_int(read_field(value, layout, "used"))
-        if used is None:
-            continue
-        total += used
-        found = True
-    return total if found else None
+def _memheap_snapshot(
+    heap: gdb.Value | None, layout: StructLayout | None
+) -> HeapSnapshot | None:
+    """Read pool/available/max from a memheap object, or ``None`` if unreadable.
 
-
-def get_heap_used(heap_type: str, kl: KernelLayout) -> int | None:
-    """Read system-heap used bytes from static kernel state.
-
-    small_mem/slab expose ``used_mem``; memheap-as-heap uses ``_heap``;
-    4.1 ``struct rt_memory`` objects contribute their ``used`` fields.
-    ``rt_memory_info()`` is not called.
+    A missing ``struct rt_memheap`` layout must not reach ``read_field``: that
+    accessor assumes a concrete ``StructLayout`` and would raise
+    ``AttributeError`` instead of degrading.
     """
-    if heap_type in ("small_mem", "slab", "none"):
-        used = read_int(lookup_symbol("used_mem"))
-        if used is not None:
-            return used
-    if heap_type in ("memheap", "none"):
-        used = _memheap_used(kl)
-        if used is not None:
-            return used
-    return _memory_object_used(kl)
+    if heap is None or layout is None:
+        return None
+    pool = read_int(read_field(heap, layout, "pool_size"))
+    available = read_int(read_field(heap, layout, "available_size"))
+    max_used = read_int(read_field(heap, layout, "max_used_size"))
+    used = (
+        max(pool - available, 0) if pool is not None and available is not None else None
+    )
+    return HeapSnapshot(algorithm="memheap", used=used, total=pool, max_used=max_used)
+
+
+def _system_heap_snapshot(heap_type: str, kl: KernelLayout) -> HeapSnapshot | None:
+    """Snapshot the 4.1 ``system_heap`` handle (rt_memory or rt_memheap)."""
+    heap = _deref_system_heap()
+    if heap is None:
+        return None
+    if heap_type == "memheap":
+        return _memheap_snapshot(heap, kl.structs.get("struct rt_memheap"))
+    # small_mem/slab embed ``struct rt_memory`` at offset 0, so the totals read
+    # through the handle's declared ``struct rt_memory`` type.
+    try:
+        total = read_int(heap["total"])
+        used = read_int(heap["used"])
+        max_used = read_int(heap["max"])
+    except (gdb.error, gdb.MemoryError, TypeError, KeyError, IndexError, ValueError):
+        return HeapSnapshot(algorithm=heap_type)
+    return HeapSnapshot(algorithm=heap_type, used=used, total=total, max_used=max_used)
+
+
+def _globals_small_mem_snapshot(algorithm: str) -> HeapSnapshot | None:
+    """Snapshot the 4.0 small_mem / slab static globals.
+
+    small_mem exposes ``mem_size_aligned`` for the total; slab stores only
+    ``heap_start``/``heap_end`` (both are ``rt_ubase_t`` globals), so the total
+    degrades to ``heap_end - heap_start`` when the aligned size is absent.
+    """
+    used = read_int(lookup_symbol("used_mem"))
+    max_used = read_int(lookup_symbol("max_mem"))
+    total = read_int(lookup_symbol("mem_size_aligned"))
+    if total is None:
+        heap_end = read_int(lookup_symbol("heap_end"))
+        heap_start = read_int(lookup_symbol("heap_start"))
+        if heap_end is not None and heap_start is not None:
+            total = heap_end - heap_start
+    if used is None and total is None and max_used is None:
+        return None
+    return HeapSnapshot(algorithm=algorithm, used=used, total=total, max_used=max_used)
+
+
+def _globals_memheap_snapshot(kl: KernelLayout) -> HeapSnapshot | None:
+    """Snapshot the 4.0 ``_heap`` memheap-as-heap static object."""
+    return _memheap_snapshot(
+        lookup_symbol("_heap"), kl.structs.get("struct rt_memheap")
+    )
+
+
+def get_heap_snapshot(heap_type: str, kl: KernelLayout) -> HeapSnapshot:
+    """Read a halted-state system-heap snapshot without inferior calls.
+
+    Prefers the 4.1 ``system_heap`` handle, then 4.0 static globals, mirroring
+    the kernel's ``rt_memory_info`` / ``rt_memheap_info`` formulas. Only the
+    system heap is reported; ``struct rt_memory`` objects that are not the
+    system allocator are deliberately excluded.
+    """
+    if heap_type != "none":
+        snap = _system_heap_snapshot(heap_type, kl)
+        if snap is not None:
+            return snap
+        if heap_type == "memheap":
+            snap = _globals_memheap_snapshot(kl)
+        else:
+            snap = _globals_small_mem_snapshot(heap_type)
+        if snap is not None:
+            return snap
+    return HeapSnapshot(algorithm=heap_type)

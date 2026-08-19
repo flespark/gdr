@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 
 import pytest
 
@@ -38,6 +39,7 @@ _PUBLIC_COMMANDS = (
     "mempools",
     "timers",
     "system",
+    "heap",
 )
 
 
@@ -204,6 +206,58 @@ def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
         "Heap:",
     ):
         assert label in output
+
+    # QEMU fixtures are small_mem-as-heap: the Heap line must show the probed
+    # algorithm plus an integer used/total pair and reject ``unavailable``.
+    heap_line = next(
+        line.strip() for line in output.splitlines() if line.startswith("Heap:")
+    )
+    assert "small_mem" in heap_line, heap_line
+    assert "unavailable" not in heap_line, heap_line
+    pair = heap_line.split("small_mem", 1)[1].strip().split("/")
+    assert len(pair) == 2, heap_line
+    used, total = pair
+    assert used.isdecimal() and total.isdecimal(), heap_line
+    assert int(used) <= int(total), heap_line
+
+
+def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
+    """``rtt heap`` shows basics, a bounded walk, holes, and occupancy."""
+    output = rtt_outputs["heap"]
+    for label in (
+        "Algorithm:",
+        "TotalSize:",
+        "UsedSize:",
+        "MaxUsed:",
+        "MemTrace:",
+        "Blocks:",
+        "Holes:",
+    ):
+        assert label in output, output
+    pairs = _detail_pairs(output)
+    assert pairs["Algorithm"] == "small_mem", output
+    assert pairs["TotalSize"].isdecimal(), output
+    assert pairs["UsedSize"].isdecimal(), output
+    assert pairs["MaxUsed"].isdecimal() or pairs["MaxUsed"] == "N/A", output
+
+    # Blocks reports a used/free/total summary from the halted block chain.
+    blocks = pairs["Blocks"]
+    assert re.match(r"\d+ used, \d+ free, \d+ total", blocks), output
+
+    # Holes follows the exact free-block line shape.
+    holes = pairs["Holes"]
+    assert holes == "0 free" or re.match(r"\d+ free, largest: \d+, smallest:", holes), (
+        output
+    )
+
+    # MEMTRACE is enabled on the QEMU fixtures; occupancy is either the N/A
+    # degrade line or a per-thread table that lists allocating thread names.
+    if "Thread occupancy: N/A" in output:
+        assert "Thread occupancy: N/A" in pairs, output
+    else:
+        assert "Thread occupancy" in pairs, output
+        for header in ("Thread", "Blocks", "Bytes"):
+            assert header in output, output
 
 
 def test_rtt_semaphore_command_lists_fixture_data(rtt_outputs):
@@ -657,7 +711,7 @@ def test_rtt_messagequeue_detail_shows_node_counts_and_waiters(gdb):
     _assert_clean_command_output(send)
 
 
-def test_rtt_mempool_detail_shows_block_diagnostics(gdb):
+def test_rtt_mempool_detail_shows_block_detail(gdb):
     """``rtt mempool <name>`` renders pool range, alignment, and free count."""
     output = gdb.run(f"rtt mempool {_PROFILE.mempool_name}", timeout=20)
     for label in (

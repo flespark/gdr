@@ -63,7 +63,7 @@ from rtthread.navigation import (
 from rtthread.navigation import (
     find_thread,
     get_current_thread,
-    get_heap_used,
+    get_heap_snapshot,
     get_tick,
     iter_objects,
     iter_suspend_threads,
@@ -165,6 +165,19 @@ class MemoryPool(KernelObject):
     block_size: int = 0
     block_total_count: int = 0
     block_free_count: int = 0
+
+
+@dataclass
+class HeapDetail:
+    """Formatted ``rtt heap`` diagnostics from a bounded system-heap walk.
+
+    ``pairs`` holds the Blocks/Holes lines; ``occupancy`` is the per-thread
+    ``[thread, blocks, bytes]`` table rows, or ``None`` when MEMTRACE (or the
+    walk) does not expose owner information.
+    """
+
+    pairs: list[tuple[str, str]]
+    occupancy: list[list[str]] | None
 
 
 # Value → dataclass converters
@@ -332,6 +345,19 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
+
+def _holes_line(sizes: list[int]) -> str:
+    """Format the ``rtt heap`` Holes line from free-block/free-run sizes.
+
+    ``N free, largest: X, smallest: A, B, C`` where ``smallest`` lists the three
+    smallest holes ascending (only the existing sizes when fewer), and ``0 free``
+    when the heap has no free block.
+    """
+    if not sizes:
+        return "0 free"
+    smallest = ", ".join(str(size) for size in sorted(sizes)[:3])
+    return f"{len(sizes)} free, largest: {max(sizes)}, smallest: {smallest}"
 
 
 def _cpu_or_none(raw: int | None, cpu_count: int | None) -> int | None:
@@ -982,6 +1008,76 @@ class RtThreadAdapter(RtosAdapter):
         )
 
     def _heap_summary(self) -> str:
-        """Format heap usage from static kernel state, never inferior calls."""
-        used = get_heap_used(self.heap_type, self.layout)
-        return f"{used} bytes used" if used is not None else "unavailable"
+        """Format the probed heap algorithm plus used/total from halted state.
+
+        ``rt_memory_info()`` / ``rt_memheap_info()`` are never called; both
+        values come from static kernel globals or the ``system_heap`` handle.
+        A missing used or total renders as ``N/A`` so a partial snapshot still
+        names the algorithm; both missing stays ``unavailable``.
+        """
+        snap = get_heap_snapshot(self.heap_type, self.layout)
+        if snap.used is None and snap.total is None:
+            return "unavailable"
+        used = str(snap.used) if snap.used is not None else "N/A"
+        total = str(snap.total) if snap.total is not None else "N/A"
+        return f"{snap.algorithm}  {used}/{total}"
+
+    def _memtrace_enabled(self) -> bool:
+        """Return whether the probed block headers carry MEMTRACE owner names."""
+        for type_name in (
+            "struct heap_mem",
+            "struct rt_small_mem_item",
+            "struct rt_memheap_item",
+        ):
+            struct_layout = self.layout.structs.get(type_name)
+            if struct_layout is None:
+                continue
+            if (
+                "thread" in struct_layout.fields
+                or "owner_thread_name" in struct_layout.fields
+            ):
+                return True
+        return False
+
+    def heap_basic_pairs(self) -> list[tuple[str, str]]:
+        """Vertical basics for ``rtt heap``: algorithm, sizes, and MEMTRACE."""
+        snap = get_heap_snapshot(self.heap_type, self.layout)
+        return [
+            ("Algorithm", snap.algorithm),
+            ("TotalSize", str(snap.total) if snap.total is not None else "N/A"),
+            ("UsedSize", str(snap.used) if snap.used is not None else "N/A"),
+            ("MaxUsed", str(snap.max_used) if snap.max_used is not None else "N/A"),
+            ("MemTrace", "enabled" if self._memtrace_enabled() else "unavailable"),
+        ]
+
+    def heap_detail(self) -> HeapDetail | None:
+        """Run the bounded system-heap walk and assemble formatted diagnostics.
+
+        Returns ``None`` when the block chain is not resolvable so the caller
+        keeps the basics and marks Blocks/Holes unavailable.
+        """
+        walk = diagnostics.walk_system_heap(self.heap_type, self.layout)
+        if walk is None:
+            return None
+        status = ""
+        if walk.corrupt:
+            status = " (corrupt)"
+        elif walk.truncated:
+            status = " (truncated)"
+        pairs = [
+            (
+                "Blocks",
+                f"{walk.used_blocks} used, {walk.free_blocks} free, "
+                f"{walk.used_blocks + walk.free_blocks} total{status}",
+            ),
+            ("Holes", _holes_line(walk.hole_sizes)),
+        ]
+        occupancy = (
+            [
+                [thread, str(blocks), str(bytes_)]
+                for thread, blocks, bytes_ in walk.occupancy
+            ]
+            if walk.occupancy
+            else None
+        )
+        return HeapDetail(pairs=pairs, occupancy=occupancy)

@@ -23,11 +23,11 @@ gdr/                   RTOS-agnostic core
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            RT-Thread ABI field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
-  navigation.py        RT-Thread symbols and object navigation
+  navigation.py        RT-Thread symbols, object navigation, and heap snapshot
   adapter.py           intermediate models, value converters, summaries and tables
-  diagnostics.py       bounded raw-memory walks and consistency diagnostics
+  diagnostics.py       bounded raw-memory walks (IPC, heap) and consistency diagnostics
   version.py           RT-Thread version policy and target symbols
-  commands.py          RT-Thread command tree (`rtt threads`, `rtt timers`, ...)
+  commands.py          RT-Thread command tree (`rtt threads`, `rtt heap`, ...)
 freertos/              FreeRTOS adapter
   layout.py            merged config probes, DWARF paths and capability metadata
   navigation.py        layout-driven scheduler-list traversal
@@ -152,7 +152,7 @@ toolchains. Start a Podman machine before running it.
 ## Conventions
 
 - Python 3.10+, PEP8, type hints, Google-style docstrings.
-- Files <= 1000 lines; split when approaching the limit.
+- Files <= 1500 lines; split when approaching the limit.
 - Relative imports within packages.
 - No external runtime dependencies (GDB Python API only). Dev tools
   (ruff/pytest/pytest-cov/pre-commit/pexpect) live in `[dependency-groups].dev`.

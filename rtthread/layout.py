@@ -265,8 +265,82 @@ class RtConfig:
     thread_has_init_priority: bool = True
     thread_has_pthread_data: bool = False
     heap_type: str = "none"  # "small_mem", "slab", "memheap", "none"
+    using_memtrace: bool = False
     stack_grows_up: bool | None = None
     cpu_count: int | None = None
+
+
+def _gdb_type_labels(typ) -> list[str]:
+    """Return GDB ``Type.name`` / ``Type.tag`` strings that identify *typ*.
+
+    Typedef names live on the ``TYPE_CODE_TYPEDEF`` object. After
+    ``strip_typedefs()`` a pointer type often has an empty name, with the
+    struct identity on the pointer target (and sometimes only on ``tag``).
+    """
+    labels: list[str] = []
+    for attr in ("name", "tag"):
+        value = getattr(typ, attr, None)
+        if value:
+            labels.append(value)
+    return labels
+
+
+def _system_heap_algorithm(system_heap, symbol_exists) -> str | None:
+    """Classify the system-heap algorithm from a 4.1 ``system_heap`` handle.
+
+    The handle is either a plain ``struct rt_memheap`` (memheap as heap) or a
+    pointer typedef ``rt_smem_t`` / ``rt_slab_t`` that aliases
+    ``struct rt_memory *``. GDB exposes those aliases as ``TYPE_CODE_TYPEDEF``
+    (the typedef name) wrapping a nameless pointer, so the declared type is
+    recorded before ``strip_typedefs()``. Only a concrete ``rt_slab_t`` /
+    ``struct rt_slab`` handle wins over the small_mem default because small_mem
+    and slab share the ``struct rt_memory *`` handle shape.
+    """
+    if system_heap is None:
+        return None
+    try:
+        heap_type = system_heap.type
+        labels = _gdb_type_labels(heap_type)
+        stripped = heap_type.strip_typedefs()
+        labels.extend(_gdb_type_labels(stripped))
+        if stripped.code == gdb.TYPE_CODE_PTR:
+            labels.extend(_gdb_type_labels(stripped.target().strip_typedefs()))
+    except (gdb.error, AttributeError, TypeError, ValueError):
+        return None
+    joined = "\n".join(labels)
+    if "rt_memheap" in joined:
+        return "memheap"
+    if "rt_slab" in joined:
+        return "slab"
+    if "rt_smem" in joined or "rt_memory" in joined or "rt_small_mem" in joined:
+        return "small_mem"
+    if symbol_exists("rt_smem_init"):
+        return "small_mem"
+    return None
+
+
+def _probe_using_memtrace(lookup_type, symbol_exists) -> bool:
+    """Probe RT_USING_MEMTRACE from block-header DWARF, then fallback symbols.
+
+    The authoritative check is a ``thread`` / ``owner_thread_name`` member on a
+    heap block header; the exported ``memtrace`` / ``memcheck`` functions only
+    exist when FINSH is compiled, so symbol presence alone is insufficient.
+    """
+    for type_name in (
+        "struct heap_mem",
+        "struct rt_small_mem_item",
+        "struct rt_memheap_item",
+    ):
+        type_info = lookup_type(type_name)
+        if type_info is None:
+            continue
+        try:
+            field_names = {f.name for f in type_info.fields()}
+        except (gdb.error, AttributeError, TypeError):
+            field_names = set()
+        if "thread" in field_names or "owner_thread_name" in field_names:
+            return True
+    return symbol_exists("memtrace") or symbol_exists("memcheck")
 
 
 def detect_config() -> RtConfig:
@@ -313,19 +387,24 @@ def detect_config() -> RtConfig:
 
     cfg.using_memory_object = lookup_type("struct rt_memory") is not None
 
-    # Reason: heap_type is probed by internal symbols first for 4.0.x, then by
-    # allocator entry points for 4.1.x where heap implementations are wrapped
-    # by struct rt_memory objects instead of exposed static globals.
-    if cfg.using_memory_object and symbol_exists("rt_smem_init"):
-        cfg.heap_type = "small_mem"
-    elif symbol_exists("memusage"):
-        cfg.heap_type = "slab"
-    elif symbol_exists("heap_end"):
-        cfg.heap_type = "small_mem"
-    elif cfg.using_memheap and symbol_exists("_heap"):
-        cfg.heap_type = "memheap"
-    else:
-        cfg.heap_type = "none"
+    # Reason: heap_type prefers the 4.1 ``system_heap`` handle (a typed object
+    # or pointer typedef) so the active ``*_AS_HEAP`` allocator wins even when
+    # several heap algorithms are compiled into the kernel. 4.0 kernels expose
+    # the system heap as static globals instead, so they fall back to
+    # ``memusage`` / ``heap_end`` / ``_heap`` symbol presence.
+    heap_type = _system_heap_algorithm(lookup_symbol("system_heap"), symbol_exists)
+    if heap_type is None:
+        if symbol_exists("memusage"):
+            heap_type = "slab"
+        elif symbol_exists("heap_end"):
+            heap_type = "small_mem"
+        elif symbol_exists("_heap"):
+            heap_type = "memheap"
+        else:
+            heap_type = "none"
+    cfg.heap_type = heap_type
+
+    cfg.using_memtrace = _probe_using_memtrace(lookup_type, symbol_exists)
 
     # CPU usage tracking adds a field to rt_thread; detect by type introspection
     rt_thread_type = lookup_type("struct rt_thread")
@@ -632,6 +711,76 @@ def build_memory_layout(object_type_names: dict[int, str]) -> StructLayout:
     return sl
 
 
+def build_heap_mem_layout(cfg: RtConfig) -> StructLayout:
+    """Build the 4.0 small_mem block header ``struct heap_mem``.
+
+    ``thread`` is config-conditional: RT_USING_MEMTRACE adds the owner-name
+    array between the prev/next links and the data payload.
+    """
+    sl = StructLayout("struct heap_mem")
+    sl.fields["magic"] = StructField("magic", ("magic",))
+    sl.fields["used"] = StructField("used", ("used",))
+    sl.fields["next"] = StructField("next", ("next",))
+    sl.fields["prev"] = StructField("prev", ("prev",))
+    if cfg.using_memtrace:
+        sl.fields["thread"] = StructField("thread", ("thread",), kind="string")
+    return sl
+
+
+def build_small_mem_layout() -> StructLayout:
+    """Build the 4.1 small_mem object ``struct rt_small_mem`` (COUPLED)."""
+    sl = StructLayout("struct rt_small_mem")
+    sl.fields["heap_ptr"] = StructField("heap_ptr", ("heap_ptr",), kind="ptr")
+    sl.fields["heap_end"] = StructField("heap_end", ("heap_end",), kind="ptr")
+    sl.fields["lfree"] = StructField("lfree", ("lfree",), kind="ptr")
+    sl.fields["mem_size_aligned"] = StructField(
+        "mem_size_aligned", ("mem_size_aligned",)
+    )
+    return sl
+
+
+def build_small_mem_item_layout(cfg: RtConfig) -> StructLayout:
+    """Build the 4.1 small_mem block header ``struct rt_small_mem_item``.
+
+    The used flag is the LSB of ``pool_ptr``; ``thread`` is MEMTRACE-conditional
+    exactly like ``struct heap_mem``.
+    """
+    sl = StructLayout("struct rt_small_mem_item")
+    sl.fields["pool_ptr"] = StructField("pool_ptr", ("pool_ptr",))
+    sl.fields["next"] = StructField("next", ("next",))
+    sl.fields["prev"] = StructField("prev", ("prev",))
+    if cfg.using_memtrace:
+        sl.fields["thread"] = StructField("thread", ("thread",), kind="string")
+    return sl
+
+
+def build_memheap_item_layout(cfg: RtConfig) -> StructLayout:
+    """Build the memheap block header ``struct rt_memheap_item`` (COUPLED).
+
+    ``owner_thread_name`` is MEMTRACE-conditional and carries the allocating
+    thread's name for per-thread occupancy diagnostics.
+    """
+    sl = StructLayout("struct rt_memheap_item")
+    sl.fields["magic"] = StructField("magic", ("magic",))
+    sl.fields["pool_ptr"] = StructField("pool_ptr", ("pool_ptr",), kind="ptr")
+    sl.fields["next"] = StructField("next", ("next",), kind="ptr")
+    sl.fields["prev"] = StructField("prev", ("prev",), kind="ptr")
+    if cfg.using_memtrace:
+        sl.fields["owner_thread_name"] = StructField(
+            "owner_thread_name", ("owner_thread_name",), kind="string"
+        )
+    return sl
+
+
+def build_slab_layout() -> StructLayout:
+    """Build the 4.1 slab object ``struct rt_slab`` fields used by page walks."""
+    sl = StructLayout("struct rt_slab")
+    sl.fields["heap_start"] = StructField("heap_start", ("heap_start",))
+    sl.fields["heap_end"] = StructField("heap_end", ("heap_end",))
+    sl.fields["memusage"] = StructField("memusage", ("memusage",), kind="ptr")
+    return sl
+
+
 def build_object_information_layout() -> StructLayout:
     """Build ``rt_object_information`` layout (COUPLED: rtdef.h)."""
     sl = StructLayout("struct rt_object_information")
@@ -783,6 +932,20 @@ def build_layouts(
         kl.structs["struct rt_mempool"] = build_mempool_layout(object_type_names)
     if cfg.using_memory_object:
         kl.structs["struct rt_memory"] = build_memory_layout(object_type_names)
+
+    # Heap block-header layouts follow the probed system allocator. Walks
+    # already degrade via ``structs.get``; omitting unused types keeps
+    # pretty-printers from claiming structs the target never compiled.
+    if cfg.heap_type == "small_mem":
+        if cfg.using_memory_object:
+            kl.structs["struct rt_small_mem"] = build_small_mem_layout()
+            kl.structs["struct rt_small_mem_item"] = build_small_mem_item_layout(cfg)
+        else:
+            kl.structs["struct heap_mem"] = build_heap_mem_layout(cfg)
+    elif cfg.heap_type == "memheap":
+        kl.structs["struct rt_memheap_item"] = build_memheap_item_layout(cfg)
+    elif cfg.heap_type == "slab" and cfg.using_memory_object:
+        kl.structs["struct rt_slab"] = build_slab_layout()
 
     # List hooks
     kl.list_hooks = _build_list_hooks(cfg, version)

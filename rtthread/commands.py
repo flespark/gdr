@@ -14,7 +14,13 @@ from gdr.commands import (
     render_system,
     render_tasks,
 )
-from gdr.gdb_bridge import gdb_command_guard, info, warn
+from gdr.gdb_bridge import (
+    gdb_command_guard,
+    info,
+    print_detail,
+    print_table,
+    warn,
+)
 from rtthread.adapter import RtThreadAdapter
 from rtthread.navigation import iter_object_names
 
@@ -62,6 +68,7 @@ _COMMAND_DESCRIPTIONS = {
     "mempools": "List memory pools",
     "timers": "List timers",
     "system": "Show the system summary",
+    "heap": "Show system heap status and diagnostics",
 }
 _DETAIL_DESCRIPTIONS = {
     "thread": "Show one thread's detail (rtt thread <name>)",
@@ -93,6 +100,33 @@ _HELP = (
 
 
 @gdb_command_guard
+def render_heap() -> None:
+    """Render the system-heap snapshot, block walk, and per-thread occupancy."""
+    adapter = active()
+    if not isinstance(adapter, RtThreadAdapter):
+        warn("run `gdr init rtthread <version>` first")
+        return
+    pairs = adapter.heap_basic_pairs()
+    diagnostics_data = adapter.heap_detail()
+    if diagnostics_data is None:
+        pairs += [("Blocks", "N/A"), ("Holes", "N/A"), ("Thread occupancy", "N/A")]
+        print_detail(pairs)
+        return
+    pairs += diagnostics_data.pairs
+    if diagnostics_data.occupancy is None:
+        pairs.append(("Thread occupancy", "N/A"))
+        print_detail(pairs)
+        return
+    pairs.append(("Thread occupancy", f"{len(diagnostics_data.occupancy)} threads"))
+    print_detail(pairs)
+    print_table(
+        diagnostics_data.occupancy,
+        ["Thread", "Blocks", "Bytes"],
+        elastic=("Thread",),
+    )
+
+
+@gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one RT-Thread command without depending on GDB."""
     args = argument.split()
@@ -108,6 +142,8 @@ def _invoke_command(argument: str) -> None:
         render_tasks()
     elif command == "system":
         render_system()
+    elif command == "heap":
+        render_heap()
     elif command in _OBJECT_COMMANDS:
         render_objects(_OBJECT_COMMANDS[command])
     else:

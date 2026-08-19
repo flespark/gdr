@@ -13,12 +13,26 @@ consistency checks alongside the readable summary.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
+
+try:
+    import gdb
+except ImportError:
+    gdb = None  # type: ignore[assignment]
 
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.formatting import format_optional_int, format_symbol_or_address
-from gdr.gdb_bridge import get_arch_info, lookup_symbol_at, read_bytes, read_int
-from gdr.layout import KernelLayout, read_field
+from gdr.gdb_bridge import (
+    get_arch_info,
+    lookup_symbol,
+    lookup_symbol_at,
+    lookup_type,
+    read_bytes,
+    read_int,
+    read_macro_int,
+)
+from gdr.layout import KernelLayout, StructLayout, member_offset, read_field
 from rtthread.layout import ThreadState
 
 if TYPE_CHECKING:
@@ -336,3 +350,459 @@ def _memorypool_block_pairs(
     else:
         pairs.append(("FreeCountCheck", f"ok ({free_count})"))
     return pairs
+
+
+# ---------------------------------------------------------------------------
+# System-heap block walks (``rtt heap``)
+# ---------------------------------------------------------------------------
+#
+# These walks mirror the kernel's own ``memtrace``/``memcheck`` loops but run on
+# halted memory only: they cast item addresses to the heap block-header DWARF
+# type (via ``member_offset``) and read raw bytes. Missing DWARF types or
+# unreadable memory degrade to ``None`` so the caller keeps the snapshot and
+# marks Blocks/Holes unavailable.
+
+# struct heap_mem / struct rt_memheap_item magic constants (mem.c / memheap.c).
+HEAP_MAGIC = 0x1EA0
+MEMHEAP_MAGIC = 0x1EA01EA0
+
+# slab page types (slab.c).
+PAGE_TYPE_FREE = 0x00
+
+# Kernel MEMTRACE owner names are ``rt_uint8_t thread[4]`` /
+# ``owner_thread_name[4]`` (mem.c / memheap.c), not pointer-width fields.
+_MEMTRACE_NAME_WIDTH = 4
+
+
+@dataclass
+class HeapWalk:
+    """Bounded system-heap block walk result for ``rtt heap`` diagnostics."""
+
+    used_blocks: int
+    free_blocks: int
+    hole_sizes: list[int]
+    occupancy: list[tuple[str, int, int]]  # (thread, blocks, bytes)
+    truncated: bool = False
+    corrupt: bool = False
+
+
+def _read_field_at(
+    addr: int,
+    type_name: str,
+    layout: StructLayout,
+    field: str,
+    width: int,
+    endian: Literal["little", "big"],
+) -> int | None:
+    """Read one fixed-width layout field from a raw struct address.
+
+    Offsets come from the DWARF type via ``member_offset``, so a missing type
+    or config-conditional field degrades to ``None`` (Blocks/Holes N/A).
+    """
+    f = layout.fields.get(field)
+    if f is None:
+        return None
+    offset = member_offset(type_name, f.path)
+    if offset is None:
+        return None
+    raw = read_bytes(addr + offset, width)
+    if raw is None:
+        return None
+    return int.from_bytes(raw, byteorder=endian)
+
+
+def _read_name_at(
+    addr: int,
+    type_name: str,
+    layout: StructLayout,
+    field: str,
+    width: int,
+    _endian: Literal["little", "big"],
+) -> str | None:
+    """Read a fixed-width MEMTRACE owner name from a raw struct address.
+
+    Kernel MEMTRACE pads names with spaces (``rt_mem_setname``), so the decoded
+    name is stripped; a blank name (freed block) returns ``None``.
+    """
+    f = layout.fields.get(field)
+    if f is None:
+        return None
+    offset = member_offset(type_name, f.path)
+    if offset is None:
+        return None
+    raw = read_bytes(addr + offset, width)
+    if raw is None:
+        return None
+    name = raw.split(b"\x00", 1)[0].decode("latin-1", "replace").strip()
+    return name or None
+
+
+def _header_size(type_name: str) -> int | None:
+    """Return ``RT_ALIGN(sizeof(type_name), RT_ALIGN_SIZE)``.
+
+    The kernel rounds the header size for ``SIZEOF_STRUCT_MEM`` /
+    ``RT_MEMHEAP_SIZE``; replicating the alignment keeps block sizes in sync
+    with ``rt_malloc``/``rt_memheap_alloc`` accounting. Missing ``RT_ALIGN_SIZE``
+    falls back to the target pointer width.
+    """
+    t = lookup_type(type_name)
+    if t is None:
+        return None
+    align = read_macro_int("RT_ALIGN_SIZE")
+    if align is None or align <= 0:
+        # Reason: ``-g`` without ``-g3`` omits macros. RT_ALIGN_SIZE matches
+        # the ABI pointer width (4 on 32-bit, 8 on 64-bit), not a fixed 8.
+        align = _arch()[0]
+    try:
+        size = int(t.sizeof)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return (size + align - 1) & ~(align - 1)
+
+
+def _occupancy_rows(
+    owner_blocks: dict[str, int], owner_bytes: dict[str, int]
+) -> list[tuple[str, int, int]]:
+    """Sort per-thread occupancy most-allocating first, then by name."""
+    return sorted(
+        ((name, owner_blocks[name], owner_bytes[name]) for name in owner_blocks),
+        key=lambda row: (-row[1], row[0]),
+    )
+
+
+def _walk_small_mem_chain(
+    heap_ptr: int,
+    heap_end: int,
+    item_type: str,
+    item_layout: StructLayout,
+    header_size: int,
+    *,
+    used_from_pool_ptr: bool,
+    ptrsize: int,
+    endian: Literal["little", "big"],
+) -> HeapWalk | None:
+    """Walk small_mem blocks via ``next`` offsets from ``heap_ptr``.
+
+    4.0 ``struct heap_mem`` marks used via the ``used`` field; 4.1
+    ``struct rt_small_mem_item`` marks used via the LSB of ``pool_ptr``. Both
+    store the next block as an offset relative to ``heap_ptr``.
+    """
+    seen: set[int] = set()
+    items = 0
+    used = 0
+    holes: list[int] = []
+    owner_blocks: dict[str, int] = {}
+    owner_bytes: dict[str, int] = {}
+    truncated = False
+    corrupt = False
+    memtrace = "thread" in item_layout.fields
+    addr = heap_ptr
+    while addr != heap_end:
+        if addr < heap_ptr or addr > heap_end:
+            corrupt = True
+            break
+        if addr in seen:
+            truncated = True
+            break
+        if len(seen) >= GDR_MAX_TRAVERSAL_COUNT:
+            truncated = True
+            break
+        seen.add(addr)
+        offset = addr - heap_ptr
+        if used_from_pool_ptr:
+            pool_ptr = _read_field_at(
+                addr, item_type, item_layout, "pool_ptr", ptrsize, endian
+            )
+            next_off = _read_field_at(
+                addr, item_type, item_layout, "next", ptrsize, endian
+            )
+            is_used = pool_ptr is not None and bool(pool_ptr & 0x1)
+        else:
+            magic = _read_field_at(addr, item_type, item_layout, "magic", 2, endian)
+            used_raw = _read_field_at(addr, item_type, item_layout, "used", 2, endian)
+            next_off = _read_field_at(
+                addr, item_type, item_layout, "next", ptrsize, endian
+            )
+            is_used = used_raw is not None and bool(used_raw)
+            if magic is not None and magic != HEAP_MAGIC:
+                corrupt = True
+                break
+        # Reason: kernel memcheck rejects ``position > mem_size_aligned``. A
+        # next offset that lands past ``heap_end`` must not keep walking.
+        if next_off is None or next_off <= offset or heap_ptr + next_off > heap_end:
+            corrupt = True
+            break
+        size = next_off - offset - header_size
+        items += 1
+        if is_used:
+            used += 1
+            if memtrace:
+                owner = _read_name_at(
+                    addr,
+                    item_type,
+                    item_layout,
+                    "thread",
+                    _MEMTRACE_NAME_WIDTH,
+                    endian,
+                )
+                if owner:
+                    owner_blocks[owner] = owner_blocks.get(owner, 0) + 1
+                    owner_bytes[owner] = owner_bytes.get(owner, 0) + max(size, 0)
+        else:
+            holes.append(max(size, 0))
+        addr = heap_ptr + next_off
+    if items == 0:
+        return None
+    return HeapWalk(
+        used_blocks=used,
+        free_blocks=items - used,
+        hole_sizes=holes,
+        occupancy=_occupancy_rows(owner_blocks, owner_bytes),
+        truncated=truncated,
+        corrupt=corrupt,
+    )
+
+
+def _walk_small_mem(kl: KernelLayout) -> HeapWalk | None:
+    """Resolve small_mem bounds and dispatch the block-chain walk."""
+    ptrsize, endian = _arch()
+    system_heap = lookup_symbol("system_heap")
+    if system_heap is not None:
+        obj_layout = kl.structs.get("struct rt_small_mem")
+        if obj_layout is None:
+            return None
+        item_layout = kl.structs.get("struct rt_small_mem_item")
+        if item_layout is None:
+            return None
+        try:
+            base = int(system_heap)
+        except (gdb.error, TypeError, ValueError):
+            return None
+        heap_ptr = _read_field_at(
+            base, "struct rt_small_mem", obj_layout, "heap_ptr", ptrsize, endian
+        )
+        heap_end = _read_field_at(
+            base, "struct rt_small_mem", obj_layout, "heap_end", ptrsize, endian
+        )
+        header_size = _header_size("struct rt_small_mem_item")
+        item_type = "struct rt_small_mem_item"
+        used_from_pool_ptr = True
+    else:
+        item_layout = kl.structs.get("struct heap_mem")
+        if item_layout is None:
+            return None
+        heap_ptr = read_int(lookup_symbol("heap_ptr"))
+        heap_end = read_int(lookup_symbol("heap_end"))
+        header_size = _header_size("struct heap_mem")
+        item_type = "struct heap_mem"
+        used_from_pool_ptr = False
+    if (
+        heap_ptr is None
+        or heap_end is None
+        or header_size is None
+        or heap_ptr >= heap_end
+    ):
+        return None
+    return _walk_small_mem_chain(
+        heap_ptr,
+        heap_end,
+        item_type,
+        item_layout,
+        header_size,
+        used_from_pool_ptr=used_from_pool_ptr,
+        ptrsize=ptrsize,
+        endian=endian,
+    )
+
+
+def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
+    """Walk the memheap ``block_list`` circular item chain (used+free blocks).
+
+    The 0-size tailer whose ``next`` points back at ``block_list`` is skipped,
+    matching kernel ``list_memheap`` / memtrace.
+    """
+    heap_obj = lookup_symbol("system_heap")
+    if heap_obj is None:
+        heap_obj = lookup_symbol("_heap")
+    if heap_obj is None:
+        return None
+    heap_layout = kl.structs.get("struct rt_memheap")
+    if heap_layout is None:
+        return None
+    head = read_int(read_field(heap_obj, heap_layout, "block_list"))
+    if head is None or head == 0:
+        return None
+    item_layout = kl.structs.get("struct rt_memheap_item")
+    if item_layout is None:
+        return None
+    header_size = _header_size("struct rt_memheap_item")
+    if header_size is None:
+        return None
+    ptrsize, endian = _arch()
+    seen: set[int] = set()
+    items = 0
+    used = 0
+    holes: list[int] = []
+    owner_blocks: dict[str, int] = {}
+    owner_bytes: dict[str, int] = {}
+    truncated = False
+    corrupt = False
+    memtrace = "owner_thread_name" in item_layout.fields
+    addr = head
+    while True:
+        if addr in seen:
+            truncated = True
+            break
+        if len(seen) >= GDR_MAX_TRAVERSAL_COUNT:
+            truncated = True
+            break
+        seen.add(addr)
+        magic = _read_field_at(
+            addr, "struct rt_memheap_item", item_layout, "magic", 4, endian
+        )
+        next_addr = _read_field_at(
+            addr, "struct rt_memheap_item", item_layout, "next", ptrsize, endian
+        )
+        if magic is None or next_addr is None:
+            corrupt = True
+            break
+        if magic & ~0x1 != MEMHEAP_MAGIC:
+            corrupt = True
+            break
+        # Reason: kernel list_memheap/memtrace stop before the tailer, whose
+        # ``next`` points back at ``block_list``. Counting it inflates used
+        # by one (typically a 0-size used sentinel).
+        if next_addr == head:
+            break
+        is_used = bool(magic & 0x1)
+        size = next_addr - addr - header_size
+        items += 1
+        if is_used:
+            used += 1
+            if memtrace:
+                owner = _read_name_at(
+                    addr,
+                    "struct rt_memheap_item",
+                    item_layout,
+                    "owner_thread_name",
+                    _MEMTRACE_NAME_WIDTH,
+                    endian,
+                )
+                if owner:
+                    owner_blocks[owner] = owner_blocks.get(owner, 0) + 1
+                    owner_bytes[owner] = owner_bytes.get(owner, 0) + max(size, 0)
+        else:
+            holes.append(max(size, 0))
+        addr = next_addr
+    if items == 0:
+        if corrupt or truncated:
+            return None
+        return HeapWalk(
+            used_blocks=0,
+            free_blocks=0,
+            hole_sizes=[],
+            occupancy=[],
+        )
+    return HeapWalk(
+        used_blocks=used,
+        free_blocks=items - used,
+        hole_sizes=holes,
+        occupancy=_occupancy_rows(owner_blocks, owner_bytes),
+        truncated=truncated,
+        corrupt=corrupt,
+    )
+
+
+def _walk_slab_pages(kl: KernelLayout) -> HeapWalk | None:
+    """Walk slab ``memusage`` page descriptors for a page/zone summary.
+
+    Slab has no chunk-owner ABI, so occupancy is always ``[]``. Contiguous
+    ``PAGE_TYPE_FREE`` pages form the free runs reported as holes.
+    """
+    ptrsize, endian = _arch()
+    system_heap = lookup_symbol("system_heap")
+    if system_heap is not None:
+        slab_layout = kl.structs.get("struct rt_slab")
+        if slab_layout is None:
+            return None
+        try:
+            base = int(system_heap)
+        except (gdb.error, TypeError, ValueError):
+            return None
+        heap_start = _read_field_at(
+            base, "struct rt_slab", slab_layout, "heap_start", ptrsize, endian
+        )
+        heap_end = _read_field_at(
+            base, "struct rt_slab", slab_layout, "heap_end", ptrsize, endian
+        )
+        memusage = _read_field_at(
+            base, "struct rt_slab", slab_layout, "memusage", ptrsize, endian
+        )
+    else:
+        heap_start = read_int(lookup_symbol("heap_start"))
+        heap_end = read_int(lookup_symbol("heap_end"))
+        memusage = read_int(lookup_symbol("memusage"))
+    page_size = read_macro_int("RT_MM_PAGE_SIZE")
+    if page_size is None or page_size <= 0:
+        page_size = 4096  # RT-Thread default page size
+    if (
+        heap_start is None
+        or heap_end is None
+        or memusage is None
+        or heap_end <= heap_start
+    ):
+        return None
+    npages = (heap_end - heap_start) // page_size
+    if npages <= 0:
+        return None
+    truncated = False
+    limit = npages
+    if npages > GDR_MAX_TRAVERSAL_COUNT:
+        truncated = True
+        limit = GDR_MAX_TRAVERSAL_COUNT
+    free_pages = 0
+    used_pages = 0
+    runs: list[int] = []
+    run = 0
+    corrupt = False
+    for index in range(limit):
+        raw = read_bytes(memusage + index * 4, 4)
+        if raw is None:
+            corrupt = True
+            break
+        page_type = int.from_bytes(raw, byteorder=endian) & 0x3
+        if page_type == PAGE_TYPE_FREE:
+            free_pages += 1
+            run += 1
+        else:
+            if run:
+                runs.append(run)
+                run = 0
+            used_pages += 1
+    if run:
+        runs.append(run)
+    if free_pages == 0 and used_pages == 0:
+        return None
+    return HeapWalk(
+        used_blocks=used_pages,
+        free_blocks=free_pages,
+        hole_sizes=[run_length * page_size for run_length in runs],
+        occupancy=[],
+        truncated=truncated,
+        corrupt=corrupt,
+    )
+
+
+def walk_system_heap(heap_type: str, kl: KernelLayout) -> HeapWalk | None:
+    """Walk the active system-heap allocator with bounded, guarded reads.
+
+    Returns ``None`` when the allocator's block chain is not resolvable so the
+    caller keeps the snapshot and marks Blocks/Holes unavailable.
+    """
+    if heap_type == "small_mem":
+        return _walk_small_mem(kl)
+    if heap_type == "memheap":
+        return _walk_memheap(kl)
+    if heap_type == "slab":
+        return _walk_slab_pages(kl)
+    return None

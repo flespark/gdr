@@ -474,20 +474,53 @@ def test_iter_timers_uses_resolved_list_heads(monkeypatch):
     assert list(navigation.iter_timers(layout)) == [timer]
 
 
-def test_get_heap_used_reads_used_mem(monkeypatch):
-    """small_mem / slab usage comes from the static ``used_mem`` symbol."""
+def test_get_heap_snapshot_reads_40_small_mem_globals(monkeypatch):
+    """4.0 small_mem usage comes from ``used_mem``/``mem_size_aligned``."""
     from gdr.layout import KernelLayout
 
-    monkeypatch.setattr(
-        navigation, "lookup_symbol", lambda name: 4096 if name == "used_mem" else None
-    )
+    def lookup(name: str):
+        return {
+            "used_mem": 4096,
+            "mem_size_aligned": 65536,
+            "max_mem": 8192,
+        }.get(name)
+
+    monkeypatch.setattr(navigation, "lookup_symbol", lookup)
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
 
-    assert navigation.get_heap_used("small_mem", KernelLayout()) == 4096
+    snap = navigation.get_heap_snapshot("small_mem", KernelLayout())
+
+    assert snap.algorithm == "small_mem"
+    assert snap.used == 4096
+    assert snap.total == 65536
+    assert snap.max_used == 8192
 
 
-def test_get_heap_used_reads_memheap_pool_fields(monkeypatch):
-    """memheap-as-heap usage is ``pool_size - available_size`` on ``_heap``."""
+def test_get_heap_snapshot_reads_slab_total_from_heap_bounds(monkeypatch):
+    """slab total falls back to ``heap_end - heap_start`` when unaligned."""
+    from gdr.layout import KernelLayout
+
+    def lookup(name: str):
+        return {
+            "used_mem": 2048,
+            "max_mem": 4096,
+            "heap_start": 0x1000,
+            "heap_end": 0x5000,
+        }.get(name)
+
+    monkeypatch.setattr(navigation, "lookup_symbol", lookup)
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+
+    snap = navigation.get_heap_snapshot("slab", KernelLayout())
+
+    assert snap.algorithm == "slab"
+    assert snap.used == 2048
+    assert snap.total == 0x4000
+    assert snap.max_used == 4096
+
+
+def test_get_heap_snapshot_reads_40_memheap_pool_fields(monkeypatch):
+    """4.0 memheap-as-heap usage is ``pool_size - available_size`` on ``_heap``."""
     from gdr.layout import KernelLayout, StructField, StructLayout
 
     heap = object()
@@ -500,6 +533,7 @@ def test_get_heap_used_reads_memheap_pool_fields(monkeypatch):
                     "available_size": StructField(
                         "available_size", ("available_size",)
                     ),
+                    "max_used_size": StructField("max_used_size", ("max_used_size",)),
                 },
             )
         }
@@ -511,45 +545,106 @@ def test_get_heap_used_reads_memheap_pool_fields(monkeypatch):
         navigation,
         "read_field",
         lambda value, _layout, field: (
-            {"pool_size": 1024, "available_size": 24}[field] if value is heap else None
+            {"pool_size": 1024, "available_size": 24, "max_used_size": 100}[field]
+            if value is heap
+            else None
         ),
     )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
 
-    assert navigation.get_heap_used("memheap", layout) == 1000
+    snap = navigation.get_heap_snapshot("memheap", layout)
+
+    assert snap.algorithm == "memheap"
+    assert snap.used == 1000
+    assert snap.total == 1024
+    assert snap.max_used == 100
 
 
-def test_get_heap_used_sums_rt_memory_objects(monkeypatch):
-    """4.1 ``struct rt_memory`` heaps contribute their ``used`` fields."""
+def test_get_heap_snapshot_reads_41_system_heap_rt_memory(monkeypatch):
+    """4.1 small_mem/slab read ``system_heap->total/used/max``."""
+    from gdr.layout import KernelLayout
+
+    class _FakeSystemHeap:
+        def __getitem__(self, key: str):
+            return {"total": 65536, "used": 4096, "max": 8192}[key]
+
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
+    monkeypatch.setattr(navigation, "_deref_system_heap", lambda: _FakeSystemHeap())
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+
+    snap = navigation.get_heap_snapshot("small_mem", KernelLayout())
+
+    assert snap.algorithm == "small_mem"
+    assert snap.used == 4096
+    assert snap.total == 65536
+    assert snap.max_used == 8192
+
+
+def test_get_heap_snapshot_reads_41_system_heap_memheap(monkeypatch):
+    """4.1 memheap-as-heap reads ``system_heap`` as a ``struct rt_memheap``."""
     from gdr.layout import KernelLayout, StructField, StructLayout
 
-    values = [object(), object()]
-    used_by_id = {id(values[0]): 10, id(values[1]): 15}
+    heap = object()
     layout = KernelLayout(
-        object_codes={"memory": 12},
         structs={
-            "struct rt_memory": StructLayout(
-                "struct rt_memory",
-                fields={"used": StructField("used", ("used",))},
+            "struct rt_memheap": StructLayout(
+                "struct rt_memheap",
+                fields={
+                    "pool_size": StructField("pool_size", ("pool_size",)),
+                    "available_size": StructField(
+                        "available_size", ("available_size",)
+                    ),
+                    "max_used_size": StructField("max_used_size", ("max_used_size",)),
+                },
             )
-        },
+        }
     )
     monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
-    monkeypatch.setattr(navigation, "iter_objects", lambda _code, _layout: iter(values))
+    monkeypatch.setattr(navigation, "_deref_system_heap", lambda: heap)
     monkeypatch.setattr(
         navigation,
         "read_field",
-        lambda value, _layout, _field: used_by_id[id(value)],
+        lambda _value, _layout, field: {
+            "pool_size": 2048,
+            "available_size": 48,
+            "max_used_size": 200,
+        }.get(field),
     )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
 
-    assert navigation.get_heap_used("none", layout) == 25
+    snap = navigation.get_heap_snapshot("memheap", layout)
+
+    assert snap.algorithm == "memheap"
+    assert snap.used == 2000
+    assert snap.total == 2048
+    assert snap.max_used == 200
 
 
-def test_get_heap_used_is_unavailable_without_target_state(monkeypatch):
+def test_get_heap_snapshot_degrades_without_memheap_layout(monkeypatch):
+    """A memheap handle without ``struct rt_memheap`` layout is not a crash."""
+    from gdr.layout import KernelLayout
+
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: object())
+    monkeypatch.setattr(navigation, "_deref_system_heap", lambda: object())
+
+    snap = navigation.get_heap_snapshot("memheap", KernelLayout())
+
+    assert snap.algorithm == "memheap"
+    assert snap.used is None
+    assert snap.total is None
+    assert snap.max_used is None
+
+
+def test_get_heap_snapshot_is_unavailable_without_target_state(monkeypatch):
     """Missing heap symbols do not fall back to calling ``rt_memory_info``."""
     from gdr.layout import KernelLayout
 
     monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
+    monkeypatch.setattr(navigation, "_deref_system_heap", lambda: None)
 
-    assert navigation.get_heap_used("small_mem", KernelLayout()) is None
+    snap = navigation.get_heap_snapshot("small_mem", KernelLayout())
+
+    assert snap.algorithm == "small_mem"
+    assert snap.used is None
+    assert snap.total is None
+    assert snap.max_used is None

@@ -24,6 +24,7 @@ _PUBLIC_ROUTES = {
     "mempools": ("objects", "mempool"),
     "timers": ("objects", "timer"),
     "system": ("system", None),
+    "heap": ("heap", None),
 }
 
 
@@ -34,6 +35,11 @@ def test_public_commands_reach_their_semantic_renderer(command, expected, monkey
     monkeypatch.setattr(commands, "render_tasks", lambda: calls.append(("tasks", None)))
     monkeypatch.setattr(
         commands, "render_system", lambda: calls.append(("system", None))
+    )
+    monkeypatch.setattr(
+        commands,
+        "render_heap",
+        lambda: calls.append(("heap", None)),
     )
     monkeypatch.setattr(
         commands,
@@ -261,3 +267,110 @@ def test_complete_plural_list_command_does_not_walk_objects(monkeypatch):
 
     assert "semaphores" in candidates
     assert "semaphore" in candidates
+
+
+class _FakeHeapAdapter(commands.RtThreadAdapter):
+    """RtThreadAdapter stand-in exposing the heap command surface."""
+
+    def __init__(self, diagnostics_data, basic_pairs=None):
+        self._detail = diagnostics_data
+        self._basic = (
+            basic_pairs if basic_pairs is not None else [("Algorithm", "small_mem")]
+        )
+
+    def heap_basic_pairs(self):
+        return list(self._basic)
+
+    def heap_detail(self):
+        return self._detail
+
+
+def test_render_heap_prints_basics_and_occupancy_table(monkeypatch):
+    """``rtt heap`` prints snapshot basics plus a per-thread occupancy table."""
+    from rtthread.adapter import HeapDetail
+
+    captured: list[tuple] = []
+    adapter = _FakeHeapAdapter(
+        HeapDetail(
+            pairs=[
+                ("Blocks", "12 used, 5 free, 17 total"),
+                ("Holes", "5 free, largest: 2048, smallest: 4, 8, 16"),
+            ],
+            occupancy=[["main", "8", "4096"], ["worker1", "4", "1024"]],
+        )
+    )
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        commands, "print_detail", lambda pairs: captured.append(("detail", pairs))
+    )
+    monkeypatch.setattr(
+        commands,
+        "print_table",
+        lambda rows, headers, **_kwargs: captured.append(("table", rows, headers)),
+    )
+
+    commands.render_heap()
+
+    assert captured[0][0] == "detail"
+    detail = dict(captured[0][1])
+    assert detail["Blocks"] == "12 used, 5 free, 17 total"
+    assert detail["Holes"] == "5 free, largest: 2048, smallest: 4, 8, 16"
+    assert detail["Thread occupancy"] == "2 threads"
+    assert captured[1] == (
+        "table",
+        [["main", "8", "4096"], ["worker1", "4", "1024"]],
+        ["Thread", "Blocks", "Bytes"],
+    )
+
+
+def test_render_heap_degrades_to_na_without_a_walk(monkeypatch):
+    """An unresolvable block chain keeps the basics and marks everything N/A."""
+    captured: list[tuple] = []
+    monkeypatch.setattr(commands, "active", lambda: _FakeHeapAdapter(None))
+    monkeypatch.setattr(
+        commands, "print_detail", lambda pairs: captured.append(("detail", pairs))
+    )
+
+    commands.render_heap()
+
+    detail = dict(captured[0][1])
+    assert detail["Blocks"] == "N/A"
+    assert detail["Holes"] == "N/A"
+    assert detail["Thread occupancy"] == "N/A"
+
+
+def test_render_heap_marks_occupancy_na_without_memtrace(monkeypatch):
+    """Without MEMTRACE the occupancy renders as a single N/A line."""
+    from rtthread.adapter import HeapDetail
+
+    captured: list[tuple] = []
+    adapter = _FakeHeapAdapter(
+        HeapDetail(
+            pairs=[("Blocks", "1 used, 0 free, 1 total"), ("Holes", "0 free")],
+            occupancy=None,
+        )
+    )
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        commands, "print_detail", lambda pairs: captured.append(("detail", pairs))
+    )
+    monkeypatch.setattr(
+        commands, "print_table", lambda *_args, **_kwargs: captured.append(("table",))
+    )
+
+    commands.render_heap()
+
+    detail = dict(captured[0][1])
+    assert detail["Thread occupancy"] == "N/A"
+    assert captured == [("detail", captured[0][1])]
+
+
+def test_render_heap_warns_without_rtthread_adapter(monkeypatch):
+    """A non-RT-Thread active adapter is rejected with a clear hint."""
+    warnings: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: object())
+    monkeypatch.setattr(commands, "warn", warnings.append)
+
+    commands.render_heap()
+
+    assert warnings == ["run `gdr init rtthread <version>` first"]
