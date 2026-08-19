@@ -34,7 +34,23 @@ def test_check_version_returns_the_parsed_target_profile(monkeypatch):
 
 def test_detect_target_version_uses_declared_packed_hex_encoding(monkeypatch):
     monkeypatch.setattr(
-        version, "eval_safe", lambda name: 0x40005 if name == "RT_VER_NUM" else None
+        version,
+        "lookup_symbol",
+        lambda name: 0x40005 if name == "RT_VER_NUM" else None,
+    )
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(version, "read_int", lambda value: value)
+
+    assert version.detect_target_version() == (4, 0, 5)
+
+
+def test_detect_target_version_uses_macros_when_symbols_are_absent(monkeypatch):
+    """Version macros are read through ``info macro``, not inferior evaluation."""
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+    monkeypatch.setattr(
+        version,
+        "read_macro_int",
+        lambda name: 0x40005 if name == "RT_VER_NUM" else None,
     )
     monkeypatch.setattr(version, "read_int", lambda value: value)
 

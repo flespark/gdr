@@ -69,8 +69,10 @@ def test_modern_31_profile_uses_null_shifted_object_codes():
     assert layout.object_codes["semaphore"] == 2
     assert layout.object_types[2].name == "semaphore"
     assert "reserved" in layout.structs["struct rt_semaphore"].fields
-    assert layout.list_hooks["timer_list"].head_expr == "rt_timer_list[0]"
-    assert layout.list_hooks["soft_timer_list"].head_expr == "rt_soft_timer_list[0]"
+    assert layout.list_hooks["timer_list"].head_symbol == "rt_timer_list"
+    assert layout.list_hooks["timer_list"].head_index == 0
+    assert layout.list_hooks["soft_timer_list"].head_symbol == "rt_soft_timer_list"
+    assert layout.list_hooks["soft_timer_list"].head_index == 0
 
 
 def test_4x_soft_timer_hook_requires_its_own_config_probe():
@@ -79,7 +81,10 @@ def test_4x_soft_timer_hook_requires_its_own_config_probe():
     soft = build_layouts(RtConfig(using_soft_timer=True), (4, 0, 5))
 
     assert "soft_timer_list" not in no_soft.list_hooks
-    assert soft.list_hooks["soft_timer_list"].head_expr == "_soft_timer_list[0]"
+    assert no_soft.list_hooks["timer_list"].head_symbol == "_timer_list"
+    assert no_soft.list_hooks["timer_list"].head_index == 0
+    assert soft.list_hooks["soft_timer_list"].head_symbol == "_soft_timer_list"
+    assert soft.list_hooks["soft_timer_list"].head_index == 0
 
 
 def test_messagequeue_layout_describes_receiver_suspend_list():

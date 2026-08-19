@@ -14,8 +14,8 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import eval_safe, lookup_symbol, read_cstring
-from gdr.layout import KernelLayout, ListHook, iter_list, read_field
+from gdr.gdb_bridge import lookup_symbol, read_cstring, read_int
+from gdr.layout import KernelLayout, ListHook, iter_list, read_field, resolve_list_head
 from rtthread.layout import object_information_layout
 
 
@@ -27,21 +27,13 @@ def _object_code(kl: KernelLayout, name: str) -> int | None:
 def get_object_information(type_code: int, kl: KernelLayout) -> gdb.Value | None:
     """Obtain RT-Thread object registry information for an object type code.
 
-    Calls ``rt_object_get_information()`` first, then falls back to the static
-    ``_object_container`` array when the function is unavailable.
+    Reads the static ``_object_container`` array. The kernel helper
+    ``rt_object_get_information()`` is not called: that would resume the
+    inferior.
     """
     info_layout = object_information_layout(kl)
     if info_layout is None:
         return None
-
-    # Reason: rt_object_get_information is RTM_EXPORT'd and present in all
-    # RT-Thread builds, making it the most reliable entry point.
-    info_ptr = eval_safe(f"rt_object_get_information({type_code})")
-    if info_ptr is not None and int(info_ptr) != 0:
-        try:
-            return info_ptr.dereference()
-        except (gdb.error, gdb.MemoryError):
-            pass
 
     container = lookup_symbol("_object_container")
     if container is None:
@@ -75,7 +67,7 @@ def iter_objects(type_code: int, kl: KernelLayout) -> Iterator[gdb.Value]:
     if object_list is None:
         return
     hook = ListHook(
-        head_expr="",
+        head_symbol="",
         node_path=type_info.list_path,
         container_type=type_info.struct_name,
         next_path=type_info.next_path,
@@ -113,7 +105,7 @@ def iter_suspend_threads(
     protection from :func:`gdr.layout.iter_list`.
     """
     hook = ListHook(
-        head_expr="",
+        head_symbol="",
         node_path=("tlist",),
         container_type="struct rt_thread",
         next_path=("next",),
@@ -242,29 +234,47 @@ def _cpu_from_table(table: gdb.Value | None, cpu_id: int) -> gdb.Value | None:
     return None
 
 
+def _selected_cpu_id() -> int:
+    """Return GDB's selected CPU index without resuming the inferior.
+
+    Prefers the halted core's affinity register (Cortex-A ``mpidr`` /
+    ``mpidr_el1``, RISC-V ``mhartid``), then GDB's selected thread number.
+    Falls back to CPU 0 when neither is available.
+    """
+    if gdb is None:
+        return 0
+    try:
+        frame = gdb.selected_frame()
+    except (gdb.error, AttributeError, RuntimeError):
+        frame = None
+    if frame is not None:
+        for name, mask in (("mhartid", None), ("mpidr", 0xFF), ("mpidr_el1", 0xFF)):
+            try:
+                raw = int(frame.read_register(name))
+            except (gdb.error, AttributeError, TypeError, ValueError):
+                continue
+            cpu_id = raw if mask is None else raw & mask
+            if cpu_id >= 0:
+                return cpu_id
+    try:
+        thread = gdb.selected_thread()
+        if thread is not None and int(thread.num) >= 1:
+            return int(thread.num) - 1
+    except (gdb.error, AttributeError, TypeError, ValueError):
+        pass
+    return 0
+
+
 def _smp_current_thread() -> gdb.Value | None:
     """Return the current thread for GDB's selected RT-Thread CPU."""
-    # Reason: some BSPs implement rt_hw_cpu_id() in assembly without DWARF
-    # return-type information, so GDB needs the explicit integer cast.
-    cpu_id_value = eval_safe("(int)rt_hw_cpu_id()")
-    if cpu_id_value is None:
-        return None
-    try:
-        cpu_id = int(cpu_id_value)
-    except (TypeError, ValueError):
-        return None
+    cpu_id = _selected_cpu_id()
     if cpu_id < 0:
         return None
 
-    # Reason: rt_cpu_index() is the stable RT-Thread 4.x interface; backing
-    # storage changed from rt_cpus[] to _cpus[] between releases.
-    current = _dereference_thread(eval_safe(f"rt_cpu_index({cpu_id})->current_thread"))
-    if current is not None:
-        return current
-
-    # Reason: some RT-Thread branches expose the CPU table directly. GDB's
-    # indexing works for either a struct array or a pointer to its first entry.
-    for symbol in ("rt_cpu_table", "rt_cpus", "_cpus"):
+    # Reason: backing storage changed from rt_cpus[] / rt_cpu_table to _cpus[]
+    # across 3.1 and 4.x; rt_cpu_index() is not called because that would
+    # resume the inferior.
+    for symbol in ("_cpus", "rt_cpus", "rt_cpu_table", "_rt_cpus"):
         cpu = _cpu_from_table(lookup_symbol(symbol), cpu_id)
         current = _current_thread_from_cpu(cpu)
         if current is not None:
@@ -295,7 +305,7 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
         hook = kl.list_hooks.get(hook_name)
         if hook is None:
             continue
-        head = eval_safe(hook.head_expr)
+        head = resolve_list_head(hook)
         if head is None:
             continue
         for timer in iter_list(head, hook):
@@ -314,18 +324,81 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
 
 
 def get_tick() -> int | None:
-    """Read the current RT-Thread kernel tick."""
-    value = eval_safe("rt_tick_get()")
-    if value is not None:
-        try:
-            return int(value)
-        except (gdb.error, ValueError):
-            return None
-
+    """Read the current RT-Thread kernel tick without resuming the inferior."""
     tick = lookup_symbol("rt_tick")
     if tick is not None:
         try:
             return int(tick)
-        except (gdb.error, ValueError):
+        except (gdb.error, TypeError, ValueError):
             pass
+
+    # Reason: SMP builds alias rt_tick to rt_cpu_index(0)->tick; the UP
+    # symbol is absent, so read CPU0's tick field from the per-CPU table.
+    for symbol in ("_cpus", "rt_cpus", "rt_cpu_table", "_rt_cpus"):
+        cpu = _cpu_from_table(lookup_symbol(symbol), 0)
+        if cpu is None:
+            continue
+        try:
+            if cpu.type.strip_typedefs().code == gdb.TYPE_CODE_PTR:
+                if int(cpu) == 0:
+                    continue
+                cpu = cpu.dereference()
+            return int(cpu["tick"])
+        except (gdb.error, gdb.MemoryError, IndexError, TypeError, ValueError):
+            continue
     return None
+
+
+def _memheap_used(kl: KernelLayout) -> int | None:
+    """Return used bytes from ``_heap`` when memheap is the system heap."""
+    heap = lookup_symbol("_heap")
+    if heap is None:
+        return None
+    layout = kl.structs.get("struct rt_memheap")
+    if layout is not None:
+        pool = read_int(read_field(heap, layout, "pool_size"))
+        available = read_int(read_field(heap, layout, "available_size"))
+    else:
+        try:
+            pool = read_int(heap["pool_size"])
+            available = read_int(heap["available_size"])
+        except (TypeError, ValueError, KeyError, IndexError):
+            return None
+    if pool is None or available is None:
+        return None
+    return max(pool - available, 0)
+
+
+def _memory_object_used(kl: KernelLayout) -> int | None:
+    """Sum ``used`` across 4.1 ``struct rt_memory`` heap objects."""
+    type_code = kl.object_codes.get("memory")
+    layout = kl.structs.get("struct rt_memory")
+    if type_code is None or layout is None:
+        return None
+    total = 0
+    found = False
+    for value in iter_objects(type_code, kl):
+        used = read_int(read_field(value, layout, "used"))
+        if used is None:
+            continue
+        total += used
+        found = True
+    return total if found else None
+
+
+def get_heap_used(heap_type: str, kl: KernelLayout) -> int | None:
+    """Read system-heap used bytes from static kernel state.
+
+    small_mem/slab expose ``used_mem``; memheap-as-heap uses ``_heap``;
+    4.1 ``struct rt_memory`` objects contribute their ``used`` fields.
+    ``rt_memory_info()`` is not called.
+    """
+    if heap_type in ("small_mem", "slab", "none"):
+        used = read_int(lookup_symbol("used_mem"))
+        if used is not None:
+            return used
+    if heap_type in ("memheap", "none"):
+        used = _memheap_used(kl)
+        if used is not None:
+            return used
+    return _memory_object_used(kl)

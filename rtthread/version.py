@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gdr.gdb_bridge import eval_safe, read_int, warn
+from gdr.gdb_bridge import lookup_symbol, read_int, read_macro_int, warn
 from gdr.version import (
     Version,
     VersionRange,
@@ -41,7 +41,7 @@ def detect_target_version() -> Version | None:
     """Best-effort RT-Thread version detection from exported constants."""
     for expression, encodings in TARGET_VERSION_SYMBOLS:
         detected = decode_version(
-            read_int(eval_safe(expression)) or 0,
+            read_int(lookup_symbol(expression)) or read_macro_int(expression) or 0,
             encodings,
             SUPPORTED_RANGES,
         )

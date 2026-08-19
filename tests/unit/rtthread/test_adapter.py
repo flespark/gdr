@@ -560,3 +560,19 @@ def test_timer_expires_in_wraps_safely():
     assert adapter_module._timer_expires_in(0xFFFFFFF5, 0xFFFFFFF0) == "5"
     assert adapter_module._timer_expires_in(0x00000005, 0xFFFFFFF0) == "21"
     assert adapter_module._timer_expires_in(100, None) is None
+
+
+def test_heap_summary_formats_used_bytes(monkeypatch):
+    """System summary renders the static heap snapshot as a used-bytes line."""
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(adapter_module, "get_heap_used", lambda _type, _layout: 4096)
+
+    assert adapter._heap_summary() == "4096 bytes used"
+
+
+def test_heap_summary_is_unavailable_without_target_state(monkeypatch):
+    """Missing heap symbols do not fall back to calling ``rt_memory_info``."""
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(adapter_module, "get_heap_used", lambda _type, _layout: None)
+
+    assert adapter._heap_summary() == "unavailable"

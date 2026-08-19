@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import platform
+import re
 import shutil
 import struct
 import sys
@@ -129,19 +130,61 @@ def propagate_exception() -> bool:
     return GDR_PROPAGATE_EXCEPTION
 
 
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SYMBOL_LOOKUP_ERRORS = (TypeError, ValueError, RuntimeError, AttributeError)
+
+
+def is_plain_identifier(name: str) -> bool:
+    """Return whether *name* is a single C identifier with no call or index."""
+    return bool(_IDENTIFIER.fullmatch(name))
+
+
+def _lookup_gdb_symbol(name: str):
+    """Return a ``gdb.Symbol`` for *name*, or ``None``.
+
+    Searches the selected block, then globals, then file-static symbols.
+    Does not evaluate expressions or call inferior functions.
+    """
+    symbol = None
+    try:
+        found, _is_field = gdb.lookup_symbol(name)
+        symbol = found
+    except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
+        symbol = None
+    if symbol is None:
+        try:
+            symbol = gdb.lookup_global_symbol(name)
+        except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
+            symbol = None
+    if symbol is None:
+        try:
+            symbol = gdb.lookup_static_symbol(name)
+        except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
+            symbol = None
+    return symbol
+
+
 def lookup_symbol(name: str) -> gdb.Value | None:
-    """Look up a global/static symbol by name.
+    """Look up a global or file-static data symbol by identifier.
 
     Args:
-        name: Symbol or expression understood by ``gdb.parse_and_eval``.
+        name: A single C identifier. Call expressions, GDB convenience
+            variables, and field/index paths are rejected so kernel
+            collection cannot resume the inferior.
 
     Returns:
-        The ``gdb.Value`` or ``None`` if not found / not readable.
+        The ``gdb.Value`` or ``None`` if *name* is not a plain identifier,
+        the symbol is missing, or its value is unreadable.
     """
+    if not is_plain_identifier(name):
+        return None
     _ensure_gdb()
+    symbol = _lookup_gdb_symbol(name)
+    if symbol is None:
+        return None
     try:
-        return gdb.parse_and_eval(name)
-    except gdb.error:
+        return symbol.value()
+    except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
         return None
 
 
@@ -173,8 +216,15 @@ def macro_defined(name: str) -> bool:
 
 
 def symbol_exists(name: str) -> bool:
-    """Check whether a symbol is visible in the current target."""
-    return lookup_symbol(name) is not None
+    """Return whether a DWARF/ELF symbol named *name* is visible.
+
+    Function symbols used as config probes are detected without reading
+    ``symbol.value()``, so a missing selected frame cannot hide them.
+    """
+    if not is_plain_identifier(name):
+        return False
+    _ensure_gdb()
+    return _lookup_gdb_symbol(name) is not None
 
 
 def lookup_type(name: str) -> gdb.Type | None:
@@ -186,13 +236,29 @@ def lookup_type(name: str) -> gdb.Type | None:
         return None
 
 
-def eval_safe(expr: str) -> gdb.Value | None:
-    """Evaluate a GDB expression, returning ``None`` on error."""
+def eval_identifier(name: str) -> gdb.Value | None:
+    """Evaluate one C identifier on the host after rejecting call syntax.
+
+    GDB expands preprocessor macros and constant expressions without
+    resuming the inferior. ``foo()``, ``_timer_list[0]``, and convenience
+    variables are rejected so this cannot become an inferior function call.
+    """
+    if not is_plain_identifier(name):
+        return None
     _ensure_gdb()
     try:
-        return gdb.parse_and_eval(expr)
-    except (gdb.error, gdb.MemoryError):
+        return gdb.parse_and_eval(name)
+    except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
         return None
+
+
+def read_macro_int(name: str) -> int | None:
+    """Read a preprocessor macro or integer constant as ``int``.
+
+    Uses :func:`eval_identifier` so GDB performs the expansion, including
+    nested arithmetic such as packed version macros.
+    """
+    return read_int(eval_identifier(name))
 
 
 def read_int(value: gdb.Value | None) -> int | None:

@@ -101,7 +101,7 @@ def test_setup_rtthread_commits_only_after_all_registration_steps(
     )
     monkeypatch.setattr(
         "rtthread.adapter.RtThreadAdapter",
-        lambda _layout: step("adapter") or adapter_instance,
+        lambda _layout, **_kwargs: step("adapter") or adapter_instance,
     )
     monkeypatch.setattr(
         entrypoint, "register_printers", lambda _layout: step("printers")

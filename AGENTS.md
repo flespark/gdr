@@ -55,14 +55,16 @@ Key design principles (see `docs/architecture.md`):
   Kernel config features (SMP, heap type, IPC components) are probed at
   runtime by symbol presence, which is far more reliable than guessing the
   RTOS or parsing version strings.
+- **Never drive target.** Target RTOS will keep halt when collect system runtime
+  statuses. Inferior function calls (``foo()``) are prohibited. Identifier-only
+  ``gdb.parse_and_eval`` is allowed only through ``gdr.gdb_bridge.eval_identifier``.
 - **Layout is dataclass-driven, not YAML.** Kernel structs vary by *config*
   (SMP, heap manager, IPC toggles), not by version. A factory function
   `build_layouts(config)` assembles the right field set; small version
   deltas are handled with minimal conditional fields.
-- **Coupling is explicit.** RT-Thread field layouts live in
-  `rtthread/layout.py`; RT-Thread symbols and traversal live in
-  `rtthread/navigation.py`. The `gdr/` core contains no RT-Thread-specific
-  names or behavior.
+- **Coupling is explicit.** RTOS field layouts live in `<rtos>/layout.py`;
+  RTOS symbols and traversal live in `<rtos>/navigation.py`. The `gdr/` core
+  contains no RTOS-specific names or behavior.
 
 ## Setup
 

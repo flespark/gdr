@@ -510,3 +510,165 @@ def test_read_bytes_preserves_target_memory_order(monkeypatch):
 
     assert bridge.read_bytes(0x1000, 2) == b"\x12\x34"
     assert fake_gdb.memory_reads == [(0x1000, 2)]
+
+
+class _Symbol:
+    """Minimal ``gdb.Symbol`` that records whether ``value()`` was read."""
+
+    def __init__(self, value, *, fail: bool = False):
+        self._value = value
+        self.fail = fail
+        self.value_reads = 0
+
+    def value(self):
+        self.value_reads += 1
+        if self.fail:
+            raise RuntimeError("no selected frame")
+        return self._value
+
+
+class _LookupGdb:
+    """GDB stand-in for identifier-only symbol lookup."""
+
+    class error(Exception):
+        pass
+
+    def __init__(
+        self,
+        *,
+        block=None,
+        globals_=None,
+        static=None,
+        block_raises: bool = False,
+    ):
+        self.block = block or {}
+        self.globals_ = globals_ or {}
+        self.static = static or {}
+        self.block_raises = block_raises
+        self.lookups: list[tuple[str, str]] = []
+
+    def lookup_symbol(self, name: str):
+        self.lookups.append(("block", name))
+        if self.block_raises:
+            raise self.error("no frame")
+        symbol = self.block.get(name)
+        return symbol, False
+
+    def lookup_global_symbol(self, name: str):
+        self.lookups.append(("global", name))
+        return self.globals_.get(name)
+
+    def lookup_static_symbol(self, name: str):
+        self.lookups.append(("static", name))
+        return self.static.get(name)
+
+
+class _EvalGdb:
+    """GDB stand-in for identifier-only ``parse_and_eval``."""
+
+    class error(Exception):
+        pass
+
+    def __init__(self, values: dict[str, object]):
+        self.values = values
+        self.parsed: list[str] = []
+
+    def parse_and_eval(self, expression: str):
+        self.parsed.append(expression)
+        if expression not in self.values:
+            raise self.error(f'No symbol "{expression}"')
+        return self.values[expression]
+
+
+def test_eval_identifier_rejects_call_and_index_expressions(monkeypatch):
+    """The wrap checker never forwards ``foo()`` to ``parse_and_eval``."""
+    fake = _EvalGdb({"rt_tick": 1})
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.eval_identifier("rt_tick_get()") is None
+    assert bridge.eval_identifier("_timer_list[0]") is None
+    assert bridge.eval_identifier("$pc") is None
+    assert fake.parsed == []
+
+
+def test_read_macro_int_uses_checked_parse_and_eval(monkeypatch):
+    """GDB expands identifier macros, including packed version arithmetic."""
+    fake = _EvalGdb(
+        {
+            "RT_CPUS_NR": 2,
+            "configNUMBER_OF_CORES": 4,
+            "RT_VER_NUM": 40005,
+        }
+    )
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.read_macro_int("RT_CPUS_NR") == 2
+    assert bridge.read_macro_int("configNUMBER_OF_CORES") == 4
+    assert bridge.read_macro_int("RT_VER_NUM") == 40005
+    assert bridge.read_macro_int("MISSING") is None
+    assert bridge.read_macro_int("foo()") is None
+    assert fake.parsed == [
+        "RT_CPUS_NR",
+        "configNUMBER_OF_CORES",
+        "RT_VER_NUM",
+        "MISSING",
+    ]
+
+
+def test_production_code_does_not_evaluate_gdb_expressions():
+    """Only ``eval_identifier`` in gdb_bridge may call ``gdb.parse_and_eval``."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    paths = [
+        root / "gdr.py",
+        *root.glob("gdr/*.py"),
+        *root.glob("rtthread/*.py"),
+        *root.glob("freertos/*.py"),
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert "eval_safe" not in text, path
+        if path.name == "gdb_bridge.py":
+            assert "gdb.parse_and_eval(name)" in text
+            continue
+        assert "parse_and_eval" not in text, path
+
+
+def test_lookup_symbol_rejects_call_and_index_expressions(monkeypatch):
+    """Kernel collection must not evaluate expressions that can resume the MCU."""
+    fake = _LookupGdb()
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.lookup_symbol("rt_tick_get()") is None
+    assert bridge.lookup_symbol("_timer_list[0]") is None
+    assert bridge.lookup_symbol("rt_cpu_index(0)") is None
+    assert bridge.lookup_symbol("$pc") is None
+    assert not bridge.symbol_exists("rt_sem_init()")
+    assert fake.lookups == []
+
+
+def test_lookup_symbol_falls_back_to_file_static(monkeypatch):
+    """File-static heap counters are visible through ``lookup_static_symbol``."""
+    symbol = _Symbol(4096)
+    fake = _LookupGdb(static={"used_mem": symbol})
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.lookup_symbol("used_mem") == 4096
+    assert fake.lookups == [
+        ("block", "used_mem"),
+        ("global", "used_mem"),
+        ("static", "used_mem"),
+    ]
+
+
+def test_symbol_exists_does_not_read_function_values(monkeypatch):
+    """Config probes detect ``rt_sem_init`` without requiring a selected frame."""
+    symbol = _Symbol(None, fail=True)
+    fake = _LookupGdb(globals_={"rt_sem_init": symbol}, block_raises=True)
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.symbol_exists("rt_sem_init") is True
+    assert symbol.value_reads == 0
+    assert bridge.lookup_symbol("rt_sem_init") is None
+    assert symbol.value_reads == 1

@@ -161,12 +161,12 @@ def _is_legacy_31(version: tuple[int, int, int]) -> bool:
 def _probe_cpu_count(lookup_symbol) -> int | None:
     """Probe the SMP CPU count from target symbols.
 
-    ``struct rt_cpu _rt_cpus[RT_CPUS_NR]`` (4.x) or ``rt_cpus[]`` (3.1) is a
-    global array whose length equals the configured CPU count. Falling back to
-    ``RT_CPUS_NR`` only when the macro is visible; otherwise return ``None``
-    and callers treat unknown CPU values conservatively.
+    ``struct rt_cpu _cpus[RT_CPUS_NR]`` (4.x) or ``rt_cpus[]`` (3.1) is a
+    global or file-static array whose length equals the configured CPU count.
+    Falling back to ``RT_CPUS_NR`` only when the macro is visible; otherwise
+    return ``None`` and callers treat unknown CPU values conservatively.
     """
-    for symbol_name in ("_rt_cpus", "rt_cpus"):
+    for symbol_name in ("_cpus", "_rt_cpus", "rt_cpus"):
         array = lookup_symbol(symbol_name)
         if array is None:
             continue
@@ -178,13 +178,11 @@ def _probe_cpu_count(lookup_symbol) -> int | None:
         except (gdb.error, AttributeError, TypeError, ValueError):
             continue
 
-    macro = lookup_symbol("RT_CPUS_NR")
-    if macro is not None:
-        try:
-            count = int(macro)
-            return count if count > 0 else None
-        except (TypeError, ValueError):
-            return None
+    from gdr.gdb_bridge import read_macro_int
+
+    count = read_macro_int("RT_CPUS_NR")
+    if count is not None and count > 0:
+        return count
     return None
 
 
@@ -705,10 +703,11 @@ def _build_list_hooks(
     # Hard timer list (timer.c: static rt_list_t _timer_list[1])
     timer_list_name = "rt_timer_list" if version[0] == 3 else "_timer_list"
     hooks["timer_list"] = ListHook(
-        head_expr=f"{timer_list_name}[{RT_TIMER_SKIP_LIST_LEVEL - 1}]",
+        head_symbol=timer_list_name,
         node_path=("row", RT_TIMER_SKIP_LIST_LEVEL - 1),
         container_type="struct rt_timer",
         next_path=_OBJECT_LIST_NEXT_PATH,
+        head_index=RT_TIMER_SKIP_LIST_LEVEL - 1,
     )
 
     # Soft timer list (only if soft timer is compiled in)
@@ -717,10 +716,11 @@ def _build_list_hooks(
             "rt_soft_timer_list" if version[0] == 3 else "_soft_timer_list"
         )
         hooks["soft_timer_list"] = ListHook(
-            head_expr=f"{soft_timer_list_name}[{RT_TIMER_SKIP_LIST_LEVEL - 1}]",
+            head_symbol=soft_timer_list_name,
             node_path=("row", RT_TIMER_SKIP_LIST_LEVEL - 1),
             container_type="struct rt_timer",
             next_path=_OBJECT_LIST_NEXT_PATH,
+            head_index=RT_TIMER_SKIP_LIST_LEVEL - 1,
         )
 
     return hooks

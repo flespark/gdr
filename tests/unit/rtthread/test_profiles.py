@@ -41,7 +41,7 @@ def test_modern_31_profile_has_null_shifted_object_codes():
 
 
 def test_modern_profile_has_null_shifted_codes_and_smp_current_thread():
-    """Cortex-A9 4.x uses shifted codes and the SMP current-thread accessor."""
+    """Cortex-A9 4.x uses shifted codes and the per-CPU table as current thread."""
     profile = get_rtthread_test_profile("4.0.5", "cortex-a9")
 
     assert profile.semaphore_code == 0x02
@@ -54,10 +54,7 @@ def test_modern_profile_has_null_shifted_codes_and_smp_current_thread():
     assert profile.semaphore_name == "test_sem"
     assert profile.mutex_name == "test_mutex"
     assert profile.timer_name == "test_timer"
-    assert (
-        profile.current_thread_expression
-        == "rt_cpu_index(rt_hw_cpu_id())->current_thread"
-    )
+    assert profile.current_thread_expression == "_cpus"
 
 
 def test_rv64_profile_uses_global_current_thread():

@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from .constants import GDR_MAX_TRAVERSAL_COUNT
-from .gdb_bridge import warn
+from .gdb_bridge import lookup_symbol, warn
 
 try:
     import gdb
@@ -103,18 +103,23 @@ class ListHook:
     """Describes how to iterate an intrusive doubly-linked list.
 
     Attributes:
-        head_expr: GDB expression evaluating to the list head.
+        head_symbol: Identifier of the list-head symbol. Empty when the
+            caller already holds the head ``gdb.Value``.
         node_path: Path from the container struct to its embedded list node
             (used with ``container_of``).
         container_type: GDB type name to cast the container to.
         next_path: Path from a list node to its next node. This is layout
             metadata because intrusive-list implementations vary by target.
+        head_index: Optional array index applied after looking up
+            ``head_symbol`` (for example skip-list slot 0). ``None`` means
+            the symbol itself is the head.
     """
 
-    head_expr: str
+    head_symbol: str
     node_path: tuple[str | int, ...]
     container_type: str
     next_path: tuple[str | int, ...]
+    head_index: int | None = None
 
 
 @dataclass
@@ -255,6 +260,26 @@ def read_field(
     if f is None:
         return None
     return read_path(value, f.path)
+
+
+def resolve_list_head(hook: ListHook):
+    """Return the list-head ``gdb.Value`` for *hook*, or ``None``.
+
+    Looks up ``head_symbol`` as a DWARF/ELF identifier and applies
+    ``head_index`` with ``gdb.Value`` indexing. Never evaluates a GDB
+    expression, so the inferior stays halted.
+    """
+    if not hook.head_symbol:
+        return None
+    value = lookup_symbol(hook.head_symbol)
+    if value is None:
+        return None
+    if hook.head_index is None:
+        return value
+    try:
+        return value[hook.head_index]
+    except _ACCESS_ERRORS:
+        return None
 
 
 def iter_list(

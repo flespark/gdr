@@ -10,11 +10,10 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.gdb_bridge import (
-    eval_safe,
     lookup_symbol,
     lookup_type,
     macro_defined,
-    read_int,
+    read_macro_int,
 )
 from gdr.layout import StructField, StructLayout
 
@@ -61,7 +60,7 @@ def _fields(type_name: str) -> set[str]:
 
 
 def _macro_int(name: str) -> int | None:
-    return read_int(eval_safe(name))
+    return read_macro_int(name)
 
 
 def detect_config() -> FreeRtosConfig:

@@ -180,17 +180,53 @@ for kind, name, symbol, tag in (
 
 def test_current_task_matches_the_selected_cpu(gdb_session):
     output = gdb_session.run_python(
-        f"""
+        """
 import gdb
 from rtthread.navigation import get_current_thread
 
-expected = gdb.parse_and_eval({_PROFILE.current_thread_expression!r})
 current = get_current_thread()
-print(f"expected_non_null={{int(expected) != 0}}")
-print(f"current_found={{current is not None}}")
+expected = None
+try:
+    pointer = gdb.parse_and_eval("rt_current_thread")
+    if int(pointer) != 0:
+        expected = pointer.dereference()
+except (gdb.error, gdb.MemoryError, TypeError, ValueError):
+    pass
+if expected is None:
+    cpu_id = 0
+    found_cpu = False
+    try:
+        frame = gdb.selected_frame()
+    except gdb.error:
+        frame = None
+    if frame is not None:
+        for name, mask in (("mhartid", None), ("mpidr", 0xFF), ("mpidr_el1", 0xFF)):
+            try:
+                raw = int(frame.read_register(name))
+            except (gdb.error, AttributeError, TypeError, ValueError):
+                continue
+            cpu_id = raw if mask is None else raw & mask
+            found_cpu = True
+            break
+    if not found_cpu:
+        thread = gdb.selected_thread()
+        if thread is not None and int(thread.num) >= 1:
+            cpu_id = int(thread.num) - 1
+    for name in ("_cpus", "rt_cpus", "rt_cpu_table", "_rt_cpus"):
+        try:
+            table = gdb.parse_and_eval(name)
+            cpu = table[cpu_id]
+            pointer = cpu["current_thread"]
+            if int(pointer) != 0:
+                expected = pointer.dereference()
+                break
+        except (gdb.error, gdb.MemoryError, TypeError, ValueError, KeyError):
+            continue
+print(f"expected_non_null={expected is not None and int(expected.address) != 0}")
+print(f"current_found={current is not None}")
 print(
     "current_matches_selected_cpu="
-    f"{{current is not None and int(current.address) == int(expected)}}"
+    f"{current is not None and expected is not None and int(current.address) == int(expected.address)}"
 )
 """
     )

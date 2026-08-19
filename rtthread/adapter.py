@@ -36,7 +36,6 @@ from gdr.formatting import (
     format_symbol_or_address,
 )
 from gdr.gdb_bridge import (
-    eval_safe,
     lookup_symbol_at,
     read_bytes,
     read_cstring,
@@ -64,6 +63,7 @@ from rtthread.navigation import (
 from rtthread.navigation import (
     find_thread,
     get_current_thread,
+    get_heap_used,
     get_tick,
     iter_objects,
     iter_suspend_threads,
@@ -505,8 +505,9 @@ _DETAIL_BUILDERS: dict[str, tuple[Callable, Callable]] = {
 class RtThreadAdapter(RtosAdapter):
     """Expose RT-Thread navigation through GDR's semantic adapter contract."""
 
-    def __init__(self, layout: KernelLayout) -> None:
+    def __init__(self, layout: KernelLayout, heap_type: str = "none") -> None:
         self.layout = layout
+        self.heap_type = heap_type
         # Reason: IPC policy decoding lives in ``_ipc_policy``; expose it to the
         # RTOS-neutral pretty-printer through the layout's formatter hook so the
         # core reuses the same decoder rather than a duplicated enum_map.
@@ -969,7 +970,6 @@ class RtThreadAdapter(RtosAdapter):
             ),
             None,
         )
-        used = read_int(eval_safe("(int)rt_memory_info(0)"))
         return SystemSummary(
             kernel_version="RT-Thread",
             current_task=current,
@@ -978,5 +978,10 @@ class RtThreadAdapter(RtosAdapter):
             scheduler_state="unavailable",
             state_counts=states,
             object_counts=self.object_counts(),
-            heap_summary=f"{used} bytes used" if used is not None else "unavailable",
+            heap_summary=self._heap_summary(),
         )
+
+    def _heap_summary(self) -> str:
+        """Format heap usage from static kernel state, never inferior calls."""
+        used = get_heap_used(self.heap_type, self.layout)
+        return f"{used} bytes used" if used is not None else "unavailable"

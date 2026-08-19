@@ -70,9 +70,7 @@ def get_rtthread_test_profile(version: str, target: str) -> RtThreadTestProfile:
     legacy_31 = (major, minor) == (3, 1) and patch <= 2
     offset = 0 if legacy_31 else 1
     current_thread_expression = (
-        "rt_current_thread"
-        if target == "rv64" or major == 3
-        else "rt_cpu_index(rt_hw_cpu_id())->current_thread"
+        "rt_current_thread" if target == "rv64" or major == 3 else "_cpus"
     )
     return RtThreadTestProfile(
         semaphore_code=0x01 + offset,

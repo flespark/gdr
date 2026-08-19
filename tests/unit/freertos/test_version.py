@@ -13,7 +13,21 @@ def test_validate_version_accepts_supported_ranges(value, monkeypatch):
 
 def test_target_version_uses_declared_decimal_encoding(monkeypatch):
     monkeypatch.setattr(
-        version, "eval_safe", lambda name: 100301 if name.startswith("gdr_") else None
+        version,
+        "lookup_symbol",
+        lambda name: 100301 if name.startswith("gdr_") else None,
+    )
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(version, "read_int", lambda value: value)
+    assert version.detect_target_version() == (10, 3, 1)
+
+
+def test_target_version_uses_macros_when_symbols_are_absent(monkeypatch):
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+    monkeypatch.setattr(
+        version,
+        "read_macro_int",
+        lambda name: 100301 if name.startswith("gdr_") else None,
     )
     monkeypatch.setattr(version, "read_int", lambda value: value)
     assert version.detect_target_version() == (10, 3, 1)
@@ -35,9 +49,10 @@ def test_validate_version_rejects_invalid_and_unsupported_values(monkeypatch):
 def test_target_version_uses_declared_packed_hex_encoding(monkeypatch):
     monkeypatch.setattr(
         version,
-        "eval_safe",
+        "lookup_symbol",
         lambda name: 0xA0301 if name == "tskKERNEL_VERSION" else None,
     )
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
     monkeypatch.setattr(version, "read_int", lambda value: value)
 
     assert version.detect_target_version() == (10, 3, 1)

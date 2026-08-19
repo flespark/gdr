@@ -30,7 +30,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 
 | Module | Responsibility |
 |--------|---------------|
-| `gdb_bridge.py` | Wraps GDB registration, safe eval, memory/type access, terminal probing, output and error guards. |
+| `gdb_bridge.py` | Wraps GDB registration, identifier-only symbol lookup, memory/type access, terminal probing, output and error guards. Inferior function evaluation is not used. |
 | `constants.py` / `formatting.py` | Shared traversal/presentation defaults and pure optional/address/symbol/table formatting. Formatting has no GDB dependency. |
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). It interprets adapter-supplied paths but contains no target type names, symbols, or list conventions. |
 | `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. |
@@ -77,7 +77,26 @@ entirely; IPC components (`RT_USING_MUTEX`, etc.) may be absent.
 Probing these by symbol presence (`rt_cpu_index`, `rt_sem_init`,
 `rt_mutex_take`, ...) is reliable and cheap, and spares users from
 reciting their `.config`. Probing falls back to safe defaults with a
-warning when a symbol is ambiguous.
+warning when a symbol is ambiguous. Symbol presence uses DWARF/ELF
+lookup, never a GDB expression that could call into the target.
+
+### No inferior function calls
+
+GDR inspects a halted RTOS. `gdb.parse_and_eval("foo()")` resumes the
+core until the dummy frame returns, so SysTick and pending peripheral
+ISRs can mutate `rt_tick`, thread state, and IPC objects. Kernel
+collection therefore uses only:
+
+- `gdb.lookup_symbol` / `lookup_global_symbol` / `lookup_static_symbol`
+  for identifiers (`rt_tick`, `_object_container`, `_cpus`)
+- `gdb.Value` field and index access for struct members and arrays
+- identifier-only `eval_identifier` → `gdb.parse_and_eval("NAME")` so GDB
+  expands macros such as packed version constants on the host. Call and
+  index expressions are rejected by the wrapper.
+
+Target helpers such as `rt_tick_get()`, `rt_object_get_information()`,
+`rt_hw_cpu_id()`, and `rt_memory_info()` are not called. SMP current-CPU
+identity comes from the halted register file or GDB's selected thread.
 
 ### Adapter-owned dataclass layouts, not YAML schemas
 
