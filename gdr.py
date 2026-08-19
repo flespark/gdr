@@ -32,7 +32,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import info, warn  # noqa: E402
+from gdr.gdb_bridge import gdb_command_guard, info, warn  # noqa: E402
 from gdr.printers import register_printers  # noqa: E402
 
 
@@ -92,16 +92,29 @@ class GdrCommand(_GdbCommandBase):  # type: ignore[misc]
         super().__init__("gdr", gdb.COMMAND_USER)
 
     def invoke(self, argument: str, from_tty: bool) -> None:  # noqa: ARG002
-        argv = gdb.string_to_argv(argument)
-        if not argv or argv[0] in ("help", "--help", "-h"):
-            _print_usage()
-            return
+        _invoke_command(argument)
 
-        if len(argv) != 3 or argv[0] != "init":
-            warn("usage: gdr init <rtos> <version>")
-            _print_usage()
-            return
-        _setup_rtos(argv[1].lower(), argv[2])
+
+@gdb_command_guard
+def _invoke_command(argument: str) -> None:
+    """Parse and dispatch one ``gdr`` bootstrap command, guarded at the edge.
+
+    A guarded entry means an unexpected failure in argument parsing or RTOS
+    setup surfaces as a single ``[gdr] error`` diagnostic instead of raw GDB
+    "Python Exception" noise.  ``SystemExit`` (unsupported RTOS / version)
+    intentionally passes through: it is a ``BaseException`` the guard does
+    not catch.
+    """
+    argv = gdb.string_to_argv(argument) if gdb is not None else argument.split()
+    if not argv or argv[0] in ("help", "--help", "-h"):
+        _print_usage()
+        return
+
+    if len(argv) != 3 or argv[0] != "init":
+        warn("usage: gdr init <rtos> <version>")
+        _print_usage()
+        return
+    _setup_rtos(argv[1].lower(), argv[2])
 
 
 def _setup_rtthread(version: str) -> None:

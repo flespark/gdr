@@ -142,21 +142,43 @@ one routing entry point — the session adapter selected by `gdr init` — so
 RTOS only needs to implement the protocol to obtain the shared command tree,
 pretty-printers and convenience functions unchanged.
 
-### `gdb_command_guard` for kernel data collection
+### Exception guard for kernel data collection
 
 RTOS debugging routinely touches target memory through GDB, and any read can
 raise `gdb.error` / `gdb.MemoryError` (target halted, unmapped memory, remote
 link dropped). Without a guard these bubble up as GDB "Python Exception"
-noise and abort the rest of the command. Every command body in `gdr/commands.py`
-is therefore wrapped with `@gdb_command_guard`, which:
+noise and abort the rest of the command.
 
-- converts `gdb.error` / `gdb.MemoryError` into a `warn()` (recoverable, the
-  command reports and continues);
-- converts any other `Exception` into `err()`, including a full traceback
-  only when `GDR_DEBUG` is set.
+- **Command guards.** Every command tree's dispatch
+  (`gdr._invoke_command` for ``gdr init``, and each adapter's
+  `_invoke_command` for ``rtt``/``frt``) is wrapped with
+  `@gdb_command_guard`. This is the one choke point that catches anything an
+  inner renderer, adapter or navigation walk failed to contain — including
+  `gdr init`'s config probing. The shared renderers in `gdr/commands.py` are
+  also guarded, providing defense-in-depth and keeping direct calls safe.
+- **Convenience-function guards.** `gdb.Function.invoke` must return a
+  `gdb.Value`, so the command guard's `None` fallback cannot be used.
+  Instead `gdb_function_guard` converts errors into `gdb.GdbError`, whose
+  message GDB prints cleanly; an explicit `gdb.GdbError` from a body passes
+  through unchanged. Adapting to a missing object is *not* an error and still
+  returns a null `gdb.Value`.
+- **Probe helpers.** Bridge primitives (`safe_int`, `safe_dereference`,
+  `value_address`, DWARF `_fields`), and GDB tab completion degrade to safe
+  defaults (`None`, `0`, `[]`). These are the building blocks guards rely on.
+  They catch only *expected* types (`gdb.error`, `gdb.MemoryError`,
+  `IndexError`, `TypeError`, `ValueError`, `AttributeError`); anything
+  unexpected now bubbles to a guard for a full diagnostic instead of being
+  silently swallowed. Completion is a notable exception: GDB completion must
+  never print or raise, so `_object_names` keeps a deliberate broad catch that
+  degrades to no candidates.
 
-This keeps derived-data collection resilient: one bad read degrades to a
-stable one-line diagnostic instead of aborting the whole command tree.
+The guard's reporting policy:
+
+- `gdb.error` / `gdb.MemoryError` → `warn()` (recoverable, continues);
+- any other `Exception` → `err()` one-liner, or a full
+  `show_last_exception()` diagnostic when `GDR_DEBUG` is enabled;
+- `GDR_PROPAGATE_EXCEPTION` additionally re-raises after a debug diagnostic
+  so a reported bug can be surfaced or tested.
 
 ### Derived data and state for debugging targets
 
@@ -241,9 +263,9 @@ GDB p/bt/info -> registered printer -> active layout metadata -> GDB display
 
 ## Closed-loop verification
 
-GDB helpers degrade silently: the script runs but output is wrong. To
-guard against this, QEMU smoke tests boot RTOS-specific firmware that creates
-known objects and assert, where an adapter implementation exists:
+GDR maybe degrade silently after update: the script runs but output is wrong.
+To guard against this, QEMU smoke tests boot RTOS-specific firmware that
+creates known objects and assert, where an adapter implementation exists:
 
 - pretty-printers registered and fold correctly,
 - convenience functions return non-null `gdb.Value` with expected fields,

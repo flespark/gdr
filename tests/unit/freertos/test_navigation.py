@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import freertos.navigation as navigation
 from freertos.layout import FreeRtosConfig, build_layout
 
@@ -92,6 +94,24 @@ def test_iter_list_warns_when_truncated(monkeypatch):
 
     assert list(navigation._iter_list(head, layout, max_count=1)) == [task]
     assert warnings == ["FreeRTOS list traversal truncated after 1 nodes"]
+
+
+def test_iter_list_propagates_unexpected_errors(monkeypatch):
+    """Only expected traversal failures are contained; others bubble to a guard."""
+    layout = build_layout(FreeRtosConfig())
+    head = object()
+
+    def boom(_value):
+        raise RuntimeError("unexpected traversal failure")
+
+    monkeypatch.setattr(navigation, "value_address", boom)
+
+    with pytest.raises(RuntimeError, match="unexpected traversal failure"):
+        list(navigation._iter_list(head, layout))
+
+    warnings: list[str] = []
+    monkeypatch.setattr(navigation, "warn", warnings.append)
+    assert warnings == []
 
 
 def test_list_count_reads_the_layout_count_field(monkeypatch):

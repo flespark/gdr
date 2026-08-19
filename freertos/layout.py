@@ -18,6 +18,15 @@ from gdr.gdb_bridge import (
 )
 from gdr.layout import StructField, StructLayout
 
+# TODO: replace by exception guard
+# DWARF probe failures we degrade from during config detection.  Module scope
+# keeps the tuple computable outside GDB (where ``gdb`` is ``None``); anything
+# outside this set bubbles to the ``gdr init`` command guard for a diagnostic.
+if gdb is not None:
+    _PROBE_ERRORS = (gdb.error, TypeError, ValueError, AttributeError)
+else:
+    _PROBE_ERRORS = (TypeError, ValueError, AttributeError)
+
 
 @dataclass
 class FreeRtosConfig:
@@ -47,7 +56,7 @@ def _fields(type_name: str) -> set[str]:
         return set()
     try:
         return {field.name for field in typ.strip_typedefs().fields() if field.name}
-    except Exception:
+    except _PROBE_ERRORS:
         return set()
 
 
@@ -79,7 +88,7 @@ def detect_config() -> FreeRtosConfig:
             if notification is not None and notification.code == gdb.TYPE_CODE_ARRAY:
                 cfg.notification_array = True
                 cfg.notification_count = notification.range()[1] + 1
-        except Exception:
+        except _PROBE_ERRORS:
             pass
     tick = lookup_type("TickType_t")
     runtime = lookup_type("configRUN_TIME_COUNTER_TYPE")

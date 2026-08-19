@@ -7,8 +7,8 @@
 GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 [GEF](#致谢) 与 [Asterinas GDB helper](#致谢)：
 
-1. **RTOS 命令** — 每个 adapter 自己提供命令树（例如
-   `rtt threads`、`rtt timers`）和对应的表格输出。
+1. **RTOS 命令** — 每个 RTOS adapter 提供自己的命令树（例如
+   `rtt threads`、`rtt timers`）用于获取直观的系统运行状态。
 2. **Pretty-printers** — 将复杂的内核对象 显示为一行摘要，使 `p ui_task`、
    `bt full`、`info locals` 更易读。
 3. **便捷函数** — `$gdr_task("main")`、`$gdr_tasks()`、
@@ -121,7 +121,7 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 
 ## 注意
 
-GDR 认为运行时内存中的数据结构和代码是一致的，没有考虑经过编译优化产生偏差的情况。
+GDR 认为运行时内存中的数据结构和代码是**一致的**，没有考虑经过编译优化产生偏差的情况。
 且部分信息依据代码中的宏定义，所以最好使用如下调试优化的编译选项：
 
 ```cmake
@@ -135,7 +135,7 @@ add_compile_options(-O0 -ggdb3)
 
 ## 贡献
 
-完整贡献指南见 `AGENTS.md`。
+完整贡献指南见 [AGENTS.md](AGENTS.md) 。
 
 ## 致谢
 

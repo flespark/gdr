@@ -11,9 +11,10 @@ that touches ``gdb.*`` outside a GDB session raises ``RuntimeError``.
 from __future__ import annotations
 
 import functools
-import os
+import platform
 import shutil
 import struct
+import sys
 import traceback as _traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,7 +25,12 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.constants import GDR_DEFAULT_TERMINAL_WIDTH, GDR_MAX_CSTRING_LENGTH
+from gdr.constants import (
+    GDR_DEBUG,
+    GDR_DEFAULT_TERMINAL_WIDTH,
+    GDR_MAX_CSTRING_LENGTH,
+    GDR_PROPAGATE_EXCEPTION,
+)
 from gdr.formatting import format_table
 
 
@@ -104,14 +110,23 @@ def get_arch_info() -> ArchInfo | None:
 
 
 def is_debug() -> bool:
-    """True if ``GDR_DEBUG`` env var is set (enables verbose diagnostics).
+    """Whether verbose diagnostics are enabled.
 
-    Enables full Python tracebacks in :func:`format_exception` and surfaces
-    them through :func:`err` instead of a one-line message.  Mirrors GEF's
-    ``gef.debug`` setting but opt-in via environment so it works before GDB
-    has finished initialising.
+    Reflects :data:`gdr.constants.GDR_DEBUG`.  When true, :func:`err`
+    formatting and the guards use the full :func:`show_last_exception`
+    diagnostic instead of a one-line message.
     """
-    return os.environ.get("GDR_DEBUG", "").lower() in ("1", "true", "yes")
+    return GDR_DEBUG
+
+
+def propagate_exception() -> bool:
+    """Whether a debug-mode diagnostic should re-raise after printing.
+
+    Reflects :data:`gdr.constants.GDR_PROPAGATE_EXCEPTION`.  Only meaningful
+    together with :func:`is_debug`; lets a reported bug be re-raised for GDB
+    to surface.
+    """
+    return GDR_PROPAGATE_EXCEPTION
 
 
 def lookup_symbol(name: str) -> gdb.Value | None:
@@ -381,7 +396,7 @@ def err(msg: str) -> None:
 
     Distinct from :func:`warn` in severity: ``warn`` is for recoverable
     degradation (e.g. symbol not found), ``err`` is for a command that
-    failed outright.  Mirrors GEF's ``err()`` vs ``warn()`` distinction.
+    failed outright.
     """
     _ensure_gdb()
     gdb.write(f"[gdr] error: {msg}\n", stream=gdb.STDERR)
@@ -394,17 +409,67 @@ def info(msg: str) -> None:
 
 
 def format_exception(e: BaseException) -> str:
-    """Format an exception with optional traceback for diagnostics.
+    """Format an exception for a one-line diagnostic.
 
-    Returns a one-line ``"Type: message"`` normally, or appends the full
-    Python traceback when :func:`is_debug` is true.  Inspired by GEF's
-    ``show_last_exception`` but trimmed for the RTOS use case (no GDB
-    command history, which is noisy over remote sessions).
+    Returns a ``"Type: message"`` string.  Debug-mode stacktraces are left to
+    :func:`show_last_exception`; keeping this a one-liner means command and
+    function guards can embed it directly even when :data:`gdr.constants.GDR_DEBUG`
+    is disabled.
     """
-    lines = [f"{type(e).__name__}: {e}"]
-    if is_debug():
-        lines.append(_traceback.format_exc().rstrip())
-    return "\n".join(lines)
+    return f"{type(e).__name__}: {e}"
+
+
+def _source_line(filename: str, lineno: int) -> str:
+    """Return the source line at *lineno* in *filename*, or ``""``.
+
+    Best-effort and never allowed to raise: source trees may be missing,
+    moved, or exceed the pyc cache after a binary is flashed.
+    """
+    try:
+        with open(filename, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+        return lines[lineno - 1].strip() if 0 < lineno <= len(lines) else ""
+    except OSError:
+        return ""
+
+
+def show_last_exception() -> None:
+    """Print a full diagnostic for the exception currently being handled.
+
+    Print a full diagnostic for the exception currently being handled: an
+    exception banner, the reversed stacktrace with one source line per frame,
+    and the runtime environment (GDB and Python versions, platform).  Call
+    only from inside an ``except`` block (it reads ``sys.exc_info()``).
+
+    Deliberately does not print GDB command history via ``gdb.execute("show
+    commands")``: history is noisy over remote sessions (see
+    :func:`format_exception`).
+    """
+    _ensure_gdb()
+    exc_type, exc_value, exc_traceback = sys.exc_info()
+    if exc_type is None:
+        err("show_last_exception() called outside of an exception handler")
+        return
+
+    lines: list[str] = [""]
+    lines.append(" Exception raised ".center(72, "="))
+    lines.append(format_exception(exc_value))
+    lines.append(" Detailed stacktrace ".center(72, "="))
+    for frame in _traceback.extract_tb(exc_traceback)[::-1]:
+        filename, lineno, method, code = frame
+        source = code if code and code.strip() else _source_line(filename, lineno)
+        lines.append(f'  File "{filename}", line {lineno:d}, in {method}()')
+        if source:
+            lines.append(f"    {source}")
+    lines.append(" Runtime environment ".center(72, "="))
+    gdb_version = getattr(gdb, "VERSION", "unknown")
+    lines.append(f"GDB: {gdb_version}")
+    lines.append(
+        f"Python: {sys.version_info.major:d}.{sys.version_info.minor:d}."
+        f"{sys.version_info.micro:d}"
+    )
+    lines.append(f"OS: {platform.system()} {platform.release()} ({platform.machine()})")
+    gdb.write("\n".join(lines) + "\n")
 
 
 def gdb_command_guard(func):
@@ -416,8 +481,10 @@ def gdb_command_guard(func):
     the rest of the command.  With it:
 
     * ``gdb.error`` / ``gdb.MemoryError`` → :func:`warn` (recoverable).
-    * any other ``Exception`` → :func:`err`, with a full traceback only
-      when ``GDR_DEBUG`` is set (see :func:`is_debug`).
+    * any other ``Exception`` → :func:`err` one-liner, or
+      :func:`show_last_exception` plus an optional re-raise when
+      :data:`gdr.constants.GDR_DEBUG` is set (see :func:`is_debug` /
+      :func:`propagate_exception`).
 
     The wrapped function's return value is preserved on success and
     discarded on error (commands are void-returning by convention).
@@ -434,7 +501,51 @@ def gdb_command_guard(func):
             warn(f"{func.__name__}: {format_exception(e)}")
             return None
         except Exception as e:
-            err(f"{func.__name__}: {format_exception(e)}")
+            if is_debug():
+                show_last_exception()
+                if propagate_exception():
+                    raise
+            else:
+                err(f"{func.__name__}: {format_exception(e)}")
             return None
+
+    return wrapper
+
+
+def gdb_function_guard(func):
+    """Decorator for GDB convenience-function bodies (return ``gdb.Value``).
+
+    GDB requires ``gdb.Function.invoke`` to return a ``gdb.Value``; the
+    command guard's ``None`` fallback would itself raise ``TypeError``.  This
+    guard therefore converts errors into ``gdb.GdbError``, whose message GDB
+    prints cleanly without raw "Python Exception" noise.
+
+    * ``gdb.GdbError`` → re-raised unchanged (explicit user-facing messages).
+    * ``gdb.error`` / ``gdb.MemoryError`` → ``gdb.GdbError`` (recoverable).
+    * any other ``Exception`` → debug: :func:`show_last_exception` (+ optional
+      re-raise); otherwise ``gdb.GdbError``.
+    Not finding a requested object is *not* an error: adapters return a null
+    ``gdb.Value`` for that, and this guard leaves successful results intact.
+    """
+    target_errors: tuple[type[BaseException], ...] = ()
+    user_error: type[BaseException] = Exception
+    if gdb is not None:
+        target_errors = (gdb.error, gdb.MemoryError)
+        user_error = gdb.GdbError
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except user_error:
+            raise
+        except target_errors as e:
+            raise user_error(f"{func.__name__}: {format_exception(e)}") from e
+        except Exception as e:
+            if is_debug():
+                show_last_exception()
+                if propagate_exception():
+                    raise
+            raise user_error(f"{func.__name__}: {format_exception(e)}") from e
 
     return wrapper

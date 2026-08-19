@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 import gdr.gdb_bridge as bridge
 
 
@@ -309,6 +311,154 @@ def test_gdb_command_guard_preserves_successful_results(monkeypatch):
 
     assert command(41) == 42
     assert command.__name__ == "command"
+
+
+def test_gdb_command_guard_debug_uses_show_last_exception(monkeypatch):
+    """In debug mode an unexpected error prints the full diagnostic, not a one-liner."""
+    monkeypatch.setattr(bridge, "gdb", _FakeArchGdb(4, "little endian"))
+    monkeypatch.setattr(bridge, "is_debug", lambda: True)
+    shown: list[bool] = []
+    monkeypatch.setattr(bridge, "show_last_exception", lambda: shown.append(True))
+    monkeypatch.setattr(bridge, "propagate_exception", lambda: False)
+    errors: list[str] = []
+    monkeypatch.setattr(bridge, "err", errors.append)
+
+    @bridge.gdb_command_guard
+    def command():
+        raise ValueError("boom")
+
+    assert command() is None
+    assert shown == [True]
+    assert errors == []
+
+
+def test_gdb_command_guard_debug_propagates_when_configured(monkeypatch):
+    """``GDR_PROPAGATE_EXCEPTION`` re-raises after a debug diagnostic."""
+    monkeypatch.setattr(bridge, "gdb", _FakeArchGdb(4, "little endian"))
+    monkeypatch.setattr(bridge, "is_debug", lambda: True)
+    monkeypatch.setattr(bridge, "show_last_exception", lambda: None)
+    monkeypatch.setattr(bridge, "propagate_exception", lambda: True)
+
+    @bridge.gdb_command_guard
+    def command():
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        command()
+
+
+def test_is_debug_reflects_the_config_constant(monkeypatch):
+    """Verbose diagnostics mirror the ``GDR_DEBUG`` setting in constants."""
+    monkeypatch.setattr(bridge, "GDR_DEBUG", True)
+    assert bridge.is_debug() is True
+
+    monkeypatch.setattr(bridge, "GDR_DEBUG", False)
+    assert bridge.is_debug() is False
+
+
+def test_propagate_exception_reflects_the_config_constant(monkeypatch):
+    """The re-raise toggle mirrors ``GDR_PROPAGATE_EXCEPTION`` in constants."""
+    monkeypatch.setattr(bridge, "GDR_PROPAGATE_EXCEPTION", True)
+    assert bridge.propagate_exception() is True
+
+    monkeypatch.setattr(bridge, "GDR_PROPAGATE_EXCEPTION", False)
+    assert bridge.propagate_exception() is False
+
+
+class _FunctionGdb:
+    """Minimal GDB stand-in exposing the error types ``gdb.Function`` relies on."""
+
+    class error(Exception):
+        pass
+
+    class MemoryError(Exception):
+        pass
+
+    class GdbError(Exception):
+        pass
+
+
+def test_gdb_function_guard_preserves_success(monkeypatch):
+    """The function guard is transparent on a successful lookup."""
+    monkeypatch.setattr(bridge, "gdb", _FunctionGdb())
+
+    @bridge.gdb_function_guard
+    def function():
+        return 42
+
+    assert function() == 42
+
+
+def test_gdb_function_guard_converts_target_errors(monkeypatch):
+    """Target failures become ``gdb.GdbError`` instead of raw Python noise."""
+    monkeypatch.setattr(bridge, "gdb", _FunctionGdb())
+    monkeypatch.setattr(bridge, "is_debug", lambda: False)
+
+    @bridge.gdb_function_guard
+    def function():
+        raise _FunctionGdb.MemoryError("unmapped memory")
+
+    with pytest.raises(_FunctionGdb.GdbError) as excinfo:
+        function()
+    assert "function: MemoryError: unmapped memory" in str(excinfo.value)
+
+
+def test_gdb_function_guard_converts_unexpected_errors(monkeypatch):
+    """An unexpected exception surfaces as ``gdb.GdbError`` with a clean message."""
+    monkeypatch.setattr(bridge, "gdb", _FunctionGdb())
+    monkeypatch.setattr(bridge, "is_debug", lambda: False)
+
+    @bridge.gdb_function_guard
+    def function():
+        raise ValueError("corrupt task list")
+
+    with pytest.raises(_FunctionGdb.GdbError) as excinfo:
+        function()
+    assert "function: ValueError: corrupt task list" in str(excinfo.value)
+
+
+def test_gdb_function_guard_passes_through_user_gdberror(monkeypatch):
+    """An explicit ``gdb.GdbError`` from the body is re-raised unchanged."""
+    fake_gdb = _FunctionGdb()
+    monkeypatch.setattr(bridge, "gdb", fake_gdb)
+
+    @bridge.gdb_function_guard
+    def function():
+        raise fake_gdb.GdbError("explicit user-facing message")
+
+    with pytest.raises(fake_gdb.GdbError) as excinfo:
+        function()
+    assert "explicit user-facing message" in str(excinfo.value)
+
+
+def test_show_last_exception_renders_a_full_diagnostic(monkeypatch):
+    """The debug diagnostic shows banner, stacktrace, and runtime environment."""
+    fake_gdb = _TableGdb()
+    monkeypatch.setattr(bridge, "gdb", fake_gdb)
+
+    def explode():
+        raise ValueError("bad value")
+
+    try:
+        explode()
+    except ValueError:
+        bridge.show_last_exception()
+
+    output = "".join(fake_gdb.writes)
+    assert " Exception raised " in output
+    assert "ValueError: bad value" in output
+    assert " Detailed stacktrace " in output
+    assert "test_show_last_exception_renders_a_full_diagnostic" in output
+    assert " Runtime environment " in output
+    assert "GDB: unknown" in output
+    assert "Python:" in output
+
+
+def test_format_exception_returns_a_one_line_diagnostic():
+    """The one-liner keeps message-only output stable regardless of debug state."""
+    error = ValueError("boom")
+    assert bridge.format_exception(error) == "ValueError: boom"
+    assert "\n" not in bridge.format_exception(error)
 
 
 def test_get_arch_info_reports_a_fresh_target_snapshot(monkeypatch):

@@ -8,7 +8,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.adapter_api import active
-from gdr.gdb_bridge import make_pointer_array, read_cstring
+from gdr.gdb_bridge import gdb_function_guard, make_pointer_array, read_cstring
 
 _registered_functions: set[str] = set()
 
@@ -24,6 +24,7 @@ if gdb is not None:
         def __init__(self) -> None:
             super().__init__("gdr_task")
 
+        @gdb_function_guard
         def invoke(self, name):
             adapter = active()
             if adapter is None:
@@ -39,6 +40,7 @@ if gdb is not None:
         def __init__(self) -> None:
             super().__init__("gdr_tasks")
 
+        @gdb_function_guard
         def invoke(self):
             adapter = active()
             return (
@@ -57,6 +59,7 @@ if gdb is not None:
         def __init__(self) -> None:
             super().__init__("gdr_object")
 
+        @gdb_function_guard
         def invoke(self, kind, name):
             adapter = active()
             if adapter is None:

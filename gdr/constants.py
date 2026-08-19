@@ -4,6 +4,18 @@ All constants are module-level ``GDR_*`` names so a bare ``from
 gdr.constants import *`` cannot collide with target or adapter names.
 """
 
+# Master switch for verbose diagnostics.  When ``True``, an unforeseen error
+# prints a full :func:`gdr.gdb_bridge.show_last_exception` diagnostic
+# (exception banner, framed stacktrace, GDB/Python/OS versions) instead of a
+# one-line error.  Kept as a source constant so behavior is deterministic and
+# testable without environment plumbing.
+GDR_DEBUG = False
+
+# Only meaningful together with ``GDR_DEBUG``: also re-raise the exception
+# after printing the debug diagnostic, so a reported bug can be surfaced or
+# exercised by tests.
+GDR_PROPAGATE_EXCEPTION = False
+
 # Upper bound on intrusive-list / registry walks.  Guards against a corrupt
 # or cyclic linked list hanging GDB; diagnostics that exceed this report
 # ``<invalid>`` / truncated results instead of looping forever.

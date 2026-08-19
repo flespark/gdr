@@ -22,6 +22,21 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
+# Field/access errors we degrade from.  Stored at module scope so the tuple
+# stays evaluable when imported outside GDB (where ``gdb`` is ``None`` would
+# otherwise turn a running handler into an AttributeError).  Unexpected
+# exceptions bubble to a command/function guard for a full diagnostic.
+if gdb is not None:
+    _ACCESS_ERRORS = (
+        gdb.error,
+        gdb.MemoryError,
+        IndexError,
+        TypeError,
+        ValueError,
+    )
+else:
+    _ACCESS_ERRORS = (IndexError, TypeError, ValueError)
+
 
 # ---------------------------------------------------------------------------
 # Dataclasses (pure Python, no GDB needed)
@@ -224,7 +239,7 @@ def read_path(value: gdb.Value, path: tuple[str | int, ...]) -> gdb.Value | None
         for part in path:
             current = current[part]
         return current
-    except (gdb.error, gdb.MemoryError, IndexError):
+    except _ACCESS_ERRORS:
         return None
 
 
@@ -282,5 +297,5 @@ def iter_list(
             yield container_of(node, hook.container_type, hook.node_path)
             node = read_path(node, hook.next_path)
             count += 1
-    except (gdb.error, gdb.MemoryError):
+    except _ACCESS_ERRORS:
         return

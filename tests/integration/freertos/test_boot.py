@@ -57,3 +57,27 @@ def test_freertos_tasks_and_system_commands_navigate_fixture(gdb_session):
     task_array = gdb_session.run("p $gdr_tasks()[0]")
     assert "4" in task_value
     assert "*" in task_array or "0x" in task_array
+
+
+def test_freertos_unknown_task_degrades_to_null(gdb_session):
+    """A missing task name returns a null value without raw Python noise."""
+    output = gdb_session.run('p $gdr_task("no_such_task")')
+    assert "= 0" in output
+    for marker in (
+        "[gdr] error:",
+        "Python Exception",
+        "Traceback (most recent call last)",
+    ):
+        assert marker not in output, output
+
+
+def test_freertos_commands_report_cleanly_without_failures(gdb_session):
+    """Aggregate commands complete without Python or guard error noise."""
+    for command in ("freertos tasks", "freertos system"):
+        output = gdb_session.run(command, timeout=20)
+        for marker in (
+            "[gdr] error:",
+            "Python Exception",
+            "Traceback (most recent call last)",
+        ):
+            assert marker not in output, output

@@ -21,6 +21,23 @@ from gdr.gdb_bridge import (
 )
 from gdr.layout import read_field
 
+# TODO: replace by exception guard
+# Exception types we degrade from during scheduler-list traversal.  Stored at
+# module scope so the tuple stays computable when imported outside GDB (where
+# ``gdb`` is ``None``, which would otherwise turn a handler into an
+# AttributeError).  Anything outside this set intentionally bubbles to a
+# command/function guard for a full diagnostic.
+if gdb is not None:
+    _TRAVERSAL_ERRORS = (
+        gdb.error,
+        gdb.MemoryError,
+        IndexError,
+        TypeError,
+        ValueError,
+    )
+else:
+    _TRAVERSAL_ERRORS = (IndexError, TypeError, ValueError)
+
 
 def _owner_task(pointer):
     """Cast ListItem.pvOwner (void *) to the DWARF TCB type."""
@@ -29,14 +46,14 @@ def _owner_task(pointer):
             return None
         typ = gdb.lookup_type("struct tskTaskControlBlock").pointer()
         return pointer.cast(typ).dereference()
-    except Exception:
+    except _TRAVERSAL_ERRORS:
         return None
 
 
 def _array_item(value, index):
     try:
         return value[index]
-    except Exception:
+    except _TRAVERSAL_ERRORS:
         return None
 
 
@@ -71,7 +88,7 @@ def _iter_list(
                 yield owner
             node = read_field(item, item_layout, "next")
         warn(f"FreeRTOS list traversal truncated after {max_count} nodes")
-    except Exception:
+    except _TRAVERSAL_ERRORS:
         warn("FreeRTOS list traversal stopped because list data is unreadable")
 
 
@@ -82,7 +99,7 @@ def _ready_heads(layout: FreeRtosLayout) -> Iterator:
     try:
         bounds = table.type.strip_typedefs().range()
         first, last = int(bounds[0]), int(bounds[1])
-    except Exception:
+    except _TRAVERSAL_ERRORS:
         first, last = 0, 256
     for index in range(first, min(last + 1, first + 256)):
         item = _array_item(table, index)
@@ -151,5 +168,5 @@ def list_count(name: str, layout: FreeRtosLayout) -> int | None:
         return None
     try:
         return read_int(read_field(head, layout.structs["struct xLIST"], "count"))
-    except Exception:
+    except _TRAVERSAL_ERRORS:
         return None

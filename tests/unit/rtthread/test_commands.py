@@ -227,6 +227,23 @@ def test_complete_object_names_degrades_on_traversal_failure(monkeypatch):
     assert commands._complete("semaphore tes", "tes") == []
 
 
+def test_command_entry_guard_contains_unexpected_renderer_errors(monkeypatch):
+    """A broken renderer cannot leak a Python exception out of the command edge."""
+    from gdr import gdb_bridge as bridge
+
+    errors: list[str] = []
+    monkeypatch.setattr(bridge, "err", errors.append)
+    monkeypatch.setattr(bridge, "is_debug", lambda: False)
+    monkeypatch.setattr(
+        commands,
+        "render_tasks",
+        lambda: (_ for _ in ()).throw(ValueError("corrupt task list")),
+    )
+
+    assert commands._invoke_command("threads") is None
+    assert errors == ["_invoke_command: ValueError: corrupt task list"]
+
+
 def test_complete_plural_list_command_does_not_walk_objects(monkeypatch):
     """Plural list commands never trigger object-name traversal."""
     monkeypatch.setattr(

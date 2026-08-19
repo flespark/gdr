@@ -43,6 +43,52 @@ def test_gdr_task_exposes_the_target_name_field(gdb_session):
 def test_gdr_task_returns_zero_for_an_unknown_name(gdb_session):
     output = gdb_session.run('p $gdr_task("nonexistent")')
     assert "= 0" in output
+    _assert_no_python_noise(output)
+
+
+def _assert_no_python_noise(output: str) -> None:
+    """Reject GDB/Python failure markers in convenience-function output.
+
+    The function guard (:func:`gdr.gdb_bridge.gdb_function_guard`) is what
+    keeps a failing $gdr_* call from surfacing as raw GDB "Python Exception"
+    noise; these assertions pin that contract on a live target.
+    """
+    for marker in (
+        "[gdr] error:",
+        "Python Exception",
+        "Traceback (most recent call last)",
+    ):
+        assert marker not in output, output
+
+
+def test_gdr_object_unknown_object_degrades_to_null(gdb_session):
+    """A missing object returns a null value without raw Python noise."""
+    output = gdb_session.run('p $gdr_object("thread", "no_such_thread")')
+    assert "= 0" in output
+    _assert_no_python_noise(output)
+
+
+def test_gdr_object_non_pointer_arguments_never_leak(gdb_session):
+    """Nonsensical arguments yield a null value, never a Python traceback."""
+    output = gdb_session.run("p $gdr_object(1, 2)")
+    assert "= 0" in output
+    _assert_no_python_noise(output)
+
+
+def test_gdr_tasks_array_is_bounded_and_clean(gdb_session):
+    """The task array is a finite pointer array with no failure markers."""
+    output = gdb_session.run_python(
+        """
+import gdb
+
+tasks = gdb.parse_and_eval("$gdr_tasks()")
+lo, hi = tasks.type.range()
+print(f"count={hi - lo + 1}")
+print(f"is_array={tasks.type.strip_typedefs().code == gdb.TYPE_CODE_ARRAY}")
+"""
+    )
+    assert "is_array=True" in output
+    _assert_no_python_noise(output)
 
 
 def test_gdr_tasks_returns_every_target_native_task_pointer(gdb_session):

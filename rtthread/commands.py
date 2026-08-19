@@ -14,7 +14,7 @@ from gdr.commands import (
     render_system,
     render_tasks,
 )
-from gdr.gdb_bridge import info, warn
+from gdr.gdb_bridge import gdb_command_guard, info, warn
 from rtthread.adapter import RtThreadAdapter
 from rtthread.navigation import iter_object_names
 
@@ -92,6 +92,7 @@ _HELP = (
 )
 
 
+@gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one RT-Thread command without depending on GDB."""
     args = argument.split()
@@ -143,6 +144,11 @@ def _object_names(kind: str) -> list[str]:
     try:
         return list(iter_object_names(kind, adapter.layout))
     except Exception:
+        # Reason: this is the GDB completion boundary (``complete()``), not a
+        # command body. GDB completion must never raise or print -- the guard's
+        # warn/err output would corrupt the readline prompt -- so we swallow
+        # everything here and degrade to no candidates, as documented on
+        # :func:`_object_names`.
         return []
 
 

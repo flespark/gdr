@@ -8,7 +8,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.commands import render_system, render_tasks
-from gdr.gdb_bridge import info, warn
+from gdr.gdb_bridge import gdb_command_guard, info, warn
 
 _command_registered = False
 _alias_registered = False
@@ -22,6 +22,7 @@ _HELP = (
 )
 
 
+@gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one FreeRTOS command without depending on GDB."""
     args = argument.split()

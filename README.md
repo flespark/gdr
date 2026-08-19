@@ -8,8 +8,8 @@ GDR runs inside the GDB Python interpreter and provides three layers of
 debugging support, following the approach popularised by the [GEF](#acknowledgements) and
 the [Asterinas GDB helper](#acknowledgements):
 
-1. **RTOS commands** — each adapter owns its command tree (for example,
-   `rtt threads` and `rtt timers`) and the corresponding table output.
+1. **RTOS commands** — each RTOS adapter owns its command tree (for example,
+   `rtt threads` and `rtt timers`) which show you intuitive system running status.
 2. **Pretty-printers** — fold noisy kernel object into one-line summaries
    so `p ui_task`, `bt full` and `info locals` stay readable.
 3. **Convenience functions** — `$gdr_task("main")`, `$gdr_tasks()`,
@@ -124,7 +124,7 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 
 ## Note
 
-GDR insist on data struct keep align between code and runtime memory. But there
+GDR insist on data struct **keep align** between code and runtime memory. But there
 maybe bias due to compiler optimization. GDR also extract info from macros in
 code. Fellow debug optimized compilation options is recommend:
 
@@ -140,7 +140,7 @@ presence at startup.
 
 ## Contribute
 
-See `AGENTS.md` for the full contributor guide.
+See [AGENTS.md](AGENTS.md) for the full contributor guide.
 
 ## Acknowledgements
 

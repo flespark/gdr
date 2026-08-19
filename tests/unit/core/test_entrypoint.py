@@ -155,3 +155,34 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
         "commands",
         ("active", adapter_instance),
     ]
+
+
+def test_invoke_command_guards_setup_errors(monkeypatch):
+    """An unexpected ``gdr init`` failure surfaces as an error, never a traceback."""
+    entrypoint = _load_entrypoint()
+    from gdr import gdb_bridge as bridge
+
+    errors: list[str] = []
+
+    def _broken_setup(*_args):
+        raise ValueError("broken layout probe")
+
+    monkeypatch.setattr(entrypoint, "_setup_rtos", _broken_setup)
+    monkeypatch.setattr(bridge, "err", errors.append)
+    monkeypatch.setattr(bridge, "is_debug", lambda: False)
+
+    assert entrypoint._invoke_command("init rtthread 4.0.5") is None
+    assert errors == ["_invoke_command: ValueError: broken layout probe"]
+
+
+def test_invoke_command_passes_unsupported_rtos_to_setup(monkeypatch):
+    """The dispatch reaches ``_setup_rtos`` which itself reports unsupported names."""
+    entrypoint = _load_entrypoint()
+    received: list[list[str]] = []
+
+    def _record(rtos: str, version: str):
+        received.append([rtos, version])
+
+    monkeypatch.setattr(entrypoint, "_setup_rtos", _record)
+    entrypoint._invoke_command("init rtthread 4.0.5")
+    assert received == [["rtthread", "4.0.5"]]
