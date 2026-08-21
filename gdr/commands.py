@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from gdr.adapter_api import active
+from gdr.formatting import format_optional_int
 from gdr.gdb_bridge import (
     gdb_command_guard,
     info,
@@ -71,7 +72,14 @@ def render_system() -> None:
         info(f"{state}: {count}")
     for kind, count in sorted(summary.object_counts.items()):
         info(f"  {kind}: {count}")
-    info(f"Heap: {summary.heap_summary}")
+    if summary.heap_used is None and summary.heap_total is None:
+        info(f"Heap allocator: {summary.heap_allocator or 'unavailable'}")
+    else:
+        info(
+            f"Heap allocator: {summary.heap_allocator or 'unavailable'}, "
+            f"used: {format_optional_int(summary.heap_used)}, "
+            f"total: {format_optional_int(summary.heap_total)}"
+        )
 
 
 @gdb_command_guard

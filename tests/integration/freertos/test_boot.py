@@ -51,7 +51,7 @@ def test_freertos_tasks_and_system_commands_navigate_fixture(gdb_session):
     assert "Scheduler state: running" in system
     assert "Ready: 1" in system
     assert "Delayed: 4" in system
-    assert "Heap: unavailable" in system
+    assert "Heap allocator: unimplemented" in system
 
     task_value = gdb_session.run('p $gdr_task("gdr_ready").uxPriority')
     task_array = gdb_session.run("p $gdr_tasks()[0]")

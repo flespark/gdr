@@ -375,6 +375,48 @@ def test_get_object_information_scans_the_static_container(monkeypatch):
     assert found.type_code == 2
 
 
+def test_get_object_information_falls_back_to_31_container_symbol(monkeypatch):
+    """3.1.x keeps the historical ``rt_object_container`` registry spelling."""
+    from gdr.layout import KernelLayout, StructField, StructLayout
+
+    class _Entry:
+        def __init__(self, type_code: int):
+            self.type_code = type_code
+
+    class _Container:
+        def __getitem__(self, index: int) -> _Entry:
+            if index >= 2:
+                raise IndexError
+            return _Entry(index)
+
+    layout = KernelLayout(
+        structs={
+            "struct rt_object_information": StructLayout(
+                "struct rt_object_information",
+                fields={"type": StructField("type", ("type",))},
+            )
+        }
+    )
+    calls: list[str] = []
+
+    def _lookup(name: str):
+        calls.append(name)
+        return _Container() if name == "rt_object_container" else None
+
+    monkeypatch.setattr(navigation, "lookup_symbol", _lookup)
+    monkeypatch.setattr(
+        navigation,
+        "read_field",
+        lambda entry, _layout, field: entry.type_code if field == "type" else None,
+    )
+
+    found = navigation.get_object_information(1, layout)
+
+    assert found is not None
+    assert found.type_code == 1
+    assert calls == ["_object_container", "rt_object_container"]
+
+
 def test_get_tick_reads_the_up_tick_symbol(monkeypatch):
     """Uniprocessor ``rt_tick`` is a static global, not ``rt_tick_get()``."""
     monkeypatch.setattr(

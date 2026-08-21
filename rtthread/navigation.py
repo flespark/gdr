@@ -33,18 +33,33 @@ def _object_code(kl: KernelLayout, name: str) -> int | None:
     return kl.object_codes.get(name)
 
 
+def _object_container() -> gdb.Value | None:
+    """Return the object-registry table, tolerating the 3.1.x symbol name.
+
+    RT-Thread 4.x declares ``static _object_container`` while the 3.1 series
+    kept the historical ``static rt_object_container`` spelling. Both are
+    looked up as identifiers so ``rt_object_get_information()`` (an inferior
+    call) is never needed.
+    """
+    for name in ("_object_container", "rt_object_container"):
+        container = lookup_symbol(name)
+        if container is not None:
+            return container
+    return None
+
+
 def get_object_information(type_code: int, kl: KernelLayout) -> gdb.Value | None:
     """Obtain RT-Thread object registry information for an object type code.
 
-    Reads the static ``_object_container`` array. The kernel helper
-    ``rt_object_get_information()`` is not called: that would resume the
-    inferior.
+    Reads the static ``_object_container`` / ``rt_object_container`` array.
+    The kernel helper ``rt_object_get_information()`` is not called: that
+    would resume the inferior.
     """
     info_layout = object_information_layout(kl)
     if info_layout is None:
         return None
 
-    container = lookup_symbol("_object_container")
+    container = _object_container()
     if container is None:
         return None
     try:

@@ -191,46 +191,46 @@ def test_timer_layout_describes_parameter_field():
     assert timer["parameter"].kind == "ptr"
 
 
-def test_system_heap_algorithm_returns_none_without_a_handle():
+def test_system_heap_allocator_returns_none_without_a_handle():
     """No ``system_heap`` symbol means the 4.0 globals decide."""
-    assert layout_module._system_heap_algorithm(None, lambda _name: False) is None
+    assert layout_module._system_heap_allocator(None, lambda _name: False) is None
 
 
-def test_system_heap_algorithm_classifies_memheap_value(monkeypatch):
+def test_system_heap_allocator_classifies_memheap_value(monkeypatch):
     """A plain ``struct rt_memheap`` system_heap handle is memheap."""
     monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
     handle = _Handle(_StructType("rt_memheap"))
 
     assert (
-        layout_module._system_heap_algorithm(handle, lambda _name: False) == "memheap"
+        layout_module._system_heap_allocator(handle, lambda _name: False) == "memheap"
     )
 
 
-def test_system_heap_algorithm_classifies_memheap_from_type_tag(monkeypatch):
+def test_system_heap_allocator_classifies_memheap_from_type_tag(monkeypatch):
     """Some GDB builds expose the struct identity on ``tag`` only."""
     monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
     handle = _Handle(_StructType(None, tag="rt_memheap"))
 
     assert (
-        layout_module._system_heap_algorithm(handle, lambda _name: False) == "memheap"
+        layout_module._system_heap_allocator(handle, lambda _name: False) == "memheap"
     )
 
 
-def test_system_heap_algorithm_classifies_slab_typedef(monkeypatch):
+def test_system_heap_allocator_classifies_slab_typedef(monkeypatch):
     """A ``rt_slab_t`` typedef wins over the shared ``struct rt_memory *`` shape."""
     monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
     handle = _typedef_ptr_handle("rt_slab_t")
 
-    assert layout_module._system_heap_algorithm(handle, lambda _name: False) == "slab"
+    assert layout_module._system_heap_allocator(handle, lambda _name: False) == "slab"
 
 
-def test_system_heap_algorithm_defaults_to_small_mem_for_memory_pointer(monkeypatch):
+def test_system_heap_allocator_defaults_to_small_mem_for_memory_pointer(monkeypatch):
     """A ``rt_smem_t`` typedef to ``struct rt_memory *`` classifies as small_mem."""
     monkeypatch.setattr(layout_module, "gdb", _FakeGdb)
     handle = _typedef_ptr_handle("rt_smem_t")
 
     assert (
-        layout_module._system_heap_algorithm(handle, lambda _name: False) == "small_mem"
+        layout_module._system_heap_allocator(handle, lambda _name: False) == "small_mem"
     )
 
 

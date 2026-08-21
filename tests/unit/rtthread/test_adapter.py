@@ -562,8 +562,8 @@ def test_timer_expires_in_wraps_safely():
     assert adapter_module._timer_expires_in(100, None) is None
 
 
-def test_heap_summary_formats_algorithm_used_and_total(monkeypatch):
-    """System summary renders the probed algorithm plus used/total."""
+def test_system_summary_copies_heap_snapshot_fields(monkeypatch):
+    """System summary carries structured heap snapshot fields, not a display line."""
     from rtthread.navigation import HeapSnapshot
 
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
@@ -574,11 +574,17 @@ def test_heap_summary_formats_algorithm_used_and_total(monkeypatch):
             algorithm="small_mem", used=4096, total=65536
         ),
     )
+    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
+    monkeypatch.setattr(adapter, "object_counts", lambda: {})
 
-    assert adapter._heap_summary() == "small_mem  4096/65536"
+    summary = adapter.system_summary()
+    assert summary.heap_allocator == "small_mem"
+    assert summary.heap_used == 4096
+    assert summary.heap_total == 65536
 
 
-def test_heap_summary_is_unavailable_without_target_state(monkeypatch):
+def test_system_summary_keeps_missing_heap_counters(monkeypatch):
     """Missing heap symbols do not fall back to calling ``rt_memory_info``."""
     from rtthread.navigation import HeapSnapshot
 
@@ -588,27 +594,61 @@ def test_heap_summary_is_unavailable_without_target_state(monkeypatch):
         "get_heap_snapshot",
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
     )
+    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
+    monkeypatch.setattr(adapter, "object_counts", lambda: {})
 
-    assert adapter._heap_summary() == "unavailable"
+    summary = adapter.system_summary()
+    assert summary.heap_allocator == "small_mem"
+    assert summary.heap_used is None
+    assert summary.heap_total is None
 
 
-def test_heap_summary_formats_partial_used_or_total(monkeypatch):
-    """A one-sided snapshot still names the algorithm; the missing side is N/A."""
+def test_system_summary_keeps_partial_heap_counters(monkeypatch):
+    """A one-sided snapshot still exposes the known counter as an int."""
     from rtthread.navigation import HeapSnapshot
 
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
+    monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
         adapter_module,
         "get_heap_snapshot",
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem", total=65536),
     )
-    assert adapter._heap_summary() == "small_mem  NA/65536"
+    summary = adapter.system_summary()
+    assert summary.heap_allocator == "small_mem"
+    assert summary.heap_used is None
+    assert summary.heap_total == 65536
     monkeypatch.setattr(
         adapter_module,
         "get_heap_snapshot",
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem", used=0),
     )
-    assert adapter._heap_summary() == "small_mem  0/NA"
+    summary = adapter.system_summary()
+    assert summary.heap_used == 0
+    assert summary.heap_total is None
+
+
+def test_system_summary_omits_none_heap_allocator(monkeypatch):
+    """``heap_type=none`` does not advertise a fake allocator name."""
+    from rtthread.navigation import HeapSnapshot
+
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="none")
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(algorithm="none"),
+    )
+    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
+    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+
+    summary = adapter.system_summary()
+    assert summary.heap_allocator is None
+    assert summary.heap_used is None
+    assert summary.heap_total is None
 
 
 def test_holes_line_formats_free_blocks():

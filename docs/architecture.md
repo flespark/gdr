@@ -88,7 +88,8 @@ ISRs can mutate `rt_tick`, thread state, and IPC objects. Kernel
 collection therefore uses only:
 
 - `gdb.lookup_symbol` / `lookup_global_symbol` / `lookup_static_symbol`
-  for identifiers (`rt_tick`, `_object_container`, `_cpus`)
+  for identifiers (`rt_tick`, `_object_container` / `rt_object_container`,
+  `_cpus`)
 - `gdb.Value` field and index access for struct members and arrays
 - identifier-only `eval_identifier` → `gdb.parse_and_eval("NAME")` so GDB
   expands macros such as packed version constants on the host. Call and

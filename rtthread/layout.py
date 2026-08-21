@@ -285,7 +285,7 @@ def _gdb_type_labels(typ) -> list[str]:
     return labels
 
 
-def _system_heap_algorithm(system_heap, symbol_exists) -> str | None:
+def _system_heap_allocator(system_heap, symbol_exists) -> str | None:
     """Classify the system-heap algorithm from a 4.1 ``system_heap`` handle.
 
     The handle is either a plain ``struct rt_memheap`` (memheap as heap) or a
@@ -392,7 +392,7 @@ def detect_config() -> RtConfig:
     # several heap algorithms are compiled into the kernel. 4.0 kernels expose
     # the system heap as static globals instead, so they fall back to
     # ``memusage`` / ``heap_end`` / ``_heap`` symbol presence.
-    heap_type = _system_heap_algorithm(lookup_symbol("system_heap"), symbol_exists)
+    heap_type = _system_heap_allocator(lookup_symbol("system_heap"), symbol_exists)
     if heap_type is None:
         if symbol_exists("memusage"):
             heap_type = "slab"

@@ -203,20 +203,24 @@ def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
         "Tick count:",
         "semaphore:",
         "timer:",
-        "Heap:",
+        "Heap allocator:",
     ):
         assert label in output
 
-    # QEMU fixtures are small_mem-as-heap: the Heap line must show the probed
-    # algorithm plus an integer used/total pair and reject ``unavailable``.
+    # QEMU fixtures are small_mem-as-heap: the heap line names the probed
+    # allocator plus an integer used/total pair and rejects ``unavailable``.
     heap_line = next(
-        line.strip() for line in output.splitlines() if line.startswith("Heap:")
+        line.strip() for line in output.splitlines() if "Heap allocator:" in line
     )
-    assert "small_mem" in heap_line, heap_line
-    assert "unavailable" not in heap_line, heap_line
-    pair = heap_line.split("small_mem", 1)[1].strip().split("/")
-    assert len(pair) == 2, heap_line
-    used, total = pair
+    heap = heap_line.partition("Heap allocator:")[2].strip()
+    assert "small_mem" in heap, heap_line
+    assert "unavailable" not in heap, heap_line
+    fields = dict(
+        token.strip().split(": ", 1) for token in heap.split(",") if ": " in token
+    )
+    used = fields.get("used")
+    total = fields.get("total")
+    assert used is not None and total is not None, heap_line
     assert used.isdecimal() and total.isdecimal(), heap_line
     assert int(used) <= int(total), heap_line
 

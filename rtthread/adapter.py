@@ -996,6 +996,7 @@ class RtThreadAdapter(RtosAdapter):
             ),
             None,
         )
+        heap_snap = get_heap_snapshot(self.heap_type, self.layout)
         return SystemSummary(
             kernel_version="RT-Thread",
             current_task=current,
@@ -1004,23 +1005,12 @@ class RtThreadAdapter(RtosAdapter):
             scheduler_state="unavailable",
             state_counts=states,
             object_counts=self.object_counts(),
-            heap_summary=self._heap_summary(),
+            heap_allocator=None
+            if heap_snap.algorithm == "none"
+            else heap_snap.algorithm,
+            heap_used=heap_snap.used,
+            heap_total=heap_snap.total,
         )
-
-    def _heap_summary(self) -> str:
-        """Format the probed heap algorithm plus used/total from halted state.
-
-        ``rt_memory_info()`` / ``rt_memheap_info()`` are never called; both
-        values come from static kernel globals or the ``system_heap`` handle.
-        A missing used or total renders as ``N/A`` so a partial snapshot still
-        names the algorithm; both missing stays ``unavailable``.
-        """
-        snap = get_heap_snapshot(self.heap_type, self.layout)
-        if snap.used is None and snap.total is None:
-            return "unavailable"
-        used = str(snap.used) if snap.used is not None else "N/A"
-        total = str(snap.total) if snap.total is not None else "N/A"
-        return f"{snap.algorithm}  {used}/{total}"
 
     def _memtrace_enabled(self) -> bool:
         """Return whether the probed block headers carry MEMTRACE owner names."""

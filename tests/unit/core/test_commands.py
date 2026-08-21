@@ -109,7 +109,6 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
             scheduler_state="running",
             state_counts={"Ready": 2, "Suspended": 1},
             object_counts={"timer": 2, "task": 3},
-            heap_summary="unavailable",
         ),
     )
     messages: list[str] = []
@@ -128,9 +127,44 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
         "Suspended: 1",
         "  task: 3",
         "  timer: 2",
-        "Heap: unavailable",
+        "Heap allocator: unavailable",
     ]
     assert adapter.count_calls == 0
+
+
+def test_system_renders_heap_allocator_from_snapshot_fields(monkeypatch):
+    """The renderer, not the adapter, formats algorithm/used/total."""
+    adapter = _Adapter(
+        summary=SystemSummary(
+            heap_allocator="small_mem", heap_used=4096, heap_total=65536
+        )
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(commands, "info", messages.append)
+
+    commands.render_system()
+
+    assert messages[-1] == "Heap allocator: small_mem, used: 4096, total: 65536"
+
+
+def test_system_renders_partial_heap_counters_as_na(monkeypatch):
+    """A one-sided snapshot still names the allocator; the missing side is N/A."""
+    adapter = _Adapter(
+        summary=SystemSummary(heap_allocator="small_mem", heap_total=65536)
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(commands, "info", messages.append)
+
+    commands.render_system()
+
+    assert messages[-1] == "Heap allocator: small_mem, used: N/A, total: 65536"
+
+    adapter.summary = SystemSummary(heap_allocator="small_mem", heap_used=0)
+    messages.clear()
+    commands.render_system()
+    assert messages[-1] == "Heap allocator: small_mem, used: 0, total: N/A"
 
 
 def test_objects_normalizes_kind_and_renders_adapter_table(monkeypatch):

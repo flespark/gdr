@@ -23,7 +23,9 @@ class SystemSummary:
     scheduler_state: str = "unavailable"
     state_counts: dict[str, int] = field(default_factory=dict)
     object_counts: dict[str, int] = field(default_factory=dict)
-    heap_summary: str = "unavailable"
+    heap_allocator: str | None = None
+    heap_used: int | None = None
+    heap_total: int | None = None
 
 
 @dataclass
