@@ -102,6 +102,8 @@ def test_system_summary_uses_one_scheduler_snapshot(monkeypatch):
     assert summary.current_task == "task-running"
     assert summary.task_count == 2
     assert summary.object_counts == {"task": 2}
+    assert summary.heap_allocator is None
+    assert summary.heap_status is None
 
 
 def test_task_table_uses_freertos_capability_columns(monkeypatch):

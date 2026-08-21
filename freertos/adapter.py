@@ -199,5 +199,5 @@ class FreeRtosAdapter(RtosAdapter):
                 name: value for name, value in counts.items() if value is not None
             },
             object_counts={"task": len(tasks)},
-            heap_allocator="unimplemented",
+            heap_allocator=None,
         )

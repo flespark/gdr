@@ -197,40 +197,27 @@ print(f"max_stack_used={value.max_stack_used}")
 def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
     """The system command exposes task, tick, object, state, and heap data."""
     output = rtt_outputs["system"]
+    pairs = _detail_pairs(output)
     for label in (
-        "Kernel version:",
-        "Task count:",
-        "Tick count:",
-        "semaphore:",
-        "timer:",
-        "Heap allocator:",
+        "Kernel version",
+        "Task count",
+        "Tick count",
+        "semaphore",
+        "timer",
+        "Heap allocator",
+        "Heap used",
+        "Heap total",
+        "Heap status",
     ):
-        assert label in output
+        assert label in pairs, output
 
-    # QEMU fixtures are small_mem-as-heap: the heap line names the probed
-    # allocator plus an integer used/total pair and rejects ``unavailable``.
-    heap_line = next(
-        line.strip() for line in output.splitlines() if "Heap allocator:" in line
-    )
-    heap = heap_line.partition("Heap allocator:")[2].strip()
-    assert "small_mem" in heap, heap_line
-    assert "unavailable" not in heap, heap_line
-    fields = dict(
-        token.strip().split(": ", 1) for token in heap.split(",") if ": " in token
-    )
-    used = fields.get("used")
-    total = fields.get("total")
-    assert used is not None and total is not None, heap_line
-    assert used.isdecimal() and total.isdecimal(), heap_line
-    assert int(used) <= int(total), heap_line
-
-    status_line = next(
-        (line.strip() for line in output.splitlines() if "Heap status:" in line),
-        None,
-    )
-    assert status_line is not None, output
-    status = status_line.partition("Heap status:")[2].strip()
-    assert status in {"good", "corrupt", "overrun"}, status_line
+    # QEMU fixtures are small_mem-as-heap: used/total are integers and the
+    # allocator name is the probed algorithm, not ``unavailable``.
+    assert pairs["Heap allocator"] == "small_mem", output
+    assert pairs["Heap used"].isdecimal(), output
+    assert pairs["Heap total"].isdecimal(), output
+    assert int(pairs["Heap used"]) <= int(pairs["Heap total"]), output
+    assert pairs["Heap status"] in {"good", "corrupt", "overrun"}, output
 
 
 def test_rtt_heap_reports_system_heap_detail(rtt_outputs):

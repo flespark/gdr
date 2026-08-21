@@ -585,9 +585,7 @@ def test_system_summary_copies_heap_snapshot_fields(monkeypatch):
     assert summary.heap_allocator == "small_mem"
     assert summary.heap_used == 4096
     assert summary.heap_total == 65536
-    assert summary.heap_from_walk is False
-    assert summary.heap_truncated is False
-    assert summary.heap_corrupt is False
+    assert summary.heap_status is None
 
 
 def test_system_summary_keeps_missing_heap_counters(monkeypatch):
@@ -611,6 +609,7 @@ def test_system_summary_keeps_missing_heap_counters(monkeypatch):
     assert summary.heap_allocator == "small_mem"
     assert summary.heap_used is None
     assert summary.heap_total is None
+    assert summary.heap_status is None
 
 
 def test_system_summary_keeps_partial_heap_counters(monkeypatch):
@@ -633,6 +632,7 @@ def test_system_summary_keeps_partial_heap_counters(monkeypatch):
     assert summary.heap_allocator == "small_mem"
     assert summary.heap_used is None
     assert summary.heap_total == 65536
+    assert summary.heap_status is None
     monkeypatch.setattr(
         adapter_module,
         "get_heap_snapshot",
@@ -644,7 +644,7 @@ def test_system_summary_keeps_partial_heap_counters(monkeypatch):
 
 
 def test_system_summary_omits_none_heap_allocator(monkeypatch):
-    """``heap_type=none`` does not advertise a fake allocator name."""
+    """``heap_type=none`` reports allocator unavailable and omits heap_status."""
     from rtthread.navigation import HeapSnapshot
 
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="none")
@@ -664,6 +664,7 @@ def test_system_summary_omits_none_heap_allocator(monkeypatch):
     assert summary.heap_allocator is None
     assert summary.heap_used is None
     assert summary.heap_total is None
+    assert summary.heap_status is None
 
 
 def test_system_summary_falls_back_to_a_closed_heap_walk(monkeypatch):
@@ -696,13 +697,11 @@ def test_system_summary_falls_back_to_a_closed_heap_walk(monkeypatch):
     summary = adapter.system_summary()
     assert summary.heap_used == 160
     assert summary.heap_total == 256
-    assert summary.heap_from_walk is True
-    assert summary.heap_truncated is False
-    assert summary.heap_corrupt is False
+    assert summary.heap_status == "good"
 
 
 def test_system_summary_does_not_use_truncated_or_slab_estimates(monkeypatch):
-    """Truncated walks and page-level slab counts must not invent used/total."""
+    """Truncated walks must not invent used/total or become heap_status."""
     from rtthread.diagnostics import HeapWalk
     from rtthread.navigation import HeapSnapshot
 
@@ -732,8 +731,7 @@ def test_system_summary_does_not_use_truncated_or_slab_estimates(monkeypatch):
     summary = adapter.system_summary()
     assert summary.heap_used is None
     assert summary.heap_total is None
-    assert summary.heap_from_walk is False
-    assert summary.heap_truncated is True
+    assert summary.heap_status == "good"
 
 
 def test_system_summary_reports_a_corrupt_heap_walk(monkeypatch):
@@ -767,8 +765,56 @@ def test_system_summary_reports_a_corrupt_heap_walk(monkeypatch):
     summary = adapter.system_summary()
     assert summary.heap_used == 4096
     assert summary.heap_total == 65536
-    assert summary.heap_from_walk is False
-    assert summary.heap_corrupt is True
+    assert summary.heap_status == "corrupt"
+
+
+def test_system_summary_reports_overrun_when_used_exceeds_total(monkeypatch):
+    """Used exceeding total is overrun, independent of walk truncation."""
+    from rtthread.diagnostics import HeapWalk
+    from rtthread.navigation import HeapSnapshot
+
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
+    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(
+            algorithm="small_mem", used=70000, total=65536
+        ),
+    )
+    monkeypatch.setattr(
+        adapter_module.diagnostics,
+        "walk_system_heap",
+        lambda _t, _kl: HeapWalk(
+            used_blocks=3,
+            free_blocks=0,
+            hole_sizes=[],
+            occupancy=[],
+            used_bytes=70000,
+            total_bytes=65536,
+        ),
+    )
+
+    summary = adapter.system_summary()
+    assert summary.heap_used == 70000
+    assert summary.heap_total == 65536
+    assert summary.heap_status == "overrun"
+
+    monkeypatch.setattr(
+        adapter_module.diagnostics,
+        "walk_system_heap",
+        lambda _t, _kl: HeapWalk(
+            used_blocks=3,
+            free_blocks=0,
+            hole_sizes=[],
+            occupancy=[],
+            truncated=True,
+        ),
+    )
+    summary = adapter.system_summary()
+    assert summary.heap_status == "overrun"
 
 
 def test_holes_line_formats_free_blocks():
@@ -967,6 +1013,7 @@ def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):
     result = adapter.heap_detail()
 
     assert result is not None
+    assert result.status == "good"
     assert result.pairs == [
         ("Blocks", "12 used, 5 free, 17 total"),
         ("Holes", "5 free, largest: 2048, smallest: 4, 8, 16"),
@@ -1017,4 +1064,37 @@ def test_heap_detail_marks_corrupt_walks(monkeypatch):
     result = adapter.heap_detail()
 
     assert result is not None
+    assert result.status == "corrupt"
     assert result.pairs[0][1] == "1 used, 0 free, 1 total (corrupt)"
+
+
+def test_heap_detail_marks_truncated_walks_without_changing_status(monkeypatch):
+    """A length-limited walk annotates Blocks, not heap_status."""
+    from rtthread.diagnostics import HeapWalk
+    from rtthread.navigation import HeapSnapshot
+
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
+    monkeypatch.setattr(
+        adapter_module,
+        "get_heap_snapshot",
+        lambda _type, _layout: HeapSnapshot(
+            algorithm="small_mem", used=4096, total=65536
+        ),
+    )
+    monkeypatch.setattr(
+        adapter_module.diagnostics,
+        "walk_system_heap",
+        lambda _t, _kl: HeapWalk(
+            used_blocks=2,
+            free_blocks=1,
+            hole_sizes=[64],
+            occupancy=[],
+            truncated=True,
+        ),
+    )
+
+    result = adapter.heap_detail()
+
+    assert result is not None
+    assert result.status == "good"
+    assert result.pairs[0][1] == "2 used, 1 free, 3 total (truncated)"

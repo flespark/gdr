@@ -53,40 +53,40 @@ def render_object_detail(kind: str, name: str) -> None:
 
 @gdb_command_guard
 def render_system() -> None:
-    """Render the normalized system summary from the active adapter."""
+    """Render the normalized system summary as a vertical key/value block."""
     adapter = active()
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
     summary = adapter.system_summary()
-    info(f"Kernel version: {summary.kernel_version}")
-    info(f"Current task: {summary.current_task or 'unavailable'}")
-    info(
-        f"Task count: {summary.task_count if summary.task_count is not None else 'unavailable'}"
+    pairs: list[tuple[str, str]] = [
+        ("Kernel version", summary.kernel_version),
+        ("Current task", summary.current_task or "unavailable"),
+        (
+            "Task count",
+            str(summary.task_count)
+            if summary.task_count is not None
+            else "unavailable",
+        ),
+        (
+            "Tick count",
+            str(summary.tick_count)
+            if summary.tick_count is not None
+            else "unavailable",
+        ),
+        ("Scheduler state", summary.scheduler_state),
+    ]
+    pairs.extend((state, str(count)) for state, count in summary.state_counts.items())
+    pairs.extend(
+        (kind, str(count)) for kind, count in sorted(summary.object_counts.items())
     )
-    info(
-        f"Tick count: {summary.tick_count if summary.tick_count is not None else 'unavailable'}"
-    )
-    info(f"Scheduler state: {summary.scheduler_state}")
-    for state, count in summary.state_counts.items():
-        info(f"{state}: {count}")
-    for kind, count in sorted(summary.object_counts.items()):
-        info(f"  {kind}: {count}")
-    if summary.heap_used is None and summary.heap_total is None:
-        info(f"Heap allocator: {summary.heap_allocator or 'unavailable'}")
-    else:
-        info(
-            f"Heap allocator: {summary.heap_allocator or 'unavailable'}, "
-            f"used: {format_optional_int(summary.heap_used)}, "
-            f"total: {format_optional_int(summary.heap_total)}"
-        )
-    if summary.heap_corrupt:
-        heap_status = "corrupt"
-    elif summary.heap_truncated:
-        heap_status = "overrun"
-    else:
-        heap_status = "good"
-    info(f"Heap status: {heap_status}")
+    pairs.append(("Heap allocator", summary.heap_allocator or "unavailable"))
+    if summary.heap_used is not None or summary.heap_total is not None:
+        pairs.append(("Heap used", format_optional_int(summary.heap_used)))
+        pairs.append(("Heap total", format_optional_int(summary.heap_total)))
+    if summary.heap_status is not None:
+        pairs.append(("Heap status", summary.heap_status))
+    print_detail(pairs)
 
 
 @gdb_command_guard

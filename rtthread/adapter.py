@@ -192,11 +192,14 @@ class HeapDetail:
 
     ``pairs`` holds the Blocks/Holes lines; ``occupancy`` is the per-thread
     ``[thread, blocks, bytes]`` table rows, or ``None`` when MEMTRACE (or the
-    walk) does not expose owner information.
+    walk) does not expose owner information. ``status`` is heap health
+    (``good`` / ``corrupt`` / ``overrun``), copied onto
+    ``SystemSummary.heap_status``; a truncated walk is only a Blocks suffix.
     """
 
     pairs: list[tuple[str, str]]
     occupancy: list[list[str]] | None
+    status: str = "good"
 
 
 # Value → dataclass converters
@@ -366,15 +369,41 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # ---------------------------------------------------------------------------
 
 
-def _heap_detail_from_walk(walk: diagnostics.HeapWalk | None) -> HeapDetail | None:
+def _heap_status(
+    walk: diagnostics.HeapWalk | None,
+    used: int | None = None,
+    total: int | None = None,
+) -> str | None:
+    """Classify heap health; a truncated walk is not a status value.
+
+    ``truncated`` only means the bounded walk hit ``GDR_MAX_TRAVERSAL_COUNT``.
+    ``overrun`` is used exceeding total. Corrupt walks win over overrun.
+    ``None`` means the system command should omit Heap status.
+    """
+    if walk is not None and walk.corrupt:
+        return "corrupt"
+    if used is not None and total is not None and used > total:
+        return "overrun"
+    if walk is None:
+        return None
+    return "good"
+
+
+def _heap_detail_from_walk(
+    walk: diagnostics.HeapWalk | None,
+    used: int | None = None,
+    total: int | None = None,
+) -> HeapDetail | None:
     """Assemble Blocks/Holes/occupancy from one bounded walk result."""
     if walk is None:
         return None
-    status = ""
+    status = _heap_status(walk, used, total)
     if walk.corrupt:
-        status = " (corrupt)"
+        suffix = " (corrupt)"
     elif walk.truncated:
-        status = " (truncated)"
+        suffix = " (truncated)"
+    else:
+        suffix = ""
     occupancy = (
         [
             [thread, str(blocks), str(bytes_)]
@@ -388,11 +417,12 @@ def _heap_detail_from_walk(walk: diagnostics.HeapWalk | None) -> HeapDetail | No
             (
                 "Blocks",
                 f"{walk.used_blocks} used, {walk.free_blocks} free, "
-                f"{walk.used_blocks + walk.free_blocks} total{status}",
+                f"{walk.used_blocks + walk.free_blocks} total{suffix}",
             ),
             ("Holes", _holes_line(walk.hole_sizes)),
         ],
         occupancy=occupancy,
+        status=status,
     )
 
 
@@ -1057,9 +1087,7 @@ class RtThreadAdapter(RtosAdapter):
             heap_allocator=None if heap.algorithm == "none" else heap.algorithm,
             heap_used=heap.used,
             heap_total=heap.total,
-            heap_from_walk=heap.from_walk,
-            heap_truncated=bool(heap.walk is not None and heap.walk.truncated),
-            heap_corrupt=bool(heap.walk is not None and heap.walk.corrupt),
+            heap_status=_heap_status(heap.walk, heap.used, heap.total),
         )
 
     def _memtrace_enabled(self) -> bool:
@@ -1141,7 +1169,7 @@ class RtThreadAdapter(RtosAdapter):
         Blocks/Holes unavailable.
         """
         heap = info if info is not None else self.heap_info()
-        return _heap_detail_from_walk(heap.walk)
+        return _heap_detail_from_walk(heap.walk, heap.used, heap.total)
 
     def heap_report(self) -> tuple[list[tuple[str, str]], HeapDetail | None]:
         """One snapshot+walk collection formatted for ``rtt heap``."""

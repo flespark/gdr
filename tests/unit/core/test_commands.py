@@ -111,96 +111,117 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
             object_counts={"timer": 2, "task": 3},
         ),
     )
-    messages: list[str] = []
+    written: list[list[tuple[str, str]]] = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(commands, "info", messages.append)
+    monkeypatch.setattr(commands, "print_detail", written.append)
 
     commands.render_system()
 
-    assert messages == [
-        "Kernel version: 10.3.1",
-        "Current task: worker",
-        "Task count: 3",
-        "Tick count: 123",
-        "Scheduler state: running",
-        "Ready: 2",
-        "Suspended: 1",
-        "  task: 3",
-        "  timer: 2",
-        "Heap allocator: unavailable",
-        "Heap status: good",
+    assert written == [
+        [
+            ("Kernel version", "10.3.1"),
+            ("Current task", "worker"),
+            ("Task count", "3"),
+            ("Tick count", "123"),
+            ("Scheduler state", "running"),
+            ("Ready", "2"),
+            ("Suspended", "1"),
+            ("task", "3"),
+            ("timer", "2"),
+            ("Heap allocator", "unavailable"),
+        ]
     ]
     assert adapter.count_calls == 0
 
 
 def test_system_renders_heap_allocator_from_snapshot_fields(monkeypatch):
-    """The renderer, not the adapter, formats algorithm/used/total."""
+    """Used/total become their own aligned keys; status is adapter-owned."""
     adapter = _Adapter(
         summary=SystemSummary(
-            heap_allocator="small_mem", heap_used=4096, heap_total=65536
+            heap_allocator="small_mem",
+            heap_used=4096,
+            heap_total=65536,
+            heap_status="good",
         )
     )
-    messages: list[str] = []
+    written: list[list[tuple[str, str]]] = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(commands, "info", messages.append)
+    monkeypatch.setattr(commands, "print_detail", written.append)
 
     commands.render_system()
 
-    assert messages[-2] == "Heap allocator: small_mem, used: 4096, total: 65536"
-    assert messages[-1] == "Heap status: good"
+    by_label = dict(written[-1])
+    assert by_label["Heap allocator"] == "small_mem"
+    assert by_label["Heap used"] == "4096"
+    assert by_label["Heap total"] == "65536"
+    assert by_label["Heap status"] == "good"
 
 
 def test_system_renders_partial_heap_counters_as_na(monkeypatch):
     """A one-sided snapshot still names the allocator; the missing side is N/A."""
     adapter = _Adapter(
-        summary=SystemSummary(heap_allocator="small_mem", heap_total=65536)
+        summary=SystemSummary(
+            heap_allocator="small_mem", heap_total=65536, heap_status="good"
+        )
     )
-    messages: list[str] = []
+    written: list[list[tuple[str, str]]] = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(commands, "info", messages.append)
+    monkeypatch.setattr(commands, "print_detail", written.append)
 
     commands.render_system()
 
-    assert messages[-2] == "Heap allocator: small_mem, used: N/A, total: 65536"
-    assert messages[-1] == "Heap status: good"
+    by_label = dict(written[-1])
+    assert by_label["Heap allocator"] == "small_mem"
+    assert by_label["Heap used"] == "N/A"
+    assert by_label["Heap total"] == "65536"
+    assert by_label["Heap status"] == "good"
 
-    adapter.summary = SystemSummary(heap_allocator="small_mem", heap_used=0)
-    messages.clear()
+    adapter.summary = SystemSummary(
+        heap_allocator="small_mem", heap_used=0, heap_status="good"
+    )
+    written.clear()
     commands.render_system()
-    assert messages[-2] == "Heap allocator: small_mem, used: 0, total: N/A"
-    assert messages[-1] == "Heap status: good"
+    by_label = dict(written[-1])
+    assert by_label["Heap used"] == "0"
+    assert by_label["Heap total"] == "N/A"
 
 
 def test_system_renders_heap_status(monkeypatch):
-    """Heap status is one line: corrupt wins, else overrun, else good."""
+    """The renderer prints the adapter's heap_status without re-deriving it."""
     adapter = _Adapter(
         summary=SystemSummary(
             heap_allocator="small_mem",
             heap_used=160,
             heap_total=256,
-            heap_from_walk=True,
-            heap_truncated=True,
-            heap_corrupt=True,
+            heap_status="corrupt",
         )
     )
-    messages: list[str] = []
+    written: list[list[tuple[str, str]]] = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(commands, "info", messages.append)
+    monkeypatch.setattr(commands, "print_detail", written.append)
 
     commands.render_system()
-    assert messages[-2] == "Heap allocator: small_mem, used: 160, total: 256"
-    assert messages[-1] == "Heap status: corrupt"
-    assert all("Heap source:" not in line for line in messages)
+    by_label = dict(written[-1])
+    assert by_label["Heap allocator"] == "small_mem"
+    assert by_label["Heap used"] == "160"
+    assert by_label["Heap total"] == "256"
+    assert by_label["Heap status"] == "corrupt"
+    assert "Heap source" not in by_label
 
-    adapter.summary.heap_corrupt = False
-    messages.clear()
+    adapter.summary.heap_status = "overrun"
+    written.clear()
     commands.render_system()
-    assert messages[-1] == "Heap status: overrun"
+    assert dict(written[-1])["Heap status"] == "overrun"
 
-    adapter.summary.heap_truncated = False
-    messages.clear()
+    adapter.summary.heap_status = "good"
+    written.clear()
     commands.render_system()
-    assert messages[-1] == "Heap status: good"
+    assert dict(written[-1])["Heap status"] == "good"
+
+    adapter.summary.heap_status = None
+    written.clear()
+    commands.render_system()
+    assert "Heap status" not in dict(written[-1])
 
 
 def test_objects_normalizes_kind_and_renders_adapter_table(monkeypatch):
