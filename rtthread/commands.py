@@ -106,8 +106,7 @@ def render_heap() -> None:
     if not isinstance(adapter, RtThreadAdapter):
         warn("run `gdr init rtthread <version>` first")
         return
-    pairs = adapter.heap_basic_pairs()
-    diagnostics_data = adapter.heap_detail()
+    pairs, diagnostics_data = adapter.heap_report()
     if diagnostics_data is None:
         pairs += [("Blocks", "N/A"), ("Holes", "N/A"), ("Thread occupancy", "N/A")]
         print_detail(pairs)

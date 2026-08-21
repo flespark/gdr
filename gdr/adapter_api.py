@@ -26,6 +26,9 @@ class SystemSummary:
     heap_allocator: str | None = None
     heap_used: int | None = None
     heap_total: int | None = None
+    heap_from_walk: bool = False
+    heap_truncated: bool = False
+    heap_corrupt: bool = False
 
 
 @dataclass

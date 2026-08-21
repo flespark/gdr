@@ -224,6 +224,14 @@ def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
     assert used.isdecimal() and total.isdecimal(), heap_line
     assert int(used) <= int(total), heap_line
 
+    status_line = next(
+        (line.strip() for line in output.splitlines() if "Heap status:" in line),
+        None,
+    )
+    assert status_line is not None, output
+    status = status_line.partition("Heap status:")[2].strip()
+    assert status in {"good", "corrupt", "overrun"}, status_line
+
 
 def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
     """``rtt heap`` shows basics, a bounded walk, holes, and occupancy."""

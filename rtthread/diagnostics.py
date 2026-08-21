@@ -376,7 +376,12 @@ _MEMTRACE_NAME_WIDTH = 4
 
 @dataclass
 class HeapWalk:
-    """Bounded system-heap block walk result for ``rtt heap`` diagnostics."""
+    """Bounded system-heap block walk result for ``rtt heap`` diagnostics.
+
+    ``used_bytes`` / ``total_bytes`` are set only when the walk closed without
+    truncation or corruption, so they are exact chain accounting rather than
+    an estimate. Slab page walks leave them unset.
+    """
 
     used_blocks: int
     free_blocks: int
@@ -384,6 +389,8 @@ class HeapWalk:
     occupancy: list[tuple[str, int, int]]  # (thread, blocks, bytes)
     truncated: bool = False
     corrupt: bool = False
+    used_bytes: int | None = None
+    total_bytes: int | None = None
 
 
 def _read_field_at(
@@ -460,6 +467,15 @@ def _header_size(type_name: str) -> int | None:
     return (size + align - 1) & ~(align - 1)
 
 
+def _exact_byte_counts(
+    *, truncated: bool, corrupt: bool, used_bytes: int, total_bytes: int
+) -> tuple[int | None, int | None]:
+    """Return used/total only when a walk closed over a consistent arena."""
+    if truncated or corrupt or used_bytes < 0 or total_bytes < used_bytes:
+        return None, None
+    return used_bytes, total_bytes
+
+
 def _occupancy_rows(
     owner_blocks: dict[str, int], owner_bytes: dict[str, int]
 ) -> list[tuple[str, int, int]]:
@@ -490,6 +506,7 @@ def _walk_small_mem_chain(
     seen: set[int] = set()
     items = 0
     used = 0
+    used_bytes = 0
     holes: list[int] = []
     owner_blocks: dict[str, int] = {}
     owner_bytes: dict[str, int] = {}
@@ -536,6 +553,7 @@ def _walk_small_mem_chain(
         items += 1
         if is_used:
             used += 1
+            used_bytes += max(size, 0)
             if memtrace:
                 owner = _read_name_at(
                     addr,
@@ -553,6 +571,12 @@ def _walk_small_mem_chain(
         addr = heap_ptr + next_off
     if items == 0:
         return None
+    exact_used, exact_total = _exact_byte_counts(
+        truncated=truncated,
+        corrupt=corrupt,
+        used_bytes=used_bytes,
+        total_bytes=heap_end - heap_ptr,
+    )
     return HeapWalk(
         used_blocks=used,
         free_blocks=items - used,
@@ -560,6 +584,8 @@ def _walk_small_mem_chain(
         occupancy=_occupancy_rows(owner_blocks, owner_bytes),
         truncated=truncated,
         corrupt=corrupt,
+        used_bytes=exact_used,
+        total_bytes=exact_total,
     )
 
 
@@ -649,6 +675,7 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
     corrupt = False
     memtrace = "owner_thread_name" in item_layout.fields
     addr = head
+    closed = False
     while True:
         if addr in seen:
             truncated = True
@@ -673,6 +700,7 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
         # ``next`` points back at ``block_list``. Counting it inflates used
         # by one (typically a 0-size used sentinel).
         if next_addr == head:
+            closed = True
             break
         is_used = bool(magic & 0x1)
         size = next_addr - addr - header_size
@@ -694,6 +722,14 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
         else:
             holes.append(max(size, 0))
         addr = next_addr
+    exact_used = exact_total = None
+    if closed:
+        exact_used, exact_total = _exact_byte_counts(
+            truncated=truncated,
+            corrupt=corrupt,
+            used_bytes=addr + header_size - head - sum(holes),
+            total_bytes=addr + header_size - head,
+        )
     if items == 0:
         if corrupt or truncated:
             return None
@@ -702,6 +738,8 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
             free_blocks=0,
             hole_sizes=[],
             occupancy=[],
+            used_bytes=exact_used,
+            total_bytes=exact_total,
         )
     return HeapWalk(
         used_blocks=used,
@@ -710,6 +748,8 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
         occupancy=_occupancy_rows(owner_blocks, owner_bytes),
         truncated=truncated,
         corrupt=corrupt,
+        used_bytes=exact_used,
+        total_bytes=exact_total,
     )
 
 

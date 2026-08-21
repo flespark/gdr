@@ -370,6 +370,8 @@ def test_small_mem_chain_walk_counts_blocks_and_holes(monkeypatch):
     assert walk.hole_sizes == [64]
     assert walk.corrupt is False
     assert walk.truncated is False
+    assert walk.used_bytes == 144
+    assert walk.total_bytes == 256
 
 
 def test_small_mem_chain_walk_uses_pool_ptr_lsb_for_41(monkeypatch):
@@ -530,6 +532,8 @@ def test_small_mem_chain_walk_reports_corrupt_magic(monkeypatch):
     assert walk is not None
     assert walk.corrupt is True
     assert walk.used_blocks == 1
+    assert walk.used_bytes is None
+    assert walk.total_bytes is None
 
 
 def test_small_mem_chain_walk_reports_truncated_beyond_bound(monkeypatch):
@@ -560,6 +564,8 @@ def test_small_mem_chain_walk_reports_truncated_beyond_bound(monkeypatch):
     assert walk is not None
     assert walk.truncated is True
     assert walk.used_blocks == 2
+    assert walk.used_bytes is None
+    assert walk.total_bytes is None
 
 
 def test_memheap_walk_counts_circular_block_list(monkeypatch):
@@ -608,6 +614,8 @@ def test_memheap_walk_counts_circular_block_list(monkeypatch):
     assert walk.free_blocks == 1
     assert walk.hole_sizes == [16]
     assert walk.corrupt is False
+    assert walk.used_bytes == 128
+    assert walk.total_bytes == 144
 
 
 def test_memheap_walk_aggregates_owner_thread_names(monkeypatch):
@@ -708,6 +716,8 @@ def test_memheap_walk_skips_the_circular_tailer(monkeypatch):
     assert walk.used_blocks == 0
     assert walk.free_blocks == 0
     assert walk.hole_sizes == []
+    assert walk.used_bytes == 24
+    assert walk.total_bytes == 24
 
 
 def test_slab_walk_counts_free_and_used_pages(monkeypatch):

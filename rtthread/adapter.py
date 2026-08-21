@@ -19,6 +19,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
+from gdr.formatting import format_optional_int
+
 try:
     import gdb
 except ImportError:
@@ -32,7 +34,6 @@ from gdr.adapter_api import (
 )
 from gdr.formatting import (
     format_address,
-    format_optional_int,
     format_symbol_or_address,
 )
 from gdr.gdb_bridge import (
@@ -165,6 +166,24 @@ class MemoryPool(KernelObject):
     block_size: int = 0
     block_total_count: int = 0
     block_free_count: int = 0
+
+
+@dataclass
+class HeapInfo:
+    """One snapshot+walk collection shared by ``rtt system`` and ``rtt heap``.
+
+    ``used``/``total`` are the snapshot counters, replaced by exact walk
+    bytes only when a closed small_mem/memheap walk is allowed to fill a
+    missing value. ``max_used`` stays snapshot-only. ``walk`` is the bounded
+    block walk, or ``None`` when the chain is unresolvable.
+    """
+
+    algorithm: str
+    used: int | None = None
+    total: int | None = None
+    max_used: int | None = None
+    from_walk: bool = False
+    walk: diagnostics.HeapWalk | None = None
 
 
 @dataclass
@@ -345,6 +364,36 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
+
+def _heap_detail_from_walk(walk: diagnostics.HeapWalk | None) -> HeapDetail | None:
+    """Assemble Blocks/Holes/occupancy from one bounded walk result."""
+    if walk is None:
+        return None
+    status = ""
+    if walk.corrupt:
+        status = " (corrupt)"
+    elif walk.truncated:
+        status = " (truncated)"
+    occupancy = (
+        [
+            [thread, str(blocks), str(bytes_)]
+            for thread, blocks, bytes_ in walk.occupancy
+        ]
+        if walk.occupancy
+        else None
+    )
+    return HeapDetail(
+        pairs=[
+            (
+                "Blocks",
+                f"{walk.used_blocks} used, {walk.free_blocks} free, "
+                f"{walk.used_blocks + walk.free_blocks} total{status}",
+            ),
+            ("Holes", _holes_line(walk.hole_sizes)),
+        ],
+        occupancy=occupancy,
+    )
 
 
 def _holes_line(sizes: list[int]) -> str:
@@ -996,7 +1045,7 @@ class RtThreadAdapter(RtosAdapter):
             ),
             None,
         )
-        heap_snap = get_heap_snapshot(self.heap_type, self.layout)
+        heap = self.heap_info()
         return SystemSummary(
             kernel_version="RT-Thread",
             current_task=current,
@@ -1005,11 +1054,12 @@ class RtThreadAdapter(RtosAdapter):
             scheduler_state="unavailable",
             state_counts=states,
             object_counts=self.object_counts(),
-            heap_allocator=None
-            if heap_snap.algorithm == "none"
-            else heap_snap.algorithm,
-            heap_used=heap_snap.used,
-            heap_total=heap_snap.total,
+            heap_allocator=None if heap.algorithm == "none" else heap.algorithm,
+            heap_used=heap.used,
+            heap_total=heap.total,
+            heap_from_walk=heap.from_walk,
+            heap_truncated=bool(heap.walk is not None and heap.walk.truncated),
+            heap_corrupt=bool(heap.walk is not None and heap.walk.corrupt),
         )
 
     def _memtrace_enabled(self) -> bool:
@@ -1029,45 +1079,71 @@ class RtThreadAdapter(RtosAdapter):
                 return True
         return False
 
-    def heap_basic_pairs(self) -> list[tuple[str, str]]:
-        """Vertical basics for ``rtt heap``: algorithm, sizes, and MEMTRACE."""
-        snap = get_heap_snapshot(self.heap_type, self.layout)
-        return [
-            ("Algorithm", snap.algorithm),
-            ("TotalSize", str(snap.total) if snap.total is not None else "N/A"),
-            ("UsedSize", str(snap.used) if snap.used is not None else "N/A"),
-            ("MaxUsed", str(snap.max_used) if snap.max_used is not None else "N/A"),
-            ("MemTrace", "enabled" if self._memtrace_enabled() else "unavailable"),
-        ]
+    def heap_info(self) -> HeapInfo:
+        """Collect the system-heap snapshot and walk once.
 
-    def heap_detail(self) -> HeapDetail | None:
-        """Run the bounded system-heap walk and assemble formatted diagnostics.
-
-        Returns ``None`` when the block chain is not resolvable so the caller
-        keeps the basics and marks Blocks/Holes unavailable.
+        ``rtt system`` and ``rtt heap`` both take sizes and walk flags from
+        this result so a missing snapshot counter falls back to exact walk
+        bytes under the same rule.
         """
-        walk = diagnostics.walk_system_heap(self.heap_type, self.layout)
-        if walk is None:
-            return None
-        status = ""
-        if walk.corrupt:
-            status = " (corrupt)"
-        elif walk.truncated:
-            status = " (truncated)"
-        pairs = [
-            (
-                "Blocks",
-                f"{walk.used_blocks} used, {walk.free_blocks} free, "
-                f"{walk.used_blocks + walk.free_blocks} total{status}",
-            ),
-            ("Holes", _holes_line(walk.hole_sizes)),
-        ]
-        occupancy = (
-            [
-                [thread, str(blocks), str(bytes_)]
-                for thread, blocks, bytes_ in walk.occupancy
-            ]
-            if walk.occupancy
+        snap = get_heap_snapshot(self.heap_type, self.layout)
+        walk = (
+            diagnostics.walk_system_heap(self.heap_type, self.layout)
+            if self.heap_type != "none"
             else None
         )
-        return HeapDetail(pairs=pairs, occupancy=occupancy)
+        used = snap.used
+        total = snap.total
+        from_walk = False
+        # Reason: only a closed, uncorrupted small_mem/memheap walk yields
+        # exact used/total. Truncated walks and slab page counts are estimates
+        # and must not fill command counters.
+        if (
+            (used is None or total is None)
+            and walk is not None
+            and not walk.truncated
+            and not walk.corrupt
+            and walk.used_bytes is not None
+            and walk.total_bytes is not None
+        ):
+            used = walk.used_bytes
+            total = walk.total_bytes
+            from_walk = True
+        return HeapInfo(
+            algorithm=snap.algorithm,
+            used=used,
+            total=total,
+            max_used=snap.max_used,
+            from_walk=from_walk,
+            walk=walk,
+        )
+
+    def heap_basic_pairs(self, info: HeapInfo | None = None) -> list[tuple[str, str]]:
+        """Vertical basics for ``rtt heap``: algorithm, sizes, and MEMTRACE."""
+        heap = info if info is not None else self.heap_info()
+        pairs = [
+            ("Algorithm", heap.algorithm),
+            ("TotalSize", format_optional_int(heap.total)),
+            ("UsedSize", format_optional_int(heap.used)),
+            ("MaxUsed", format_optional_int(heap.max_used)),
+            ("MemTrace", "enabled" if self._memtrace_enabled() else "unavailable"),
+        ]
+        if heap.from_walk:
+            pairs.append(("Source", "walk"))
+        return pairs
+
+    def heap_detail(self, info: HeapInfo | None = None) -> HeapDetail | None:
+        """Format Blocks/Holes/occupancy from the collected system-heap walk.
+
+        Pass ``heap_info()`` to reuse that collection; otherwise this method
+        collects snapshot and walk itself. Returns ``None`` when the block
+        chain is not resolvable so the caller keeps the basics and marks
+        Blocks/Holes unavailable.
+        """
+        heap = info if info is not None else self.heap_info()
+        return _heap_detail_from_walk(heap.walk)
+
+    def heap_report(self) -> tuple[list[tuple[str, str]], HeapDetail | None]:
+        """One snapshot+walk collection formatted for ``rtt heap``."""
+        info = self.heap_info()
+        return self.heap_basic_pairs(info), self.heap_detail(info)

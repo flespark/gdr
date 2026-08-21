@@ -80,6 +80,13 @@ def render_system() -> None:
             f"used: {format_optional_int(summary.heap_used)}, "
             f"total: {format_optional_int(summary.heap_total)}"
         )
+    if summary.heap_corrupt:
+        heap_status = "corrupt"
+    elif summary.heap_truncated:
+        heap_status = "overrun"
+    else:
+        heap_status = "good"
+    info(f"Heap status: {heap_status}")
 
 
 @gdb_command_guard

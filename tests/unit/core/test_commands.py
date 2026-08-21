@@ -128,6 +128,7 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
         "  task: 3",
         "  timer: 2",
         "Heap allocator: unavailable",
+        "Heap status: good",
     ]
     assert adapter.count_calls == 0
 
@@ -145,7 +146,8 @@ def test_system_renders_heap_allocator_from_snapshot_fields(monkeypatch):
 
     commands.render_system()
 
-    assert messages[-1] == "Heap allocator: small_mem, used: 4096, total: 65536"
+    assert messages[-2] == "Heap allocator: small_mem, used: 4096, total: 65536"
+    assert messages[-1] == "Heap status: good"
 
 
 def test_system_renders_partial_heap_counters_as_na(monkeypatch):
@@ -159,12 +161,46 @@ def test_system_renders_partial_heap_counters_as_na(monkeypatch):
 
     commands.render_system()
 
-    assert messages[-1] == "Heap allocator: small_mem, used: N/A, total: 65536"
+    assert messages[-2] == "Heap allocator: small_mem, used: N/A, total: 65536"
+    assert messages[-1] == "Heap status: good"
 
     adapter.summary = SystemSummary(heap_allocator="small_mem", heap_used=0)
     messages.clear()
     commands.render_system()
-    assert messages[-1] == "Heap allocator: small_mem, used: 0, total: N/A"
+    assert messages[-2] == "Heap allocator: small_mem, used: 0, total: N/A"
+    assert messages[-1] == "Heap status: good"
+
+
+def test_system_renders_heap_status(monkeypatch):
+    """Heap status is one line: corrupt wins, else overrun, else good."""
+    adapter = _Adapter(
+        summary=SystemSummary(
+            heap_allocator="small_mem",
+            heap_used=160,
+            heap_total=256,
+            heap_from_walk=True,
+            heap_truncated=True,
+            heap_corrupt=True,
+        )
+    )
+    messages: list[str] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(commands, "info", messages.append)
+
+    commands.render_system()
+    assert messages[-2] == "Heap allocator: small_mem, used: 160, total: 256"
+    assert messages[-1] == "Heap status: corrupt"
+    assert all("Heap source:" not in line for line in messages)
+
+    adapter.summary.heap_corrupt = False
+    messages.clear()
+    commands.render_system()
+    assert messages[-1] == "Heap status: overrun"
+
+    adapter.summary.heap_truncated = False
+    messages.clear()
+    commands.render_system()
+    assert messages[-1] == "Heap status: good"
 
 
 def test_objects_normalizes_kind_and_renders_adapter_table(monkeypatch):

@@ -278,11 +278,8 @@ class _FakeHeapAdapter(commands.RtThreadAdapter):
             basic_pairs if basic_pairs is not None else [("Algorithm", "small_mem")]
         )
 
-    def heap_basic_pairs(self):
-        return list(self._basic)
-
-    def heap_detail(self):
-        return self._detail
+    def heap_report(self):
+        return list(self._basic), self._detail
 
 
 def test_render_heap_prints_basics_and_occupancy_table(monkeypatch):
