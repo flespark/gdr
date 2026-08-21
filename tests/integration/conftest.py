@@ -1,8 +1,9 @@
 """Pytest fixtures for profile-driven QEMU closed-loop verification.
 
 The selected RTOS owns its target profile while :mod:`tests.support.qemu_harness`
-owns the QEMU/GDB process lifecycle. RT-Thread's old environment variables
-remain accepted for one release cycle through ``rtthread_qemu_profiles``.
+owns the QEMU/GDB process lifecycle. Fixture directories come from
+``RT_THREAD_FIXTURE_CACHE`` / ``FREERTOS_FIXTURE_CACHE`` when those cache roots
+are set.
 """
 
 from __future__ import annotations

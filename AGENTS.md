@@ -92,7 +92,7 @@ replacement and the only formatter used.
 
 ### RT-Thread QEMU test
 
-`bash ci/rtthread/run-qemu-matrix.sh` apply series arch/version triage patches
+`bash ci/rt-thread/run-qemu-matrix.sh` apply series arch/version triage patches
 to RT-thread repo and build firmware for QEMU test.
 
 QEMU fixture patches are grouped by platform first:
@@ -100,16 +100,24 @@ QEMU fixture patches are grouped by platform first:
 `ci/rt-thread/patches/rv64/<version>/`. Do not share a patch across those
 directories unless it applies cleanly to both BSP paths and toolchains.
 
-The integration harness resolves fixture paths by default to the repo
-sibling directory `<repo>/../fixture/<target>/<version>/rtthread_qemu.elf`
-(plus `rtthread_qemu.bin` for RV64), or to explicit overrides when
-`GDR_ELF_PATH` and `GDR_FIRMWARE_PATH` are set. Missing tools or fixture
-artifacts are skipped per test via `pytest.skip` (see
-`tests/support/qemu_harness.py`), so partial local caches stay usable.
+The integration harness resolves fixture paths from
+`RT_THREAD_FIXTURE_CACHE/<target>/<version>/rtthread.elf` (plus
+`rtthread.bin` for RV64) when that cache root is set. Otherwise it uses
+the repo-sibling directory
+`<repo>/../fixture/<target>/<version>/rtthread.elf` (plus
+`rtthread.bin` for RV64), or explicit `GDR_ELF_PATH` /
+`GDR_FIRMWARE_PATH` overrides. Missing tools or fixture artifacts are
+skipped per test via `pytest.skip` (see `tests/support/qemu_harness.py`),
+so partial local caches stay usable.
 
 ```bash
 # Run the Cortex-A9 matrix against a local fixture cache without rebuilding.
-GDR_GDB=gdb-multiarch GDR_QEMU_TARGET=cortex-a9 \
+RT_THREAD_FIXTURE_CACHE=/path/to/cache GDR_GDB=gdb-multiarch \
+  bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+
+# Or point pytest at the same cache layout directly.
+RT_THREAD_FIXTURE_CACHE=/path/to/cache GDR_GDB=gdb-multiarch \
+  GDR_QEMU_TARGET=cortex-a9 GDR_VERSION=4.0.5 \
   uv run pytest tests/integration/rtthread -v
 ```
 
@@ -128,10 +136,16 @@ B-L475E-IOT01A fixture (whose FreeRTOS submodule is commit
 
 ```bash
 bash ci/freertos/run-qemu-matrix.sh
+
+# Skip compilation when a firmware cache is already populated.
+FREERTOS_FIXTURE_CACHE=/path/to/cache bash ci/freertos/run-qemu-matrix.sh
 ```
 
-The fixture uses the Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU
-semihosting, not the board's unsupported LPTIM. Fixture sources live in
+The cache layout is `<cache>/b-l475e-iot01a/10.3.1/freertos.elf`. Without
+it, pytest falls back to
+`<repo>/../fixture/freertos_b_l475e_iot01a.elf`. The fixture uses the
+Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, not
+the board's unsupported LPTIM. Fixture sources live in
 `ci/freertos/fixture/`; the build is defined in `ci/freertos/build-freertos.sh`.
 
 ### CI pipelines

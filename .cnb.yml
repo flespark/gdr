@@ -64,7 +64,7 @@ main: # branch: main
     - name: publish-qemu-matrix-image
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       services:
         - docker
       ifModify:
@@ -88,7 +88,7 @@ main: # branch: main
     - name: publish-gdb12-compat-image
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       services:
         - docker
       ifModify:
@@ -112,7 +112,7 @@ main: # branch: main
     - name: gdb12-compat-a9
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       docker:
         build:
           dockerfile: ci/Dockerfile.gdb12
@@ -126,9 +126,7 @@ main: # branch: main
         GDR_EXPECTED_GDB_MAJOR: "12"
         GDR_EXPECTED_EMBEDDED_PYTHON: "3.10"
         RT_THREAD_REFS: v4.0.5
-        RT_THREAD_TARGET: cortex-a9
         RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
-        CROSS_TOOL_PREFIX: arm-none-eabi-
       stages:
         - name: GDB 12 / Python 3.10 Cortex-A9 smoke test
           script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
@@ -136,7 +134,7 @@ main: # branch: main
     - name: qemu-test-a9
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       docker:
         # ci/Dockerfile pins QEMU, GDB, xPack ARM/RISC-V GCC/newlib, scons,
         # and uv. `by` lets CNB invalidate the cached image only when
@@ -154,9 +152,7 @@ main: # branch: main
       env:
         # Use gdb-multiarch (the container's GDB with ARM target support).
         GDR_GDB: gdb-multiarch
-        RT_THREAD_TARGET: cortex-a9
         RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
-        CROSS_TOOL_PREFIX: arm-none-eabi-
       stages:
         - name: pytest matrix (QEMU closed-loop)
           script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
@@ -164,7 +160,7 @@ main: # branch: main
     - name: qemu-test-rv64
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       docker:
         build:
           dockerfile: ci/Dockerfile
@@ -175,10 +171,7 @@ main: # branch: main
           - /root/.cache/uv:copy-on-write
       env:
         GDR_GDB: gdb-multiarch
-        GDR_QEMU_TARGET: rv64
-        RT_THREAD_TARGET: rv64
         RTOS_TOOLCHAIN_PATH: /opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin
-        CROSS_TOOL_PREFIX: riscv64-unknown-elf-
       stages:
         - name: pytest RV64 matrix (QEMU closed-loop)
           script: bash ci/rt-thread/run-qemu-matrix.sh rv64
@@ -191,7 +184,7 @@ main: # branch: main
     - name: gdb12-compat-a9
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       docker:
         build:
           dockerfile: ci/Dockerfile.gdb12
@@ -205,9 +198,7 @@ main: # branch: main
         GDR_EXPECTED_GDB_MAJOR: "12"
         GDR_EXPECTED_EMBEDDED_PYTHON: "3.10"
         RT_THREAD_REFS: v4.0.5
-        RT_THREAD_TARGET: cortex-a9
         RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
-        CROSS_TOOL_PREFIX: arm-none-eabi-
       stages:
         - name: GDB 12 / Python 3.10 Cortex-A9 smoke test
           script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
@@ -215,7 +206,7 @@ main: # branch: main
     - name: qemu-test-a9
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       docker:
         build:
           dockerfile: ci/Dockerfile
@@ -226,9 +217,7 @@ main: # branch: main
           - /root/.cache/uv:copy-on-write
       env:
         GDR_GDB: gdb-multiarch
-        RT_THREAD_TARGET: cortex-a9
         RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
-        CROSS_TOOL_PREFIX: arm-none-eabi-
       stages:
         - name: pytest matrix (QEMU closed-loop)
           script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
@@ -236,7 +225,7 @@ main: # branch: main
     - name: qemu-test-rv64
       runner:
         tags: cnb:arch:amd64
-        cpus: 4
+        cpus: 8
       docker:
         build:
           dockerfile: ci/Dockerfile
@@ -247,10 +236,7 @@ main: # branch: main
           - /root/.cache/uv:copy-on-write
       env:
         GDR_GDB: gdb-multiarch
-        GDR_QEMU_TARGET: rv64
-        RT_THREAD_TARGET: rv64
         RTOS_TOOLCHAIN_PATH: /opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin
-        CROSS_TOOL_PREFIX: riscv64-unknown-elf-
       stages:
         - name: pytest RV64 matrix (QEMU closed-loop)
           script: bash ci/rt-thread/run-qemu-matrix.sh rv64

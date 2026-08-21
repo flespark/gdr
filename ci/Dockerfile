@@ -85,12 +85,14 @@ ENV XPACK_ARM_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
     XPACK_RISCV_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
     PYTHON2_BIN=/opt/python2/bin/python \
     PYTHON2_SCONS=/opt/python2/bin/scons \
-    LD_LIBRARY_PATH=/opt/python2/lib \
     PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Fail the image build if the isolated Python 2 runtime cannot load the
 # matching OpenSSL 1.1 extension modules copied from the Buster stage.
-RUN /opt/python2/bin/python -c 'import hashlib; assert hashlib.md5("gdr").hexdigest() == "fff7c7603b50cc39962ecf42277c0d0d"'
+# Reason: keep /opt/python2/lib off the image-wide LD_LIBRARY_PATH; only this
+# smoke check and build-rtt.sh's 3.1.x scons path need it.
+RUN LD_LIBRARY_PATH=/opt/python2/lib \
+    /opt/python2/bin/python -c 'import hashlib; assert hashlib.md5("gdr").hexdigest() == "fff7c7603b50cc39962ecf42277c0d0d"'
 
 # Default working directory; CNB mounts the repo at /root/workspace by
 # convention, but we leave WORKDIR generic so local `docker run -v` works.

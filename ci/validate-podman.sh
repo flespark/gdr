@@ -27,15 +27,25 @@ fi
 if [[ -n "${RT_THREAD_SOURCE_DIR:-}" ]]; then
     podman_args+=(--volume "$RT_THREAD_SOURCE_DIR:/rt-thread-source:ro")
 fi
+if [[ -n "${RT_THREAD_FIXTURE_CACHE:-}" ]]; then
+    podman_args+=(
+        --env "RT_THREAD_FIXTURE_CACHE=$RT_THREAD_FIXTURE_CACHE"
+        --volume "$RT_THREAD_FIXTURE_CACHE:$RT_THREAD_FIXTURE_CACHE:ro"
+    )
+fi
+if [[ -n "${FREERTOS_FIXTURE_CACHE:-}" ]]; then
+    podman_args+=(
+        --env "FREERTOS_FIXTURE_CACHE=$FREERTOS_FIXTURE_CACHE"
+        --volume "$FREERTOS_FIXTURE_CACHE:$FREERTOS_FIXTURE_CACHE:ro"
+    )
+fi
 
 podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" --tag "$IMAGE_TAG" "$ROOT_DIR"
 podman run "${podman_args[@]}" "$IMAGE_TAG" \
     bash -c '
         set -e
         RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-        CROSS_TOOL_PREFIX=arm-none-eabi- \
         bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
         RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
-        CROSS_TOOL_PREFIX=riscv64-unknown-elf- \
         bash ci/rt-thread/run-qemu-matrix.sh rv64
     '
