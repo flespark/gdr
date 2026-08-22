@@ -48,20 +48,20 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 ### 下载
 
 请从 [CNB Releases](https://cnb.cool/flespark-2026/gdr/-/releases) 的最新 Release
-下载包含 RT-Thread 支持的 GDR 脚本压缩包。
+下载包含所有 RTOS 支持 的 GDR 脚本压缩包
 
 macOS / Linux 使用 `.tar.gz`:
 
 ```bash
-tar -xzf gdr-rtthread.tar.gz
-cd gdr-rtthread
+tar -xzf gdr.tar.gz
+cd gdr
 ```
 
 Windows 使用原生支持的 `.zip`:
 
 ```powershell
-Expand-Archive -Path .\gdr-rtthread.zip -DestinationPath .
-Set-Location .\gdr-rtthread
+Expand-Archive -Path .\gdr.zip -DestinationPath .
+Set-Location .\gdr
 ```
 
 ### 加载与初始化

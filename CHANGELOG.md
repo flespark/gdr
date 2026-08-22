@@ -6,65 +6,37 @@ All notable changes to GDR are documented in this file.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [2026.02] - 2026-08-22
+
 ### Added
 
-- Architecture governance: shared formatting/version helpers, adapter-owned
-  task tables, layout-driven FreeRTOS navigation, and RT-Thread diagnostics
-  separated from command routing. The public GDB command and raw-value APIs
-  remain unchanged; FreeRTOS task columns now reflect target capabilities.
+- Added RTOS-neutral `$gdr_task`, `$gdr_tasks`, and `$gdr_object` functions,
+  plus adapter-owned task/object tables and a unified command router.
+- Added RT-Thread detail commands for tasks, timers, IPC, and memory pools,
+  including bounded waiter, capacity, policy, expiry, and consistency data.
+- Added width-aware table rendering, target-symbolized function pointers, and
+  a profile-driven QEMU/GDB harness with persistent sessions and diagnostics.
+- Added RT-Thread heap command for heap info collection and diagnostic (heap
+  algorithm, used size, total size, owner, corrupt check, memory bubble state).
 
-- Width-aware ASCII table rendering: lists probe the current GDB/terminal
-  width and shrink only marked elastic text columns (`Name`/`Owner`/`Waiters`/
-  `Callback`/`Entry`) with two-dot truncation. The column set never changes
-  with width, and tables restore the natural layout when minimum elastic
-  widths still overflow.
-- Singular object detail commands: `rtt thread|timer|semaphore|mutex|event|
-  mailbox|messagequeue|mempool <name>` render one object as a vertical
-  `Key: Value` block via the adapter-owned `object_detail` contract.
-- Waiter summaries on IPC and mempool tables: `count:names` `Waiters` columns
-  for semaphores, mutexes, events, and memory pools, plus split
-  `RecvWait`/`SendWait` columns for mailboxes and message queues. Counts come
-  from bounded, corruption-guarded suspend-list traversal (via
-  `struct rt_thread.tlist`), never a cached counter removed in later kernels,
-  and versions without a sender wait list render `N/A` instead of a fake `0`.
-  Event detail pairs each waiter with its `event_set` mask and
-  AND/OR/CLEAR mode.
-- Derived capacity columns: mailboxes/message queues show `Free`, memory
-  pools show `Used`, IPC objects decode a `FIFO`/`PRIO` policy column, mutex
-  rows show `OrigPrio`, and timer rows add `Addr` plus a wrap-safe `ExpiresIn`
-  (inactive timers render `N/A`).
-- Task lists add `BasePrio` and `Addr`; SMP targets show `CPU`/`Bind` with
-  the current task's real `oncpu`, and the CPU-0-to-`-1` coercion bug is
-  fixed so CPU 0 is a valid value.
-- Object detail diagnostics: thread detail shows `error`/`remaining_tick`,
-  timer detail shows the callback `parameter` and tick-based expiry,
-  IPC/mempool detail includes policy and waiter relationships, message queues
-  walk and count their message/free chains, mailboxes list FIFO slots with a
-  stable offset verdict, and memory pools report pool range, block alignment,
-  and free-list consistency. All walks are bounded and corruption-guarded.
-- RTOS-neutral profile-driven QEMU/GDB harness with dynamic GDB ports,
-  session-local logs, persistent GDB connections, and actionable boot errors.
-- FreeRTOS package and a B-L475E-IOT01A QEMU fixture built
-  from STM32CubeL4 v1.18.2 and its pinned FreeRTOS V10.3.1 submodule.
-- RTOS-neutral semantic adapter API with raw-value `$gdr_task`, `$gdr_tasks`,
-  and `$gdr_object(kind, name)` convenience functions. The `gdr` command is
-  limited to `init` and `help`.
-- FreeRTOS version/config probes, DWARF task layouts, safe scheduler
-  navigation, and the RTOS-specific `freertos tasks/system` commands.
-- RT-Thread `rtthread` / `rtt` command tree for task, system, semaphore, mutex,
-  timer, and IPC object output, with an `rtt help` command that lists supported
-  subcommands and aliases. The redundant `rtt objects` command was removed.
-- FreeRTOS fixture smoke tests covering boot readiness, debug type visibility,
-  32-bit ABI, persistent commands, task enumeration, and system counters.
+### Changed
+
+- Release archives now contain both RT-Thread and FreeRTOS adapters in one
+  `gdr` asset. The `gdr` command is limited to initialization and help; RTOS
+  commands remain under `rtt` and `frt`.
+- Task and IPC tables expose capability-aware columns such as `BasePrio`,
+  `Addr`, `CPU`, `Bind`, waiter lists, `Free`, `Used`, and `ExpiresIn`.
+- Table widths shrink only marked text columns and preserve the complete
+  column set across terminal sizes.
 
 ### Fixed
 
-- Completed RT-Thread command routing and object tables for events, mailboxes,
-  message queues, and memory pools.
-- Singular RT-Thread detail commands now retain policy, waiter and consistency
-  diagnostics even when the inspected object has no error or active waiter;
-  unavailable raw-memory fields are reported explicitly instead of silently
-  disappearing.
+- Completed RT-Thread routing and object tables for events, mailboxes, message
+  queues, and memory pools.
+- Fixed SMP CPU-0 reporting and retained detail diagnostics when raw fields or
+  waiters are unavailable; unsupported values now render explicitly as `N/A`.
 
 ## [2026.01] - 2026-07-29
 

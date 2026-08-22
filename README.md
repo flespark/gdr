@@ -49,22 +49,23 @@ the [Asterinas GDB helper](#acknowledgements):
 
 ### Download
 
-Download the RT-Thread archive from [GitHub Releases](https://github.com/flespark/gdr/releases/latest).
+Download the unified GDR archive, which includes both RT-Thread and FreeRTOS
+adapters, from [GitHub Releases](https://github.com/flespark/gdr/releases/latest).
 
 Use `.tar.gz` on macOS or Linux:
 
 ```bash
-curl -LO https://github.com/flespark/gdr/releases/latest/download/gdr-rtthread-latest.tar.gz
-tar -xzf gdr-rtthread-latest.tar.gz
-cd gdr-rtthread
+curl -LO https://github.com/flespark/gdr/releases/latest/download/gdr-latest.tar.gz
+tar -xzf gdr-latest.tar.gz
+cd gdr
 ```
 
 and `.zip` on Windows:
 
 ```powershell
-Invoke-WebRequest https://github.com/flespark/gdr/releases/latest/download/gdr-rtthread-latest.zip -OutFile gdr-rtthread-latest.zip
-Expand-Archive -Path .\gdr-rtthread-latest.zip -DestinationPath .
-Set-Location .\gdr-rtthread
+Invoke-WebRequest https://github.com/flespark/gdr/releases/latest/download/gdr-latest.zip -OutFile gdr-latest.zip
+Expand-Archive -Path .\gdr-latest.zip -DestinationPath .
+Set-Location .\gdr
 ```
 
 ### Load and init

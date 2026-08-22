@@ -41,7 +41,7 @@ jobs:
           gh release create "$TAG" \
             --title "GDR $TAG" \
             --notes-file "$notes_file" \
-            "dist/gdr-rtthread-$TAG.tar.gz" \
-            "dist/gdr-rtthread-$TAG.zip" \
-            "dist/gdr-rtthread-latest.tar.gz" \
-            "dist/gdr-rtthread-latest.zip"
+            "dist/gdr-$TAG.tar.gz" \
+            "dist/gdr-$TAG.zip" \
+            "dist/gdr-latest.tar.gz" \
+            "dist/gdr-latest.zip"

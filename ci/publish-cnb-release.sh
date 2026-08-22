@@ -29,11 +29,11 @@ fi
 
 shopt -s nullglob
 archives=(
-    "$archive_dir"/gdr-*-${release_tag}.tar.gz
-    "$archive_dir"/gdr-*-${release_tag}.zip
+    "$archive_dir"/gdr-${release_tag}.tar.gz
+    "$archive_dir"/gdr-${release_tag}.zip
 )
 # Reason: CNB release URLs already scope assets by release tag; upload stable
-# names so README download commands do not need to include a release version.
+# names so download commands do not need to include a release version.
 if [[ ${#archives[@]} -ne 2 ]]; then
     echo "expected one versioned archive in each format" >&2
     exit 1
