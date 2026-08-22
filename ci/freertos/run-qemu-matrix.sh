@@ -25,6 +25,10 @@ die() {
     exit 1
 }
 
+log_matrix_entry() {
+    echo "[gdr-ci] freertos/$1/$2: $3"
+}
+
 main() {
     local fixture_cache="${FREERTOS_FIXTURE_CACHE:-}"
     local target="$DEFAULT_TARGET"
@@ -45,6 +49,7 @@ main() {
         fixture_dir="$fixture_cache/$target/$version"
         [[ -f "$fixture_dir/freertos.elf" ]] || \
             die "cached fixture missing: $fixture_dir/freertos.elf"
+        log_matrix_entry "$target" "$version" "pytest"
         runner=(
             env -u GDR_ELF_PATH -u GDR_FIRMWARE_PATH
             "GDR_RTOS=freertos"
@@ -61,8 +66,10 @@ main() {
     if [[ -n "$toolchain_path" ]]; then
         build_args+=(--toolchain-path "$toolchain_path")
     fi
+    log_matrix_entry "$target" "$version" "building fixture"
     bash "$SCRIPT_DIR/build-freertos.sh" "${build_args[@]}"
 
+    log_matrix_entry "$target" "$version" "pytest"
     runner=(
         env -u GDR_ELF_PATH -u GDR_FIRMWARE_PATH
         "GDR_RTOS=freertos"

@@ -34,6 +34,10 @@ die() {
     exit 1
 }
 
+log_matrix_entry() {
+    echo "[gdr-ci] rtthread/$1/$2: $3"
+}
+
 # Populate REFS / TOOLCHAIN_PATH / TOOLCHAIN_PREFIX for one QEMU target.
 resolve_matrix() {
     local target="$1"
@@ -136,6 +140,7 @@ collect_fixture() {
 run_rtthread_pytest() {
     local target="$1" version="$2" fixture_cache="${3:-}"
     local elf_path="${4:-}" firmware_path="${5:-}"
+    log_matrix_entry "$target" "$version" "pytest"
     local -a runner=(env -u GDR_ELF_PATH -u GDR_FIRMWARE_PATH)
     runner+=(
         "GDR_RTOS=rtthread"
@@ -220,6 +225,7 @@ main() {
         if [[ "$target" == "rv64" ]]; then
             firmware_path="$build_dir/$bsp/rtthread.bin"
         fi
+        log_matrix_entry "$target" "$version" "building fixture"
         build_fixture "$target" "$ref" "$repo" "$build_dir" "$bsp"
         if [[ -n "${RT_THREAD_FIXTURE_COLLECT_DIR:-}" ]]; then
             collect_fixture "$target" "$version" "$elf_path" "$firmware_path"
