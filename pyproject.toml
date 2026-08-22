@@ -1,6 +1,6 @@
 [project]
 name = "gdr"
-version = "2026.1"
+version = "2026.2"
 description = "GDB helper framework for debugging RTOS-based embedded firmware"
 readme = "README.md"
 requires-python = ">=3.10"
