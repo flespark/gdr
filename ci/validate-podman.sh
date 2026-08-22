@@ -23,6 +23,7 @@ case "${PODMAN_PLATFORM:-$(uname -m)}" in
     linux/arm64|arm64|aarch64)
         PLATFORM="linux/arm64"
         IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack-arm64}"
+        XPACK_ARCH="linux-arm64"
         build_args=(--build-arg XPACK_ARCH=linux-arm64
                     --build-arg XPACK_ARM_SHA256=67980c7990eba7bb7ffdf39699102effd70889f5ac427be19a8c8a6c5fab2972
                     --build-arg XPACK_RISCV_SHA256=4e60e2a54c16385e4e2476d08240f857495d5a61609d97e1ee49f72875a6ec1e)
@@ -30,6 +31,7 @@ case "${PODMAN_PLATFORM:-$(uname -m)}" in
     linux/amd64|amd64|x86_64)
         PLATFORM="linux/amd64"
         IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack}"
+        XPACK_ARCH="linux-x64"
         build_args=()
         ;;
     *)
@@ -49,6 +51,17 @@ if [[ -n "${RT_THREAD_REPO:-}" ]]; then
 fi
 if [[ -n "${RT_THREAD_SOURCE_DIR:-}" ]]; then
     podman_args+=(--volume "$RT_THREAD_SOURCE_DIR:/rt-thread-source:ro")
+fi
+# Share a local RT-Thread git cache so the container does not re-fetch tags from
+# GitHub (VM networking is slow and intermittently drops). The bare mirror cache
+# is fetched with tags already present, so run-qemu-matrix keeps it out of the
+# GitHub path. Note: prepare_source_cache needs a writable cache to run `git
+# fetch`/`git init --bare`, so keep this mount writable.
+if [[ -n "${RT_THREAD_SOURCE_CACHE:-}" ]]; then
+    podman_args+=(
+        --env "RT_THREAD_SOURCE_CACHE=$RT_THREAD_SOURCE_CACHE"
+        --volume "$RT_THREAD_SOURCE_CACHE:$RT_THREAD_SOURCE_CACHE"
+    )
 fi
 # Collect freshly built fixtures into a host directory (writable, unlike the
 # read-only RT_THREAD_FIXTURE_CACHE). Laid out as <target>/<version>/, matching
@@ -79,6 +92,21 @@ fi
 if [[ -n "${GDR_CI_SKIP_BUILD:-}" ]] && podman image exists "$IMAGE_TAG"; then
     echo "[gdr-ci] reusing existing image $IMAGE_TAG (GDR_CI_SKIP_BUILD)"
 else
+    # Seed ci/gdr-xpack with pre-downloaded archives (host-side cache, faster
+    # than the VM's GitHub download). The Dockerfile falls back to curl for
+    # CNB where no local cache exists. xPack arm64+x64 archives share one dir.
+    archive_dir="${GDR_CI_XPACK_DIR:-/Volumes/PS3000/gdr-xpack-archives}"
+    if [[ -d "$archive_dir" ]]; then
+        mkdir -p "$ROOT_DIR/ci/gdr-xpack"
+        for archive in \
+            "xpack-arm-none-eabi-gcc-15.2.1-1.1-${XPACK_ARCH}.tar.gz" \
+            "xpack-riscv-none-elf-gcc-15.2.0-1-${XPACK_ARCH}.tar.gz"; do
+            if [[ -s "$archive_dir/$archive" ]]; then
+                echo "[gdr-ci] seeding $archive from $archive_dir"
+                cp "$archive_dir/$archive" "$ROOT_DIR/ci/gdr-xpack/$archive"
+            fi
+        done
+    fi
     podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" \
         "${build_args[@]}" --tag "$IMAGE_TAG" "$ROOT_DIR"
 fi

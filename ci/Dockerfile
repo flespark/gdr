@@ -76,14 +76,29 @@ ARG XPACK_RISCV_SHA256=aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a3755
 ARG XPACK_ARCH=linux-x64
 # Reason: xPack publishes per-arch linux archives (linux-x64 / linux-arm64);
 # the CNB runner builds amd64, while local Apple-Silicon podman builds arm64.
+#
+# A local build can skip the slow GitHub download by pre-seeding
+# ci/gdr-xpack/ with the two archives (see validate-podman.sh). They are copied
+# into the image at the same path, and the download below is replaced when the
+# archive is already present. sha256 still verifies integrity either way.
+# ci/gdr-xpack/ always exists (its .gitkeep is committed), so the COPY is never
+# the failure point; the RUN decides between local archives and curl+check.
 # Reason: RT-Thread's RV64 BSP hard-codes the legacy riscv64-unknown-elf prefix.
+COPY ci/gdr-xpack/ /opt/gdr-xpack/
 RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-${XPACK_ARCH}.tar.gz" \
     && riscv_archive="xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-${XPACK_ARCH}.tar.gz" \
-    && curl --fail --location --retry 3 --output "/tmp/$arm_archive" \
-        "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v${XPACK_ARM_VERSION}/$arm_archive" \
+    && if [ -s "/opt/gdr-xpack/$arm_archive" ] && [ -s "/opt/gdr-xpack/$riscv_archive" ]; then \
+        echo "[gdr-ci] seeding toolchains from ci/gdr-xpack"; \
+        cp "/opt/gdr-xpack/$arm_archive" "/tmp/$arm_archive"; \
+        cp "/opt/gdr-xpack/$riscv_archive" "/tmp/$riscv_archive"; \
+    else \
+        echo "[gdr-ci] downloading xPack toolchains from GitHub"; \
+        curl --fail --location --retry 3 --output "/tmp/$arm_archive" \
+            "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v${XPACK_ARM_VERSION}/$arm_archive"; \
+        curl --fail --location --retry 3 --output "/tmp/$riscv_archive" \
+            "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/$riscv_archive"; \
+    fi \
     && echo "${XPACK_ARM_SHA256}  /tmp/$arm_archive" | sha256sum --check - \
-    && curl --fail --location --retry 3 --output "/tmp/$riscv_archive" \
-        "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/$riscv_archive" \
     && echo "${XPACK_RISCV_SHA256}  /tmp/$riscv_archive" | sha256sum --check - \
     && tar --extract --gzip --file "/tmp/$arm_archive" --directory /opt \
     && tar --extract --gzip --file "/tmp/$riscv_archive" --directory /opt \
