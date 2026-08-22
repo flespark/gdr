@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Reproduce CNB's amd64 QEMU matrices in a local Podman container.
+# Reproduce CNB's QEMU matrices locally in a Podman container.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack}"
-PLATFORM="${PODMAN_PLATFORM:-linux/amd64}"
 
 # Keep the Podman machine, image store, and build cache off the system disk
 # when callers provide external XDG roots (for example, a USB drive on macOS).
@@ -14,6 +13,30 @@ fi
 if [[ -n "${PODMAN_XDG_DATA_HOME:-}" ]]; then
     export XDG_DATA_HOME="$PODMAN_XDG_DATA_HOME"
 fi
+
+# Native architecture by default so xPack toolchains, debian qemu/gdb and the
+# RTOS compiler run as fast as on CNB's amd64 runners. PODMAN_PLATFORM still
+# forces an explicit platform (e.g. linux/amd64) and the matching build args
+# are picked below. The RTOS targets (Cortex-A9 / RV64) are cross-compiled, so
+# fixtures are identical regardless of the image architecture.
+case "${PODMAN_PLATFORM:-$(uname -m)}" in
+    linux/arm64|arm64|aarch64)
+        PLATFORM="linux/arm64"
+        IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack-arm64}"
+        build_args=(--build-arg XPACK_ARCH=linux-arm64
+                    --build-arg XPACK_ARM_SHA256=67980c7990eba7bb7ffdf39699102effd70889f5ac427be19a8c8a6c5fab2972
+                    --build-arg XPACK_RISCV_SHA256=4e60e2a54c16385e4e2476d08240f857495d5a61609d97e1ee49f72875a6ec1e)
+        ;;
+    linux/amd64|amd64|x86_64)
+        PLATFORM="linux/amd64"
+        IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack}"
+        build_args=()
+        ;;
+    *)
+        echo "unknown platform: ${PODMAN_PLATFORM:-$(uname -m)}" >&2
+        exit 2
+        ;;
+esac
 
 podman_args=(
     --rm
@@ -56,7 +79,8 @@ fi
 if [[ -n "${GDR_CI_SKIP_BUILD:-}" ]] && podman image exists "$IMAGE_TAG"; then
     echo "[gdr-ci] reusing existing image $IMAGE_TAG (GDR_CI_SKIP_BUILD)"
 else
-    podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" --tag "$IMAGE_TAG" "$ROOT_DIR"
+    podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" \
+        "${build_args[@]}" --tag "$IMAGE_TAG" "$ROOT_DIR"
 fi
 podman run "${podman_args[@]}" "$IMAGE_TAG" \
     bash -c '

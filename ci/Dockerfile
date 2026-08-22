@@ -26,9 +26,24 @@ RUN pip install --no-cache-dir "scons==3.1.2"
 
 FROM debian:trixie-slim
 
+# Target architecture (BuildKit/podman provide TARGETARCH for linux/amd64 ->
+# amd64, linux/arm64 -> arm64). The xPack GNU toolchain archives and the
+# Python 2 libcrypto/libssl copies are arch-specific, so select them here
+# instead of hard-coding x86_64 paths.
+ARG TARGETARCH=amd64
+
 COPY --from=legacy-scons /usr/local /opt/python2
-COPY --from=legacy-scons /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 /opt/python2/lib/
-COPY --from=legacy-scons /usr/lib/x86_64-linux-gnu/libssl.so.1.1 /opt/python2/lib/
+# Reason: the legacy-scons stage runs on both x86_64 and arm64; pick the
+# matching libcrypto/libssl from its image filesystem instead of hard-coding
+# one /usr/lib/<triplet> path.
+RUN --mount=type=bind,from=legacy-scons,target=/opt/legacy-scons \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        libdir="aarch64-linux-gnu"; \
+    else \
+        libdir="x86_64-linux-gnu"; \
+    fi; \
+    cp "/opt/legacy-scons/usr/lib/$libdir/libcrypto.so.1.1" /opt/python2/lib/; \
+    cp "/opt/legacy-scons/usr/lib/$libdir/libssl.so.1.1" /opt/python2/lib/
 
 #----------------------------------------------------------------------
 # Runtime tools. Host GCC and pip are unnecessary: RT-Thread uses the xPack
@@ -58,9 +73,12 @@ ARG XPACK_ARM_VERSION=15.2.1-1.1
 ARG XPACK_ARM_SHA256=da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6
 ARG XPACK_RISCV_VERSION=15.2.0-1
 ARG XPACK_RISCV_SHA256=aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758
+ARG XPACK_ARCH=linux-x64
+# Reason: xPack publishes per-arch linux archives (linux-x64 / linux-arm64);
+# the CNB runner builds amd64, while local Apple-Silicon podman builds arm64.
 # Reason: RT-Thread's RV64 BSP hard-codes the legacy riscv64-unknown-elf prefix.
-RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-linux-x64.tar.gz" \
-    && riscv_archive="xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-linux-x64.tar.gz" \
+RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-${XPACK_ARCH}.tar.gz" \
+    && riscv_archive="xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-${XPACK_ARCH}.tar.gz" \
     && curl --fail --location --retry 3 --output "/tmp/$arm_archive" \
         "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v${XPACK_ARM_VERSION}/$arm_archive" \
     && echo "${XPACK_ARM_SHA256}  /tmp/$arm_archive" | sha256sum --check - \
