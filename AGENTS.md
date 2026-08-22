@@ -102,20 +102,17 @@ directories unless it applies cleanly to both BSP paths and toolchains.
 
 The integration harness resolves fixture paths from
 `RT_THREAD_FIXTURE_CACHE/<target>/<version>/rtthread.elf` (plus
-`rtthread.bin` for RV64) when that cache root is set. Otherwise it uses
-the repo-sibling directory
-`<repo>/../fixture/<target>/<version>/rtthread.elf` (plus
-`rtthread.bin` for RV64), or explicit `GDR_ELF_PATH` /
-`GDR_FIRMWARE_PATH` overrides. Missing tools or fixture artifacts are
-skipped per test via `pytest.skip` (see `tests/support/qemu_harness.py`),
-so partial local caches stay usable.
+`rtthread.bin` for RV64). The default cache root is the CNB host path
+`/workspace/fixture/rtthread`. Explicit `GDR_ELF_PATH` /
+`GDR_FIRMWARE_PATH` overrides still win. Missing tools or fixture artifacts
+are skipped per test via `pytest.skip` (see
+`tests/support/qemu_harness.py`), so partial local caches stay usable.
 
 ```bash
-# Run the Cortex-A9 matrix against a local fixture cache without rebuilding.
-RT_THREAD_FIXTURE_CACHE=/path/to/cache GDR_GDB=gdb-multiarch \
-  bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+# Run the Cortex-A9 matrix against the default CNB fixture cache.
+GDR_GDB=gdb-multiarch bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
 
-# Or point pytest at the same cache layout directly.
+# Or point at another cache root / a single pytest session.
 RT_THREAD_FIXTURE_CACHE=/path/to/cache GDR_GDB=gdb-multiarch \
   GDR_QEMU_TARGET=cortex-a9 GDR_VERSION=4.0.5 \
   uv run pytest tests/integration/rtthread -v
@@ -141,9 +138,8 @@ bash ci/freertos/run-qemu-matrix.sh
 FREERTOS_FIXTURE_CACHE=/path/to/cache bash ci/freertos/run-qemu-matrix.sh
 ```
 
-The cache layout is `<cache>/b-l475e-iot01a/10.3.1/freertos.elf`. Without
-it, pytest falls back to
-`<repo>/../fixture/freertos_b_l475e_iot01a.elf`. The fixture uses the
+The default cache root is `/workspace/fixture/freertos`, with layout
+`<cache>/b-l475e-iot01a/10.3.1/freertos.elf`. The fixture uses the
 Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, not
 the board's unsupported LPTIM. Fixture sources live in
 `ci/freertos/fixture/`; the build is defined in `ci/freertos/build-freertos.sh`.

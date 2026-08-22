@@ -7,8 +7,9 @@ from pathlib import Path
 
 from tests.support.qemu_harness import QemuProfile
 
-_CACHE_ELF = "freertos.elf"
-_SIBLING_ELF = "freertos_b_l475e_iot01a.elf"
+_ELF_NAME = "freertos.elf"
+# Reason: CNB closed-loop hosts keep prebuilt firmware under /workspace/fixture.
+_DEFAULT_FIXTURE_CACHE = Path("/workspace/fixture/freertos")
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -16,17 +17,15 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(value) if value else default
 
 
-def resolve_freertos_fixture_dir(gdr_root: Path, target: str, version: str) -> Path:
+def resolve_freertos_fixture_dir(_gdr_root: Path, target: str, version: str) -> Path:
     """Return the firmware directory for one target/version pair.
 
-    ``FREERTOS_FIXTURE_CACHE`` is a cache root of
-    ``<target>/<version>/freertos.elf``. Without it, profiles fall back to the
-    repo-sibling ``fixture/`` directory.
+    ``FREERTOS_FIXTURE_CACHE`` overrides the CNB default cache root
+    ``/workspace/fixture/freertos``; both layouts are
+    ``<cache>/<target>/<version>/freertos.elf``.
     """
-    cache = os.environ.get("FREERTOS_FIXTURE_CACHE")
-    if cache:
-        return Path(cache) / target / version
-    return gdr_root / ".." / "fixture"
+    cache = Path(os.environ.get("FREERTOS_FIXTURE_CACHE", str(_DEFAULT_FIXTURE_CACHE)))
+    return cache / target / version
 
 
 def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
@@ -36,9 +35,7 @@ def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
     if target != "b-l475e-iot01a":
         raise RuntimeError(f"unknown FreeRTOS QEMU target: {target}")
     fixture_dir = resolve_freertos_fixture_dir(gdr_root, target, version)
-    using_cache = bool(os.environ.get("FREERTOS_FIXTURE_CACHE"))
-    default_elf = fixture_dir / (_CACHE_ELF if using_cache else _SIBLING_ELF)
-    elf_path = _env_path("GDR_ELF_PATH", default_elf)
+    elf_path = _env_path("GDR_ELF_PATH", fixture_dir / _ELF_NAME)
     firmware_path = _env_path("GDR_FIRMWARE_PATH", elf_path)
     return QemuProfile(
         rtos="freertos",

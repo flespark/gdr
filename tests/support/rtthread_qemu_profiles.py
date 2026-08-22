@@ -14,6 +14,8 @@ from tests.support.qemu_harness import QemuProfile
 
 _ELF_NAME = "rtthread.elf"
 _BIN_NAME = "rtthread.bin"
+# Reason: CNB closed-loop hosts keep prebuilt firmware under /workspace/fixture.
+_DEFAULT_FIXTURE_CACHE = Path("/workspace/fixture/rtthread")
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -21,17 +23,15 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(value) if value else default
 
 
-def resolve_rtthread_fixture_dir(gdr_root: Path, target: str, version: str) -> Path:
+def resolve_rtthread_fixture_dir(_gdr_root: Path, target: str, version: str) -> Path:
     """Return the firmware directory for one target/version pair.
 
-    ``RT_THREAD_FIXTURE_CACHE`` is a cache root of
-    ``<target>/<version>/rtthread.elf``. Without it, profiles fall back to the
-    repo-sibling ``fixture/<target>/<version>/`` directory.
+    ``RT_THREAD_FIXTURE_CACHE`` overrides the CNB default cache root
+    ``/workspace/fixture/rtthread``; both layouts are
+    ``<cache>/<target>/<version>/rtthread.elf``.
     """
-    cache = os.environ.get("RT_THREAD_FIXTURE_CACHE")
-    if cache:
-        return Path(cache) / target / version
-    return gdr_root / ".." / "fixture" / target / version
+    cache = Path(os.environ.get("RT_THREAD_FIXTURE_CACHE", str(_DEFAULT_FIXTURE_CACHE)))
+    return cache / target / version
 
 
 def get_rtthread_qemu_profile(gdr_root: Path) -> QemuProfile:
