@@ -12,6 +12,9 @@
 #   RT_THREAD_FIXTURE_CACHE  firmware cache root with
 #                            <target>/<version>/rtthread.elf (and rtthread.bin
 #                            on RV64). When set, compilation is skipped.
+#   RT_THREAD_FIXTURE_COLLECT_DIR  optional host directory for copying freshly
+#                            built fixtures (<target>/<version>/). When unset,
+#                            collection is skipped (normal CI/local test runs).
 #   RT_THREAD_REFS           whitespace-separated version refs when none are
 #                            passed on the command line
 #   RT_THREAD_REPO           upstream git URL used to populate the source cache
@@ -112,6 +115,24 @@ build_fixture() {
     bash "$SCRIPT_DIR/build-rtt.sh" "${build_args[@]}"
 }
 
+# Copy freshly built fixtures into RT_THREAD_FIXTURE_COLLECT_DIR so later runs
+# can reuse them via RT_THREAD_FIXTURE_CACHE and skip compilation. The layout
+# matches the cache convention: <collect>/<target>/<version>/rtthread.elf.
+collect_fixture() {
+    local target="$1" version="$2" elf="$3" firmware="${4:-}"
+    local collect="${RT_THREAD_FIXTURE_COLLECT_DIR:-}"
+    if [[ -z "$collect" ]]; then
+        return 0
+    fi
+    local dst="$collect/$target/$version"
+    mkdir -p "$dst"
+    cp "$elf" "$dst/rtthread.elf"
+    if [[ "$target" == "rv64" && -n "$firmware" ]]; then
+        cp "$firmware" "$dst/rtthread.bin"
+    fi
+    echo "[gdr-ci] fixture collected: $dst/rtthread.elf"
+}
+
 run_rtthread_pytest() {
     local target="$1" version="$2" fixture_cache="${3:-}"
     local elf_path="${4:-}" firmware_path="${5:-}"
@@ -200,6 +221,9 @@ main() {
             firmware_path="$build_dir/$bsp/rtthread.bin"
         fi
         build_fixture "$target" "$ref" "$repo" "$build_dir" "$bsp"
+        if [[ -n "${RT_THREAD_FIXTURE_COLLECT_DIR:-}" ]]; then
+            collect_fixture "$target" "$version" "$elf_path" "$firmware_path"
+        fi
         if should_run_pytest "$target" "$ref"; then
             run_rtthread_pytest "$target" "$version" "" "$elf_path" "$firmware_path"
         fi

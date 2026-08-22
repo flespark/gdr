@@ -27,6 +27,16 @@ fi
 if [[ -n "${RT_THREAD_SOURCE_DIR:-}" ]]; then
     podman_args+=(--volume "$RT_THREAD_SOURCE_DIR:/rt-thread-source:ro")
 fi
+# Collect freshly built fixtures into a host directory (writable, unlike the
+# read-only RT_THREAD_FIXTURE_CACHE). Laid out as <target>/<version>/, matching
+# the cache convention so a later run can set RT_THREAD_FIXTURE_CACHE and skip
+# recompilation.
+if [[ -n "${RT_THREAD_FIXTURE_COLLECT_DIR:-}" ]]; then
+    podman_args+=(
+        --env "RT_THREAD_FIXTURE_COLLECT_DIR=$RT_THREAD_FIXTURE_COLLECT_DIR"
+        --volume "$RT_THREAD_FIXTURE_COLLECT_DIR:$RT_THREAD_FIXTURE_COLLECT_DIR"
+    )
+fi
 if [[ -n "${RT_THREAD_FIXTURE_CACHE:-}" ]]; then
     podman_args+=(
         --env "RT_THREAD_FIXTURE_CACHE=$RT_THREAD_FIXTURE_CACHE"
@@ -40,7 +50,14 @@ if [[ -n "${FREERTOS_FIXTURE_CACHE:-}" ]]; then
     )
 fi
 
-podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" --tag "$IMAGE_TAG" "$ROOT_DIR"
+# Reuse a prebuilt image when GDR_CI_SKIP_BUILD is set: the xPack toolchains
+# (roughly 300MB each) download slowly, and an uncommitted Dockerfile change
+# invalidates the build cache and forces a redownload.
+if [[ -n "${GDR_CI_SKIP_BUILD:-}" ]] && podman image exists "$IMAGE_TAG"; then
+    echo "[gdr-ci] reusing existing image $IMAGE_TAG (GDR_CI_SKIP_BUILD)"
+else
+    podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" --tag "$IMAGE_TAG" "$ROOT_DIR"
+fi
 podman run "${podman_args[@]}" "$IMAGE_TAG" \
     bash -c '
         set -e
