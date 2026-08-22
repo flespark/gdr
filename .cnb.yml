@@ -144,6 +144,7 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
+            - ci/gdr-xpack/
         volumes:
           # Cache RT-Thread tags and per-version Git clones across CI runs.
           # build-rtt.sh removes ignored SCons outputs before every build.
@@ -166,6 +167,7 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
+            - ci/gdr-xpack/
         volumes:
           - /tmp/rt-thread-build:copy-on-write
           - /root/.cache/uv:copy-on-write
@@ -212,6 +214,7 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
+            - ci/gdr-xpack/
         volumes:
           - /tmp/rt-thread-build:copy-on-write
           - /root/.cache/uv:copy-on-write
@@ -231,6 +234,7 @@ main: # branch: main
           dockerfile: ci/Dockerfile
           by:
             - ci/Dockerfile
+            - ci/gdr-xpack/
         volumes:
           - /tmp/rt-thread-build:copy-on-write
           - /root/.cache/uv:copy-on-write
