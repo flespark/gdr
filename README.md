@@ -126,8 +126,8 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 ## Note
 
 GDR insist on data struct **keep align** between code and runtime memory. But there
-maybe bias due to compiler optimization. GDR also extract info from macros in
-code. Fellow debug optimized compilation options is recommend:
+maybe bias due to compiler optimization. GDR also infer RTOS version, component/feature
+enable from macros in ELF DWARF. Fellow debug optimized compilation options is recommend:
 
 ```cmake
 add_compile_options(-O0 -ggdb3)

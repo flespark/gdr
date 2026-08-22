@@ -122,7 +122,8 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 ## 注意
 
 GDR 认为运行时内存中的数据结构和代码是**一致的**，没有考虑经过编译优化产生偏差的情况。
-且部分信息依据代码中的宏定义，所以最好使用如下调试优化的编译选项：
+且 GDR 需要从 ELF DWARF 中的宏定义推断 RTOS 版本，功能/特性的使能，所以编译时最好
+开启如下调试优化选项：
 
 ```cmake
 add_compile_options(-O0 -ggdb3)
