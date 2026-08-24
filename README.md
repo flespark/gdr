@@ -23,7 +23,7 @@ the [Asterinas GDB helper](#acknowledgements):
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | V10.3.1 fixture baseline | Task navigation and adapter-owned `freertos tasks/system` verified on QEMU B-L475E-IOT01A |
+| FreeRTOS | V10.3.0–V11.2.x | Task navigation, pretty-printers, and `freertos tasks/system` verified on QEMU B-L475E-IOT01A (10.3.1 fixture) |
 
 ## Quick start
 

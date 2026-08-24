@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from gdr.gdb_bridge import lookup_symbol, read_int, read_macro_int, warn
+import re
+
+from gdr.gdb_bridge import (
+    lookup_symbol,
+    read_int,
+    read_macro_int,
+    read_macro_text,
+    warn,
+)
 from gdr.version import (
     Version,
     VersionRange,
@@ -12,15 +20,18 @@ from gdr.version import (
     version_in_ranges,
 )
 
-SUPPORTED_RANGES: tuple[VersionRange, ...] = (
-    ((10, 3, 0), (10, 3, 1)),
-    ((10, 5, 0), (10, 6, 2)),
-    ((11, 0, 0), (11, 1, 0)),
-)
-TARGET_VERSION_SYMBOLS = (
-    ("gdr_freertos_version_num", ("decimal", "packed-hex")),
-    ("tskKERNEL_VERSION", ("decimal", "packed-hex")),
-    ("FREERTOS_KERNEL_VERSION", ("decimal", "packed-hex")),
+SUPPORTED_RANGES: tuple[VersionRange, ...] = (((10, 3, 0), (11, 2, 99)),)
+
+# Matches the tskKERNEL_VERSION_NUMBER string macro, e.g. "V10.3.1" or
+# "V11.1.0+": an optional leading V, three decimal components, and an
+# optional trailing '+' (dirty builds).
+_VERSION_STRING_RE = re.compile(r"^V?(\d+)\.(\d+)\.(\d+)\+?$")
+
+# The integer macro triplet that FreeRTOS-Kernel exports (task.h).
+_VERSION_TRIPLET = (
+    "tskKERNEL_VERSION_MAJOR",
+    "tskKERNEL_VERSION_MINOR",
+    "tskKERNEL_VERSION_BUILD",
 )
 
 
@@ -43,16 +54,53 @@ def validate_version(value: str) -> Version:
     return parsed
 
 
+def _macro_triplet() -> Version | None:
+    """Read the tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD integer macros."""
+    components: list[int] = []
+    for name in _VERSION_TRIPLET:
+        value = read_macro_int(name)
+        if value is None:
+            return None
+        components.append(value)
+    return (components[0], components[1], components[2])
+
+
+def _version_number_string() -> Version | None:
+    """Parse the tskKERNEL_VERSION_NUMBER string macro, or ``None``."""
+    text = read_macro_text("tskKERNEL_VERSION_NUMBER")
+    if text is None:
+        return None
+    match = _VERSION_STRING_RE.match(text.strip())
+    if match is None:
+        return None
+    # Reason: groups are guaranteed to be \d+ by the regex, so int() here
+    # cannot raise; the explicit 3-tuple also keeps the Version type.
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
 def detect_target_version() -> Version | None:
-    for expression, encodings in TARGET_VERSION_SYMBOLS:
-        detected = decode_version(
-            read_int(lookup_symbol(expression)) or read_macro_int(expression) or 0,
-            encodings,
-            SUPPORTED_RANGES,
-        )
-        if detected is not None:
-            return detected
-    return None
+    """Best-effort FreeRTOS version detection from exported constants.
+
+    Priority:
+    1. the ``tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD`` integer-macro triplet;
+    2. the ``tskKERNEL_VERSION_NUMBER`` string macro (``"V10.3.1"`` / ``+``);
+    3. the project-injected ``gdr_freertos_version_num`` symbol
+       (decimal or packed-hex encoding).
+
+    The upstream kernel exports no single numeric version symbol, so the
+    ``gdr_freertos_version_num`` fallback exists for builds that link a
+    helper symbol instead of relying on macro debug info.
+    """
+    triplet = _macro_triplet()
+    if triplet is not None:
+        return triplet
+    string_version = _version_number_string()
+    if string_version is not None:
+        return string_version
+    numeric = read_int(lookup_symbol("gdr_freertos_version_num"))
+    if numeric is None:
+        return None
+    return decode_version(numeric, ("decimal", "packed-hex"), SUPPORTED_RANGES)
 
 
 def check_version(value: str) -> Version:

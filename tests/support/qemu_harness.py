@@ -182,6 +182,8 @@ class GdbSession:
         self._gdb_port = gdb_port
         self._gdr_root = gdr_root
         self._proc: pexpect.spawn | None = None
+        self._script_dir = Path(tempfile.mkdtemp(prefix="gdr-gdbpy-"))
+        self._script_seq = 0
         self.source_output = ""
 
     def start(self) -> None:
@@ -226,6 +228,7 @@ class GdbSession:
                 self._proc.expect(pexpect.EOF, timeout=5)
             self._proc.close()
             self._proc = None
+        shutil.rmtree(self._script_dir, ignore_errors=True)
 
     def run(self, command: str, timeout: int = 15) -> str:
         """Run one GDB command and return its output excluding echo and prompt."""
@@ -244,12 +247,19 @@ class GdbSession:
         return "\n".join(self.run(command) for command in commands)
 
     def run_python(self, code: str, timeout: int = 15) -> str:
-        """Execute a multi-line Python block inside GDB."""
+        """Execute a multi-line Python block inside GDB.
+
+        The block is written to a temporary file and sourced instead of being
+        typed into GDB's ``python`` prompt.
+
+        Reason: feeding dozens of lines through the pseudo-terminal deadlocks
+        once the pty buffer fills, because nothing drains GDB's echo while we
+        are still writing (observed on macOS: ``os_write`` blocks forever).
+        Sourcing a file keeps the terminal traffic to a single short line.
+        """
         if self._proc is None:
             raise RuntimeError("GDB session not started")
-        self._proc.sendline("python")
-        for line in code.strip().split("\n"):
-            self._proc.sendline(line)
-        self._proc.sendline("end")
-        self._proc.expect(_GDB_PROMPT, timeout=timeout)
-        return _ANSI_RE.sub("", self._proc.before or "").replace("\r", "")
+        self._script_seq += 1
+        script = self._script_dir / f"block-{self._script_seq}.py"
+        script.write_text(f"{code.strip()}\n", encoding="utf-8")
+        return self.run(f"source {script}", timeout=timeout)

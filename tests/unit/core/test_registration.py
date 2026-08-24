@@ -8,7 +8,7 @@ import gdr.adapter_api as adapter_api
 import gdr.functions as functions
 import gdr.printers as printers
 from gdr.adapter_api import ObjectTable, RtosAdapter
-from gdr.layout import KernelLayout
+from gdr.layout import KernelLayout, StructLayout
 
 
 class _FakeGdb:
@@ -31,6 +31,9 @@ class _Adapter(RtosAdapter):
     def object_table(self, kind):  # noqa: ARG002
         return None
 
+    def object_detail(self, kind, name):  # noqa: ARG002
+        return None
+
     def iter_tasks(self):
         return iter(())
 
@@ -39,6 +42,65 @@ class _Adapter(RtosAdapter):
 
     def system_summary(self):
         raise AssertionError("not called")
+
+
+class _FakeType:
+    """``gdb.Type`` stand-in modelling the alias/qualifier layers.
+
+    A typedef'd or cv-qualified type reports ``tag is None`` in GDB; only the
+    stripped, unqualified type carries the struct tag.  Mirroring that here
+    keeps the stand-in as unfriendly as the real debugger.
+    """
+
+    def __init__(self, tag, stripped=None):
+        self.tag = tag
+        self.name = "Alias_t" if tag is None else None
+        self._stripped = stripped or self
+
+    def strip_typedefs(self):
+        return self._stripped
+
+    def unqualified(self):
+        return self
+
+
+class _FakeValue:
+    """``gdb.Value`` stand-in that only exposes a type."""
+
+    def __init__(self, type_):
+        self.type = type_
+
+
+def test_printer_lookup_folds_values_reached_through_a_typedef():
+    """A typedef'd struct value must still resolve to its layout.
+
+    Users type ``p *some_pointer`` where the pointee is a typedef alias, so
+    ``value.type.tag`` is ``None`` and only the stripped type carries the tag.
+    Reading the tag off the alias layer would silently disable every fold
+    outside an explicit ``struct`` cast.
+    """
+    layout = KernelLayout()
+    layout.structs["struct kernel_object"] = StructLayout(
+        "struct kernel_object", display_name="Object"
+    )
+    lookup = printers._make_lookup_function(layout)
+
+    aliased = _FakeValue(_FakeType(None, _FakeType("kernel_object")))
+    direct = _FakeValue(_FakeType("kernel_object"))
+    unrelated = _FakeValue(_FakeType(None, _FakeType("other_struct")))
+
+    assert lookup(aliased) is not None
+    assert lookup(direct) is not None
+    assert lookup(unrelated) is None
+
+
+def test_printer_lookup_ignores_values_without_a_resolvable_type():
+    """A value whose type cannot be inspected degrades to no printer."""
+    layout = KernelLayout()
+    layout.structs["struct kernel_object"] = StructLayout("struct kernel_object")
+    lookup = printers._make_lookup_function(layout)
+
+    assert lookup(object()) is None
 
 
 def test_register_printers_is_idempotent(monkeypatch):

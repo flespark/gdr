@@ -139,6 +139,53 @@ def test_macro_defined_returns_false_when_gdb_has_no_definition(monkeypatch):
     assert not bridge.macro_defined("ARCH_CPU_STACK_GROWS_UPWARD")
 
 
+class _MacroTextGdb:
+    """GDB stand-in that returns canned ``info macro`` output."""
+
+    class error(Exception):
+        pass
+
+    def __init__(self, output: str):
+        self.command = ""
+        self.output = output
+
+    def execute(self, command: str, *, to_string: bool):
+        assert to_string is True
+        self.command = command
+        return self.output
+
+
+def test_read_macro_text_strips_string_macro_quotes(monkeypatch):
+    """A quoted string macro returns its bare expansion text."""
+    fake = _MacroTextGdb(
+        'Defined at task.h:57\n#define tskKERNEL_VERSION_NUMBER "V11.1.0+"\n'
+    )
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.read_macro_text("tskKERNEL_VERSION_NUMBER") == "V11.1.0+"
+    assert fake.command == "info macro tskKERNEL_VERSION_NUMBER"
+
+
+def test_read_macro_text_returns_numeric_expansion_verbatim(monkeypatch):
+    """An unquoted (numeric) macro expansion is returned without quote logic."""
+    fake = _MacroTextGdb("Defined at task.h:58\n#define tskKERNEL_VERSION_MAJOR 10\n")
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.read_macro_text("tskKERNEL_VERSION_MAJOR") == "10"
+
+
+def test_read_macro_text_rejects_call_syntax_and_missing_macros(monkeypatch):
+    """Non-identifier inputs and undefined macros yield ``None``."""
+    fake = _MacroTextGdb(
+        "The symbol has no definition as a C/C++ preprocessor macro.\n"
+    )
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.read_macro_text("foo()") is None
+    # Missing macro: the output never contains ``#define tskKERNEL_VERSION_NUMBER``.
+    assert bridge.read_macro_text("tskKERNEL_VERSION_NUMBER") is None
+
+
 def test_print_table_writes_complete_table_once(monkeypatch):
     """A table is formatted before one GDB write to avoid row interleaving."""
     fake_gdb = _TableGdb()

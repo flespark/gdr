@@ -60,6 +60,24 @@ def test_freertos_tasks_and_system_commands_navigate_fixture(gdb_session):
     assert "*" in task_array or "0x" in task_array
 
 
+def test_freertos_printers_fold_typedef_spelled_values(gdb_session):
+    """Folds must trigger on the kernel typedefs users actually type.
+
+    ``pxCurrentTCB`` is a ``TCB_t *`` and ``pxReadyTasksLists`` is a
+    ``List_t[]``; a value reached through those aliases reports
+    ``gdb.Type.tag is None``, so matching the alias layer would leave every
+    fold dead outside an explicit ``struct`` cast.
+    """
+    task = gdb_session.run("p *pxCurrentTCB", timeout=20)
+    ready = gdb_session.run("p pxReadyTasksLists[0]", timeout=20)
+    item = gdb_session.run("p pxCurrentTCB->xStateListItem", timeout=20)
+
+    assert "Task(" in task, task
+    assert 'name="IDLE"' in task, task
+    assert "List(count=" in ready, ready
+    assert "ListItem(" in item, item
+
+
 def test_freertos_unknown_task_degrades_to_null(gdb_session):
     """A missing task name returns a null value without raw Python noise."""
     output = gdb_session.run('p $gdr_task("no_such_task")')

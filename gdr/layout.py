@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
 
 from .constants import GDR_MAX_TRAVERSAL_COUNT
 from .gdb_bridge import lookup_symbol, warn
@@ -41,6 +42,26 @@ else:
 # ---------------------------------------------------------------------------
 # Dataclasses (pure Python, no GDB needed)
 # ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class SupportsStructs(Protocol):
+    """Structural protocol for any adapter layout exposing a struct map.
+
+    ``KernelLayout`` and the adapter layouts produced by the RTOS packages
+    both satisfy this protocol structurally: they expose a ``structs``
+    mapping from GDB type name to :class:`StructLayout`. Pretty-printer
+    registration accepts this protocol (instead of the concrete
+    :class:`KernelLayout`) so the neutral printer can fold adapter structs
+    without those layouts inheriting from ``KernelLayout``.
+
+    ``@runtime_checkable`` stays meaningful here because ``register_printers``
+    is called from adapter setup code that runs inside GDB; a structural
+    ``isinstance`` check gives a clear diagnostic if a layout ever loses its
+    ``structs`` attribute.
+    """
+
+    structs: dict[str, StructLayout]
 
 
 @dataclass

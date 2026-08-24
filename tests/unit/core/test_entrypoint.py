@@ -140,6 +140,9 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
         lambda _layout: events.append("adapter") or adapter_instance,
     )
     monkeypatch.setattr(
+        entrypoint, "register_printers", lambda _layout: events.append("printers")
+    )
+    monkeypatch.setattr(
         "gdr.functions.register_functions", lambda: events.append("functions")
     )
     monkeypatch.setattr(
@@ -151,6 +154,7 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
 
     assert events == [
         "adapter",
+        "printers",
         "functions",
         "commands",
         ("active", adapter_instance),

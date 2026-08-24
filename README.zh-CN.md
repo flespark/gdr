@@ -22,7 +22,7 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 | RTOS | 版本 | 状态 |
 |------|------|------|
 | RT-Thread | 3.1.x、4.0.x、4.1.x | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起 |
-| FreeRTOS | V10.3.1 fixture 基线 | 任务导航及 adapter 自有的 `freertos tasks/system` 已在 QEMU B-L475E-IOT01A 验证 |
+| FreeRTOS | V10.3.0–V11.2.x | 任务导航、pretty-printer 及 `freertos tasks/system` 已在 QEMU B-L475E-IOT01A 验证（10.3.1 fixture） |
 
 ## 快速开始
 

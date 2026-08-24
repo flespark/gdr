@@ -33,7 +33,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `gdb_bridge.py` | Wraps GDB registration, identifier-only symbol lookup, memory/type access, terminal probing, output and error guards. Inferior function evaluation is not used. |
 | `constants.py` / `formatting.py` | Shared traversal/presentation defaults and pure optional/address/symbol/table formatting. Formatting has no GDB dependency. |
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). It interprets adapter-supplied paths but contains no target type names, symbols, or list conventions. |
-| `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. |
+| `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. Type matching uses `strip_typedefs().unqualified().tag` so that typedef-spelled and cv-qualified values resolve to their underlying struct tag. |
 | `version.py` | RTOS-neutral version parsing, range checks, formatting and declared decimal/packed-hex decoding. |
 | `adapter_api.py` | `RtosAdapter`, `ObjectTable`, `ObjectDetail`, `SystemSummary`, and the single active adapter selected by `gdr init`. |
 | `commands.py` / `functions.py` | Generic output coordination and raw-value convenience functions; task columns and object vocabulary remain adapter-owned. |
@@ -53,11 +53,12 @@ duplicating what `rust-gdb` / `gdb` already display well.
 
 | Module | Responsibility |
 |--------|---------------|
-| `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. |
+| `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. Version detection relies on `-g3` macro debug info and is subject to CU scope limitations (see known constraints below). |
 | `navigation.py` | Pure scheduler-list and current-task traversal functions. List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
 | `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, and system summary. |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
-| `commands.py` | The `freertos` / `frt` task and system command tree. Queue/timer object commands are not currently implemented. |
+| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). Object kinds other than `task` currently report "not reliably enumerable"; `heap` is a placeholder. |
+| `details.py` | FreeRTOS `frt task <name>` vertical detail rendering (per-TCB state, high-water mark, notification slots, wake tick, blocked-on). |
 
 ## Key decisions
 
@@ -293,8 +294,8 @@ creates known objects and assert, where an adapter implementation exists:
 
 The FreeRTOS B-L475E-IOT01A fixture asserts ready-marker delivery, retained
 DWARF for kernel structures, the 32-bit ABI, persistent GDB, scheduler-list
-navigation, current-task marking, and system counters. Pretty-printers and
-queue/timer object commands are not current FreeRTOS adapter capabilities.
+navigation, current-task marking, system counters, and pretty-printer fold
+for typedef-spelled kernel objects (Task/List/Queue).
 
 ### Test infrastructure
 
@@ -358,3 +359,59 @@ cover the pre-`Null` object enum, the enum/`rt_semaphore` transition, and the
 final 3.1 layout. The remaining 3.1 tags retain build coverage for their exact
 Cortex-A9 fixtures. Upstream has no QEMU RV64 BSP for 3.1.x, so that range is
 Cortex-A9 only.
+
+### Known constraints
+
+**FreeRTOS version detection depends on `-g3` macro debug info and CU scope.**
+The `detect_target_version()` function reads `tskKERNEL_VERSION_NUMBER` via
+`info macro`, which only resolves macros visible in the current compilation
+unit context. When GDB halts in a non-kernel CU (HAL code, ISR handler,
+assembly startup), the macro is not visible and detection degrades to a
+warning ("target FreeRTOS version is not exported"). The version mismatch
+check is then skipped but initialization proceeds normally. This is a known
+limitation tracked for future improvement.
+
+**FreeRTOS fixture coverage is single-configuration.** The current closed-loop
+fixture covers only one combination: single-core / Cortex-M4F / heap_4 /
+trace_facility=on / FreeRTOS 10.3.1 / `configENABLE_BACKWARD_COMPATIBILITY=1`
+(member name `pvContainer`) / no `pxEndOfStack` (`configRECORD_STACK_HIGH_ADDRESS=0`) /
+scalar `ucNotifyState` (pre-V10.4.0) / no runtime statistics / `configMAX_PRIORITIES=6`
+with only priority 0 having a ready task / stack grows down.
+
+Consequences of this single-configuration coverage:
+
+- Default builds use `pvContainer` (not `pxContainer`); code must probe the
+  spelling by member existence (`cfg.list_item_container_field`).
+- Without `pxEndOfStack`, `Stack`/`Used` columns show N/A; high-water mark
+  uses the `[pxStack, pxTopOfStack)` fallback window.
+- Scalar notification shape means array-indexed access is only unit-tested.
+- No runtime statistics columns means HighWater header alignment bugs can pass
+  undetected in the fixture (Phase 1 caught and fixed this via unit tests).
+- Only priority 0 has ready tasks, so `list_count("ready")` summing all
+  priorities cannot be validated by the fixture alone (Phase 1 caught and
+  fixed the single-element bug via unit tests).
+
+Config probes for SMP, other heap implementations, stream buffers, event
+groups, and V11.x-specific fields are unit-tested with mock stubs but have
+not been validated against real DWARF. Any subsequent Phase that consumes
+these probes must first add the corresponding firmware fixture.
+
+**FreeRTOS does not provide an `Entry` column.** The FreeRTOS TCB
+(`tskTaskControlBlock`) does not store the task entry function pointer after
+task creation; it exists only transiently on the initial stack frame and is
+overwritten on first context switch. This is a fundamental difference from
+RT-Thread's `rt_thread.entry`, which persists in the TCB. The `frt help`
+output documents this limitation.
+
+**FreeRTOS high-water mark semantics.** The `HighWater` column reports the
+number of `StackType_t` words that have never been overwritten (matching
+`uxTaskGetStackHighWaterMark` semantics). `unavailable` means either the stack
+was never filled with `0xa5` or the distinction between "unfilled" and
+"completely exhausted" cannot be made without an independent evidence source.
+The scan window is `[pxStack, pxTopOfStack)` (no `pxEndOfStack` required).
+
+**Queue `type` field is gated by `trace_facility`.** The `ucQueueType` member
+only exists under `configUSE_TRACE_FACILITY == 1`. Layout summary fields that
+reference config-conditional struct members must be gated by the corresponding
+`FreeRtosConfig` flag; unconditional inclusion produces `N/A` on builds where
+the member is absent.

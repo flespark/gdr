@@ -6,7 +6,47 @@ All notable changes to GDR are documented in this file.
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- FreeRTOS pretty-printers: `p *pxCurrentTCB` now folds to
+  `Task(current_priority=0, name="IDLE", base_priority=0)`, with similar
+  folds for `List(...)`, `Queue(...)`, `Timer(...)`, `EventGroup(...)`,
+  `StreamBuffer(...)`, and `ListItem(...)`.
+- FreeRTOS config probing: 14 new capability fields (`heap_kind`,
+  `max_priorities`, `queue_registry_size`, `mpu_object_pool`,
+  `list_integrity_check`, `event_groups`, `stream_buffers`,
+  `stream_buffer_notification_index`, `queue_sets`, `task_attributes`,
+  `preemption_disable`, `critical_nesting_in_tcb`, `posix_errno`,
+  `delay_abort`, `heap_protector`).
+- RTOS-neutral `read_macro_text(name)` bridge primitive for reading GDB
+  macro text without CU-specific assumptions.
+
+### Changed
+
+- FreeRTOS supported version range is now continuous `(10,3,0)-(11,2,99)`;
+  previously rejected versions such as 10.4.x, 10.7+, and 11.2.x are now
+  accepted.
+- Pretty-printer type matching now resolves typedef and cv-qualified values
+  to their underlying struct tag (`strip_typedefs().unqualified().tag`),
+  fixing fold for all FreeRTOS kernel objects which are typedef-spelled.
+
+### Fixed
+
+- StreamBuffer summary field path corrected from `uxLength` (Queue member)
+  to `xLength` (actual `StreamBufferDef_t` member).
+- Queue `type` summary field is now gated by `cfg.trace_facility`; builds
+  with `configUSE_TRACE_FACILITY=0` no longer show `type=N/A`.
+- `_array_bound` treats zero or negative DWARF range as unknown (`None`)
+  instead of writing `0` into `number_of_cores` / `max_priorities`.
+- FreeRTOS boundary regex in `test_boundary.py` tightened to catch long
+  identifiers (`tsk[A-Za-z0-9_]+`).
+
+### Removed
+
+- `FreeRtosTask.entry` field and `struct xTASK_STATUS` layout (zero
+  consumers; FreeRTOS TCB does not store entry function).
+- `mpu_wrapper_v2` config field (replaced by `mpu_object_pool` with correct
+  semantics).
 
 ## [2026.02] - 2026-08-22
 

@@ -36,7 +36,6 @@ class FreeRtosTask:
     stack_used: int | None = None
     high_water_mark: int | None = None
     runtime_counter: int | None = None
-    entry: int = 0
     core: int | None = None
     core_affinity: int | None = None
 
@@ -55,7 +54,6 @@ def value_to_task(
     size = end - base if end and base and end >= base else None
     high = None
     runtime = read_int(read_field(value, sl, "runtime_counter"))
-    entry = _ptr(read_field(value, sl, "entry"))
     return FreeRtosTask(
         name=read_cstring(read_field(value, sl, "name")) or "",
         address=value_address(value),
@@ -69,7 +67,6 @@ def value_to_task(
         stack_used=(end - top if end and top and end >= top else None),
         high_water_mark=high,
         runtime_counter=runtime,
-        entry=entry,
         core=core,
         core_affinity=read_int(read_field(value, sl, "core_affinity")),
     )

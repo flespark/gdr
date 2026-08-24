@@ -183,6 +183,7 @@ def _setup_freertos(version: str) -> None:
     layout = build_layout(cfg, target_version)
     info(f"  layout: {len(layout.structs)} structs")
     adapter = FreeRtosAdapter(layout)
+    register_printers(layout)
     register_functions()
     register_commands()
     register(adapter)

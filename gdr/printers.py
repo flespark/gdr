@@ -20,9 +20,33 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.gdb_bridge import lookup_symbol_at, read_cstring, read_int
-from gdr.layout import KernelLayout, StructField, StructLayout, read_field, read_path
+from gdr.layout import StructField, StructLayout, SupportsStructs, read_field, read_path
 
 _PRINTER_MARKER = "_gdr_layout_printer"
+
+# Errors a type inspection may raise while resolving a value's struct tag.
+# Module scope keeps the tuple computable outside GDB (where ``gdb`` is None).
+if gdb is not None:
+    _TYPE_ERRORS = (gdb.error, AttributeError, TypeError)
+else:
+    _TYPE_ERRORS = (AttributeError, TypeError)
+
+
+def _struct_tag(value) -> str | None:
+    """Return the underlying struct tag of a ``gdb.Value``, or ``None``.
+
+    Kernel APIs hand out struct values through typedef aliases, and a
+    typedef'd or cv-qualified ``gdb.Type`` reports ``tag is None`` even
+    though the value is a struct.  Resolving the tag through
+    ``strip_typedefs().unqualified()`` makes the fold trigger on the
+    spellings users actually type (``p *some_current_pointer``), not only on
+    an explicit ``struct`` cast.
+    """
+    try:
+        basic = value.type.strip_typedefs()
+        return basic.unqualified().tag
+    except _TYPE_ERRORS:
+        return None
 
 
 def _format_field(value, field: StructField) -> str:
@@ -133,7 +157,7 @@ class LayoutPrinter:
         """
 
 
-def _make_lookup_function(kl: KernelLayout):
+def _make_lookup_function(kl: SupportsStructs):
     """Create a pretty-printer lookup function for GDB.
 
     The returned function is registered with ``gdb.pretty_printers``.  GDB
@@ -150,10 +174,7 @@ def _make_lookup_function(kl: KernelLayout):
             type_map[tag] = layout
 
     def lookup_function(val: gdb.Value) -> LayoutPrinter | None:
-        try:
-            type_tag = val.type.tag
-        except AttributeError:
-            return None
+        type_tag = _struct_tag(val)
         if type_tag is None:
             return None
         layout = type_map.get(type_tag)
@@ -164,11 +185,12 @@ def _make_lookup_function(kl: KernelLayout):
     return lookup_function
 
 
-def register_printers(kl: KernelLayout) -> None:
+def register_printers(kl: SupportsStructs) -> None:
     """Register layout-driven pretty-printers with GDB once.
 
     Args:
-        kl: Kernel layout with struct descriptions.
+        kl: Layout exposing a ``structs`` map; satisfies
+            :class:`SupportsStructs`.
     """
     if gdb is None:
         raise RuntimeError("not running inside GDB")

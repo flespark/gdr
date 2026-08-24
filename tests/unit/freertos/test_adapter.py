@@ -11,7 +11,6 @@ def test_value_to_task_preserves_the_complete_intermediate_model(monkeypatch):
     config = FreeRtosConfig(
         smp=True,
         stack_end_field="pxEndOfStack",
-        entry_field="pxTaskTag",
         tcb_fields=frozenset(
             {
                 "uxBasePriority",
@@ -31,7 +30,6 @@ def test_value_to_task_preserves_the_complete_intermediate_model(monkeypatch):
         "current_priority": 4,
         "base_priority": 3,
         "runtime_counter": 0,
-        "entry": 0x5000,
         "core_affinity": 3,
     }
     monkeypatch.setattr(
@@ -58,7 +56,6 @@ def test_value_to_task_preserves_the_complete_intermediate_model(monkeypatch):
         stack_used=0x80,
         high_water_mark=None,
         runtime_counter=0,
-        entry=0x5000,
         core=0,
         core_affinity=3,
     )

@@ -215,6 +215,36 @@ def macro_defined(name: str) -> bool:
     return "#define" in output
 
 
+def read_macro_text(name: str) -> str | None:
+    """Read a preprocessor macro's expansion text, or ``None``.
+
+    Parses GDB's ``info macro NAME`` output. Returns the raw expansion with
+    surrounding double quotes stripped, so a string-valued macro (which
+    ``info macro`` prints as a quoted literal, ``#define NAME "text"``) yields
+    the bare text a caller can parse. ``None`` when the macro is not defined
+    in the current source context or *name* is not a plain identifier.
+    """
+    if not is_plain_identifier(name):
+        return None
+    _ensure_gdb()
+    try:
+        output = gdb.execute(f"info macro {name}", to_string=True)
+    except gdb.error:
+        return None
+    marker = f"#define {name}"
+    for line in output.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith(marker):
+            continue
+        expansion = stripped[len(marker) :].strip()
+        # Reason: string-valued macros print as a quoted literal; strip the
+        # outer quotes so callers get bare text to parse.
+        if len(expansion) >= 2 and expansion[0] == '"' and expansion[-1] == '"':
+            return expansion[1:-1]
+        return expansion
+    return None
+
+
 def symbol_exists(name: str) -> bool:
     """Return whether a DWARF/ELF symbol named *name* is visible.
 
