@@ -51,7 +51,7 @@ class FreeRtosTask:
     runtime_counter: int | None = None
     core: int | None = None
     core_affinity: int | None = None
-    # Phase 1 detail-only fields (frt task <name>); absent members stay None.
+    # Detail-only fields for ``frt task <name>``; absent members stay None.
     mutexes_held: int | None = None
     wake_tick: int | None = None
     blocked_on: str | None = None
@@ -90,18 +90,17 @@ def _stack_type_size() -> int:
     return arch.ptrsize if arch is not None else 4
 
 
-def _count_fill(stack: bytes, from_high_end: bool) -> int:
-    """Count leading (or trailing) ``tskSTACK_FILL_BYTE`` bytes."""
-    order = reversed(stack) if from_high_end else stack
+def _count_fill(stack: bytes) -> int:
+    """Count leading ``tskSTACK_FILL_BYTE`` bytes from the low end."""
     count = 0
-    for byte in order:
+    for byte in stack:
         if byte != 0xA5:
             break
         count += 1
     return count
 
 
-def _high_water_mark(stack: bytes | None, layout: FreeRtosLayout) -> int | None:
+def _high_water_mark(stack: bytes | None) -> int | None:
     """Count untouched ``0xa5`` fill bytes at the low end of a stack.
 
     Stacks are prefilled with ``tskSTACK_FILL_BYTE`` (0xa5) under the
@@ -112,12 +111,12 @@ def _high_water_mark(stack: bytes | None, layout: FreeRtosLayout) -> int | None:
     """
     if stack is None or not stack:
         return None
-    # Reason: on grow-up stacks the untouched fill sits at the high end.
-    from_high_end = bool(layout.config.stack_grows_up)
-    edge = stack[-1] if from_high_end else stack[0]
-    if edge != 0xA5:
+    # Reason: only grow-down stacks are supported. The sole upstream
+    # portSTACK_GROWTH=+1 port is SDCC/Cygnal 8051, which has no GCC toolchain
+    # and no QEMU machine, so the untouched fill always sits at the low end.
+    if stack[0] != 0xA5:
         return None
-    return _count_fill(stack, from_high_end) // _stack_type_size()
+    return _count_fill(stack) // _stack_type_size()
 
 
 def _read_notifications(
@@ -170,7 +169,7 @@ def value_to_task(
         # in the startup window -- which is exactly the direction a debugger
         # must prefer over a fabricated larger number.
         raw = read_bytes(water_base, water_size)
-        high = _high_water_mark(raw, layout)
+        high = _high_water_mark(raw)
     state_item = read_field(value, sl, "state_list_item")
     wake_tick = None
     if state_item is not None:
@@ -255,14 +254,14 @@ class FreeRtosAdapter(RtosAdapter):
         return None
 
     def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
-        """Return one object's detail; only ``task`` is enumerable in Phase 1."""
+        """Return one object's detail; only ``task`` is enumerable so far."""
         if kind.strip().lower() == "task":
             value = find_task(name, self.layout)
             if value is None:
                 return ObjectDetail(found=False)
             task = value_to_task(value, *task_state(value, self.layout), self.layout)
             return ObjectDetail(pairs=task_detail(task, self.layout))
-        return None  # queue/timer/etc detail arrives with later phases
+        return None  # queue/timer/etc detail needs the object discovery channels
 
     def iter_tasks(self):
         for value, _state, _core in iter_tasks(self.layout):
@@ -372,5 +371,9 @@ class FreeRtosAdapter(RtosAdapter):
                 name: value for name, value in counts.items() if value is not None
             },
             object_counts={"task": len(tasks)},
-            heap_allocator=None,
+            heap_allocator=(
+                f"heap_{self.layout.config.heap_kind}"
+                if self.layout.config.heap_kind is not None
+                else None
+            ),
         )

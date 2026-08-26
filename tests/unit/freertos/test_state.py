@@ -270,6 +270,31 @@ def test_smp_run_state_minus1_on_ready_list_is_ready(monkeypatch):
     )
 
 
+def test_smp_run_state_minus2_without_core_falls_through_to_blocked(monkeypatch):
+    """-2 with no pxCurrentTCBs match must not invent Ready.
+
+    The task still occupies a delayed list, so Step 3 reports Blocked.
+    """
+    assert _task_state(
+        monkeypatch,
+        smp=True,
+        run_state=-2,
+        current_tcbs=_Array([]),
+        state_container=DELAYED,
+    ) == ("Blocked", None)
+
+
+def test_smp_run_state_minus2_without_core_defaults_to_ready(monkeypatch):
+    """-2 with no core and no other list match falls through to Ready."""
+    assert _task_state(
+        monkeypatch,
+        smp=True,
+        run_state=-2,
+        current_tcbs=_Array([]),
+        state_container=0x777,
+    ) == ("Ready", None)
+
+
 # --- core_of back-reference --------------------------------------------------
 
 

@@ -87,6 +87,19 @@ def test_iter_list_stops_on_invalid_pointer(monkeypatch):
     assert warnings == ["FreeRTOS list traversal stopped at invalid node 0x1"]
 
 
+def test_iter_list_stops_on_out_of_range_node(monkeypatch):
+    """A next pointer outside every mapped section ends the walk."""
+    layout, head, _task, _calls = _list_walk(monkeypatch, [_Pointer(1)])
+    warnings: list[str] = []
+    monkeypatch.setattr(navigation, "warn", warnings.append)
+    monkeypatch.setattr(
+        navigation, "_mapped_ranges", lambda: ((0x20000000, 0x20010000),)
+    )
+
+    assert list(navigation._iter_list(head, layout)) == []
+    assert warnings == ["FreeRTOS list traversal stopped at out-of-range node 0x1"]
+
+
 def test_iter_list_warns_when_truncated(monkeypatch):
     layout, head, task, _calls = _list_walk(monkeypatch, [_Pointer(1), _Pointer(2)])
     warnings: list[str] = []

@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+try:
+    import gdb
+except ImportError:
+    gdb = None  # type: ignore[assignment]
+
 from freertos.layout import FreeRtosLayout
 from gdr.formatting import format_address, format_optional_int
 from gdr.gdb_bridge import lookup_symbol, read_int
@@ -23,15 +28,37 @@ def _notify_state_name(state: int) -> str:
     return _NOTIFY_STATE_NAMES.get(state, str(state))
 
 
-def _runtime_percent(task: FreeRtosTask) -> str | None:
-    """Return the task's share of total runtime, or ``None`` when unknown.
+def _sum_runtime_counter(value, layout: FreeRtosLayout) -> int | None:
+    """Sum ``ulTotalRunTime``, which is a scalar on V10 and an array on V11.
 
-    Phase 1 reads the scalar ``ulTotalRunTime`` (V10; V11 SMP turns it into an
-    array, tracked as a Phase-2 lane concern).
+    Reason: V11 declares ``ulTotalRunTime[configNUMBER_OF_CORES]`` on every
+    build, including uniprocessor (``[1]``). ``int()`` on an array gdb.Value
+    raises TypeError, so a scalar-only read would silently hide Runtime%.
     """
+    try:
+        typ = value.type.strip_typedefs()
+        if gdb is not None and typ.code == gdb.TYPE_CODE_ARRAY:
+            total = 0
+            any_value = False
+            for index in range(max(layout.config.number_of_cores, 1)):
+                item = read_int(value[index])
+                if item is not None:
+                    any_value = True
+                    total += item
+            return total if any_value else None
+    except (TypeError, ValueError, AttributeError, IndexError):
+        pass
+    return read_int(value)
+
+
+def _runtime_percent(task: FreeRtosTask, layout: FreeRtosLayout) -> str | None:
+    """Return the task's share of total runtime, or ``None`` when unknown."""
     if task.runtime_counter is None:
         return None
-    total = read_int(lookup_symbol("ulTotalRunTime"))
+    total_sym = lookup_symbol("ulTotalRunTime")
+    if total_sym is None:
+        return None
+    total = _sum_runtime_counter(total_sym, layout)
     if total is None or total <= 0:
         return None
     return f"{100.0 * task.runtime_counter / total:.1f}%"
@@ -40,10 +67,10 @@ def _runtime_percent(task: FreeRtosTask) -> str | None:
 def task_detail(task: FreeRtosTask, layout: FreeRtosLayout) -> list[tuple[str, str]]:
     """Build vertical ``(key, value)`` pairs for ``frt task <name>``.
 
-    Key order is the Phase 1 contract; config-conditional fields appear only
-    when the corresponding TCB member exists in DWARF. ``WakeTick`` is only
-    meaningful while blocked, ``BlockedOn`` is a Phase 1 placeholder (waiter
-    host resolution arrives with object discovery).
+    Key order is a stable output contract; config-conditional fields appear
+    only when the corresponding TCB member exists in DWARF. ``WakeTick`` is
+    only meaningful while blocked, and ``BlockedOn`` is still a placeholder
+    (resolving the waiter host needs the object discovery channels).
     """
     tcb_layout = layout.structs["struct tskTaskControlBlock"]
     fields = tcb_layout.fields
@@ -83,7 +110,7 @@ def task_detail(task: FreeRtosTask, layout: FreeRtosLayout) -> list[tuple[str, s
             pairs.append((f"Notify[{index}]", f"{value}/{_notify_state_name(state)}"))
     if "runtime_counter" in fields:
         pairs.append(("Runtime", format_optional_int(task.runtime_counter)))
-        percent = _runtime_percent(task)
+        percent = _runtime_percent(task, layout)
         if percent is not None:
             pairs.append(("Runtime%", percent))
     if "core_affinity" in fields:

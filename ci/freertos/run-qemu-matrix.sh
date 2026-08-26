@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Build and run the FreeRTOS QEMU closed-loop smoke test.
+# Build and run FreeRTOS QEMU closed-loop tests for one or more variants.
 #
 # Usage:
-#   run-qemu-matrix.sh
+#   run-qemu-matrix.sh [<target>] [<version>] [<variant>...]
 #
 # Optional environment (caller configuration, not internal plumbing):
 #   FREERTOS_FIXTURE_CACHE   firmware cache root with
-#                            <target>/<version>/freertos.elf. When set,
-#                            compilation is skipped.
+#                            <target>/<version>/<variant>/freertos.elf.
+#                            Default: ~/Project/gdr-fixture/freertos.
+#                            A cached fixture is reused; missing ones are built
+#                            and then installed into this cache.
+#   GDR_FORCE_BUILD=1        rebuild even when the cached fixture exists
+#   FREERTOS_KERNEL_DIR      local FreeRTOS-Kernel checkout for non-CubeL4 lanes
 #   RTOS_TOOLCHAIN_PATH      compiler bin directory (or XPACK_ARM_TOOLCHAIN_PATH)
 #   GDR_GDB                  GDB binary for the closed-loop tests
 set -euo pipefail
@@ -16,9 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULT_TARGET="b-l475e-iot01a"
 DEFAULT_VERSION="10.3.1"
+DEFAULT_VARIANT="base"
 DEFAULT_BUILD_DIR="/tmp/gdr-freertos-build"
-DEFAULT_ELF_NAME="freertos_b_l475e_iot01a.elf"
-DEFAULT_BIN_NAME="freertos_b_l475e_iot01a.bin"
+DEFAULT_CACHE_ROOT="$HOME/Project/gdr-fixture/freertos"
 
 die() {
     echo "[gdr-ci] FAILED: $*" >&2
@@ -26,60 +30,131 @@ die() {
 }
 
 log_matrix_entry() {
-    echo "[gdr-ci] freertos/$1/$2: $3"
+    echo "[gdr-ci] freertos/$1/$2/$3: $4"
+}
+
+is_cube_lane() {
+    [[ "$1" == "b-l475e-iot01a" ]]
+}
+
+kernel_tag_for_version() {
+    case "$1" in
+    10.3.1) echo "V10.3.1-kernel-only" ;;
+    10.4.*) echo "V10.4.6" ;;
+    10.5.*) echo "V10.5.1" ;;
+    11.1.*) echo "V11.1.0" ;;
+    *) echo "V$1" ;;
+    esac
+}
+
+qemu_machine_for_target() {
+    case "$1" in
+    b-l475e-iot01a) echo "b-l475e-iot01a" ;;
+    mps2-an385) echo "mps2-an385" ;;
+    *) die "unknown FreeRTOS QEMU target: $1" ;;
+    esac
+}
+
+run_pytest() {
+    local target="$1" version="$2" variant="$3"
+    local -a runner
+    runner=(
+        env -u GDR_ELF_PATH -u GDR_FIRMWARE_PATH
+        "GDR_RTOS=freertos"
+        "GDR_QEMU_TARGET=$target"
+        "GDR_VERSION=$version"
+        "GDR_FIXTURE_VARIANT=$variant"
+        "GDR_GDB=$GDR_GDB"
+        "GDR_QEMU_MACHINE=$(qemu_machine_for_target "$target")"
+    )
+    if [[ -n "${CACHE_ROOT:-}" ]]; then
+        runner+=("FREERTOS_FIXTURE_CACHE=$CACHE_ROOT")
+    fi
+    if [[ -n "${GDR_ELF_OVERRIDE:-}" ]]; then
+        runner+=("GDR_ELF_PATH=$GDR_ELF_OVERRIDE" "GDR_FIRMWARE_PATH=$GDR_ELF_OVERRIDE")
+    fi
+    log_matrix_entry "$target" "$version" "$variant" "pytest"
+    (cd "$REPO_ROOT" && "${runner[@]}" uv run pytest tests/integration/freertos -v --tb=short)
+}
+
+build_one() {
+    local target="$1" version="$2" variant="$3"
+    local build_dir="$DEFAULT_BUILD_DIR/$target/$version/$variant"
+    local cache_dir="$CACHE_ROOT/$target/$version/$variant"
+    local elf_path="$build_dir/freertos.elf"
+    local bin_path="$build_dir/freertos.bin"
+    local toolchain_path="${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:-}}"
+    local -a build_args
+    mkdir -p "$build_dir"
+    if is_cube_lane "$target"; then
+        build_args=(
+            --variant "$variant"
+            --build-dir "$build_dir"
+            --out-elf "$elf_path"
+            --out-bin "$bin_path"
+            --cache-dir "$cache_dir"
+        )
+        if [[ -n "$toolchain_path" ]]; then
+            build_args+=(--toolchain-path "$toolchain_path")
+        fi
+        log_matrix_entry "$target" "$version" "$variant" "building CubeL4 fixture"
+        bash "$SCRIPT_DIR/build-fixture-cubel4.sh" "${build_args[@]}"
+    else
+        build_args=(
+            --tag "$(kernel_tag_for_version "$version")"
+            --target "$target"
+            --variant "$variant"
+            --version "$version"
+            --build-dir "$build_dir"
+            --out-elf "$elf_path"
+            --out-bin "$bin_path"
+            --cache-dir "$cache_dir"
+        )
+        # Reason: only an explicitly configured checkout is trusted; the build
+        # script clones the tag itself otherwise, so no developer-specific path
+        # is baked into the lane.
+        if [[ -d "${FREERTOS_KERNEL_DIR:-}" ]]; then
+            build_args+=(--kernel-dir "$FREERTOS_KERNEL_DIR")
+        fi
+        if [[ -n "$toolchain_path" ]]; then
+            build_args+=(--toolchain-path "$toolchain_path")
+        fi
+        log_matrix_entry "$target" "$version" "$variant" "building kernel fixture"
+        bash "$SCRIPT_DIR/build-fixture-kernel.sh" "${build_args[@]}"
+    fi
+    GDR_ELF_OVERRIDE="$cache_dir/freertos.elf" run_pytest "$target" "$version" "$variant"
 }
 
 main() {
-    local fixture_cache="${FREERTOS_FIXTURE_CACHE:-}"
-    local target="$DEFAULT_TARGET"
-    local version="$DEFAULT_VERSION"
-    local build_dir="$DEFAULT_BUILD_DIR"
-    local elf_path="$build_dir/$DEFAULT_ELF_NAME"
-    local bin_path="$build_dir/$DEFAULT_BIN_NAME"
-    local toolchain_path="${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:-}}"
-    local fixture_dir
-    local -a build_args runner
+    local target="${1:-$DEFAULT_TARGET}"
+    local version="${2:-$DEFAULT_VERSION}"
+    shift $(($# >= 1 ? 1 : 0)) || true
+    shift $(($# >= 1 ? 1 : 0)) || true
+    local -a variants
+    if [[ $# -gt 0 ]]; then
+        variants=("$@")
+    else
+        variants=("$DEFAULT_VARIANT")
+    fi
 
     export GDR_GDB="${GDR_GDB:-gdb-multiarch}"
     bash "$REPO_ROOT/ci/check-gdb-python.sh"
     export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/gdr-venv}"
     uv sync --group dev
 
-    if [[ -n "$fixture_cache" ]]; then
-        fixture_dir="$fixture_cache/$target/$version"
-        [[ -f "$fixture_dir/freertos.elf" ]] || \
-            die "cached fixture missing: $fixture_dir/freertos.elf"
-        log_matrix_entry "$target" "$version" "pytest"
-        runner=(
-            env -u GDR_ELF_PATH -u GDR_FIRMWARE_PATH
-            "GDR_RTOS=freertos"
-            "GDR_QEMU_TARGET=$target"
-            "GDR_VERSION=$version"
-            "GDR_GDB=$GDR_GDB"
-            "FREERTOS_FIXTURE_CACHE=$fixture_cache"
-        )
-        (cd "$REPO_ROOT" && "${runner[@]}" uv run pytest tests/integration/freertos -v --tb=short)
-        return
-    fi
+    CACHE_ROOT="${FREERTOS_FIXTURE_CACHE:-$DEFAULT_CACHE_ROOT}"
+    echo "[gdr-ci] fixture cache: $CACHE_ROOT"
 
-    build_args=(--build-dir "$build_dir" --out-elf "$elf_path" --out-bin "$bin_path")
-    if [[ -n "$toolchain_path" ]]; then
-        build_args+=(--toolchain-path "$toolchain_path")
-    fi
-    log_matrix_entry "$target" "$version" "building fixture"
-    bash "$SCRIPT_DIR/build-freertos.sh" "${build_args[@]}"
-
-    log_matrix_entry "$target" "$version" "pytest"
-    runner=(
-        env -u GDR_ELF_PATH -u GDR_FIRMWARE_PATH
-        "GDR_RTOS=freertos"
-        "GDR_QEMU_TARGET=$target"
-        "GDR_VERSION=$version"
-        "GDR_GDB=$GDR_GDB"
-        "GDR_ELF_PATH=$elf_path"
-        "GDR_FIRMWARE_PATH=$elf_path"
-    )
-    (cd "$REPO_ROOT" && "${runner[@]}" uv run pytest tests/integration/freertos -v --tb=short)
+    local variant cached_elf
+    for variant in "${variants[@]}"; do
+        cached_elf="$CACHE_ROOT/$target/$version/$variant/freertos.elf"
+        if [[ -f "$cached_elf" && "${GDR_FORCE_BUILD:-0}" != 1 ]]; then
+            log_matrix_entry "$target" "$version" "$variant" "reusing cached fixture"
+            GDR_ELF_OVERRIDE="$cached_elf" run_pytest "$target" "$version" "$variant"
+        else
+            build_one "$target" "$version" "$variant"
+        fi
+    done
 }
 
 main "$@"

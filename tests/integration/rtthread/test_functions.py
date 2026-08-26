@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from tests.support.rtthread_profiles import get_rtthread_test_profile
+from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
 
 _VERSION = os.environ.get(
     "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")

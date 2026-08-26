@@ -9,6 +9,7 @@ from gdr.gdb_bridge import (
     read_int,
     read_macro_int,
     read_macro_text,
+    read_macro_text_in_source,
     warn,
 )
 from gdr.version import (
@@ -54,11 +55,30 @@ def validate_version(value: str) -> Version:
     return parsed
 
 
+def _macro_int_in_kernel_cu(name: str) -> int | None:
+    """Read an integer macro from the FreeRTOS kernel compilation unit."""
+    value = read_macro_int(name)
+    if value is not None:
+        return value
+    text = read_macro_text_in_source(name, "vTaskStartScheduler")
+    if text is None:
+        return None
+    try:
+        return int(text, 0)
+    except ValueError:
+        return None
+
+
 def _macro_triplet() -> Version | None:
-    """Read the tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD integer macros."""
+    """Read the tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD integer macros.
+
+    The first attempt uses the current CU. If the selected source is outside
+    the kernel, the fallback temporarily lists ``vTaskStartScheduler`` to
+    select a kernel CU, reads the macro, and restores the user's source view.
+    """
     components: list[int] = []
     for name in _VERSION_TRIPLET:
-        value = read_macro_int(name)
+        value = _macro_int_in_kernel_cu(name)
         if value is None:
             return None
         components.append(value)
@@ -69,13 +89,20 @@ def _version_number_string() -> Version | None:
     """Parse the tskKERNEL_VERSION_NUMBER string macro, or ``None``."""
     text = read_macro_text("tskKERNEL_VERSION_NUMBER")
     if text is None:
+        text = read_macro_text_in_source(
+            "tskKERNEL_VERSION_NUMBER", "vTaskStartScheduler"
+        )
+    if text is None:
         return None
     match = _VERSION_STRING_RE.match(text.strip())
     if match is None:
         return None
-    # Reason: groups are guaranteed to be \d+ by the regex, so int() here
-    # cannot raise; the explicit 3-tuple also keeps the Version type.
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    # Reason: the regex normally guarantees decimal groups, but keep target
+    # macro text untrusted at this GDB boundary.
+    try:
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
 
 
 def detect_target_version() -> Version | None:

@@ -6,7 +6,7 @@ import freertos.details as details_module
 from freertos.adapter import FreeRtosTask
 from freertos.layout import FreeRtosConfig, build_layout
 
-# Phase 1 detail key order (Plan Phase 1 note). Conditional keys appear only
+# Documented ``frt task <name>`` detail key order. Conditional keys appear only
 # when the matching TCB member exists in DWARF.
 _FULL_ORDER = [
     "Name",
@@ -95,7 +95,7 @@ def _full_task():
     )
 
 
-def test_task_detail_follows_the_phase_one_key_order(monkeypatch):
+def test_task_detail_follows_the_documented_key_order(monkeypatch):
     """Every available key appears exactly once, in the documented order."""
     monkeypatch.setattr(details_module, "lookup_symbol", lambda _name: None)
 
@@ -116,6 +116,36 @@ def test_task_detail_reports_runtime_percent_against_total(monkeypatch):
 
     assert pairs["Runtime%"] == "25.0%"
     assert keys.index("Runtime%") == keys.index("Runtime") + 1
+
+
+def test_runtime_percent_sums_v11_array_total(monkeypatch):
+    """V11 ulTotalRunTime is an array even on a uniprocessor build."""
+    array_code = object()
+
+    class _FakeType:
+        code = array_code
+
+        def strip_typedefs(self):
+            return self
+
+    class _Array:
+        def __init__(self, values):
+            self._values = values
+            self.type = _FakeType()
+
+        def __getitem__(self, index):
+            return self._values[index]
+
+    fake = _Array([400, 1600])
+    monkeypatch.setattr(
+        details_module, "gdb", type("G", (), {"TYPE_CODE_ARRAY": array_code})
+    )
+    monkeypatch.setattr(details_module, "lookup_symbol", lambda _name: fake)
+    monkeypatch.setattr(details_module, "read_int", lambda value: value)
+
+    percent = details_module._runtime_percent(_full_task(), _full_layout())
+
+    assert percent == "25.0%"
 
 
 def test_task_detail_omits_absent_members_and_never_shows_entry():

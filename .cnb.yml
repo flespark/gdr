@@ -1,6 +1,6 @@
 # CNB pipeline for GDR.
 #
-# Eight pipelines:
+# Ten pipelines:
 #  1. validate-py310 — ruff + unit coverage on Python 3.10
 #  2. validate-py314 — same checks on Python 3.14
 #  3. publish-qemu-matrix-image — timestamped QEMU matrix image
@@ -8,7 +8,9 @@
 #  5. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
 #  6. qemu-test-a9 — Cortex-A9 closed-loop test
 #  7. qemu-test-rv64 — RISC-V RV64 closed-loop test
-#  8. release — source archives and a CNB Release on every pushed tag
+#  8. freertos-snapshot — file-only static ELF decode
+#  9. freertos-qemu-matrix — live config and kernel-version matrix
+# 10. release — source archives and a CNB Release on every pushed tag
 #
 # The QEMU jobs use `docker.build` with their respective CI Dockerfiles; the
 # resulting images are cached by hash on the CNB artifact registry, so later
@@ -178,6 +180,73 @@ main: # branch: main
         - name: pytest RV64 matrix (QEMU closed-loop)
           script: bash ci/rt-thread/run-qemu-matrix.sh rv64
 
+    - name: freertos-snapshot
+      # Reason: the snapshot lane needs arm-none-eabi-gcc and a Python GDB
+      # (file-only decode, no QEMU). validate-py310/314 run on plain
+      # python:3.10/3.14 images with neither, so this must live on the
+      # qemu-matrix image instead of becoming a green-but-empty skip.
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+            - ci/gdr-xpack/
+        volumes:
+          - /tmp/freertos-fixture:copy-on-write
+          - /tmp/gdr-freertos-kernel-source:copy-on-write
+          - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        FREERTOS_FIXTURE_CACHE: /tmp/freertos-fixture
+      stages:
+        # Reason: probe the exact tools the lane needs before pytest; a missing
+        # gcc would otherwise pytest.skip the whole lane and report green.
+        - name: toolchain sanity (no green-by-skip)
+          script: |
+            arm-none-eabi-gcc --version | head -1
+            "$GDR_GDB" --nx --quiet --batch --ex 'python print("GDR_PYTHON_OK")'
+        - name: static snapshot lane (no QEMU)
+          script: |
+            uv sync --group dev
+            GDR_FORCE_BUILD=1 uv run pytest tests/integration/freertos/test_snapshot.py -v --tb=short
+
+    - name: freertos-qemu-matrix
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+            - ci/gdr-xpack/
+        volumes:
+          - /tmp/freertos-fixture:copy-on-write
+          - /tmp/gdr-freertos-kernel-source:copy-on-write
+          - /tmp/stm32cubel4-v1.18.2:copy-on-write
+          - /tmp/gdr-venv:copy-on-write
+          - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        FREERTOS_FIXTURE_CACHE: /tmp/freertos-fixture
+      stages:
+        - name: toolchain sanity (no green-by-skip)
+          script: |
+            arm-none-eabi-gcc --version | head -1
+            "$GDR_GDB" --nx --quiet --batch --ex 'python print("GDR_PYTHON_OK")'
+            qemu-system-arm --version | head -1
+        - name: FreeRTOS live matrix
+          script: |
+            bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-only static-dynamic trace-off heap-1 heap-2 heap-3 heap-5 heap-protector registry-0
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 base
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.5.1 base
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base heap-protector
+
   pull_request:
     # Mirror of the push pipelines, for pre-merge feedback on PRs.
     - <<: *validate-py310
@@ -244,6 +313,67 @@ main: # branch: main
       stages:
         - name: pytest RV64 matrix (QEMU closed-loop)
           script: bash ci/rt-thread/run-qemu-matrix.sh rv64
+
+    - name: freertos-snapshot
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+            - ci/gdr-xpack/
+        volumes:
+          - /tmp/freertos-fixture:copy-on-write
+          - /tmp/gdr-freertos-kernel-source:copy-on-write
+          - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        FREERTOS_FIXTURE_CACHE: /tmp/freertos-fixture
+      stages:
+        - name: toolchain sanity (no green-by-skip)
+          script: |
+            arm-none-eabi-gcc --version | head -1
+            "$GDR_GDB" --nx --quiet --batch --ex 'python print("GDR_PYTHON_OK")'
+        - name: static snapshot lane (no QEMU)
+          script: |
+            uv sync --group dev
+            GDR_FORCE_BUILD=1 uv run pytest tests/integration/freertos/test_snapshot.py -v --tb=short
+
+    - name: freertos-qemu-matrix
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 8
+      docker:
+        build:
+          dockerfile: ci/Dockerfile
+          by:
+            - ci/Dockerfile
+            - ci/gdr-xpack/
+        volumes:
+          - /tmp/freertos-fixture:copy-on-write
+          - /tmp/gdr-freertos-kernel-source:copy-on-write
+          - /tmp/stm32cubel4-v1.18.2:copy-on-write
+          - /tmp/gdr-venv:copy-on-write
+          - /root/.cache/uv:copy-on-write
+      env:
+        GDR_GDB: gdb-multiarch
+        RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+        FREERTOS_FIXTURE_CACHE: /tmp/freertos-fixture
+      stages:
+        - name: toolchain sanity (no green-by-skip)
+          script: |
+            arm-none-eabi-gcc --version | head -1
+            "$GDR_GDB" --nx --quiet --batch --ex 'python print("GDR_PYTHON_OK")'
+            qemu-system-arm --version | head -1
+        - name: FreeRTOS live matrix
+          script: |
+            bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-only static-dynamic trace-off heap-1 heap-2 heap-3 heap-5 heap-protector registry-0
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 base
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.5.1 base
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base heap-protector
 
 # `$` applies to every reference. CNB sets CNB_BRANCH to the pushed tag when
 # `tag_push` fires. The imported Secret repository file provides

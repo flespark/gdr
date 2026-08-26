@@ -147,29 +147,18 @@ def test_high_water_uses_px_top_of_stack_window_when_stack_end_absent(monkeypatc
 
 def test_high_water_unavailable_when_stack_not_filled(monkeypatch):
     """A stack whose first byte is not 0xa5 was never watermark-filled."""
-    layout = build_layout(FreeRtosConfig(stack_end_field="pxEndOfStack"), (10, 3, 1))
     monkeypatch.setattr(adapter_module, "_stack_type_size", lambda: 4)
 
-    assert adapter_module._high_water_mark(b"\x00" * 128, layout) is None
-    assert adapter_module._high_water_mark(None, layout) is None
+    assert adapter_module._high_water_mark(b"\x00" * 128) is None
+    assert adapter_module._high_water_mark(None) is None
 
 
 def test_high_water_counts_words_when_partially_filled(monkeypatch):
     """Untouched fill bytes are counted and divided by StackType_t size."""
-    layout = build_layout(FreeRtosConfig(stack_end_field="pxEndOfStack"), (10, 3, 1))
     monkeypatch.setattr(adapter_module, "_stack_type_size", lambda: 4)
     stack = b"\xa5" * 32 + b"\x00" * 96
 
-    assert adapter_module._high_water_mark(stack, layout) == 8
-
-
-def test_high_water_counts_trailing_fill_on_grow_up_stacks(monkeypatch):
-    """Grow-up stacks keep the untouched fill at the high address end."""
-    layout = build_layout(FreeRtosConfig(stack_grows_up=True), (10, 3, 1))
-    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda: 4)
-    stack = b"\x00" * 96 + b"\xa5" * 32
-
-    assert adapter_module._high_water_mark(stack, layout) == 8
+    assert adapter_module._high_water_mark(stack) == 8
 
 
 # --- task table column gating ------------------------------------------------
@@ -474,7 +463,7 @@ def test_object_detail_task_routes_via_task_state_and_builder(monkeypatch):
 
     assert detail is not None
     assert detail.pairs == [("Name", "worker")]
-    # Non-task kinds are not reliably enumerable in Phase 1.
+    # Non-task kinds are not reliably enumerable yet.
     assert adapter.object_detail("queue", "q") is None
 
 

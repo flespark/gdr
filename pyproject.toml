@@ -42,15 +42,29 @@ dev = [
 ]
 
 # ---------------------------------------------------------------------------
-# Pyright / basedpyright: point type checkers at the uv-managed virtualenv.
-# Reason: without this, editor/CI type checkers resolve imports against the
-# system interpreter and report dev-only imports (pytest, pexpect) as unresolved.
+# Pyright / basedpyright: point type checkers at the uv-managed virtualenv, and
+# turn off the diagnostics that the guarded `gdb` import makes unavoidable.
+# Reason: without venvPath/venv, type checkers resolve imports against the
+# system interpreter and report dev-only imports as unresolved. Verified with
+# `pyright tests/support/qemu_harness.py`: `Import "pytest" could not be
+# resolved` appears whenever the two keys are absent (or point at a missing
+# environment) and disappears when they name `.venv`.
+# Reason: `gdb` exists only inside the GDB interpreter, so every module guards
+# the import with a `gdb = None` fallback (see gdr/gdb_bridge.py). Pyright then
+# reports each `gdb.*` call as an Optional member access and each `gdb.Value`
+# annotation as "variable not allowed in type expression" - hundreds of findings
+# that are artifacts of that guard rather than defects. Every other check stays
+# enabled.
 # ruff remains the project's linter of record; this block changes no runtime
 # behaviour.
 # ---------------------------------------------------------------------------
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+reportOptionalMemberAccess = "none"
+reportOptionalSubscript = "none"
+reportOptionalIterable = "none"
+reportInvalidTypeForm = "none"
 
 # ---------------------------------------------------------------------------
 # Ruff: linter + formatter (drop-in replacement for black)

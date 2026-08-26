@@ -46,7 +46,10 @@ tests/
   integration/         QEMU/GDB closed-loop tests and fixtures
     rtthread/          command, function, and pretty-printer assertions
     freertos/          FreeRTOS boot and command assertions
-  support/             shared QEMU harness and fixture expectation profiles
+  support/             RTOS-neutral harnesses + per-RTOS profiles:
+                       qemu_harness.py / static_elf_harness.py (lifecycle),
+                       <rtos>_qemu_profiles.py (how to boot and attach),
+                       <rtos>_fixture_profiles.py (what the fixture must contain)
 ```
 
 Key design principles (see `docs/architecture.md`):
@@ -80,7 +83,7 @@ uv run pre-commit install    # activate git hooks
 All commands run via `uv run` (auto-activates the `.venv`):
 
 | Command | Purpose |
-|---------|---------|
+| --------- | --------- |
 | `uv run ruff check .` | Lint |
 | `uv run ruff format .` | Format (black-compatible) |
 | `uv run ruff format --check .` | Verify formatting without writing |
@@ -129,30 +132,60 @@ The RV64 target uses `qemu-system-riscv64 -machine virt` and boots
 
 ### FreeRTOS smoke test
 
-`bash ci/freertos/run-qemu-matrix.sh` builds the locked STM32CubeL4 `v1.18.2`
-B-L475E-IOT01A fixture (whose FreeRTOS submodule is commit
-`5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`) and runs it under QEMU:
+FreeRTOS verification has three lanes, one builder each, all installing into
+one fixture cache (details in `ci/freertos/README.md`):
+
+- **CubeL4 live (`b-l475e-iot01a`):** `ci/freertos/build-fixture-cubel4.sh`
+  compiles the shared fixture against the FreeRTOS submodule bundled in
+  STM32CubeL4 `v1.18.2` (commit
+  `5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`), so it is pinned to kernel
+  `10.3.1` and carries the **config variant** matrix.
+- **Kernel-direct live (`mps2-an385`):** `ci/freertos/build-fixture-kernel.sh`
+  clones `FreeRTOS-Kernel` at a tag and links `portable/GCC/ARM_CM3`, so it
+  carries the **kernel version** matrix.
+- **Static snapshot:** `ci/freertos/build-fixture-snapshot.sh` builds a
+  Cortex-M33 ELF whose `.data` holds pre-initialized SMP scheduler structures.
+  `tests/integration/freertos/test_snapshot.py` loads it with `file` only (no
+  QEMU), so this lane can run on `validate-py310/314`.
+
+`bash ci/freertos/run-qemu-matrix.sh [<target>] [<version>] [<variant>...]`
+drives the two live lanes.
 
 ```bash
-bash ci/freertos/run-qemu-matrix.sh
+bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-dynamic
 
-# Skip compilation when a firmware cache is already populated.
-FREERTOS_FIXTURE_CACHE=/path/to/cache bash ci/freertos/run-qemu-matrix.sh
+# Point the fixture cache elsewhere; a cached fixture is reused, a missing one
+# is built and then installed into the cache.
+FREERTOS_FIXTURE_CACHE=/path/to/cache \
+  bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
 ```
 
-The default cache root is `/workspace/fixture/freertos`, with layout
-`<cache>/b-l475e-iot01a/10.3.1/freertos.elf`. The fixture uses the
-Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, not
-the board's unsupported LPTIM. Fixture sources live in
-`ci/freertos/fixture/`; the build is defined in `ci/freertos/build-freertos.sh`.
+Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` plus
+`<cache>/snapshot/snapshot.elf`, rooted at `FREERTOS_FIXTURE_CACHE`
+(default `~/Project/gdr-fixture/freertos`). `GDR_FIXTURE_VARIANT` selects the
+variant, `GDR_FORCE_BUILD=1` forces a rebuild, and a missing artifact is
+`pytest.skip` so partial local caches stay usable. The B-L475E fixture uses the
+Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, not the
+board's unsupported LPTIM. Shared fixture sources live in
+`ci/freertos/fixture/` (`config/<variant>/`, `board/<board>/`, `main.c`).
+
+`GDR_GDB` must name a GDB with embedded Python: xPack's `arm-none-eabi-gdb`
+has none, its sibling `arm-none-eabi-gdb-py3` does. Probe with
+`"$GDR_GDB" --nx --quiet --batch --ex 'python print("ok")'` instead of trusting
+the binary's name.
+
+Any work that consumes a config branch (SMP, heap_N, static allocation,
+stream buffers, MPU, runtime stats, …) must first have a fixture or
+snapshot that can falsify it.
 
 ### CI pipelines
 
 CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
 defined in `.cnb.yml` (ruff + unit coverage on Python 3.10/3.14, the GDB 12
-compatibility baseline, and Cortex-A9 and RV64 QEMU matrices). GitHub Actions
-mirrors the validate jobs in `.github/workflows/ci.yml`. To reproduce the
-current ARM and RV64 QEMU matrices locally in a Podman machine:
+compatibility baseline, the Cortex-A9 and RV64 RT-Thread QEMU matrices, the
+FreeRTOS static-snapshot lane, and the FreeRTOS live variant/version matrix).
+GitHub Actions mirrors the validate jobs in `.github/workflows/ci.yml`. To
+reproduce the current ARM and RV64 QEMU matrices locally in a Podman machine:
 
 ```bash
 ci/validate-podman.sh

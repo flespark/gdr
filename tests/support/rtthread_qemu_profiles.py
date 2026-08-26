@@ -2,7 +2,7 @@
 
 COUPLED: each target/version selected here must have a corresponding fixture
 patch set under ``ci/rt-thread/patches/`` and a matching expectation profile in
-``tests/support/rtthread_profiles.py``.
+``tests/support/rtthread_fixture_profiles.py``.
 """
 
 from __future__ import annotations

@@ -39,13 +39,13 @@ class FreeRtosConfig:
     mini_list: bool | None = None
     tls_field: str | None = None
     list_item_container_field: str | None = None
-    stack_grows_up: bool | None = False
     stack_end_field: str | None = None
     trace_facility: bool = False
     queue_registry: bool = False
     queue_registry_size: int = 0
     timers: bool = False
     static_allocation: bool = False
+    static_and_dynamic: bool = False
     max_priorities: int | None = None
     list_integrity_check: bool = False
     event_groups: bool = False
@@ -123,25 +123,57 @@ def _mini_list_detected() -> bool | None:
     return None
 
 
-def _detect_heap_kind() -> int | None:
-    """Identify the heap manager (heap_1..heap_5) by its unique symbols.
+def _block_link_type_present() -> bool:
+    """Return whether DWARF exposes ``BlockLink_t`` / ``struct A_BLOCK_LINK``.
 
-    Priority chain (each heap has a distinguishing kernel symbol):
-    * heap_5 -> ``vPortDefineHeapRegions`` (heap_4's symbols plus regions API)
-    * heap_4 -> ``pxEnd`` (a ``BlockLink_t *`` pointer; heap_4/5 only)
+    heap_2/4/5 all define that typedef in their ``.c`` file; heap_1 and heap_3
+    do not. Missing type info is a failed check, not a pass.
+    """
+    return (
+        lookup_type("BlockLink_t") is not None
+        or lookup_type("struct A_BLOCK_LINK") is not None
+    )
+
+
+def _detect_heap_kind() -> int | None:
+    """Identify the heap manager (heap_1..heap_5) by symbols and types.
+
+    Signatures (heap_5 always also carries heap_4's ``pxEnd``, so 5 supersedes
+    4; any other overlapping match is reported as unknown rather than picking
+    a priority winner):
+    * heap_5 -> ``vPortDefineHeapRegions`` plus ``BlockLink_t``
+    * heap_4 -> ``pxEnd`` plus ``BlockLink_t``, without the regions API
     * heap_1 -> ``xNextFreeByte`` (sole BlockLink-free allocator)
-    * heap_2 -> ``xStart`` and ``xEnd`` both as ``BlockLink_t`` values
+    * heap_2 -> ``xStart`` and ``xEnd`` plus ``BlockLink_t``
     * else ``None`` (heap_3 wraps ``malloc`` and exports no kernel heap symbol)
     """
-    if symbol_exists("vPortDefineHeapRegions"):
-        return 5
-    if symbol_exists("pxEnd"):
-        return 4
-    if symbol_exists("xNextFreeByte"):
-        return 1
-    if symbol_exists("xStart") and symbol_exists("xEnd"):
-        return 2
-    return None
+    has_regions = symbol_exists("vPortDefineHeapRegions")
+    has_px_end = symbol_exists("pxEnd")
+    has_next_free = symbol_exists("xNextFreeByte")
+    has_x_start = symbol_exists("xStart")
+    has_x_end = symbol_exists("xEnd")
+    has_block_link = _block_link_type_present()
+    matches: list[int] = []
+    if has_regions and has_block_link:
+        matches.append(5)
+    if has_px_end and has_block_link:
+        matches.append(4)
+    if has_next_free:
+        matches.append(1)
+    # Reason: heap_2's xEnd is a BlockLink_t *value*; heap_4/5 use pxEnd as a
+    # pointer and must not also match heap_2 when a test fixture (or a
+    # corrupted symbol table) happens to expose both names.
+    if has_x_start and has_x_end and has_block_link and not has_px_end:
+        matches.append(2)
+    # Reason: heap_5.c reuses heap_4's xStart/pxEnd plus vPortDefineHeapRegions,
+    # so a real heap_5 always matches 4 as well. Drop the dominated 4; any
+    # leftover overlap (heap_1 symbols next to a BlockLink heap, etc.) is
+    # ambiguous and must not silently pick the priority-chain winner.
+    if 5 in matches and 4 in matches:
+        matches.remove(4)
+    if len(matches) != 1:
+        return None
+    return matches[0]
 
 
 def detect_config() -> FreeRtosConfig:
@@ -210,8 +242,10 @@ def detect_config() -> FreeRtosConfig:
     )
 
     # Reason: trace facility (queue type classification) is proven by the
-    # ucQueueType member of struct QueueDefinition, not by a macro guard.
-    queue_fields = _fields("struct QueueDefinition")
+    # ucQueueType member. Some GDB/DWARF spellings expose the struct tag
+    # (``struct QueueDefinition``) while others only expose the typedef
+    # (``xQUEUE``); ``_fields`` already strip_typedefs() so either works.
+    queue_fields = _fields("struct QueueDefinition") or _fields("xQUEUE")
     cfg.trace_facility = "ucQueueType" in queue_fields
     cfg.queue_sets = "pxQueueSetContainer" in queue_fields
     cfg.queue_registry = lookup_symbol("xQueueRegistry") is not None
@@ -220,11 +254,13 @@ def detect_config() -> FreeRtosConfig:
         lookup_symbol("xTimerTaskHandle") is not None
         or lookup_symbol("xTimerQueue") is not None
     )
-    # Reason: ucStaticallyAllocated (tskSTATIC_AND_DYNAMIC_ALLOCATION_POSSIBLE)
-    # is the reliable probe; xIdleTaskTCB is function-local and often absent.
-    cfg.static_allocation = (
-        "ucStaticallyAllocated" in fields or lookup_symbol("xIdleTaskTCB") is not None
-    )
+    # Reason: tskSTATIC_AND_DYNAMIC_ALLOCATION_POSSIBLE (FreeRTOS.h) is what
+    # actually emits ucStaticallyAllocated; that is only true when *both*
+    # static and dynamic allocation are possible. static-only builds still
+    # export xTaskCreateStatic but have no TCB marker, so the two facts are
+    # probed separately.
+    cfg.static_allocation = symbol_exists("xTaskCreateStatic")
+    cfg.static_and_dynamic = "ucStaticallyAllocated" in fields
 
     cfg.mpu_object_pool = symbol_exists("xKernelObjectPool")
     cfg.heap_kind = _detect_heap_kind()
@@ -301,7 +337,7 @@ def build_layout(
             tcb_fields["core_affinity"] = StructField(
                 "core_affinity", ("uxCoreAffinityMask",)
             )
-    # Phase 1 detail fields (frt task <name>).  Each is gated on the actual
+    # Detail-only fields for ``frt task <name>``.  Each is gated on the actual
     # DWARF member so absent members never render a fabricated column/pair.
     if "uxMutexesHeld" in cfg.tcb_fields:
         tcb_fields["mutexes_held"] = StructField("mutexes_held", ("uxMutexesHeld",))

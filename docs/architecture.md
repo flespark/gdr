@@ -29,7 +29,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 ### `gdr/` — core
 
 | Module | Responsibility |
-|--------|---------------|
+| -------- | --------------- |
 | `gdb_bridge.py` | Wraps GDB registration, identifier-only symbol lookup, memory/type access, terminal probing, output and error guards. Inferior function evaluation is not used. |
 | `constants.py` / `formatting.py` | Shared traversal/presentation defaults and pure optional/address/symbol/table formatting. Formatting has no GDB dependency. |
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). It interprets adapter-supplied paths but contains no target type names, symbols, or list conventions. |
@@ -41,7 +41,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 ### `rtthread/` — adapter
 
 | Module | Responsibility |
-|--------|---------------|
+| -------- | --------------- |
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** Defines `RtConfig`, `detect_config()` (symbol-presence probing), and `build_layouts(config) -> KernelLayout`. Handles config-conditional fields (SMP, heap manager, IPC toggles) via factory branches, not version-branched files. |
 | `navigation.py` | RT-Thread object navigation: registry/current-thread/tick entry symbols, type codes, timer traversal, and the halted system-heap snapshot. Returns raw `gdb.Value` objects using the layouts supplied by `layout.py`. |
 | `adapter.py` | RT-Thread intermediate object models, `gdb.Value` conversion, adapter-owned task/object tables, detail dispatch and system summaries. These models are presentation inputs, not ABI layout descriptions. |
@@ -52,7 +52,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 ### `freertos/` — adapter
 
 | Module | Responsibility |
-|--------|---------------|
+| -------- | --------------- |
 | `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. Version detection relies on `-g3` macro debug info and is subject to CU scope limitations (see known constraints below). |
 | `navigation.py` | Pure scheduler-list and current-task traversal functions. List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
 | `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, and system summary. |
@@ -327,17 +327,18 @@ dynamic ports, logs and timeout diagnostics live in
 `GDR_QEMU_TARGET` selects the profile while keeping all GDR assertions shared:
 
 | Target | QEMU startup | GDB symbols | Notes |
-|--------|--------------|-------------|-------|
+| -------- | -------------- | ------------- | ------- |
 | `cortex-a9` | `qemu-system-arm -M vexpress-a9 -kernel rtthread.elf` | `rtthread.elf` | No SD device is required for the fixture boot path. |
 | `rv64` | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | M-Mode boot, no SD image, `set architecture riscv:rv64`. |
-| `b-l475e-iot01a` | `qemu-system-arm -M b-l475e-iot01a -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS V10.3.1 Cortex-M4F SysTick fixture, 32-bit pointers. |
+| `b-l475e-iot01a` | `qemu-system-arm -M b-l475e-iot01a -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS V10.3.1 Cortex-M4F SysTick fixture, 32-bit pointers. Variant selected by `GDR_FIXTURE_VARIANT`. |
+| `mps2-an385` | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS-Kernel tag builds (10.4.x / 10.5.x / 11.1.x) on Cortex-M3. |
 
 The ELF and firmware image may be separate: RV64 deliberately boots a raw BIN
 while GDB requires the DWARF ELF. The shared suite asserts each profile's
 pointer width, including `sizeof(void *) == 8` for RV64 and 4 for the FreeRTOS
 Cortex-M fixture.
 
-`tests/support/rtthread_profiles.py` separately owns fixture-level expectations that
+`tests/support/rtthread_fixture_profiles.py` separately owns fixture-level expectations that
 vary by target or RT-Thread version: object enum values, the current-thread
 expression, and canonical fixture object names. It intentionally does not
 import production layout metadata, so a regression in GDR's layout mapping
@@ -362,39 +363,51 @@ Cortex-A9 only.
 
 ### Known constraints
 
+**Fixture-first.** Work may consume a config branch (SMP, heap_N, static
+allocation, stream buffers, MPU, runtime stats, queue sets, …) only when a
+live firmware variant or a static snapshot can falsify it. Branches without
+a fixture stay deferred unit-test stubs, never "done".
+
 **FreeRTOS version detection depends on `-g3` macro debug info and CU scope.**
-The `detect_target_version()` function reads `tskKERNEL_VERSION_NUMBER` via
-`info macro`, which only resolves macros visible in the current compilation
-unit context. When GDB halts in a non-kernel CU (HAL code, ISR handler,
-assembly startup), the macro is not visible and detection degrades to a
-warning ("target FreeRTOS version is not exported"). The version mismatch
-check is then skipped but initialization proceeds normally. This is a known
-limitation tracked for future improvement.
+`detect_target_version()` reads the `tskKERNEL_VERSION_*` macros via
+identifier eval and `info macro`. Both consult the current compilation unit's
+`.debug_macro` first; `info macro -a` plus the fixture-exported
+`gdr_freertos_version_num` cover a halt in HAL / startup / application CUs.
+A remaining miss degrades to a warning ("target FreeRTOS version is not
+exported") and skips the mismatch check rather than guessing.
 
-**FreeRTOS fixture coverage is single-configuration.** The current closed-loop
-fixture covers only one combination: single-core / Cortex-M4F / heap_4 /
-trace_facility=on / FreeRTOS 10.3.1 / `configENABLE_BACKWARD_COMPATIBILITY=1`
-(member name `pvContainer`) / no `pxEndOfStack` (`configRECORD_STACK_HIGH_ADDRESS=0`) /
-scalar `ucNotifyState` (pre-V10.4.0) / no runtime statistics / `configMAX_PRIORITIES=6`
-with only priority 0 having a ready task / stack grows down.
+**FreeRTOS live fixtures are a variant matrix**, not a single configuration.
+`ci/freertos/fixture/config/<variant>/` plus a shared `main.c` produce
+`base` (the historical B-L475E-IOT01A / 10.3.1 combination), `full`,
+`static-only`, `static-dynamic`, `trace-off`, `heap-1`/`2`/`3`/`5`,
+`heap-protector` (≥V11), and `registry-0`. Cache layout is
+`<cache>/<target>/<version>/<variant>/freertos.elf`. Independent expected
+capabilities live in `tests/support/freertos_fixture_profiles.py` and must not
+be derived from `freertos/layout.py`.
 
-Consequences of this single-configuration coverage:
+The historical `base` combination remains: single-core / Cortex-M4F / heap_4
+/ trace_facility=on / FreeRTOS 10.3.1 / `configENABLE_BACKWARD_COMPATIBILITY=1`
+(member name `pvContainer`) / no `pxEndOfStack` / scalar `ucNotifyState` /
+no runtime statistics / `configMAX_PRIORITIES=6` / stack grows down. Default
+builds still use `pvContainer`; without `pxEndOfStack`, `Stack`/`Used` stay
+N/A and HighWater scans `[pxStack, pxTopOfStack)`.
 
-- Default builds use `pvContainer` (not `pxContainer`); code must probe the
-  spelling by member existence (`cfg.list_item_container_field`).
-- Without `pxEndOfStack`, `Stack`/`Used` columns show N/A; high-water mark
-  uses the `[pxStack, pxTopOfStack)` fallback window.
-- Scalar notification shape means array-indexed access is only unit-tested.
-- No runtime statistics columns means HighWater header alignment bugs can pass
-  undetected in the fixture (Phase 1 caught and fixed this via unit tests).
-- Only priority 0 has ready tasks, so `list_count("ready")` summing all
-  priorities cannot be validated by the fixture alone (Phase 1 caught and
-  fixed the single-element bug via unit tests).
+**Unreachable on QEMU (documented, unit-tested only):**
 
-Config probes for SMP, other heap implementations, stream buffers, event
-groups, and V11.x-specific fields are unit-tested with mock stubs but have
-not been validated against real DWARF. Any subsequent Phase that consumes
-these probes must first add the corresponding firmware fixture.
+- `mpu-pool` (`portUSING_MPU_WRAPPERS` + MPU wrappers v2 / `xKernelObjectPool`):
+  needs an ARM_CM33_NTZ TrustZone port; QEMU `mps2-an505` support is unproven.
+- `stack_grows_up`: **not supported**. GDR decodes stacks as grow-down only
+  (high water mark scans the untouched fill from the low end). The sole
+  upstream `portSTACK_GROWTH +1` port is SDCC/Cygnal 8051, which has no GCC
+  toolchain and no QEMU machine, so no grow-up target can exist; the dead
+  field/branch was removed rather than kept as an untestable probe.
+
+**Static snapshot lane** (`ci/freertos/build-fixture-snapshot.sh` with sources
+in `ci/freertos/snapshot/`) covers states a healthy kernel cannot produce
+(corrupt lists, SMP `xTaskRunState` of `0`/`1`/`-1`/`-2` without a live
+dual-core port). Snapshot data is non-zero-initialized into `.data`; file-only
+GDB synthesises zeros for `.bss`, so a BSS-resident structure would read back
+as a successful decode of empty lists (see `ci/freertos/README.md`).
 
 **FreeRTOS does not provide an `Entry` column.** The FreeRTOS TCB
 (`tskTaskControlBlock`) does not store the task entry function pointer after

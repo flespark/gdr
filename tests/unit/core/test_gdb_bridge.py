@@ -166,6 +166,17 @@ def test_read_macro_text_strips_string_macro_quotes(monkeypatch):
     assert fake.command == "info macro tskKERNEL_VERSION_NUMBER"
 
 
+def test_read_macro_text_is_scoped_to_the_current_source_context(monkeypatch):
+    """The bridge does not pretend that ``info macro -a`` crosses CUs."""
+    fake = _MacroTextGdb(
+        'Defined at task.h:57\n#define tskKERNEL_VERSION_NUMBER "V10.3.1"\n'
+    )
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.read_macro_text("tskKERNEL_VERSION_NUMBER") == "V10.3.1"
+    assert fake.command == "info macro tskKERNEL_VERSION_NUMBER"
+
+
 def test_read_macro_text_returns_numeric_expansion_verbatim(monkeypatch):
     """An unquoted (numeric) macro expansion is returned without quote logic."""
     fake = _MacroTextGdb("Defined at task.h:58\n#define tskKERNEL_VERSION_MAJOR 10\n")

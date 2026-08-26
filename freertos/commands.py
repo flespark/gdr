@@ -20,8 +20,9 @@ from gdr.gdb_bridge import gdb_command_guard, info, warn
 _command_registered = False
 _alias_registered = False
 
-# Plural list commands and their semantic object kind (Phase 2+ implements the
-# non-task kinds; Phase 1 still routes them so the command surface is stable).
+# Plural list commands and their semantic object kind. Only ``task`` is
+# enumerable today; the other kinds are routed anyway so the command surface
+# stays stable while their discovery channels land.
 _OBJECT_COMMANDS = {
     "tasks": "task",
     "queues": "queue",
@@ -99,7 +100,7 @@ _HELP = (
 
 @gdb_command_guard
 def render_heap() -> None:
-    """Placeholder for the system-heap snapshot (Phase 2+)."""
+    """Placeholder for the system-heap snapshot."""
     warn("FreeRTOS heap diagnostics are not implemented yet")
 
 
@@ -155,7 +156,7 @@ def _prefixes(word: str | None, candidates: list[str]) -> list[str]:
 def _object_names(kind: str) -> list[str]:
     """Return live object names of *kind* for tab completion.
 
-    Phase 1 only enumerates tasks; other kinds yield ``[]`` until their
+    Only tasks are enumerable today; other kinds yield ``[]`` until their
     discovery channel lands. Degrades to ``[]`` on any traversal failure so
     tab completion never raises inside GDB.
     """

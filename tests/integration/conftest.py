@@ -32,7 +32,7 @@ def get_qemu_profile() -> QemuProfile:
     if rtos == "rtthread":
         return get_rtthread_qemu_profile(GDR_ROOT)
     if rtos == "freertos":
-        from tests.support.freertos_profiles import get_freertos_qemu_profile
+        from tests.support.freertos_qemu_profiles import get_freertos_qemu_profile
 
         return get_freertos_qemu_profile(GDR_ROOT)
     raise RuntimeError(f"unknown GDR_RTOS: {rtos}")

@@ -10,6 +10,7 @@ that touches ``gdb.*`` outside a GDB session raises ``RuntimeError``.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import platform
 import re
@@ -87,7 +88,10 @@ def get_arch_info() -> ArchInfo | None:
     """
     _ensure_gdb()
     try:
-        ptrsize = gdb.selected_inferior().architecture().void_type().pointer().sizeof
+        # type: ignore[attr-defined] - Architecture.void_type() exists at runtime
+        # but is missing from the bundled gdb type stub; the AttributeError
+        # branch below already covers GDB builds that lack it.
+        ptrsize = gdb.selected_inferior().architecture().void_type().pointer().sizeof  # type: ignore[attr-defined]
     except (AttributeError, TypeError, gdb.error):
         try:
             ptrsize = gdb.lookup_type("void").pointer().sizeof
@@ -223,12 +227,19 @@ def read_macro_text(name: str) -> str | None:
     ``info macro`` prints as a quoted literal, ``#define NAME "text"``) yields
     the bare text a caller can parse. ``None`` when the macro is not defined
     in the current source context or *name* is not a plain identifier.
+
+    Args:
+        name: A single C identifier naming the macro.
+        The macro is read from the current source context. Use
+            :func:`read_macro_text_in_source` when a specific compilation unit
+            must be selected first.
     """
     if not is_plain_identifier(name):
         return None
     _ensure_gdb()
+    command = f"info macro {name}"
     try:
-        output = gdb.execute(f"info macro {name}", to_string=True)
+        output = gdb.execute(command, to_string=True)
     except gdb.error:
         return None
     marker = f"#define {name}"
@@ -243,6 +254,45 @@ def read_macro_text(name: str) -> str | None:
             return expansion[1:-1]
         return expansion
     return None
+
+
+def read_macro_text_in_source(name: str, source: str) -> str | None:
+    """Read a macro after temporarily selecting a GDB source location.
+
+    GDB's macro lookup is scoped to the current source location. Selecting a
+    known kernel function is therefore the portable way to read a macro from
+    another compilation unit without driving the inferior.
+    """
+    if not is_plain_identifier(name) or not source.strip():
+        return None
+    _ensure_gdb()
+    saved_source: str | None = None
+    saved_listsize: str | None = None
+    try:
+        source_info = gdb.execute("info source", to_string=True)
+        # Reason: GDB prints ``Current source file is <path>.`` with a
+        # trailing sentence period; the path itself usually contains dots
+        # (``main.c``), so a non-greedy stop-at-dot capture would truncate it.
+        match = re.search(r"Current source file is (.+)$", source_info, re.M)
+        if match:
+            saved_source = match.group(1).strip().removesuffix(".")
+        saved_listsize = gdb.execute("show listsize", to_string=True)
+        gdb.execute("set listsize 1", to_string=True)
+        gdb.execute(f"list {source}", to_string=True)
+        return read_macro_text(name)
+    except (gdb.error, ValueError, AttributeError):
+        return None
+    finally:
+        if saved_listsize:
+            try:
+                match = re.search(r"(?:listsize is|default is) (.+?)\.", saved_listsize)
+                if match:
+                    gdb.execute(f"set listsize {match.group(1)}", to_string=True)
+            except gdb.error:
+                pass
+        if saved_source:
+            with contextlib.suppress(gdb.error):
+                gdb.execute(f"list {saved_source}:1", to_string=True)
 
 
 def symbol_exists(name: str) -> bool:
@@ -396,7 +446,9 @@ def make_pointer_array(values: list[gdb.Value]) -> gdb.Value:
     fmt = "I" if arch.ptrsize == 4 else "Q"
     mask = (1 << (arch.ptrsize * 8)) - 1
     buf = b"".join(struct.pack(f"{endian}{fmt}", ptr & mask) for ptr in pointers)
-    return gdb.Value(buf, elem_type.array(len(pointers) - 1))
+    # type: ignore[arg-type] - gdb.Value accepts a buffer plus an array type;
+    # the stub only declares the scalar overloads.
+    return gdb.Value(buf, elem_type.array(len(pointers) - 1))  # type: ignore[arg-type]
 
 
 def _gdb_width() -> int | None:
@@ -542,8 +594,10 @@ def show_last_exception() -> None:
     :func:`format_exception`).
     """
     _ensure_gdb()
-    exc_type, exc_value, exc_traceback = sys.exc_info()
-    if exc_type is None:
+    _exc_type, exc_value, exc_traceback = sys.exc_info()
+    # Reason: test exc_value (not the type) so the value is narrowed to a real
+    # exception for format_exception below; the triple is all-or-nothing.
+    if exc_value is None:
         err("show_last_exception() called outside of an exception handler")
         return
 

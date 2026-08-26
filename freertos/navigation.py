@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 try:
@@ -62,6 +63,30 @@ def _array_item(value, index):
         return None
 
 
+_SECTION_RANGE_RE = re.compile(r"0x([0-9a-fA-F]+)\s*-\s*0x([0-9a-fA-F]+)")
+
+
+def _mapped_ranges() -> tuple[tuple[int, int], ...]:
+    """Return loadable ELF section ranges from ``info files``, or empty.
+
+    An empty result means the map is unknown (unit tests, or GDB not ready),
+    so callers skip the range check rather than inventing a RAM window.
+    """
+    if gdb is None:
+        return ()
+    try:
+        output = gdb.execute("info files", to_string=True)
+    except Exception:
+        return ()
+    ranges: list[tuple[int, int]] = []
+    for match in _SECTION_RANGE_RE.finditer(output or ""):
+        low = int(match.group(1), 16)
+        high = int(match.group(2), 16)
+        if high > low:
+            ranges.append((low, high))
+    return tuple(ranges)
+
+
 def _iter_list(
     head, layout: FreeRtosLayout, max_count: int = GDR_MAX_TRAVERSAL_COUNT
 ) -> Iterator:
@@ -75,9 +100,19 @@ def _iter_list(
         mini_layout = layout.structs["struct xMINI_LIST_ITEM"]
         node = read_field(end, mini_layout, "next")
         seen: set[int] = set()
+        ranges = _mapped_ranges()
         for _ in range(max_count):
             node_addr = safe_int(node)
             if not node_addr or node_addr == end_addr:
+                return
+            # Reason: a corrupt next pointer into the NULL page or outside
+            # every loadable section is not a list node; stop before
+            # dereference. Skip the check when no map is available so unit
+            # tests with synthetic addresses still exercise the walk.
+            if ranges and not any(low <= node_addr < high for low, high in ranges):
+                warn(
+                    f"FreeRTOS list traversal stopped at out-of-range node {node_addr:#x}"
+                )
                 return
             if node_addr in seen:
                 warn(f"FreeRTOS list traversal stopped at repeated node {node_addr:#x}")
@@ -202,7 +237,11 @@ def task_state(tcb, layout: FreeRtosLayout) -> tuple[str, int | None]:
             core = core_of(tcb, layout)
             if core is not None:
                 return "Running(yielding)", core
-            return "Ready", None
+            # Reason: core_of() can miss a scheduled-to-yield TCB when
+            # pxCurrentTCBs is unreadable. Do not invent Ready; fall through
+            # Steps 2-6 so delayed/suspended/termination membership still
+            # wins, and Step 6's default returns Ready only when nothing else
+            # matched (typically the task still sits on a ready list).
         if run_state is not None and 0 <= run_state < layout.config.number_of_cores:
             return "Running", run_state
 

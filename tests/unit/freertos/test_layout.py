@@ -146,6 +146,12 @@ def test_trace_facility_detected_via_uc_queue_type(monkeypatch):
     assert cfg.trace_facility is True
 
 
+def test_trace_facility_falls_back_to_xqueue_typedef(monkeypatch):
+    """Some DWARF only exposes the xQUEUE typedef, not the struct tag."""
+    cfg = _make_config(monkeypatch, fields={"xQUEUE": {"ucQueueType"}})
+    assert cfg.trace_facility is True
+
+
 def test_trace_facility_absent_without_uc_queue_type(monkeypatch):
     cfg = _make_config(monkeypatch)
     assert cfg.trace_facility is False
@@ -163,22 +169,42 @@ def test_queue_sets_absent_without_px_queue_set_container(monkeypatch):
     assert cfg.queue_sets is False
 
 
-# --- static_allocation ------------------------------------------------------
+# --- static_allocation / static_and_dynamic ---------------------------------
 
 
-def test_static_allocation_detected_via_uc_statically_allocated(monkeypatch):
+def test_static_and_dynamic_detected_via_uc_statically_allocated(monkeypatch):
     cfg = _tcb_config(monkeypatch, "ucStaticallyAllocated")
-    assert cfg.static_allocation is True
-
-
-def test_static_allocation_absent_without_tcb_marker(monkeypatch):
-    cfg = _tcb_config(monkeypatch)
+    assert cfg.static_and_dynamic is True
     assert cfg.static_allocation is False
 
 
-def test_static_allocation_falls_back_to_x_idle_task_tcb_symbol(monkeypatch):
-    cfg = _make_config(monkeypatch, symbols={"xIdleTaskTCB"})
+def test_static_allocation_detected_via_x_task_create_static(monkeypatch):
+    cfg = _make_config(monkeypatch, symbol_present={"xTaskCreateStatic"})
     assert cfg.static_allocation is True
+    assert cfg.static_and_dynamic is False
+
+
+def test_static_only_has_api_without_tcb_marker(monkeypatch):
+    """static-only: xTaskCreateStatic exists, ucStaticallyAllocated does not."""
+    cfg = _make_config(monkeypatch, symbol_present={"xTaskCreateStatic"})
+    assert cfg.static_allocation is True
+    assert cfg.static_and_dynamic is False
+
+
+def test_static_dynamic_sets_both_flags(monkeypatch):
+    cfg = _make_config(
+        monkeypatch,
+        fields={"struct tskTaskControlBlock": {"ucStaticallyAllocated"}},
+        symbol_present={"xTaskCreateStatic"},
+    )
+    assert cfg.static_allocation is True
+    assert cfg.static_and_dynamic is True
+
+
+def test_dynamic_only_has_neither_static_flag(monkeypatch):
+    cfg = _tcb_config(monkeypatch)
+    assert cfg.static_allocation is False
+    assert cfg.static_and_dynamic is False
 
 
 # --- TCB optional capability fields -----------------------------------------
@@ -424,13 +450,16 @@ def test_heap_protector_absent_without_symbol(monkeypatch):
 def test_heap_kind_identifies_heap5(monkeypatch):
     cfg = _make_config(
         monkeypatch,
+        types={"BlockLink_t"},
         symbol_present={"vPortDefineHeapRegions", "pxEnd", "xStart", "xEnd"},
     )
     assert cfg.heap_kind == 5
 
 
 def test_heap_kind_identifies_heap4(monkeypatch):
-    cfg = _make_config(monkeypatch, symbol_present={"pxEnd", "xStart"})
+    cfg = _make_config(
+        monkeypatch, types={"BlockLink_t"}, symbol_present={"pxEnd", "xStart"}
+    )
     assert cfg.heap_kind == 4
 
 
@@ -440,12 +469,30 @@ def test_heap_kind_identifies_heap1(monkeypatch):
 
 
 def test_heap_kind_identifies_heap2(monkeypatch):
-    cfg = _make_config(monkeypatch, symbol_present={"xStart", "xEnd"})
+    cfg = _make_config(
+        monkeypatch, types={"BlockLink_t"}, symbol_present={"xStart", "xEnd"}
+    )
     assert cfg.heap_kind == 2
 
 
 def test_heap_kind_none_for_heap3_or_no_heap(monkeypatch):
     cfg = _make_config(monkeypatch)
+    assert cfg.heap_kind is None
+
+
+def test_heap_kind_requires_block_link_type_for_heap4(monkeypatch):
+    """pxEnd without BlockLink_t is not enough to claim heap_4."""
+    cfg = _make_config(monkeypatch, symbol_present={"pxEnd", "xStart"})
+    assert cfg.heap_kind is None
+
+
+def test_heap_kind_ambiguous_overlap_is_unknown(monkeypatch):
+    """heap_1's xNextFreeByte next to a BlockLink heap is not a unique match."""
+    cfg = _make_config(
+        monkeypatch,
+        types={"BlockLink_t"},
+        symbol_present={"pxEnd", "xNextFreeByte"},
+    )
     assert cfg.heap_kind is None
 
 

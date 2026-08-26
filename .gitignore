@@ -29,6 +29,7 @@ venv/
 .mypy_cache/
 
 # Test firmware artifacts (QEMU builds, ELF binaries)
+ci/freertos/snapshot/out/
 tests/fixtures/**/*.elf
 tests/fixtures/**/*.bin
 tests/fixtures/**/*.map

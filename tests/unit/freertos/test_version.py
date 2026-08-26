@@ -27,6 +27,11 @@ def test_validate_version_rejects_invalid_and_unsupported_values(monkeypatch):
     assert "unsupported FreeRTOS version" in warnings[1]
 
 
+def _stub_cu_fallback(monkeypatch) -> None:
+    """Keep CU-scoped fallback off unless a test is exercising it."""
+    monkeypatch.setattr(version, "read_macro_text_in_source", lambda *_a, **_k: None)
+
+
 def test_detect_version_from_macro_triplet(monkeypatch):
     """The tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD int macros win when present."""
     values = {
@@ -35,10 +40,30 @@ def test_detect_version_from_macro_triplet(monkeypatch):
         "tskKERNEL_VERSION_BUILD": 1,
     }
     monkeypatch.setattr(version, "read_macro_int", lambda name: values.get(name))
-    monkeypatch.setattr(version, "read_macro_text", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
     monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
 
     assert version.detect_target_version() == (10, 3, 1)
+
+
+def test_detect_version_switches_to_kernel_source_context(monkeypatch):
+    """A non-kernel CU is repaired by selecting the kernel source context."""
+    values = {
+        "tskKERNEL_VERSION_MAJOR": "11",
+        "tskKERNEL_VERSION_MINOR": "1",
+        "tskKERNEL_VERSION_BUILD": "0",
+    }
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(
+        version,
+        "read_macro_text_in_source",
+        lambda name, source: values[name] if source == "vTaskStartScheduler" else None,
+    )
+    monkeypatch.setattr(version, "read_macro_text", lambda _name: None)
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+
+    assert version.detect_target_version() == (11, 1, 0)
 
 
 @pytest.mark.parametrize(
@@ -52,7 +77,8 @@ def test_detect_version_from_macro_triplet(monkeypatch):
 def test_detect_version_from_version_number_string(monkeypatch, text, expected):
     """The tskKERNEL_VERSION_NUMBER string macro is parsed with the V/+ forms."""
     monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
-    monkeypatch.setattr(version, "read_macro_text", lambda _name: text)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: text)
+    _stub_cu_fallback(monkeypatch)
     monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
 
     assert version.detect_target_version() == expected
@@ -60,7 +86,8 @@ def test_detect_version_from_version_number_string(monkeypatch, text, expected):
 
 def test_detect_version_rejects_invalid_string(monkeypatch):
     monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
-    monkeypatch.setattr(version, "read_macro_text", lambda _name: "unknown")
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: "unknown")
+    _stub_cu_fallback(monkeypatch)
     monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
 
     assert version.detect_target_version() is None
@@ -69,7 +96,8 @@ def test_detect_version_rejects_invalid_string(monkeypatch):
 def test_detect_version_from_gdr_symbol_decimal_fallback(monkeypatch):
     """gdr_freertos_version_num (decimal MMmmpp) is the last-resort escape hatch."""
     monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
-    monkeypatch.setattr(version, "read_macro_text", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
     monkeypatch.setattr(
         version,
         "lookup_symbol",
@@ -81,7 +109,8 @@ def test_detect_version_from_gdr_symbol_decimal_fallback(monkeypatch):
 
 def test_detect_version_from_gdr_symbol_packed_hex_fallback(monkeypatch):
     monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
-    monkeypatch.setattr(version, "read_macro_text", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
     monkeypatch.setattr(
         version,
         "lookup_symbol",
@@ -93,7 +122,8 @@ def test_detect_version_from_gdr_symbol_packed_hex_fallback(monkeypatch):
 
 def test_detect_version_returns_none_when_nothing_exported(monkeypatch):
     monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
-    monkeypatch.setattr(version, "read_macro_text", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
     monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
 
     assert version.detect_target_version() is None
