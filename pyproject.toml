@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Flespark and contributors" }]
-keywords = ["gdb", "rtos", "rt-thread", "embedded", "debug"]
+keywords = ["gdb", "rtos", "rt-thread", "freertos", "embedded", "debug"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -40,6 +40,17 @@ dev = [
     "pre-commit>=3.6",
     "pexpect>=4.9",
 ]
+
+# ---------------------------------------------------------------------------
+# Pyright / basedpyright: point type checkers at the uv-managed virtualenv.
+# Reason: without this, editor/CI type checkers resolve imports against the
+# system interpreter and report dev-only imports (pytest, pexpect) as unresolved.
+# ruff remains the project's linter of record; this block changes no runtime
+# behaviour.
+# ---------------------------------------------------------------------------
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
 
 # ---------------------------------------------------------------------------
 # Ruff: linter + formatter (drop-in replacement for black)

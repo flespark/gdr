@@ -38,6 +38,7 @@ class FreeRtosConfig:
     runtime_counter_bits: int | None = 32
     mini_list: bool | None = None
     tls_field: str | None = None
+    list_item_container_field: str | None = None
     stack_grows_up: bool | None = False
     stack_end_field: str | None = None
     trace_facility: bool = False
@@ -189,6 +190,20 @@ def detect_config() -> FreeRtosConfig:
         (name for name in ("xTLSBlock", "xNewLib_reent") if name in fields),
         None,
     )
+    # Reason: configENABLE_BACKWARD_COMPATIBILITY defaults to 1, which
+    # ``#define pxContainer pvContainer`` (FreeRTOS.h). The default build's
+    # DWARF member is therefore named ``pvContainer``; a non-compatible build
+    # (or a kernel that dropped the macro) uses ``pxContainer``. Access has to
+    # follow whichever spelling actually exists, or list membership reads
+    # would always fail and every non-running task would be mislabelled.
+    cfg.list_item_container_field = next(
+        (
+            name
+            for name in ("pvContainer", "pxContainer")
+            if name in _fields("struct xLIST_ITEM")
+        ),
+        None,
+    )
     cfg.stack_end_field = next(
         (name for name in ("pxEndOfStack", "pxStackEnd") if name in fields),
         None,
@@ -286,6 +301,33 @@ def build_layout(
             tcb_fields["core_affinity"] = StructField(
                 "core_affinity", ("uxCoreAffinityMask",)
             )
+    # Phase 1 detail fields (frt task <name>).  Each is gated on the actual
+    # DWARF member so absent members never render a fabricated column/pair.
+    if "uxMutexesHeld" in cfg.tcb_fields:
+        tcb_fields["mutexes_held"] = StructField("mutexes_held", ("uxMutexesHeld",))
+    if cfg.notifications:
+        tcb_fields["notify_value"] = StructField("notify_value", ("ulNotifiedValue",))
+        tcb_fields["notify_state"] = StructField("notify_state", ("ucNotifyState",))
+    if "ucStaticallyAllocated" in cfg.tcb_fields:
+        tcb_fields["statically_allocated"] = StructField(
+            "statically_allocated", ("ucStaticallyAllocated",)
+        )
+    if "ucDelayAborted" in cfg.tcb_fields:
+        tcb_fields["delay_aborted"] = StructField("delay_aborted", ("ucDelayAborted",))
+    if "iTaskErrno" in cfg.tcb_fields:
+        tcb_fields["errno"] = StructField("errno", ("iTaskErrno",))
+    if cfg.critical_nesting_in_tcb:
+        tcb_fields["critical_nesting"] = StructField(
+            "critical_nesting", ("uxCriticalNesting",)
+        )
+    if cfg.preemption_disable:
+        tcb_fields["preemption_disable"] = StructField(
+            "preemption_disable", ("xPreemptionDisable",)
+        )
+    if cfg.task_attributes:
+        tcb_fields["task_attributes"] = StructField(
+            "task_attributes", ("uxTaskAttributes",)
+        )
     queue_fields: dict[str, StructField] = {
         "length": StructField("length", ("uxLength",), summary=True),
         "count": StructField("count", ("uxMessagesWaiting",), summary=True),
@@ -321,7 +363,12 @@ def build_layout(
                 "next": StructField("next", ("pxNext",)),
                 "previous": StructField("previous", ("pxPrevious",)),
                 "owner": StructField("owner", ("pvOwner",), kind="ptr", summary=True),
-                "container": StructField("container", ("pxContainer",)),
+                # Reason: member name follows the probed spelling (pvContainer
+                # under the default backward-compat build, pxContainer
+                # otherwise); falling back to pxContainer when unknown.
+                "container": StructField(
+                    "container", (cfg.list_item_container_field or "pxContainer",)
+                ),
             },
             display_name="ListItem",
         ),

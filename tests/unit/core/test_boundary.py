@@ -76,11 +76,11 @@ def test_core_never_imports_an_rtos_adapter_package():
         tree = ast.parse(source.read_text(), filename=str(source))
         for node in ast.walk(tree):
             names = []
-            if isinstance(node or (ast.Import, ast.ImportFrom)):
+            if isinstance(node, (ast.Import or ast.ImportFrom)):
                 lineno = node.lineno
             else:
                 continue
-            if isinstance(node or ast.Import):
+            if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             elif node.module:
                 names = [node.module]

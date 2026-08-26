@@ -39,12 +39,17 @@ else:
     _TRAVERSAL_ERRORS = (IndexError, TypeError, ValueError)
 
 
-def _owner_task(pointer):
-    """Cast ListItem.pvOwner (void *) to the DWARF TCB type."""
+def _owner_task(pointer, layout: FreeRtosLayout):
+    """Cast ListItem.pvOwner (void *) back to the DWARF TCB type.
+
+    The TCB type name comes from the layout, not a hard-coded literal, so a
+    renamed/re-typed kernel struct stays correct.
+    """
     try:
         if pointer is None or not int(pointer) or gdb is None:
             return None
-        typ = gdb.lookup_type("struct tskTaskControlBlock").pointer()
+        struct_name = layout.structs["struct tskTaskControlBlock"].struct_name
+        typ = gdb.lookup_type(struct_name).pointer()
         return pointer.cast(typ).dereference()
     except _TRAVERSAL_ERRORS:
         return None
@@ -83,7 +88,7 @@ def _iter_list(
                 warn(f"FreeRTOS list traversal stopped at invalid node {node_addr:#x}")
                 return
             item_layout = layout.structs["struct xLIST_ITEM"]
-            owner = _owner_task(read_field(item, item_layout, "owner"))
+            owner = _owner_task(read_field(item, item_layout, "owner"), layout)
             if owner is not None:
                 yield owner
             node = read_field(item, item_layout, "next")
@@ -96,12 +101,14 @@ def _ready_heads(layout: FreeRtosLayout) -> Iterator:
     table = lookup_symbol(layout.lists["ready"])
     if table is None:
         return
-    try:
-        bounds = table.type.strip_typedefs().range()
-        first, last = int(bounds[0]), int(bounds[1])
-    except _TRAVERSAL_ERRORS:
-        first, last = 0, 256
-    for index in range(first, min(last + 1, first + 256)):
+    # Reason: the priority count come from the probed config (the DWARF array
+    # bound of pxReadyTasksLists), never a guessed (0, 256) fallback which
+    # would wastefully scan empty slots and swallow warnings on a small target.
+    count = layout.config.max_priorities
+    if count is None or count <= 0:
+        warn("FreeRTOS ready-queue priority count is unknown; skipping ready list")
+        return
+    for index in range(count):
         item = _array_item(table, index)
         if item is None:
             return
@@ -116,35 +123,202 @@ def _head(name: str, layout: FreeRtosLayout):
 
 
 def iter_tasks(layout: FreeRtosLayout) -> Iterator[tuple[object, str, int | None]]:
-    """Yield ``(TCB, list-state, core)`` exactly once per target address."""
+    """Yield ``(TCB, state, core)`` exactly once per target address.
+
+    Every unique TCB is classified by the precise per-TCB state algorithm
+    (``task_state``) rather than the list it happened to be reached from; a
+    task can sit on one list while its state is determined by another (e.g. a
+    notification-blocked task's ``xEventListItem`` sits on ``xSuspendedTaskList``
+    but it is ``Blocked``, not ``Suspended``).
+    """
     seen: set[int] = set()
-    sources: list[tuple[Iterator, str]] = []
-    sources.extend((_iter_list(head, layout), "Ready") for head in _ready_heads(layout))
-    for key, state in (
-        ("delayed_1", "Blocked"),
-        ("delayed_2", "Blocked"),
-        ("delayed_current", "Blocked"),
-        ("delayed_overflow", "Blocked"),
-        ("pending", "Pending"),
-        ("suspended", "Suspended"),
-        ("termination", "Deleted/Pending"),
+    sources = [_iter_list(head, layout) for head in _ready_heads(layout)]
+    for key in (
+        "delayed_1",
+        "delayed_2",
+        "delayed_current",
+        "delayed_overflow",
+        "pending",
+        "suspended",
+        "termination",
     ):
         head = _head(key, layout)
         if head is not None:
-            sources.append((_iter_list(head, layout), state))
-    current = current_tasks(layout)
-    current_addrs = {address: core for core, address in current}
-    for iterator, state in sources:
+            sources.append(_iter_list(head, layout))
+    for iterator in sources:
         for task in iterator:
             address = value_address(task)
             if not address or address in seen:
                 continue
             seen.add(address)
-            core = current_addrs.get(address)
-            yield task, "Running" if core is not None else state, core
+            yield task, *task_state(task, layout)
+
+
+def _next_global(name: str, deref: bool = False) -> int | None:
+    """Return the address of a scheduler-list container, or ``None``.
+
+    ``pxDelayedTaskList`` / ``pxOverflowDelayedTaskList`` are pointers to the
+    *active* list, so ListItem containers point at the dereferenced value;
+    every other list is a plain ``List_t`` symbol.
+    """
+    value = lookup_symbol(name)
+    if value is None:
+        return None
+    if deref:
+        value = safe_dereference(value)
+        if value is None:
+            return None
+    return value_address(value)
+
+
+def task_state(tcb, layout: FreeRtosLayout) -> tuple[str, int | None]:
+    """Return ``(state_string, core_index_or_None)`` per the \u00a73.3 algorithm.
+
+    Strictly mirrors ``eTaskGetState`` (tasks.c): checks the current-task/run
+    state first, then the event list item's container, then the state list
+    item's container against the delayed/suspended/termination lists, and
+    finishes with a default.  State strings are exactly ``Running``,
+    ``Running(yielding)``, ``Ready``, ``Blocked``, ``Suspended``, ``Deleted``.
+    """
+    sl = layout.structs["struct tskTaskControlBlock"]
+    item_layout = layout.structs["struct xLIST_ITEM"]
+    si = read_field(tcb, sl, "state_list_item")
+    ei = read_field(tcb, sl, "event_list_item")
+    # Reason: pxContainer is a List_t * pointer member; comparing list
+    # membership needs the pointer value (the list address it points to), not
+    # value_address() which yields the address of the pointer field itself.
+    state_addr = safe_int(read_field(si, item_layout, "container")) if si else None
+    event_addr = safe_int(read_field(ei, item_layout, "container")) if ei else None
+
+    # Step 1: running task.
+    if not layout.config.smp:
+        current = safe_dereference(lookup_symbol("pxCurrentTCB"))
+        if current is not None and value_address(current) == value_address(tcb):
+            return "Running", 0
+    else:
+        run_state = read_int(read_field(tcb, sl, "run_state"))
+        # Step 1b: scheduled-to-yield still occupies a core.
+        if run_state is not None and run_state == _TASK_SCHEDULED_TO_YIELD:
+            core = core_of(tcb, layout)
+            if core is not None:
+                return "Running(yielding)", core
+            return "Ready", None
+        if run_state is not None and 0 <= run_state < layout.config.number_of_cores:
+            return "Running", run_state
+
+    # Step 2: event item on the pending-ready list => ready.
+    if event_addr is not None and event_addr == _next_global(layout.lists["pending"]):
+        return "Ready", None
+
+    # Step 3: state item on the active delayed list => blocked.
+    delayed = _next_global(layout.lists["delayed_current"], deref=True)
+    overflow = _next_global(layout.lists["delayed_overflow"], deref=True)
+    if state_addr is not None and state_addr in (delayed, overflow):
+        return "Blocked", None
+
+    # Step 4: state item on the suspended list => blocked unless fully idle.
+    suspended = _next_global(layout.lists["suspended"])
+    if state_addr is not None and state_addr == suspended:
+        if event_addr:
+            return "Blocked", None
+        if _waiting_notification(tcb, layout):
+            return "Blocked", None
+        return "Suspended", None
+
+    # Step 5: state item null or on the termination list => deleted.
+    termination = _next_global(layout.lists["termination"])
+    # Reason: only a *confirmed* NULL container (0) or the termination list
+    # means the task object is gone (eTaskGetState reports NULL as deleted,
+    # tasks.c:2610-2615). An unreadable container (None) is unknown: rendering
+    # it as a definite Deleted would turn every read failure into a wrong,
+    # confident answer, so it falls through to the default below.
+    if state_addr == 0 or state_addr == termination:
+        return "Deleted", None
+
+    # Step 6: default, SMP running check then ready.
+    if layout.config.smp:
+        run_state = read_int(read_field(tcb, sl, "run_state"))
+        if run_state is not None and 0 <= run_state < layout.config.number_of_cores:
+            return "Running", run_state
+    return "Ready", None
+
+
+_TASK_SCHEDULED_TO_YIELD = -2
+
+
+def _waiting_notification(tcb, layout: FreeRtosLayout) -> bool:
+    """Whether any notification slot is waiting (ucNotifyState == 1).
+
+    ``ucNotifyState`` only became an array in V10.4.0
+    (``configTASK_NOTIFICATION_ARRAY_ENTRIES``); before that it is a plain
+    scalar member.  Subscripting the scalar raises, which would silently
+    answer "not waiting" and mislabel a notification-blocked task as
+    ``Suspended``, so the shape comes from the probed config.
+    """
+    sl = layout.structs["struct tskTaskControlBlock"]
+    states = read_field(tcb, sl, "notify_state")
+    if states is None:
+        return False
+    if not layout.config.notification_array:
+        return read_int(states) == 1  # WAITING
+    try:
+        for index in range(layout.config.notification_count):
+            if read_int(states[index]) == 1:  # WAITING
+                return True
+    except _TRAVERSAL_ERRORS:
+        pass
+    return False
+
+
+def core_of(tcb, layout: FreeRtosLayout) -> int | None:
+    """Return the core index for a running/yielding task, else ``None``.
+
+    When ``xTaskRunState == -2`` (about to yield) the task still sits on a
+    core, so scan ``pxCurrentTCBs[]`` for a pointer matching this TCB.
+    """
+    if not layout.config.smp:
+        return None
+    sl = layout.structs["struct tskTaskControlBlock"]
+    run_state = read_int(read_field(tcb, sl, "run_state"))
+    if run_state is None:
+        return None
+    if 0 <= run_state < layout.config.number_of_cores:
+        return run_state
+    if run_state == _TASK_SCHEDULED_TO_YIELD:
+        tcb_addr = value_address(tcb)
+        value = lookup_symbol("pxCurrentTCBs")
+        for core in range(layout.config.number_of_cores):
+            pointer = _array_item(value, core)
+            task = safe_dereference(pointer)
+            if task is not None and value_address(task) == tcb_addr:
+                return core
+    return None
+
+
+def is_idle_task(tcb, layout: FreeRtosLayout) -> bool:
+    """Return whether *tcb* is the idle task.
+
+    SMP kernels set ``uxTaskAttributes & taskATTRIBUTE_IS_IDLE`` on the idle
+    TCB; single-core kernels expose the idle handle as ``xIdleTaskHandles[0]``
+    (V11 always defines the array) or the V10 scalar ``xIdleTaskHandle``.
+    """
+    sl = layout.structs["struct tskTaskControlBlock"]
+    attributes = read_int(read_field(tcb, sl, "task_attributes"))
+    if attributes is not None and (attributes & 1):  # taskATTRIBUTE_IS_IDLE
+        return True
+    tcb_addr = value_address(tcb)
+    if lookup_symbol("xIdleTaskHandles") is not None:
+        handle = _array_item(lookup_symbol("xIdleTaskHandles"), 0)
+        task = safe_dereference(handle)
+        return task is not None and value_address(task) == tcb_addr
+    if lookup_symbol("xIdleTaskHandle") is not None:
+        task = safe_dereference(lookup_symbol("xIdleTaskHandle"))
+        return task is not None and value_address(task) == tcb_addr
+    return False
 
 
 def current_tasks(layout: FreeRtosLayout) -> list[tuple[int, int]]:
+    """Return ``[(core, TCB address)]`` for the currently running tasks."""
     if layout.config.smp:
         value = lookup_symbol("pxCurrentTCBs")
         result = []
@@ -162,11 +336,30 @@ def system_value(name: str) -> int | None:
     return read_int(lookup_symbol(name))
 
 
-def list_count(name: str, layout: FreeRtosLayout) -> int | None:
-    head = _head(name, layout)
-    if head is None:
-        return None
+def _list_count_of(head, layout: FreeRtosLayout) -> int | None:
     try:
         return read_int(read_field(head, layout.structs["struct xLIST"], "count"))
     except _TRAVERSAL_ERRORS:
         return None
+
+
+def list_count(name: str, layout: FreeRtosLayout) -> int | None:
+    """Return the item count of a scheduler list, or ``None`` when unknown.
+
+    ``pxReadyTasksLists`` is an *array* of ``List_t`` (one per priority) rather
+    than a single list: GDB resolves a struct-member access on the array to
+    element 0, so reading it like a plain list would silently report only the
+    priority-0 count. Sum every priority instead.
+    """
+    if name == "ready":
+        total: int | None = None
+        for head in _ready_heads(layout):
+            count = _list_count_of(head, layout)
+            if count is None:
+                return None
+            total = count if total is None else total + count
+        return total
+    head = _head(name, layout)
+    if head is None:
+        return None
+    return _list_count_of(head, layout)

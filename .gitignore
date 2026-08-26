@@ -48,6 +48,4 @@ tmp/
 ref/
 
 # DtoD workflow (pi extension): run artifacts and local type-only dev deps
-.pi/dtod/runs/
-.pi/extensions/dtod/node_modules/
-.pi/extensions/dtod/package-lock.json
+.pi/

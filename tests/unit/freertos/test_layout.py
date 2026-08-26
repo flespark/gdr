@@ -296,6 +296,39 @@ def test_max_priorities_none_when_list_symbol_missing(monkeypatch):
     assert cfg.max_priorities is None
 
 
+# --- list_item_container_field (pxContainer/pvContainer spelling) ----------
+
+
+def test_container_field_detects_pv_container_spelling(monkeypatch):
+    """Default backward-compat build emits the member as ``pvContainer``."""
+    cfg = _make_config(monkeypatch, fields={"struct xLIST_ITEM": {"pvContainer"}})
+    assert cfg.list_item_container_field == "pvContainer"
+    field = (
+        build_layout(cfg, (10, 3, 1)).structs["struct xLIST_ITEM"].fields["container"]
+    )
+    assert field.path == ("pvContainer",)
+
+
+def test_container_field_detects_px_container_spelling(monkeypatch):
+    """Non-backward-compatible build emits the member as ``pxContainer``."""
+    cfg = _make_config(monkeypatch, fields={"struct xLIST_ITEM": {"pxContainer"}})
+    assert cfg.list_item_container_field == "pxContainer"
+    field = (
+        build_layout(cfg, (11, 1, 0)).structs["struct xLIST_ITEM"].fields["container"]
+    )
+    assert field.path == ("pxContainer",)
+
+
+def test_container_field_defaults_to_px_container_when_unknown():
+    """No probed member name defaults the access path to pxContainer."""
+    field = (
+        build_layout(FreeRtosConfig(), (10, 3, 1))
+        .structs["struct xLIST_ITEM"]
+        .fields["container"]
+    )
+    assert field.path == ("pxContainer",)
+
+
 # --- list_integrity_check ---------------------------------------------------
 
 

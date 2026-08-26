@@ -30,10 +30,12 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   commands.py          RT-Thread command tree (`rtt threads`, `rtt heap`, ...)
 freertos/              FreeRTOS adapter
   layout.py            merged config probes, DWARF paths and capability metadata
-  navigation.py        layout-driven scheduler-list traversal
+  navigation.py        layout-driven scheduler-list traversal and per-TCB state
   adapter.py           complete task model, conversion, summaries and tables
+  details.py           `frt task <name>` vertical detail rendering
   version.py           FreeRTOS version policy and target symbols
-  commands.py          FreeRTOS command tree (`frt tasks`, `frt system`)
+  commands.py          FreeRTOS command tree (`frt tasks/task/system/help/objects/heap`,
+                       7 plural + 7 singular + 6 aliases)
 gdr/                   semantic command/function core ($gdr_task, $gdr_tasks,
                        $gdr_object; internal renderers, not gdr subcommands)
 tests/

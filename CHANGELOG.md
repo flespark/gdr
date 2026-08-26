@@ -20,6 +20,20 @@ All notable changes to GDR are documented in this file.
   `delay_abort`, `heap_protector`).
 - RTOS-neutral `read_macro_text(name)` bridge primitive for reading GDB
   macro text without CU-specific assumptions.
+- FreeRTOS command tree expanded: 7 plural list commands (`tasks`, `queues`,
+  `semaphores`, `mutexes`, `timers`, `eventgroups`, `streambuffers`), 7
+  singular detail commands (`frt task <name>`, etc.), standalone `help`,
+  `system`, `objects`, `heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/
+  `egs`/`sbs`).
+- FreeRTOS `frt task <name>` vertical detail with per-TCB state, high-water
+  mark, notification slots, wake tick, blocked-on, and mutexes-held.
+- FreeRTOS per-TCB state determination aligned with `eTaskGetState`
+  (Running/Ready/Blocked/Suspended/Deleted, SMP Running(yielding)).
+- FreeRTOS `HighWater` column in `frt tasks`: stack-fill scan using
+  `[pxStack, pxTopOfStack)` window (no `pxEndOfStack` required).
+- FreeRTOS Tab completion via Python `complete()`: command vocabulary as
+  first word, live task names for singular detail commands.
+- FreeRTOS object names with spaces now reachable (e.g. `frt task Tmr Svc`).
 
 ### Changed
 

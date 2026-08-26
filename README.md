@@ -95,10 +95,8 @@ warning: target RT-Thread version not exported; cannot verify version
 | Command | Description |
 |---------|-------------|
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
-| `rtt <objects>` | List the kernel object type collective status |
-| `rtt <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
-| `frt tasks` | List FreeRTOS tasks |
-| `frt system` | Show the FreeRTOS system summary |
+| `<rtos> <objects>` | List the kernel object type collective status, show supported command usage and aliases by `<rtos> help` |
+| `<rtos> <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
 
 ## Convenience functions
 

@@ -50,7 +50,7 @@ def _list_walk(monkeypatch, next_nodes: list[_Pointer], *, dereference=True):
     monkeypatch.setattr(
         navigation,
         "_owner_task",
-        lambda pointer: task if pointer is owner_pointer else None,
+        lambda pointer, _layout: task if pointer is owner_pointer else None,
     )
     return layout, head, task, calls
 
@@ -130,3 +130,32 @@ def test_list_count_reads_the_layout_count_field(monkeypatch):
 
     assert navigation.list_count("suspended", layout) == 3
     assert calls == [(layout.structs["struct xLIST"], "count")]
+
+
+def test_list_count_sums_every_ready_priority_list(monkeypatch):
+    """pxReadyTasksLists is an array: the count must cover all priorities.
+
+    GDB resolves a struct-member access on an array value to element 0, so
+    reading the ready table like a plain ``List_t`` reports only the
+    priority-0 count and silently under-reports every higher-priority ready
+    task in ``frt system``.
+    """
+    layout = build_layout(FreeRtosConfig(max_priorities=4))
+    counts = {0: 1, 1: 0, 2: 2, 3: 1}
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: counts)
+    monkeypatch.setattr(navigation, "_array_item", lambda table, index: table[index])
+    monkeypatch.setattr(
+        navigation, "read_field", lambda value, _struct_layout, _field: value
+    )
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+
+    assert navigation.list_count("ready", layout) == 4
+
+
+def test_list_count_ready_is_unknown_without_a_priority_count(monkeypatch):
+    """An unknown priority count degrades to None, never a partial sum."""
+    layout = build_layout(FreeRtosConfig(max_priorities=None))
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: {0: 3})
+    monkeypatch.setattr(navigation, "warn", lambda _message: None)
+
+    assert navigation.list_count("ready", layout) is None
