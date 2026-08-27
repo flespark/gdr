@@ -8,6 +8,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.adapter import FreeRtosAdapter, iter_task_names
+from freertos.navigation import discover
 from gdr.adapter_api import active
 from gdr.commands import (
     render_object_detail,
@@ -15,7 +16,7 @@ from gdr.commands import (
     render_system,
     render_tasks,
 )
-from gdr.gdb_bridge import gdb_command_guard, info, warn
+from gdr.gdb_bridge import gdb_command_guard, info, print_table, warn
 
 _command_registered = False
 _alias_registered = False
@@ -105,6 +106,27 @@ def render_heap() -> None:
 
 
 @gdb_command_guard
+def render_object_summary() -> None:
+    """Render the per-kind object summary with provenance (``frt objects``).
+
+    The core's neutral ``render_objects`` only has Kind/Count and cannot
+    express the channel breakdown, so the summary is rendered here with the
+    adapter-owned provenance table and its limitation messages.
+    """
+    adapter = active()
+    if adapter is None:
+        warn("run `gdr init <rtos> <version>` first")
+        return
+    if not isinstance(adapter, FreeRtosAdapter):
+        warn("frt objects requires the FreeRTOS adapter")
+        return
+    table = adapter.object_summary_table()
+    for message in table.messages:
+        info(message)
+    print_table(table.rows, table.headers, elastic=table.elastic)
+
+
+@gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one FreeRTOS command without depending on GDB."""
     args = argument.split()
@@ -128,7 +150,7 @@ def _invoke_command(argument: str) -> None:
     elif command == "system":
         render_system()
     elif command == "objects":
-        render_objects()
+        render_object_summary()
     elif command == "heap":
         render_heap()
     elif command in _OBJECT_COMMANDS:
@@ -156,17 +178,18 @@ def _prefixes(word: str | None, candidates: list[str]) -> list[str]:
 def _object_names(kind: str) -> list[str]:
     """Return live object names of *kind* for tab completion.
 
-    Only tasks are enumerable today; other kinds yield ``[]`` until their
-    discovery channel lands. Degrades to ``[]`` on any traversal failure so
-    tab completion never raises inside GDB.
+    Tasks complete from the scheduler snapshot; other kinds complete from
+    the discovery channels' names (registry names, static symbol names).
+    Degrades to ``[]`` on any traversal failure so tab completion never
+    raises inside GDB.
     """
     adapter = active()
     if not isinstance(adapter, FreeRtosAdapter):
         return []
     try:
-        if kind != "task":
-            return []
-        return list(iter_task_names(adapter.layout))
+        if kind == "task":
+            return list(iter_task_names(adapter.layout))
+        return sorted(obj.name for obj in discover(kind, adapter.layout) if obj.name)
     except Exception:
         # Reason: this is the GDB completion boundary (``complete()``), not a
         # command body. GDB completion must never raise or print -- the

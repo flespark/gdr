@@ -64,3 +64,27 @@ def test_gdr_object_returns_null_for_missing(gdb_session):
     output = gdb_session.run('p $gdr_task("no_such_task")')
     assert "= 0" in output
     _assert_no_python_noise(output)
+
+
+def test_gdr_object_queue_by_name_and_address(gdb_session):
+    """$gdr_object resolves a queue by symbol name and by 0x address alike.
+
+    Both forms must yield the same native QueueDefinition value: the name
+    form goes through the discovery channels, the address form through
+    resolve_object's hex parsing, and the final cast is the same.
+    """
+    output = gdb_session.run_python(
+        """
+import gdb
+by_name = gdb.parse_and_eval('$gdr_object("queue", "gdr_empty_queue")')
+handle = int(gdb.parse_and_eval('gdr_empty_queue'))
+by_addr = gdb.parse_and_eval(f'$gdr_object("queue", "{hex(handle)}")')
+print(f"tag={by_name.type.strip_typedefs().tag}")
+print(f"same={int(by_name.address) == int(by_addr.address)}")
+print(f"length={int(by_name['uxLength'])}")
+"""
+    )
+    _assert_no_python_noise(output)
+    assert "tag=QueueDefinition" in output
+    assert "same=True" in output
+    assert "length=2" in output

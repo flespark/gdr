@@ -38,10 +38,19 @@ def test_public_commands_reach_their_semantic_renderer(command, expected, monkey
     monkeypatch.setattr(
         commands, "render_system", lambda: calls.append(("system", None))
     )
+
+    def render_objects(kind: str = ""):
+        # Reason: the bare ``objects`` route owns its provenance summary; a
+        # call with no kind would silently lose the Sources column.
+        if not kind:
+            raise AssertionError("'objects' must route to render_object_summary")
+        calls.append(("objects", kind))
+
+    monkeypatch.setattr(commands, "render_objects", render_objects)
     monkeypatch.setattr(
         commands,
-        "render_objects",
-        lambda kind="": calls.append(("objects", kind or None)),
+        "render_object_summary",
+        lambda: calls.append(("objects", None)),
     )
     monkeypatch.setattr(commands, "render_heap", lambda: calls.append(("heap", None)))
 
@@ -306,3 +315,72 @@ def test_plural_command_with_extra_words_still_rejected(monkeypatch):
 
     assert calls == []
     assert warnings == [commands._USAGE]
+
+
+def test_objects_summary_headers_and_sources(monkeypatch):
+    """``frt objects`` renders Kind/Count/Sources with a channel breakdown.
+
+    The core renderer only knows Kind/Count; the FreeRTOS summary owns the
+    provenance model, so the table must carry the per-channel source counts.
+    """
+    from gdr.adapter_api import ObjectTable
+
+    class _SummaryAdapter:
+        def object_summary_table(self) -> ObjectTable:
+            return ObjectTable(
+                headers=["Kind", "Count", "Sources"],
+                rows=[
+                    ["task", "16", "scheduler=16"],
+                    ["queue", "3", "symbol=3 registry=1"],
+                ],
+                messages=["limitation note"],
+                elastic=("Sources",),
+            )
+
+    messages: list[str] = []
+    captured: dict[str, object] = {"messages": messages}
+    monkeypatch.setattr(commands, "FreeRtosAdapter", _SummaryAdapter)
+    monkeypatch.setattr(commands, "active", lambda: _SummaryAdapter())
+    monkeypatch.setattr(commands, "info", messages.append)
+    monkeypatch.setattr(
+        commands,
+        "print_table",
+        lambda rows, headers, elastic=(): captured.update(
+            rows=rows, headers=headers, elastic=elastic
+        ),
+    )
+
+    commands.render_object_summary()
+
+    assert captured["headers"] == ["Kind", "Count", "Sources"]
+    assert captured["rows"] == [
+        ["task", "16", "scheduler=16"],
+        ["queue", "3", "symbol=3 registry=1"],
+    ]
+    assert captured["messages"] == ["limitation note"]
+    assert captured["elastic"] == ("Sources",)
+
+
+def test_complete_second_arg_walks_discovered_object_names(monkeypatch):
+    """Non-task detail commands complete against discovery-channel names."""
+    from freertos.navigation import DiscoveredObject
+
+    adapter = _FakeAdapter()
+    monkeypatch.setattr(commands, "FreeRtosAdapter", _FakeAdapter)
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        commands,
+        "discover",
+        lambda _kind, _layout: [
+            DiscoveredObject(
+                kind="queue", address=0x1, name="gdr_queue", source="registry"
+            ),
+            DiscoveredObject(
+                kind="queue", address=0x2, name="gdr_other", source="symbol"
+            ),
+        ],
+    )
+
+    candidates = commands._complete("queue gdr_", "gdr_")
+
+    assert candidates == ["gdr_other", "gdr_queue"]

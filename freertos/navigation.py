@@ -1,9 +1,17 @@
-"""Safe traversal of FreeRTOS scheduler lists and system globals."""
+"""Safe traversal of FreeRTOS scheduler lists and system globals.
+
+Also owns the six-channel kernel-object discovery model: every object the
+commands can name or count comes from one of the ``iter_*`` channels below,
+and each :class:`DiscoveredObject` carries the channel it was found by so
+rendering can show provenance instead of pretending the enumeration is
+complete (FreeRTOS keeps no global registry for most object kinds).
+"""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 try:
     import gdb
@@ -11,16 +19,19 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.layout import FreeRtosLayout
-from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
+from gdr.constants import GDR_MAX_CSTRING_LENGTH, GDR_MAX_TRAVERSAL_COUNT
 from gdr.gdb_bridge import (
+    get_arch_info,
+    is_plain_identifier,
     lookup_symbol,
+    read_cstring,
     read_int,
     safe_dereference,
     safe_int,
     value_address,
     warn,
 )
-from gdr.layout import read_field
+from gdr.layout import member_offset, read_field, read_path
 
 # TODO: replace by exception guard
 # Exception types we degrade from during scheduler-list traversal.  Stored at
@@ -46,14 +57,7 @@ def _owner_task(pointer, layout: FreeRtosLayout):
     The TCB type name comes from the layout, not a hard-coded literal, so a
     renamed/re-typed kernel struct stays correct.
     """
-    try:
-        if pointer is None or not int(pointer) or gdb is None:
-            return None
-        struct_name = layout.structs["struct tskTaskControlBlock"].struct_name
-        typ = gdb.lookup_type(struct_name).pointer()
-        return pointer.cast(typ).dereference()
-    except _TRAVERSAL_ERRORS:
-        return None
+    return _cast_owner(pointer, layout, "struct tskTaskControlBlock")
 
 
 def _array_item(value, index):
@@ -88,9 +92,17 @@ def _mapped_ranges() -> tuple[tuple[int, int], ...]:
 
 
 def _iter_list(
-    head, layout: FreeRtosLayout, max_count: int = GDR_MAX_TRAVERSAL_COUNT
+    head,
+    layout: FreeRtosLayout,
+    max_count: int = GDR_MAX_TRAVERSAL_COUNT,
+    owner_converter=None,
 ) -> Iterator:
-    """Yield TCBs from a List_t, stopping on corruption or a bounded count."""
+    """Yield owner structs from a List_t, stopping on corruption or a bound.
+
+    The default owner converter casts ``pvOwner`` to the TCB type; timer
+    lists carry a ``Timer_t *`` owner instead, so channels may pass their own
+    converter (resolved at call time so tests can monkeypatch ``_owner_task``).
+    """
     if head is None:
         return
     try:
@@ -123,7 +135,9 @@ def _iter_list(
                 warn(f"FreeRTOS list traversal stopped at invalid node {node_addr:#x}")
                 return
             item_layout = layout.structs["struct xLIST_ITEM"]
-            owner = _owner_task(read_field(item, item_layout, "owner"), layout)
+            owner = (owner_converter or _owner_task)(
+                read_field(item, item_layout, "owner"), layout
+            )
             if owner is not None:
                 yield owner
             node = read_field(item, item_layout, "next")
@@ -402,3 +416,582 @@ def list_count(name: str, layout: FreeRtosLayout) -> int | None:
     if head is None:
         return None
     return _list_count_of(head, layout)
+
+
+# ---------------------------------------------------------------------------
+# Object discovery (six-channel provenance model)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DiscoveredObject:
+    """One kernel object found by a discovery channel.
+
+    Attributes:
+        kind: Semantic kind: ``"task"``, ``"queue"``, ``"semaphore"``,
+            ``"mutex"``, ``"timer"``, ``"eventgroup"`` or ``"streambuffer"``.
+        address: Target address of the object structure.
+        name: Display name when the channel provides one (registry name,
+            static symbol name, timer name); ``None`` otherwise.
+        source: Discovery channel: ``"mpu-pool"``, ``"registry"``,
+            ``"active"``, ``"symbol"``, ``"waiter"`` or ``"user"``.
+        inferred_kind: True when the channel cannot tell the precise kind.
+            Registry and MPU-pool queue slots also cover semaphores, mutexes
+            and queue sets; refinement needs Queue_t's ``ucQueueType``.
+    """
+
+    kind: str
+    address: int
+    name: str | None = None
+    source: str = ""
+    inferred_kind: bool = False
+
+
+# Static-buffer typedef names (include/FreeRTOS.h) -> semantic kind.  GDB
+# keeps the declared typedef spelling in the symbol's type name, so a
+# ``static StaticSemaphore_t`` variable stays distinguishable from
+# ``StaticQueue_t`` even though both strip to the same struct.
+_KIND_BY_STATIC_TYPE: dict[str, str] = {
+    "StaticTask_t": "task",
+    "StaticQueue_t": "queue",
+    "StaticSemaphore_t": "semaphore",
+    "StaticEventGroup_t": "eventgroup",
+    "StaticTimer_t": "timer",
+    "StaticStreamBuffer_t": "streambuffer",
+    "StaticMessageBuffer_t": "streambuffer",
+}
+
+# Handle typedef names (task.h/queue.h/semphr.h/timers.h/event_groups.h/
+# stream_buffer.h/message_buffer.h) -> semantic kind.  Queue-set handles are
+# queues themselves and count as ``queue``.
+_KIND_BY_HANDLE_TYPE: dict[str, str] = {
+    "TaskHandle_t": "task",
+    "QueueHandle_t": "queue",
+    "QueueSetHandle_t": "queue",
+    "QueueSetMemberHandle_t": "queue",
+    "SemaphoreHandle_t": "semaphore",
+    "TimerHandle_t": "timer",
+    "EventGroupHandle_t": "eventgroup",
+    "StreamBufferHandle_t": "streambuffer",
+    "MessageBufferHandle_t": "streambuffer",
+}
+
+
+def _cstring(value, max_len: int = GDR_MAX_CSTRING_LENGTH) -> str | None:
+    """Read a ``char*`` name and stop at the first NUL.
+
+    A bounded ``Value.string(length=N)`` read carries embedded NULs plus
+    whatever follows the string (GDB manual); names are C strings, so
+    anything after the first NUL is filler that would poison name matching
+    and table width.
+    """
+    raw = read_cstring(value, max_len)
+    if raw is None:
+        return None
+    return raw.split("\x00", 1)[0]
+
+
+def iter_registry_entries(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
+    """Yield registered queue-family objects from ``xQueueRegistry``.
+
+    Scans the whole array and never stops at the first empty slot:
+    ``vQueueUnregisterQueue`` leaves holes behind later entries
+    (queue.c), and ``vQueueAddToRegistry`` only fills the first free slot.
+    """
+    if not layout.config.queue_registry:
+        return
+    table = lookup_symbol("xQueueRegistry")
+    if table is None:
+        return
+    size = layout.config.queue_registry_size
+    if size <= 0:
+        return
+    for index in range(size):
+        item = _array_item(table, index)
+        if item is None:
+            continue
+        name_value = read_path(item, ("pcQueueName",))
+        handle = read_int(read_path(item, ("xHandle",)))
+        # Reason: an empty slot is officially pcQueueName == NULL; requiring
+        # a non-null handle too keeps a half-cleared slot from resurrecting.
+        if name_value is None or not handle:
+            continue
+        name = _cstring(name_value)
+        if not name:
+            continue
+        # Reason: the registry stores QueueHandle_t, which also covers
+        # semaphores, mutexes and queue sets; only ucQueueType
+        # (configUSE_TRACE_FACILITY) tells them apart, so the precise kind
+        # is refined by the queue-discrimination phase.
+        yield DiscoveredObject(
+            kind="queue",
+            address=handle,
+            name=name,
+            source="registry",
+            inferred_kind=True,
+        )
+
+
+def _info_variables_text() -> str:
+    """Return ``info variables`` output, or ``""`` when unavailable."""
+    if gdb is None:
+        return ""
+    try:
+        return gdb.execute("info variables", to_string=True) or ""
+    except Exception:
+        warn("symbol object scan failed: 'info variables' is unavailable")
+        return ""
+
+
+# GDB's ``info variables`` prints one declaration per line as
+# ``<line>:	[static ][const ]<type> <name>[<dim>];``.  The type is the
+# typedef spelling used at the declaration site.
+_DECLARATION_RE = re.compile(
+    r"^\s*(?:[0-9]+:\s*)?(?:static\s+)?(?:const\s+)?(?:volatile\s+)?"
+    r"([A-Za-z_]\w*)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*;"
+)
+
+
+def _iter_declared_variables(text: str) -> Iterator[tuple[str, str]]:
+    """Yield ``(type_name, symbol_name)`` pairs from ``info variables``.
+
+    Stops at the ``Non-debugging symbols:`` section: those entries carry no
+    type information and cannot be classified by typedef name.
+    """
+    for line in text.splitlines():
+        if line.strip().startswith("Non-debugging symbols:"):
+            return
+        match = _DECLARATION_RE.match(line)
+        if match is None:
+            continue
+        yield match.group(1), match.group(2)
+
+
+def _scan_symbol_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:  # noqa: ARG001
+    """One pass of the symbol channel; the caller caches its result.
+
+    The layout argument is kept for the uniform channel signature even
+    though a symbol scan is layout-independent.
+    """
+    for type_name, symbol_name in _iter_declared_variables(_info_variables_text()):
+        kind = _KIND_BY_STATIC_TYPE.get(type_name)
+        if kind is None:
+            kind = _KIND_BY_HANDLE_TYPE.get(type_name)
+        if kind is None:
+            continue
+        value = lookup_symbol(symbol_name)
+        if value is None:
+            continue
+        # Reason: a Static*_t variable IS the object buffer (tasks.c passes
+        # pxTaskBuffer straight to the TCB), so its symbol address is the
+        # object address; a *Handle_t variable holds a pointer to the object,
+        # so the pointer value is. Mixing the two up yields fake objects in
+        # .bss that still cast and read plausibly.
+        if type_name in _KIND_BY_STATIC_TYPE:
+            address = value_address(value)
+        else:
+            address = safe_int(value)
+        if not address:
+            continue
+        yield DiscoveredObject(
+            kind=kind, address=address, name=symbol_name, source="symbol"
+        )
+
+
+_SYMBOL_OBJECT_CACHE: tuple[DiscoveredObject, ...] | None = None
+
+
+def reset_symbol_object_cache() -> None:
+    """Drop the cached symbol-channel scan (tests and repeated init)."""
+    global _SYMBOL_OBJECT_CACHE
+    _SYMBOL_OBJECT_CACHE = None
+
+
+def iter_static_symbol_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
+    """Yield static-symbol objects, scanning DWARF once per session.
+
+    The first call runs ``info variables`` and caches the result; later
+    calls reuse it because the session's symbol table cannot change while
+    the target is attached and the scan is the most expensive channel on
+    large firmwares.  ``reset_symbol_object_cache()`` forces a fresh scan.
+    """
+    global _SYMBOL_OBJECT_CACHE
+    if _SYMBOL_OBJECT_CACHE is None:
+        _SYMBOL_OBJECT_CACHE = tuple(_scan_symbol_objects(layout))
+    yield from _SYMBOL_OBJECT_CACHE
+
+
+def _pointer_size() -> int:
+    """Return the target pointer width in bytes (32-bit fallback)."""
+    arch = get_arch_info()
+    if arch is not None and arch.ptrsize in (4, 8):
+        return arch.ptrsize
+    warn("target pointer width unknown; assuming 32-bit for MPU object pool")
+    return 4
+
+
+def _value_array_bound(value) -> int | None:
+    """Return the element count of an array value, or ``None``."""
+    try:
+        count = value.type.strip_typedefs().range()[1] + 1
+    except _TRAVERSAL_ERRORS:
+        return None
+    return count if count > 0 else None
+
+
+# ulKernelObjectType values (portable/Common/mpu_wrappers_v2.c).
+_MPU_KIND_BY_TYPE: dict[int, str] = {
+    1: "queue",  # also covers semaphore/mutex/queue-set/set-member
+    2: "task",
+    3: "streambuffer",
+    4: "eventgroup",
+    5: "timer",
+}
+
+
+def iter_mpu_pool_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
+    """Yield objects from the MPU kernel object pool, if present.
+
+    ``xKernelObjectPool`` is a file-static array (mpu_wrappers_v2.c), so the
+    lookup must use the static-symbol path.  Slots with an internal handle of
+    0 (empty) or ~0 (reserved while an object is mid-create) are skipped; the
+    ~0 sentinel is compared at the target pointer width.
+    """
+    if not layout.config.mpu_object_pool:
+        return
+    pool = lookup_symbol("xKernelObjectPool")
+    if pool is None:
+        return
+    count = _value_array_bound(pool)
+    if count is None:
+        warn("xKernelObjectPool has no decodable array bound; skipping MPU pool")
+        return
+    mask = (1 << (8 * _pointer_size())) - 1
+    for index in range(count):
+        item = _array_item(pool, index)
+        if item is None:
+            continue
+        handle = read_int(read_path(item, ("xInternalObjectHandle",)))
+        if not handle or handle == mask:
+            continue
+        type_code = read_int(read_path(item, ("ulKernelObjectType",)))
+        if type_code is None:
+            continue
+        kind = _MPU_KIND_BY_TYPE.get(type_code)
+        if kind is None:
+            continue
+        # Reason: KERNEL_OBJECT_TYPE_QUEUE also covers queue sets and set
+        # members (mpu_wrappers_v2.c); only the Queue_t fields can tell, so
+        # that kind is flagged inferred until the queue discriminator lands.
+        yield DiscoveredObject(
+            kind=kind,
+            address=handle,
+            name=None,
+            source="mpu-pool",
+            inferred_kind=type_code == 1,
+        )
+
+
+def _cast_owner(pointer, layout: FreeRtosLayout, struct_key: str):
+    """Cast a ListItem owner pointer to a layout-described struct value."""
+    try:
+        if pointer is None or not int(pointer) or gdb is None:
+            return None
+        struct_name = layout.structs[struct_key].struct_name
+        typ = gdb.lookup_type(struct_name).pointer()
+        return pointer.cast(typ).dereference()
+    except _TRAVERSAL_ERRORS:
+        return None
+
+
+def _owner_timer(pointer, layout: FreeRtosLayout):
+    """Cast a timer-list item owner (``Timer_t *``) to its DWARF struct."""
+    return _cast_owner(pointer, layout, "struct tmrTimerControl")
+
+
+def iter_active_timer_hosts(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
+    """Yield active timers from the scheduler's two timer lists.
+
+    ``pxCurrentTimerList`` / ``pxOverflowTimerList`` are ``static List_t *``
+    (timers.c) whose list items carry a ``Timer_t *`` owner, so this channel
+    replaces the TCB owner cast.  Only *active* timers are reachable:
+    stopped and expired one-shot timers were unlinked and are not referenced
+    by any kernel global.
+    """
+    if not layout.config.timers:
+        return
+    for head_name in ("pxCurrentTimerList", "pxOverflowTimerList"):
+        head = safe_dereference(lookup_symbol(head_name))
+        if head is None:
+            continue
+        for timer in _iter_list(head, layout, owner_converter=_owner_timer):
+            name = _cstring(
+                read_field(timer, layout.structs["struct tmrTimerControl"], "name")
+            )
+            yield DiscoveredObject(
+                kind="timer", address=value_address(timer), name=name, source="active"
+            )
+
+
+def _scheduler_list_addresses(layout: FreeRtosLayout) -> set[int]:
+    """Return the addresses of scheduler-owned List_t containers.
+
+    Delayed-list symbols are pointers to the *active* list, so they are
+    dereferenced; the other lists are plain List_t symbols.
+    """
+    addresses: set[int] = set()
+    for key, symbol in layout.lists.items():
+        address = _next_global(
+            symbol, deref=(key in ("delayed_current", "delayed_overflow"))
+        )
+        if address:
+            addresses.add(address)
+    return addresses
+
+
+def _host_from_container(
+    container: int, struct_name: str, member: str, layout: FreeRtosLayout
+):
+    """Dereference the struct that owns the List_t at *container*.
+
+    ``pxContainer`` points at the host's embedded List_t member, so the host
+    address is ``container - offsetof(member)``.  Returns the host
+    ``gdb.Value`` or ``None`` when the offset or cast fails.
+    """
+    offset = member_offset(struct_name, (member,))
+    if offset is None:
+        return None
+    host_address = container - offset
+    if host_address <= 0 or gdb is None:
+        return None
+    ranges = _mapped_ranges()
+    # Reason: a container pointing outside every loadable section cannot
+    # belong to a live object; reject before casting.  The check is skipped
+    # when no map is available so unit tests with synthetic addresses work.
+    if ranges and not any(low <= host_address < high for low, high in ranges):
+        return None
+    try:
+        # Reason: the cast type comes from the layout struct description (as
+        # _owner_task does), never a hard-coded literal, so a renamed struct
+        # stays correct.
+        struct_layout = layout.structs[struct_name]
+        typ = gdb.lookup_type(struct_layout.struct_name).pointer()
+        return gdb.Value(host_address).cast(typ).dereference()
+    except _TRAVERSAL_ERRORS:
+        return None
+
+
+def _list_contains_item(
+    head,
+    item_address: int,
+    layout: FreeRtosLayout,
+    max_count: int = GDR_MAX_TRAVERSAL_COUNT,
+) -> bool:
+    """Whether *item_address* is a node of the List_t at *head*."""
+    try:
+        list_layout = layout.structs["struct xLIST"]
+        end = read_field(head, list_layout, "end")
+        end_address = value_address(end)
+        node = read_field(end, layout.structs["struct xMINI_LIST_ITEM"], "next")
+        item_layout = layout.structs["struct xLIST_ITEM"]
+        for _ in range(max_count):
+            node_address = safe_int(node)
+            if not node_address or node_address == end_address:
+                return False
+            if node_address == item_address:
+                return True
+            node = read_field(node, item_layout, "next")
+        return False
+    except _TRAVERSAL_ERRORS:
+        return False
+
+
+def _plausible_waiter_host(
+    host,
+    struct_name: str,
+    member: str,
+    container: int,
+    item_address: int,
+    layout: FreeRtosLayout,
+) -> bool:
+    """Heuristic confirmation that *host* really owns the container list.
+
+    container_of is an identity transform, so every candidate member
+    reconstructs the container address; the discriminator is the memory
+    around it: the list must actually contain the task's event list item,
+    and the host struct fields must be internally consistent.  A wrong
+    candidate still slips through occasionally (its fields read plausible
+    neighbours), which is why this channel stays heuristic and why dedup in
+    :func:`discover` prefers every earlier channel.
+    """
+    member_list = read_path(host, (member,))
+    if member_list is None:
+        return False
+    if value_address(member_list) != container:
+        return False
+    if not _list_contains_item(member_list, item_address, layout):
+        return False
+    if struct_name == "struct EventGroupDef_t":
+        # Reason: EventBits_t reserves the high byte for control bits
+        # (eventEVENT_BITS_CONTROL_BYTES); a pointer-looking uxEventBits
+        # means the "host" is really memory inside another object.
+        bits = read_int(read_path(host, ("uxEventBits",)))
+        return bits is not None and bits < (1 << (layout.config.tick_bits - 8))
+    length = read_int(read_path(host, ("uxLength",)))
+    waiting = read_int(read_path(host, ("uxMessagesWaiting",)))
+    item_size = read_int(read_path(host, ("uxItemSize",)))
+    pc_head = read_int(read_path(host, ("pcHead",)))
+    if length is None or waiting is None or item_size is None:
+        return False
+    # Reason: a real queue holds 1..65536 items of at most 1 MiB each
+    # (semaphores and mutexes use item size 0), and the waiting count never
+    # exceeds the length; absurd neighbours therefore mean a wrong host.
+    if not (
+        1 <= length <= 65536 and 0 <= waiting <= length and 0 <= item_size <= 1 << 20
+    ):
+        return False
+    # Reason: xQueueGenericCreate allocates a storage buffer whenever the
+    # item size is non-zero, so a queue with items must have a non-null
+    # pcHead. Zero-size queues (semaphores/mutexes) legitimately use NULL.
+    if item_size != 0 and pc_head in (None, 0):
+        return False
+    # Reason: vListInitialise stamps xListEnd.xItemValue with portMAX_DELAY
+    # on both waiting lists and nothing ever changes it, so a host whose
+    # two lists do not both carry that sentinel is really memory inside a
+    # neighbour object (this separates every sibling candidate from the
+    # true host).
+    end_mask = (1 << layout.config.tick_bits) - 1
+    for sibling in ("xTasksWaitingToSend", "xTasksWaitingToReceive"):
+        end_value = read_int(read_path(host, (sibling, "xListEnd", "xItemValue")))
+        if end_value != end_mask:
+            return False
+    return True
+
+
+# Waiter-channel candidates: the only object-owned lists a TCB's
+# xEventListItem can sit on (queue.c / event_groups.c).
+_WAITER_MEMBERS: tuple[tuple[str, str, str], ...] = (
+    ("struct QueueDefinition", "xTasksWaitingToSend", "queue"),
+    ("struct QueueDefinition", "xTasksWaitingToReceive", "queue"),
+    ("struct EventGroupDef_t", "xTasksWaitingForBits", "eventgroup"),
+)
+
+
+def iter_waiter_hosts(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
+    """Reverse-discover objects from blocked tasks' event list items.
+
+    A task blocked on a queue, semaphore, mutex or event group has its
+    ``xEventListItem`` inserted into the host's waiting list with
+    ``pxContainer`` pointing back at it.  Scheduler-owned lists are excluded
+    first, then each candidate member offset is probed with container_of and
+    confirmed by list membership plus struct plausibility.
+    """
+    scheduler_lists = _scheduler_list_addresses(layout)
+    sl = layout.structs["struct tskTaskControlBlock"]
+    item_layout = layout.structs["struct xLIST_ITEM"]
+    for tcb, _state, _core in iter_tasks(layout):
+        event_item = read_field(tcb, sl, "event_list_item")
+        if event_item is None:
+            continue
+        container = safe_int(read_field(event_item, item_layout, "container"))
+        # Reason: a scheduler-owned list (xPendingReadyList, the suspended
+        # list, ...) is not an object's waiter list -- the task there is
+        # ready or notification-blocked, not blocked on a kernel object.
+        if not container or container in scheduler_lists:
+            continue
+        item_address = value_address(event_item)
+        for struct_name, member, kind in _WAITER_MEMBERS:
+            host = _host_from_container(container, struct_name, member, layout)
+            if host is None:
+                continue
+            if not _plausible_waiter_host(
+                host, struct_name, member, container, item_address, layout
+            ):
+                continue
+            yield DiscoveredObject(
+                kind=kind,
+                address=value_address(host),
+                name=None,
+                source="waiter",
+                inferred_kind=kind == "queue",
+            )
+
+
+def discover(kind: str, layout: FreeRtosLayout) -> list[DiscoveredObject]:
+    """Collect objects of *kind* from every channel, deduplicated by address.
+
+    Channels run in priority order (mpu-pool, registry, active, symbol,
+    waiter); when two channels find the same address the earlier one keeps
+    its name and source, so a registry-named queue never gets its name
+    overwritten by the symbol channel.
+    """
+    kind = kind.strip().lower()
+    channels = [
+        iter_mpu_pool_objects(layout),
+        iter_registry_entries(layout),
+        iter_active_timer_hosts(layout),
+        iter_static_symbol_objects(layout),
+        iter_waiter_hosts(layout),
+    ]
+    seen: set[int] = set()
+    found: list[DiscoveredObject] = []
+    for channel in channels:
+        for obj in channel:
+            if obj.kind != kind or not obj.address or obj.address in seen:
+                continue
+            seen.add(obj.address)
+            found.append(obj)
+    return found
+
+
+def _address_from_symbol(value) -> int | None:
+    """Return the object address a Static*_t / *Handle_t symbol refers to.
+
+    Static buffers are the object itself (symbol address); handles hold a
+    pointer to the object (pointer value).
+    """
+    type_name = getattr(value.type, "name", None)
+    if type_name in _KIND_BY_STATIC_TYPE:
+        return value_address(value)
+    if type_name in _KIND_BY_HANDLE_TYPE:
+        return safe_int(value)
+    return None
+
+
+def resolve_object(
+    kind: str,
+    text: str,
+    layout: FreeRtosLayout,  # noqa: ARG001 (uniform channel signature)
+) -> DiscoveredObject | None:
+    """Resolve an explicit address or symbol name to a discovered object.
+
+    Accepts ``0x``/``0X`` hexadecimal addresses, plain decimal addresses and
+    plain C identifiers (looked up as a symbol, never evaluated as an
+    expression, so the inferior stays halted).
+    """
+    kind = kind.strip().lower()
+    text = text.strip()
+    if not text:
+        return None
+    if text.lower().startswith("0x"):
+        try:
+            address = int(text, 16)
+        except ValueError:
+            return None
+        if not address:
+            return None
+        return DiscoveredObject(kind=kind, address=address, source="user")
+    if text.isdecimal():
+        address = int(text, 10)
+        if not address:
+            return None
+        return DiscoveredObject(kind=kind, address=address, source="user")
+    if is_plain_identifier(text):
+        value = lookup_symbol(text)
+        if value is None:
+            return None
+        address = _address_from_symbol(value)
+        if not address:
+            return None
+        return DiscoveredObject(kind=kind, address=address, name=text, source="user")
+    return None

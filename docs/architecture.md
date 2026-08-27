@@ -30,7 +30,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 
 | Module | Responsibility |
 | -------- | --------------- |
-| `gdb_bridge.py` | Wraps GDB registration, identifier-only symbol lookup, memory/type access, terminal probing, output and error guards. Inferior function evaluation is not used. |
+| `gdb_bridge.py` | Wraps GDB registration, identifier-only symbol lookup, memory/type access, terminal probing, output and error guards. Inferior function evaluation is not used. `read_cstring` reads `char[]` to the terminator GDB finds, and reads `char*` as a bounded window (`GDR_MAX_CSTRING_LENGTH` bytes, `errors="replace"`) truncated at the first NUL, because a pointer carries no length; a short name whose window crosses into unmapped memory therefore degrades to `None`. |
 | `constants.py` / `formatting.py` | Shared traversal/presentation defaults and pure optional/address/symbol/table formatting. Formatting has no GDB dependency. |
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). It interprets adapter-supplied paths but contains no target type names, symbols, or list conventions. |
 | `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. Type matching uses `strip_typedefs().unqualified().tag` so that typedef-spelled and cv-qualified values resolve to their underlying struct tag. |
@@ -54,10 +54,10 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | Module | Responsibility |
 | -------- | --------------- |
 | `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. Version detection relies on `-g3` macro debug info and is subject to CU scope limitations (see known constraints below). |
-| `navigation.py` | Pure scheduler-list and current-task traversal functions. List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
-| `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, and system summary. |
+| `navigation.py` | Pure scheduler-list and current-task traversal functions plus the object discovery channels (`iter_registry_entries`, `iter_static_symbol_objects` with its session cache, `iter_active_timer_hosts`, `iter_mpu_pool_objects`, `iter_waiter_hosts`) and their aggregation (`DiscoveredObject`, `discover`, `resolve_object`). List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
+| `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, system summary, and the object protocol methods (`find_object`, `object_counts`, and the provenance summary table). |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
-| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). Object kinds other than `task` currently report "not reliably enumerable"; `heap` is a placeholder. |
+| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; single-kind list commands other than `tasks` currently fall back to the core Kind/Count table because `object_table()` is still a stub, and `heap` is a placeholder. |
 | `details.py` | FreeRTOS `frt task <name>` vertical detail rendering (per-TCB state, high-water mark, notification slots, wake tick, blocked-on). |
 
 ## Key decisions
@@ -428,3 +428,41 @@ only exists under `configUSE_TRACE_FACILITY == 1`. Layout summary fields that
 reference config-conditional struct members must be gated by the corresponding
 `FreeRtosConfig` flag; unconditional inclusion produces `N/A` on builds where
 the member is absent.
+
+**Object discovery is a six-channel provenance model, not a registry walk.**
+FreeRTOS keeps no global object registry for most kinds (only the optional
+`xQueueRegistry` and the MPU wrappers v2 pool), so GDR discovers objects from
+six channels, each of which attaches its origin to the object:
+
+| channel | source | covers |
+| --- | --- | --- |
+| MPU pool | `xKernelObjectPool` (file-static, wrappers v2 only) | all kinds |
+| registry | `xQueueRegistry`, whole array scanned (holes included) | queue/semaphore/mutex |
+| active | `pxCurrentTimerList` / `pxOverflowTimerList` | timers (active only) |
+| symbol | one `info variables` scan per session, cached; `Static*_t` buffers use the symbol address, `*Handle_t` uses the pointer value | all kinds |
+| waiter | reverse `container_of` from a blocked TCB's `xEventListItem.pxContainer`, confirmed by list membership and struct plausibility | queue/semaphore/mutex/event group |
+| user | explicit `0x`/decimal address or symbol name | all kinds |
+
+`discover(kind)` merges the channels in that priority order, deduplicating by
+address (the first channel to find an address keeps its name/source). The
+`frt objects` summary prints per-kind counts with a `source=count` breakdown
+plus the enumeration limitation, so a count is never mistaken for a complete
+inventory: unregistered dynamic objects without a global handle (and stopped
+or expired timers) are simply not reachable from any channel.
+
+Two deliberate heuristics: the registry and MPU-pool queue slots cannot tell
+semaphores/mutexes/queue sets apart (`inferred_kind`), and the waiter channel
+validates hosts by field plausibility (`uxLength`/`uxMessagesWaiting`/
+`uxItemSize`, non-null `pcHead` for item queues, and the
+`xListEnd.xItemValue == portMAX_DELAY` sentinel on both waiting lists), which
+can in principle still misread plausible neighbouring memory — every other
+channel outranks it.
+
+The `mpu-pool` channel is implemented with unit-test stubs only: no live
+fixture exists (needs an ARM_CM33_NTZ TrustZone port), so its behaviour has no
+live coverage. The `waiter` channel has no object that is discoverable *only*
+through it in the current fixtures (every blocked-on object also holds a
+global handle), so it is covered by unit tests plus a live no-ghost assertion:
+every host the channel reverse-derives must also be findable through an
+earlier channel, which would fail if it fabricated objects out of plausible
+neighbouring memory.

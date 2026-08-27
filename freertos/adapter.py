@@ -12,9 +12,11 @@ except ImportError:
 from freertos.details import task_detail
 from freertos.layout import FreeRtosLayout
 from freertos.navigation import (
+    discover,
     is_idle_task,
     iter_tasks,
     list_count,
+    resolve_object,
     system_value,
     task_state,
 )
@@ -27,6 +29,7 @@ from gdr.adapter_api import (
 from gdr.formatting import format_address, format_optional_int
 from gdr.gdb_bridge import (
     get_arch_info,
+    lookup_type,
     read_bytes,
     read_cstring,
     read_int,
@@ -232,6 +235,74 @@ def find_task(name: str, layout: FreeRtosLayout):
     return None
 
 
+# Semantic kind -> layout struct key used to cast a discovered address back
+# to a native gdb.Value.  Semaphores and mutexes are QueueDefinition structs.
+_STRUCT_BY_KIND: dict[str, str] = {
+    "task": "struct tskTaskControlBlock",
+    "queue": "struct QueueDefinition",
+    "semaphore": "struct QueueDefinition",
+    "mutex": "struct QueueDefinition",
+    "timer": "struct tmrTimerControl",
+    "eventgroup": "struct EventGroupDef_t",
+    "streambuffer": "struct StreamBufferDef_t",
+}
+
+
+# Kinds in display order for the object summary.
+_OBJECT_KIND_ORDER: tuple[str, ...] = (
+    "task",
+    "queue",
+    "semaphore",
+    "mutex",
+    "timer",
+    "eventgroup",
+    "streambuffer",
+)
+
+
+def _cast_object(address: int, kind: str, layout: FreeRtosLayout) -> gdb.Value | None:
+    """Cast a discovered object address to its native DWARF struct value."""
+    if gdb is None:
+        return None
+    struct_key = _STRUCT_BY_KIND.get(kind.strip().lower())
+    if struct_key is None:
+        return None
+    try:
+        struct_name = layout.structs[struct_key].struct_name
+        typ = gdb.lookup_type(struct_name).pointer()
+        return gdb.Value(address).cast(typ).dereference()
+    except Exception:
+        return None
+
+
+def _queue_type_present() -> bool:
+    """Whether the kernel exposes a QueueDefinition type (queue support)."""
+    return (
+        lookup_type("struct QueueDefinition") is not None
+        or lookup_type("xQUEUE") is not None
+    )
+
+
+def _kind_enabled(kind: str, layout: FreeRtosLayout) -> bool:
+    """Whether objects of *kind* can exist in the current target config.
+
+    ``object_counts`` only reports kinds whose DWARF type is present, so a
+    build without event groups or stream buffers never shows a zero row for
+    a kind that cannot exist.
+    """
+    if kind == "task":
+        return True
+    if kind in ("queue", "semaphore", "mutex"):
+        return _queue_type_present()
+    if kind == "timer":
+        return layout.config.timers
+    if kind == "eventgroup":
+        return layout.config.event_groups
+    if kind == "streambuffer":
+        return layout.config.stream_buffers
+    return False
+
+
 class FreeRtosAdapter(RtosAdapter):
     """Expose FreeRTOS scheduler lists through the shared task contract."""
 
@@ -241,14 +312,86 @@ class FreeRtosAdapter(RtosAdapter):
     def find_task(self, name: str) -> gdb.Value | None:
         return find_task(name, self.layout)
 
-    def find_object(self, kind: str, name: str) -> gdb.Value | None:  # noqa: ARG002
-        # Queue Registry and active-timer traversal are not implemented.
-        return None
+    def find_object(self, kind: str, name: str) -> gdb.Value | None:
+        """Return the native object value for a name, address or symbol.
+
+        First tries the discovery channels by name (registry names, static
+        symbol names, active timer names), then falls back to resolving the
+        argument as an explicit ``0x`` address, decimal address or symbol
+        name.  Returns the object struct value, or ``None``.
+        """
+        layout = self.layout
+        requested = kind.strip().lower()
+        # Reason: tasks stay on the scheduler-list lookup so
+        # $gdr_object("task", "IDLE") agrees with the task table instead of
+        # requiring a static symbol for the task.
+        if requested == "task":
+            task = find_task(name, self.layout)
+            if task is not None:
+                return task
+        for found in discover(requested, layout):
+            if found.name == name:
+                return _cast_object(found.address, requested, layout)
+        resolved = resolve_object(requested, name, layout)
+        if resolved is None:
+            return None
+        return _cast_object(resolved.address, requested, layout)
 
     def object_counts(self) -> dict[str, int]:
-        # Reason: count through the same converted-task snapshot used by the
-        # system summary so both routes share one scheduler traversal contract.
-        return {"task": len(list(iter_converted_tasks(self.layout)))}
+        """Return per-kind object counts for reliably enumerable kinds."""
+        return {kind: count for kind, count, _sources in self.object_summary_rows()}
+
+    def object_summary_rows(self) -> list[tuple[str, int, str]]:
+        """Return ``(kind, count, "source=count ...")`` rows for each kind.
+
+        The task count comes from the scheduler-list snapshot (authoritative:
+        it covers dynamically created tasks too); other kinds count the
+        discovery channels' deduplicated results.
+        """
+        tasks = list(iter_converted_tasks(self.layout))
+        rows: list[tuple[str, int, str]] = [
+            ("task", len(tasks), f"scheduler={len(tasks)}")
+        ]
+        for kind in _OBJECT_KIND_ORDER[1:]:
+            if not _kind_enabled(kind, self.layout):
+                continue
+            found = discover(kind, self.layout)
+            sources: dict[str, int] = {}
+            for obj in found:
+                sources[obj.source] = sources.get(obj.source, 0) + 1
+            source_text = " ".join(
+                f"{name}={count}" for name, count in sorted(sources.items())
+            )
+            rows.append((kind, len(found), source_text))
+        return rows
+
+    def object_summary_table(self) -> ObjectTable:
+        """Build the ``frt objects`` provenance summary table.
+
+        The messages (rendered above the table by the core) state the
+        enumeration limitation and any disabled channel, so a count is never
+        mistaken for a complete object inventory.
+        """
+        messages = [
+            "object discovery covers registered, static-symbol and "
+            "scheduler-reachable objects; unregistered dynamic objects with "
+            "no global handle are not enumerable"
+        ]
+        if not self.layout.config.queue_registry:
+            messages.append(
+                "queue registry: configQUEUE_REGISTRY_SIZE is 0, so the "
+                "registry channel is disabled"
+            )
+        rows = [
+            [kind, str(count), sources]
+            for kind, count, sources in self.object_summary_rows()
+        ]
+        return ObjectTable(
+            headers=["Kind", "Count", "Sources"],
+            rows=rows,
+            messages=messages,
+            elastic=("Sources",),
+        )
 
     def object_table(self, kind: str) -> ObjectTable | None:  # noqa: ARG002
         return None

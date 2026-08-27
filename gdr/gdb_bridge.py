@@ -363,7 +363,9 @@ def read_cstring(
     """Read a C string (``char*`` or ``char[]``) from a ``gdb.Value``.
 
     For ``char[]`` arrays, GDB auto-detects the null terminator; for
-    ``char*`` pointers we pass ``length`` as a safety bound.
+    ``char*`` pointers the read is bounded to ``max_len`` because GDB cannot
+    size the buffer.  A bounded pointer read may carry embedded NULs and
+    arbitrary following bytes, so the result is truncated at the first NUL.
     """
     if value is None:
         return None
@@ -373,10 +375,13 @@ def read_cstring(
         if is_ptr:
             if int(value) == 0:
                 return None
-            value = value.dereference()
-            # Reason: for char*, GDB doesn't know the buffer size, so we
-            # bound the read.  For char[], GDB reads to null terminator.
-            return value.string(length=max_len)
+            # Reason: Value.string(length=N) fetches a full N-byte window
+            # (GDB manual) that includes embedded NULs; ``errors="replace"``
+            # keeps a stray non-UTF-8 byte in the window from aborting the
+            # whole read.  Dereferencing the pointer first would yield a
+            # scalar ``char`` whose .string() raises instead of reading the
+            # pointed-to string, so the pointer is passed to .string() as-is.
+            return value.string(length=max_len, errors="replace").split("\x00", 1)[0]
         return value.string()
     except (gdb.error, gdb.MemoryError, ValueError):
         return None

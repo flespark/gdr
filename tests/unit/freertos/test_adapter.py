@@ -216,6 +216,10 @@ def test_object_counts_uses_the_converted_task_snapshot(monkeypatch):
         yield object()
 
     monkeypatch.setattr(adapter_module, "iter_converted_tasks", converted)
+    # Reason: outside GDB the kind probes cannot look up DWARF types; the
+    # task row is the contract under test here, other kinds are covered by
+    # the discovery unit tests.
+    monkeypatch.setattr(adapter_module, "_kind_enabled", lambda _kind, _layout: False)
     adapter = adapter_module.FreeRtosAdapter(FreeRtosLayout(version=(10, 3, 1)))
 
     assert adapter.object_counts() == {"task": 1}

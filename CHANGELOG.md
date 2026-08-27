@@ -8,6 +8,20 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- FreeRTOS object discovery: six provenance channels (optional `xQueueRegistry`,
+  static/handle global symbols found by one cached `info variables` scan, the
+  active timer lists, the MPU wrappers v2 `xKernelObjectPool`, reverse
+  `container_of` from blocked tasks' `xEventListItem`, and explicit user
+  addresses/symbols), merged by address with a fixed channel priority.
+- FreeRTOS `frt objects` prints a `Kind`/`Count`/`Sources` summary with a
+  `source=count` breakdown and the enumeration limitation above the table; on
+  `configQUEUE_REGISTRY_SIZE 0` builds it also states why the registry channel
+  is unavailable.
+- `$gdr_object(kind, name)` works for FreeRTOS kinds beyond `task`, accepting a
+  discovered name, a `0x` or decimal address, or a global symbol name, and
+  returning the target-native `gdb.Value`.
+- FreeRTOS Tab completion for singular detail commands now offers discovered
+  object names for every kind, not only tasks.
 - FreeRTOS pretty-printers: `p *pxCurrentTCB` now folds to
   `Task(current_priority=0, name="IDLE", base_priority=0)`, with similar
   folds for `List(...)`, `Queue(...)`, `Timer(...)`, `EventGroup(...)`,
@@ -37,6 +51,14 @@ All notable changes to GDR are documented in this file.
 
 ### Changed
 
+- `read_cstring` reads `char*` values as a bounded window truncated at the
+  first NUL. The previous implementation dereferenced the pointer first and
+  always returned `None` for pointer-typed names, which hid every `char*`
+  kernel object name (such as `pcQueueName`); RT-Thread names are `char[]`
+  arrays and are unaffected (re-verified across the Cortex-A9 matrix).
+- FreeRTOS single-kind list commands (`frt queues`, `frt semaphores`, …) now
+  print a `Kind`/`Count` table instead of warning that the kind is not
+  reliably enumerable. Per-object detail tables are still absent.
 - FreeRTOS supported version range is now continuous `(10,3,0)-(11,2,99)`;
   previously rejected versions such as 10.4.x, 10.7+, and 11.2.x are now
   accepted.

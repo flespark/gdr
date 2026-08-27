@@ -243,3 +243,48 @@ def test_freertos_high_water_matches_variant(gdb_session):
     high_water = [line for line in idle.splitlines() if "HighWater" in line]
     assert high_water, idle
     assert "unavailable" not in high_water[0]
+
+
+def test_objects_summary_reports_sources(gdb_session):
+    """frt objects prints a provenance summary with the channel breakdown."""
+    output = gdb_session.run("freertos objects", timeout=20)
+    _assert_clean_command_output(output)
+    for header in ("Kind", "Count", "Sources"):
+        assert header in output, output
+    assert "symbol" in output
+    assert "scheduler=" in output
+    if _PROFILE.registry_size:
+        # Reason: the registry channel reads pcQueueName (a char*) through
+        # the core bounded read; a broken read loses the whole channel while
+        # the table still looks sane, so the live channel count is asserted.
+        assert "registry=" in output, output
+    else:
+        # Reason: the registry-0 build has no xQueueRegistry symbol; the
+        # summary must say so instead of silently dropping the channel.
+        assert "queue registry" in output
+
+
+def test_waiter_channel_hosts_are_known_objects(gdb_session):
+    """The waiter channel's heuristic hosts are all real kernel objects.
+
+    The reverse container_of probe is the only heuristic discovery channel;
+    live corroboration pins it to zero fabricated hosts: every host address
+    must already be reachable through an earlier (registry/symbol/active)
+    channel on fixtures whose objects all hold global handles.
+    """
+    probe = gdb_session.run_python(
+        """
+from freertos.layout import detect_config, build_layout
+from freertos.navigation import discover, iter_waiter_hosts
+layout = build_layout(detect_config())
+known = {
+    obj.address
+    for kind in ("queue", "semaphore", "mutex", "eventgroup", "timer")
+    for obj in discover(kind, layout)
+}
+unknown = [obj for obj in iter_waiter_hosts(layout) if obj.address not in known]
+print(f"unknown_hosts={len(unknown)}")
+"""
+    )
+    _assert_clean_command_output(probe)
+    assert "unknown_hosts=0" in probe, probe

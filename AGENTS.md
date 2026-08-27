@@ -30,8 +30,11 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   commands.py          RT-Thread command tree (`rtt threads`, `rtt heap`, ...)
 freertos/              FreeRTOS adapter
   layout.py            merged config probes, DWARF paths and capability metadata
-  navigation.py        layout-driven scheduler-list traversal and per-TCB state
-  adapter.py           complete task model, conversion, summaries and tables
+  navigation.py        layout-driven scheduler-list traversal, per-TCB state, and
+                       the six object-discovery channels (registry / symbol /
+                       active / mpu-pool / waiter / user) with provenance dedup
+  adapter.py           complete task model, conversion, summaries and tables,
+                       object lookup and per-kind provenance counts
   details.py           `frt task <name>` vertical detail rendering
   version.py           FreeRTOS version policy and target symbols
   commands.py          FreeRTOS command tree (`frt tasks/task/system/help/objects/heap`,

@@ -103,3 +103,26 @@ print(f"stack_end={cfg.stack_end_field}")
         assert probed["stack_end"] == "pxEndOfStack"
     else:
         assert probed["stack_end"] in {"None", ""}
+
+
+def test_registry_zero_objects_degrade_message_and_symbol_channel(gdb_session):
+    """On registry-0 the summary explains the disabled channel and the
+    symbol channel still finds a queue that has no registry entry."""
+    if _PROFILE.registry_size:
+        pytest.skip("requires the registry-0 fixture")
+    output = gdb_session.run("freertos objects", timeout=20)
+    assert "queue registry" in output, output
+    assert "symbol=" in output, output
+    # gdr_registered_queue exists as a static handle symbol even though no
+    # registry array does; the symbol channel must still discover it.
+    probe = gdb_session.run_python(
+        """
+from freertos.layout import detect_config, build_layout
+from freertos.navigation import discover
+layout = build_layout(detect_config())
+queue_addrs = {obj.address for obj in discover("queue", layout)}
+handle = int(gdb.parse_and_eval("gdr_registered_queue"))
+print(f"registered={handle in queue_addrs}")
+"""
+    )
+    assert "registered=True" in probe, probe

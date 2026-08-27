@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from unittest.mock import patch
 
 import pytest
@@ -730,3 +731,78 @@ def test_symbol_exists_does_not_read_function_values(monkeypatch):
     assert symbol.value_reads == 0
     assert bridge.lookup_symbol("rt_sem_init") is None
     assert symbol.value_reads == 1
+
+
+class _StringGdb:
+    """GDB stand-in exposing the type codes and errors read_cstring needs."""
+
+    class error(Exception):
+        pass
+
+    class MemoryError(Exception):
+        pass
+
+    TYPE_CODE_PTR = 1
+    TYPE_CODE_ARRAY = 2
+
+
+class _StringValue:
+    """Value stand-in for a ``char*`` or ``char[]`` with a canned .string()."""
+
+    def __init__(
+        self,
+        window: str = "",
+        *,
+        code: int = _StringGdb.TYPE_CODE_PTR,
+        address: int = 0x1000,
+        broken: bool = False,
+    ):
+        self.type = types.SimpleNamespace(code=code)
+        self._window = window
+        self._address = address
+        self._broken = broken
+        self.string_calls: list[dict] = []
+
+    def __int__(self) -> int:
+        return self._address
+
+    def string(self, length=None, errors=None) -> str:
+        self.string_calls.append({"length": length, "errors": errors})
+        if self._broken:
+            raise _StringGdb.error("unmapped memory")
+        return self._window
+
+
+def test_read_cstring_truncates_pointer_reads_at_first_nul(monkeypatch):
+    """A bounded ``char*`` read keeps embedded NULs and trailing bytes.
+
+    ``Value.string(length=N)`` returns a full N-byte window (GDB manual), so
+    a name shorter than the bound arrives with filler after its NUL; without
+    truncation, name matching and table width are poisoned by 256-char
+    strings.
+    """
+    monkeypatch.setattr(bridge, "gdb", _StringGdb())
+    value = _StringValue("TmrQ\x00\x00garbage")
+
+    assert bridge.read_cstring(value) == "TmrQ"
+    assert value.string_calls == [
+        {"length": bridge.GDR_MAX_CSTRING_LENGTH, "errors": "replace"}
+    ]
+
+
+def test_read_cstring_pointer_paths_degrade(monkeypatch):
+    """Null pointers and unreadable pointers yield ``None``, not exceptions."""
+    monkeypatch.setattr(bridge, "gdb", _StringGdb())
+
+    assert bridge.read_cstring(_StringValue(address=0)) is None
+    assert bridge.read_cstring(_StringValue(broken=True)) is None
+    assert bridge.read_cstring(None) is None
+
+
+def test_read_cstring_array_reads_to_terminator(monkeypatch):
+    """``char[]`` values keep GDB's auto-terminating read (no length arg)."""
+    monkeypatch.setattr(bridge, "gdb", _StringGdb())
+    value = _StringValue("main", code=_StringGdb.TYPE_CODE_ARRAY)
+
+    assert bridge.read_cstring(value) == "main"
+    assert value.string_calls == [{"length": None, "errors": None}]
