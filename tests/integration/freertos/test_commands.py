@@ -396,6 +396,90 @@ def test_queue_detail_and_semaphore_detail_field_contract(gdb_session):
     assert f["Item[0]"].endswith(": 01 00 00 00")
 
 
+def test_timers_table_matches_fixture_ground_truth(gdb_session):
+    """frt timers renders the ten-column contract with live fixture timers.
+
+    COUPLED: ci/freertos/fixture/main.c creates gdr_active (started,
+    auto-reload), gdr_stopped (started then stopped), gdr_oneshot (a 1 ms
+    one-shot, long expired), plus gdr_idle/gdr_created (never started) --
+    the stopped/expired/never-started states must each be reported honestly
+    instead of being guessed from a stale list item.
+    """
+    with _with_width(gdb_session, 200):
+        timers = gdb_session.run("freertos timers", timeout=20)
+    _assert_clean_command_output(timers)
+    header = next(
+        line for line in timers.splitlines() if line.lstrip().startswith("Name ")
+    ).split()
+    assert header == [
+        "Name",
+        "State",
+        "Mode",
+        "Period",
+        "Expiry",
+        "ExpiresIn",
+        "Callback",
+        "ID",
+        "Src",
+        "Addr",
+    ], timers
+    assert "Kernel tick" in timers
+    active = _fixture_row(timers, "gdr_active")
+    assert active[1] == "active"
+    assert active[2] == "auto"
+    assert "active" in active[8]  # Src provenance
+    assert "gdr_timer_callback" in active[6]  # Callback symbolised
+    assert active[7] == "-"  # pvTimerID is NULL in the fixture
+    # Dormant rows are named by their pcTimerName and never render a stale
+    # list-item value as a live deadline.
+    created = _fixture_row(timers, "gdr_created")
+    assert created[1] == "dormant"
+    assert created[4] == "N/A"  # Expiry
+    assert created[5] == "N/A"  # ExpiresIn
+
+
+def test_timer_detail_reports_list_and_owner(gdb_session):
+    """frt timer <name> pins List epoch, OwnerCheck and the control keys.
+
+    A never-started timer's list item was only vListInitialiseItem'd (its
+    pvOwner is heap garbage), so OwnerCheck must be decided by the container
+    member and report uninitialised for it.
+    """
+    with _with_width(gdb_session, 200):
+        active = gdb_session.run("freertos timer gdr_active", timeout=20)
+        created = gdb_session.run("freertos timer gdr_created", timeout=20)
+        stopped = gdb_session.run("freertos timer gdr_stopped", timeout=20)
+    for output in (active, created, stopped):
+        _assert_clean_command_output(output)
+    a = _detail_pairs(active)
+    assert a["State"] == "active"
+    assert a["Mode"] == "auto"
+    assert a["List"].startswith(("current(", "overflow("))
+    assert a["OwnerCheck"] == "ok"
+    assert "gdr_timer_callback" in a["Callback"]
+    c = _detail_pairs(created)
+    assert c["List"] == "none"
+    assert c["OwnerCheck"] == "uninitialised"
+    assert c["Expiry"] == "N/A"
+    assert c["ExpiresIn"] == "N/A"
+    s = _detail_pairs(stopped)
+    assert s["State"] == "dormant"
+    assert s["OwnerCheck"] == "uninitialised"
+
+
+def test_timer_commands_section_is_honest(gdb_session):
+    """The daemon queue section either shows the pending table or states why
+    it is empty -- a silent absence would hide a stale command queue."""
+    with _with_width(gdb_session, 200):
+        detail = gdb_session.run("freertos timer gdr_active", timeout=20)
+    _assert_clean_command_output(detail)
+    assert "Commands:" in detail
+    if "no pending timer commands" not in detail:
+        header_line = next(line for line in detail.splitlines() if "Command" in line)
+        for token in ("Seq", "Command", "Timer", "Value"):
+            assert token in header_line, detail
+
+
 def test_queue_set_column_only_on_full_variant(gdb_session):
     """The Set column exists only when configUSE_QUEUE_SETS is on.
 

@@ -583,10 +583,17 @@ def test_semaphores_and_mutexes_table_headers(monkeypatch):
         "0x6000",
     ]
 
-    # Non-family kinds still have no list table.
+    # A build without software timers still answers the command with an
+    # explicit capability note instead of "not enumerable".
+    timer_table = adapter_module.FreeRtosAdapter(
+        build_layout(FreeRtosConfig(), (10, 3, 1))
+    ).object_table("timer")
+    assert timer_table is not None
+    assert timer_table.rows == []
+    assert any("no software timers" in message for message in timer_table.messages)
     assert (
         adapter_module.FreeRtosAdapter(
             build_layout(FreeRtosConfig(), (10, 3, 1))
-        ).object_table("timer")
+        ).object_table("eventgroup")
         is None
     )

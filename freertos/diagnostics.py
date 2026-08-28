@@ -22,7 +22,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from gdr.gdb_bridge import read_int, value_address
+from gdr.gdb_bridge import (
+    lookup_symbol,
+    lookup_type,
+    read_int,
+    safe_dereference,
+    value_address,
+)
 from gdr.layout import read_path
 
 if TYPE_CHECKING:
@@ -157,5 +163,91 @@ def queue_checks(
             results.append(("SemaphoreSelfHead", "skipped: unreadable"))
     else:
         results.append(("SemaphoreSelfHead", "skipped: not a semaphore"))
+
+    return results
+
+
+# timers.c tmrSTATUS_IS_ACTIVE
+_TMR_STATUS_ACTIVE = 0x01
+
+
+def timer_checks(
+    value,
+    layout: FreeRtosLayout,
+) -> list[tuple[str, str]]:
+    """Run the consistency checks for one timer object.
+
+    Args:
+        value: The native ``Timer_t`` (struct tmrTimerControl) ``gdb.Value``.
+        layout: Active FreeRTOS layout, used for the list-item container
+            member name (``pvContainer`` vs ``pxContainer``) and the command
+            queue item-size comparison.
+
+    Returns:
+        ``(check_name, status)`` pairs where status is ``ok``, ``fail: ...``
+        or ``skipped: <reason>``.  A disagreement between ``ucStatus`` and
+        list membership is reported -- the daemon updates both together, so
+        it normally means a queued start/stop command -- rather than hidden.
+    """
+    status = read_int(read_path(value, ("ucStatus",)))
+    period = read_int(read_path(value, ("xTimerPeriodInTicks",)))
+    callback = read_int(read_path(value, ("pxCallbackFunction",)))
+    container_field = layout.config.list_item_container_field or "pxContainer"
+    container = read_int(read_path(value, ("xTimerListItem", container_field)))
+    results: list[tuple[str, str]] = []
+
+    if status is not None and container is not None:
+        linked = container not in (None, 0)
+        active = bool(status & _TMR_STATUS_ACTIVE)
+        if linked == active:
+            results.append(("StatusListSync", "ok"))
+        else:
+            # Reason: the daemon clears IS_ACTIVE and unlinks in one command
+            # (timers.c prvProcessReceivedCommands), so a mismatch means a
+            # queued command is still pending, not corruption -- but it must
+            # be surfaced, not silently absorbed by the State cell.
+            results.append(
+                (
+                    "StatusListSync",
+                    "fail: ucStatus and the active list disagree "
+                    "(a queued start/stop command?)",
+                )
+            )
+    else:
+        results.append(("StatusListSync", "skipped: unreadable"))
+
+    if period is not None:
+        results.append(("Period", "ok" if period != 0 else "fail: period is 0 ticks"))
+    else:
+        results.append(("Period", "skipped: unreadable"))
+
+    if callback is not None:
+        results.append(("Callback", "ok" if callback else "fail: callback is NULL"))
+    else:
+        results.append(("Callback", "skipped: unreadable"))
+
+    queue = safe_dereference(lookup_symbol("xTimerQueue"))
+    msg_type = lookup_type("struct tmrTimerQueueMessage")
+    if queue is None or msg_type is None:
+        results.append(("TimerQueueItemSize", "skipped: unreadable"))
+    else:
+        item_size = read_int(read_path(queue, ("uxItemSize",)))
+        try:
+            expected = int(msg_type.sizeof)
+        except (TypeError, ValueError, AttributeError):
+            results.append(("TimerQueueItemSize", "skipped: unreadable"))
+            return results
+        if item_size is None:
+            results.append(("TimerQueueItemSize", "skipped: unreadable"))
+        elif item_size == expected:
+            results.append(("TimerQueueItemSize", "ok"))
+        else:
+            results.append(
+                (
+                    "TimerQueueItemSize",
+                    f"fail: queue item size {item_size} != "
+                    f"sizeof(DaemonTaskMessage_t) {expected}",
+                )
+            )
 
     return results

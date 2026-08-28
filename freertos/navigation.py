@@ -727,12 +727,21 @@ def _iter_declared_variables(text: str) -> Iterator[tuple[str, str]]:
         yield match.group(1), match.group(2)
 
 
-def _scan_symbol_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:  # noqa: ARG001
-    """One pass of the symbol channel; the caller caches its result.
+def _timer_name_at(address: int, layout: FreeRtosLayout) -> str | None:
+    """Read a timer object's ``pcTimerName`` cast from a bare address."""
+    if gdb is None or not address:
+        return None
+    try:
+        sl = layout.structs["struct tmrTimerControl"]
+        typ = gdb.lookup_type(sl.struct_name).pointer()
+        value = gdb.Value(address).cast(typ).dereference()
+        return _cstring(read_field(value, sl, "name"))
+    except _TRAVERSAL_ERRORS:
+        return None
 
-    The layout argument is kept for the uniform channel signature even
-    though a symbol scan is layout-independent.
-    """
+
+def _scan_symbol_objects(layout: FreeRtosLayout):
+    """One pass of the symbol channel; the caller caches its result."""
     for type_name, symbol_name in _iter_declared_variables(_info_variables_text()):
         kind = _KIND_BY_STATIC_TYPE.get(type_name)
         if kind is None:
@@ -753,6 +762,20 @@ def _scan_symbol_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]: 
             address = safe_int(value)
         if not address:
             continue
+        if kind == "timer":
+            # Reason: a timer's canonical name is the pcTimerName passed to
+            # xTimerCreate / xTimerCreateStatic (timers.c); the symbol (a
+            # TimerHandle_t variable or a StaticTimer_t buffer) is an
+            # implementation detail.  Naming dormant timers by their symbol
+            # would make ``frt timer <name>`` unreachable by the name the
+            # firmware itself uses, so the real name is preferred when it
+            # reads (a freed/unlinked timer falls back to the symbol name).
+            timer_name = _timer_name_at(address, layout)
+            if timer_name:
+                yield DiscoveredObject(
+                    kind=kind, address=address, name=timer_name, source="symbol"
+                )
+                continue
         yield DiscoveredObject(
             kind=kind, address=address, name=symbol_name, source="symbol"
         )

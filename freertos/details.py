@@ -10,9 +10,23 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from freertos.diagnostics import queue_checks
+from freertos.diagnostics import queue_checks, timer_checks
 from freertos.layout import FreeRtosLayout, queue_type_label
-from freertos.navigation import source_label, task_priority_at
+from freertos.navigation import source_label, system_value, task_priority_at
+from freertos.timers import (
+    DAEMON_CURRENT_MESSAGE,
+    callback_cell,
+    commands_cell,
+    daemon_is_current,
+    id_cell,
+    iter_timer_commands,
+    mode_cell,
+    owner_check,
+    state_cell,
+    timer_epoch,
+    timer_expires_in,
+    timer_list_label,
+)
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.formatting import format_address, format_optional_int
 from gdr.gdb_bridge import (
@@ -23,7 +37,7 @@ from gdr.gdb_bridge import (
 from gdr.layout import read_path
 
 if TYPE_CHECKING:
-    from freertos.adapter import FreeRtosTask
+    from freertos.adapter import FreeRtosTask, FreeRtosTimerObject
 
 # ucNotifyState values (tasks.c). Used to label notification slots in detail.
 _NOTIFY_STATE_NAMES = {
@@ -374,4 +388,55 @@ def mutex_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
     pairs.append(("Locks", locks_cell(obj.rx_lock, obj.tx_lock)))
     pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
     pairs.extend(checks_pairs(queue_checks(value, obj.kind, layout)))
+    return pairs
+
+
+# ---------------------------------------------------------------------------
+# timer detail builder
+# ---------------------------------------------------------------------------
+
+
+def timer_detail(
+    obj: FreeRtosTimerObject,
+    value,
+    layout: FreeRtosLayout,
+) -> list[tuple[str, str]]:
+    """Build the vertical pairs for ``frt timer <name>``.
+
+    ``List`` resolves the epoch the item sits on (``current``/``overflow``
+    with the underlying list symbol) and ``OwnerCheck`` verifies
+    ``pvOwner`` only when the item is actually linked; a dormant timer
+    renders ``N/A`` expiry cells so a stale list-item value is never read
+    as a live deadline.  The pending-command section trails the checks.
+    """
+    dormant = obj.source != "active"
+    tick = system_value("xTickCount")
+    mask = (1 << layout.config.tick_bits) - 1
+    in_overflow = timer_epoch(obj.container) == "overflow"
+    pairs: list[tuple[str, str]] = [
+        ("Name", obj.name),
+        ("Address", format_address(obj.address)),
+        ("State", state_cell(obj.source, obj.status)),
+        ("Mode", mode_cell(obj.status)),
+        ("Period", format_optional_int(obj.period)),
+        ("Expiry", "N/A" if dormant else format_optional_int(obj.expiry)),
+        (
+            "ExpiresIn",
+            "N/A" if dormant else timer_expires_in(obj.expiry, tick, mask, in_overflow),
+        ),
+        ("Callback", callback_cell(obj.callback)),
+        ("ID", id_cell(obj.id)),
+        ("List", timer_list_label(obj.container)),
+        ("OwnerCheck", owner_check(obj.container, obj.owner, obj.address)),
+        ("Src", source_label(obj.source, obj.extra_sources)),
+    ]
+    pairs.extend(checks_pairs(timer_checks(value, layout)))
+    messages, commands = iter_timer_commands(layout)
+    cell = commands_cell(messages, commands, layout)
+    if daemon_is_current(layout):
+        # Reason: the daemon is the only writer of the queue, so while it is
+        # on a core the section is an intermediate state; the warning leads
+        # the section instead of replacing a decodable command table.
+        cell = f"{DAEMON_CURRENT_MESSAGE}\n{cell}"
+    pairs.append(("Commands", cell))
     return pairs

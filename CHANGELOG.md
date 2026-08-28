@@ -8,6 +8,38 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- FreeRTOS `frt timers` prints its own column-contract table
+  `Name State Mode Period Expiry ExpiresIn Callback ID Src Addr` instead of the
+  neutral Kind/Count fallback. Timers reachable from the daemon's active lists
+  come first, dormant ones (found through a static timer buffer or a global
+  handle) after them; a dormant row's `Expiry`/`ExpiresIn` is `N/A` because its
+  list-item value is a stale leftover, and the messages above the table carry
+  the kernel tick, the provenance breakdown and the enumeration limit.
+- FreeRTOS `frt timer <name>` vertical detail: `List` names the epoch the timer
+  sits in (`current(xActiveTimerList1)` / `overflow(xActiveTimerList2)` /
+  `none`, because the two list pointers swap when the tick count wraps),
+  `OwnerCheck` reports `ok` / `mismatch` / `uninitialised` (decided by the list
+  item's container member, since a never-started timer's `pvOwner` is
+  uninitialised heap content), and a `Commands` section shows the pending
+  daemon commands.
+- FreeRTOS timer daemon command queue inspection (`freertos/timers.py`): the
+  `xTimerQueue` ring is read FIFO with item-size and DWARF-type prechecks, each
+  slot is cast to `DaemonTaskMessage_t`, and the 12 `tmrCOMMAND_*` ids are
+  rendered by name in a `Seq Command Timer Value` table. An empty queue says
+  `no pending timer commands`; a queue that reports waiting messages but cannot
+  be walked says `timer command queue slots unreadable` rather than looking
+  empty. The `xMessageID < 0` pended-callback arm is decoded only when the
+  `u.xCallbackParameters` member exists in DWARF (it is gated by
+  `INCLUDE_xTimerPendFunctionCall`); otherwise the row states
+  `pended-callback arm absent`.
+- FreeRTOS timer consistency checks (`timer_checks`) shown as a `Checks` line in
+  the timer detail: `ucStatus`-vs-list sync, nonzero period and callback, and
+  the daemon queue item size against `sizeof(DaemonTaskMessage_t)`; each check
+  reports `ok`, `fail: <what>` or `skipped: <why>`.
+- FreeRTOS `Timer_t` layout gained `pvTimerID`, `pxCallbackFunction`,
+  `ucStatus` and `xTimerListItem`; `uxTimerNumber` is registered only on
+  `configUSE_TRACE_FACILITY` builds (it is absent from DWARF otherwise) and is
+  never used as an identity.
 - FreeRTOS `frt queues` / `frt semaphores` / `frt mutexes` print their own
   column-contract tables instead of the neutral Kind/Count fallback:
   `Name Type Items Length ItemSize Free SendWait RecvWait Locks [Set] Src
@@ -91,9 +123,14 @@ All notable changes to GDR are documented in this file.
   kernel object name (such as `pcQueueName`); RT-Thread names are `char[]`
   arrays and are unaffected (re-verified across the Cortex-A9 matrix).
 - FreeRTOS single-kind list commands (`frt queues`, `frt semaphores`, …) no
-  longer warn that the kind is not reliably enumerable; the queue family has
-  full tables and details, while `timers`/`eventgroups`/`streambuffers` still
-  print the neutral `Kind`/`Count` table.
+  longer warn that the kind is not reliably enumerable; the queue family and
+  timers have full tables and details, while `eventgroups`/`streambuffers`
+  still print the neutral `Kind`/`Count` table.
+- FreeRTOS symbol-channel timers are named by their `pcTimerName` instead of the
+  handle or static-buffer variable name, so a dormant timer is listed and
+  resolvable (`frt timer <name>`) under the name the firmware gave it. This
+  changes the row names in `frt timers` and the timer counts' source breakdown
+  in `frt objects`.
 - FreeRTOS supported version range is now continuous `(10,3,0)-(11,2,99)`;
   previously rejected versions such as 10.4.x, 10.7+, and 11.2.x are now
   accepted.

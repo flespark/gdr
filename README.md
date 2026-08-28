@@ -106,7 +106,11 @@ complete inventory. Registering queues (`configQUEUE_REGISTRY_SIZE` plus
 `configUSE_TRACE_FACILITY` cannot store the exact queue kind, so `frt queues`/
 `semaphores`/`mutexes` mark such rows with a trailing `?` in `Type`
 (`mutex?`), and the `Set` column exists only when `configUSE_QUEUE_SETS` is
-on.
+on. Software timers follow the same rule: only timers sitting in the daemon's
+active lists are reachable from the kernel, so stopped, expired one-shot and
+never-started timers appear in `frt timers` (as `dormant`, with `Expiry`/
+`ExpiresIn` printed as `N/A`) only when the build keeps a static timer buffer
+or a global handle for them.
 
 ## Convenience functions
 

@@ -540,6 +540,29 @@ def test_timer_layout_placeholder():
     assert layout.structs["struct tmrTimerControl"].display_name == "Timer"
 
 
+def test_timer_fields_gate_timer_number():
+    """The detail fields exist, and uxTimerNumber only under the trace facility.
+
+    The trace-off variant's DWARF has no uxTimerNumber member (timers.c), so
+    an unconditional registration would fabricate a stable-looking but
+    imaginary timer id on that build.
+    """
+    on = build_layout(FreeRtosConfig(trace_facility=True), (10, 3, 1))
+    off = build_layout(FreeRtosConfig(trace_facility=False), (10, 3, 1))
+    on_timer = on.structs["struct tmrTimerControl"]
+    off_timer = off.structs["struct tmrTimerControl"]
+    for name, path in (
+        ("id", ("pvTimerID",)),
+        ("callback", ("pxCallbackFunction",)),
+        ("status", ("ucStatus",)),
+        ("list_item", ("xTimerListItem",)),
+    ):
+        assert on_timer.fields[name].path == path
+    assert "number" in on_timer.fields
+    assert on_timer.fields["number"].path == ("uxTimerNumber",)
+    assert "number" not in off_timer.fields
+
+
 def test_stream_buffer_summary_uses_only_dwarf_backed_fields():
     """StreamBuffer summary must only name members that exist in DWARF.
 

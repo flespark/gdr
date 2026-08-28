@@ -712,7 +712,7 @@ def test_object_detail_routes_queue_family_kinds(monkeypatch):
         kind="queue", address=0x2000, name="gdr_queue", source="registry"
     )
 
-    def fake_find_queue_object(kind, name):
+    def fake_find_named_object(kind, name):
         if name == "no_such_queue":
             return None, None
         # Reason: the real lookup returns an object of the resolved kind, and
@@ -720,7 +720,7 @@ def test_object_detail_routes_queue_family_kinds(monkeypatch):
         # mirror that instead of always claiming "queue".
         return replace(found, kind=kind), object()
 
-    monkeypatch.setattr(adapter, "_find_queue_object", fake_find_queue_object)
+    monkeypatch.setattr(adapter, "_find_named_object", fake_find_named_object)
     monkeypatch.setattr(
         adapter_module,
         "value_to_queue_object",
@@ -752,7 +752,7 @@ def test_object_detail_routes_queue_family_kinds(monkeypatch):
     assert adapter.object_detail("eventgroup", "gdr_evw") is None
 
 
-def test_find_queue_object_falls_back_to_resolve_object(monkeypatch):
+def test_find_named_object_falls_back_to_resolve_object(monkeypatch):
     """Name match first, then the explicit resolve fallback; neither -> None."""
     layout = build_layout(FreeRtosConfig(), (10, 3, 1))
     adapter = adapter_module.FreeRtosAdapter(layout)
@@ -763,12 +763,12 @@ def test_find_queue_object_falls_back_to_resolve_object(monkeypatch):
     monkeypatch.setattr(adapter_module, "resolve_object", lambda _k, _n, _l: resolved)
     monkeypatch.setattr(adapter_module, "_cast_object", lambda _a, _k, _l: object())
 
-    found, value = adapter._find_queue_object("mutex", "0x6000")
+    found, value = adapter._find_named_object("mutex", "0x6000")
     assert found is resolved
     assert value is not None
 
     monkeypatch.setattr(adapter_module, "resolve_object", lambda _k, _n, _l: None)
-    assert adapter._find_queue_object("mutex", "nope") == (None, None)
+    assert adapter._find_named_object("mutex", "nope") == (None, None)
 
 
 def test_kind_enabled_uses_config_capabilities():
@@ -866,7 +866,7 @@ def test_object_detail_redirects_when_the_name_is_another_kind(monkeypatch):
         kind="semaphore", address=0x2000, name="gdr_mutex", source="user"
     )
     monkeypatch.setattr(
-        adapter, "_find_queue_object", lambda _k, _n: (resolved, object())
+        adapter, "_find_named_object", lambda _k, _n: (resolved, object())
     )
     monkeypatch.setattr(
         adapter_module,
@@ -895,7 +895,7 @@ def test_object_detail_renders_an_inferred_kind_instead_of_refusing(monkeypatch)
         kind="semaphore", address=0x2000, name="gdr_thing", source="user"
     )
     monkeypatch.setattr(
-        adapter, "_find_queue_object", lambda _k, _n: (resolved, object())
+        adapter, "_find_named_object", lambda _k, _n: (resolved, object())
     )
     monkeypatch.setattr(
         adapter_module,

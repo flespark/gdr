@@ -450,6 +450,14 @@ def build_layout(
                     "name", ("pcTimerName",), kind="string", summary=True
                 ),
                 "period": StructField("period", ("xTimerPeriodInTicks",), summary=True),
+                # Detail-only fields for ``frt timer <name>`` (plus the
+                # ``number`` member gated below on configUSE_TRACE_FACILITY).
+                "id": StructField("id", ("pvTimerID",), kind="ptr"),
+                "callback": StructField(
+                    "callback", ("pxCallbackFunction",), kind="ptr", summary=True
+                ),
+                "status": StructField("status", ("ucStatus",)),
+                "list_item": StructField("list_item", ("xTimerListItem",)),
             },
             display_name="Timer",
         ),
@@ -483,4 +491,13 @@ def build_layout(
         "suspended": "xSuspendedTaskList",
         "termination": "xTasksWaitingTermination",
     }
+    if cfg.trace_facility:
+        # Reason: uxTimerNumber only exists under configUSE_TRACE_FACILITY
+        # (timers.c) and prvInitialiseNewTimer never writes it, so it is not
+        # usable as an identifier (only vTimerSetTimerNumber or a trace tool
+        # sets it); gating on the same probe as ucQueueType keeps a trace-off
+        # build from fabricating a stable-looking timer id.
+        structs["struct tmrTimerControl"].fields["number"] = StructField(
+            "number", ("uxTimerNumber",)
+        )
     return FreeRtosLayout(structs=structs, lists=lists, config=cfg, version=version)

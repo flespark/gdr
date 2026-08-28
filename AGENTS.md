@@ -34,14 +34,20 @@ freertos/              FreeRTOS adapter
                        the six object-discovery channels (registry / symbol /
                        active / mpu-pool / waiter / user) with provenance dedup,
                        and the `Queue_t` queue/semaphore/mutex discriminator
+  timers.py            software-timer decoding: current/overflow list epoch,
+                       wrap-safe `ExpiresIn`, `pvOwner` owner check (container
+                       decides `uninitialised`), and the `xTimerQueue` ring
+                       read with the 12 `tmrCOMMAND_*` names
   adapter.py           complete task model, conversion, summaries and tables,
                        object lookup, per-kind provenance counts, and the
-                       queue/semaphore/mutex list tables
-  details.py           vertical detail rendering for `frt task <name>` and the
-                       queue family (`frt queue/semaphore/mutex <name>`)
-  diagnostics.py       queue-family consistency checks (data-queue pointer
-                       invariants, mutex accounting, semaphore self-head;
-                       inapplicable checks report `skipped`)
+                       queue/semaphore/mutex and timer list tables
+  details.py           vertical detail rendering for `frt task <name>`, the
+                       queue family (`frt queue/semaphore/mutex <name>`) and
+                       `frt timer <name>` (List epoch, OwnerCheck, Commands)
+  diagnostics.py       queue-family and timer consistency checks (data-queue
+                       pointer invariants, mutex accounting, semaphore
+                       self-head, `ucStatus`-vs-list sync, daemon queue item
+                       size; inapplicable checks report `skipped`)
   version.py           FreeRTOS version policy and target symbols
   commands.py          FreeRTOS command tree (`frt tasks/task/system/help/objects/heap`,
                        7 plural + 7 singular + 6 aliases)

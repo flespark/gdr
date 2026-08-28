@@ -99,7 +99,9 @@ FreeRTOS 说明：内核对象没有全局注册表，因此 `frt objects` 与�
 完整清单。给 queue 注册名字（`configQUEUE_REGISTRY_SIZE` + `vQueueAddToRegistry()`）
 是让它们能按名字出现的前提。未开 `configUSE_TRACE_FACILITY` 的 build 不保存精确类型，
 `frt queues`/`semaphores`/`mutexes` 会在 `Type` 后加 `?`（如 `mutex?`）；`Set` 列仅在
-开启 `configUSE_QUEUE_SETS` 时存在。
+开启 `configUSE_QUEUE_SETS` 时存在。软件定时器同理：内核只引用守护任务两张 active 列表里的
+timer，因此已停止 / 已过期的一次性 / 创建后未启动的 timer 只有在 build 里留有静态 timer
+缓冲区或全局句柄时才会出现在 `frt timers`（标为 `dormant`，`Expiry`/`ExpiresIn` 显示 `N/A`）。
 
 ## 便捷函数
 

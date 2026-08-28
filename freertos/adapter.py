@@ -16,6 +16,7 @@ from freertos.details import (
     queue_detail,
     semaphore_detail,
     task_detail,
+    timer_detail,
     waiter_summary,
 )
 from freertos.layout import FreeRtosLayout, queue_type_label
@@ -34,6 +35,17 @@ from freertos.navigation import (
     system_value,
     task_name_at,
     task_state,
+)
+from freertos.timers import (
+    DAEMON_CURRENT_MESSAGE,
+    callback_cell,
+    daemon_is_current,
+    id_cell,
+    mode_cell,
+    state_cell,
+    timer_epoch,
+    timer_expires_in,
+    timer_subsystem_ready,
 )
 from gdr.adapter_api import (
     ObjectDetail,
@@ -463,6 +475,65 @@ def value_to_queue_object(
     return obj
 
 
+@dataclass
+class FreeRtosTimerObject:
+    """Display model for one software timer (struct tmrTimerControl).
+
+    ``expiry`` is the list item's xItemValue (the absolute expiry tick); it
+    is only meaningful while the timer is linked into an active list -- a
+    dormant timer keeps a stale value, so the renderer shows ``N/A``.
+    ``container``/``owner`` are the list item's membership fields; the owner
+    is heap garbage on a never-linked timer, so the OwnerCheck is decided by
+    the container (freertos.timers.owner_check) and never by the owner value
+    itself.
+    """
+
+    name: str = "-"
+    address: int = 0
+    source: str = ""
+    extra_sources: tuple[str, ...] = ()
+    period: int | None = None
+    status: int | None = None
+    expiry: int | None = None
+    callback: int | None = None
+    id: int | None = None
+    timer_number: int | None = None
+    owner: int | None = None
+    container: int | None = None
+
+
+def value_to_timer_object(
+    value,
+    found: DiscoveredObject,
+    layout: FreeRtosLayout,
+) -> FreeRtosTimerObject:
+    """Convert a discovered timer address into the display model.
+
+    ``uxTimerNumber`` is only read under the trace facility -- the member
+    does not exist in a trace-off build (timers.c) -- and is not usable as
+    an identifier anyway, because prvInitialiseNewTimer never writes it.
+    """
+    obj = FreeRtosTimerObject(
+        name=found.name or "-",
+        address=found.address,
+        source=found.source,
+        extra_sources=found.extra_sources,
+    )
+    if value is None:
+        return obj
+    container_field = layout.config.list_item_container_field or "pxContainer"
+    obj.period = read_int(read_path(value, ("xTimerPeriodInTicks",)))
+    obj.status = read_int(read_path(value, ("ucStatus",)))
+    obj.expiry = read_int(read_path(value, ("xTimerListItem", "xItemValue")))
+    obj.callback = read_int(read_path(value, ("pxCallbackFunction",)))
+    obj.id = read_int(read_path(value, ("pvTimerID",)))
+    obj.owner = read_int(read_path(value, ("xTimerListItem", "pvOwner")))
+    obj.container = read_int(read_path(value, ("xTimerListItem", container_field)))
+    if layout.config.trace_facility:
+        obj.timer_number = read_int(read_path(value, ("uxTimerNumber",)))
+    return obj
+
+
 class FreeRtosAdapter(RtosAdapter):
     """Expose FreeRTOS scheduler lists through the shared task contract."""
 
@@ -561,13 +632,16 @@ class FreeRtosAdapter(RtosAdapter):
         )
 
     def object_table(self, kind: str) -> ObjectTable | None:
-        """Return the list table for one queue-family kind, or ``None``.
+        """Return the list table for one object kind, or ``None``.
 
         Semaphores and mutexes are Queue_t objects refined by the discovery
-        layer, so this one entry point serves ``frt queues``, ``frt
-        semaphores`` and ``frt mutexes`` with their own column contracts.
+        layer, so the queue-family entry point serves ``frt queues``, ``frt
+        semaphores`` and ``frt mutexes`` with their own column contracts;
+        timers have their own model and table.
         """
         kind = kind.strip().lower()
+        if kind == "timer":
+            return self._timer_table()
         if kind not in _QUEUE_FAMILY_KINDS:
             return None
         objects = [
@@ -669,6 +743,105 @@ class FreeRtosAdapter(RtosAdapter):
             elastic=("Waiters", "Name"),
         )
 
+    def _timer_table(self) -> ObjectTable:
+        """Build the ``frt timers`` table.
+
+        Rows are partitioned so the reliably named active timers (``source
+        == "active"``, found on the daemon's lists) come first and the
+        dormant ones after them; a dormant timer's ``Expiry``/``ExpiresIn``
+        must be ``N/A`` because its list-item value is a stale leftover that
+        would look like a real deadline.
+        """
+        layout = self.layout
+        headers = [
+            "Name",
+            "State",
+            "Mode",
+            "Period",
+            "Expiry",
+            "ExpiresIn",
+            "Callback",
+            "ID",
+            "Src",
+            "Addr",
+        ]
+        if not layout.config.timers:
+            return ObjectTable(
+                headers=headers,
+                rows=[],
+                messages=["no software timers in this build (configUSE_TIMERS=0)"],
+            )
+        if not timer_subsystem_ready():
+            return ObjectTable(
+                headers=headers,
+                rows=[],
+                messages=[
+                    "timer subsystem not initialised (pxCurrentTimerList == NULL)"
+                ],
+            )
+        objects = [
+            value_to_timer_object(
+                _cast_object(found.address, "timer", layout), found, layout
+            )
+            for found in discover("timer", layout)
+        ]
+        # Reason: partition keeps the active (list-reachable) timers first
+        # and the dormant ones (static buffers / global handles) after them,
+        # so a reader never has to guess which rows the kernel references.
+        objects.sort(key=lambda obj: 0 if obj.source == "active" else 1)
+        tick = system_value("xTickCount")
+        mask = (1 << layout.config.tick_bits) - 1
+        rows = []
+        transition = False
+        for obj in objects:
+            dormant = obj.source != "active"
+            state = state_cell(obj.source, obj.status)
+            transition = transition or state.endswith("?")
+            in_overflow = timer_epoch(obj.container) == "overflow"
+            rows.append(
+                [
+                    obj.name,
+                    state,
+                    mode_cell(obj.status),
+                    format_optional_int(obj.period),
+                    "N/A" if dormant else format_optional_int(obj.expiry),
+                    "N/A"
+                    if dormant
+                    else timer_expires_in(obj.expiry, tick, mask, in_overflow),
+                    callback_cell(obj.callback),
+                    id_cell(obj.id),
+                    source_label(obj.source, obj.extra_sources),
+                    format_address(obj.address),
+                ]
+            )
+        messages = [f"Kernel tick: {tick if tick is not None else 'N/A'}"]
+        sources: dict[str, int] = {}
+        for obj in objects:
+            sources[obj.source] = sources.get(obj.source, 0) + 1
+        if sources:
+            messages.append(
+                "provenance: "
+                + " ".join(f"{name}={count}" for name, count in sorted(sources.items()))
+            )
+        messages.append(
+            "stopped, expired one-shot and never-started timers are not "
+            "referenced by any kernel global; they only appear when a static "
+            "buffer or a global handle keeps them in the symbol table"
+        )
+        if transition:
+            messages.append(
+                "some timers show 'active?'/'dormant?': ucStatus and the timer "
+                "lists disagree, which a queued start/stop command explains"
+            )
+        if daemon_is_current(layout):
+            messages.append(DAEMON_CURRENT_MESSAGE)
+        return ObjectTable(
+            headers=headers,
+            rows=rows,
+            messages=messages,
+            elastic=("Callback", "Name"),
+        )
+
     def _mutex_table(self, objects: list[FreeRtosQueueObject]) -> ObjectTable:
         """Build the ``frt mutexes`` table.
 
@@ -705,7 +878,7 @@ class FreeRtosAdapter(RtosAdapter):
         )
 
     def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
-        """Return one object's vertical detail (task or queue family)."""
+        """Return one object's vertical detail (task, timer or queue family)."""
         kind = kind.strip().lower()
         if kind == "task":
             value = find_task(name, self.layout)
@@ -713,11 +886,17 @@ class FreeRtosAdapter(RtosAdapter):
                 return ObjectDetail(found=False)
             task = value_to_task(value, *task_state(value, self.layout), self.layout)
             return ObjectDetail(pairs=task_detail(task, self.layout))
+        if kind == "timer":
+            found, value = self._find_named_object(kind, name)
+            if found is None or value is None:
+                return ObjectDetail(found=False)
+            obj = value_to_timer_object(value, found, self.layout)
+            return ObjectDetail(pairs=timer_detail(obj, value, self.layout))
         if kind not in _QUEUE_FAMILY_KINDS:
-            # timer/eventgroup/streambuffer detail needs their discovery
-            # channels, not yet enumerable at this depth.
+            # eventgroup/streambuffer detail needs their discovery channels,
+            # not yet enumerable at this depth.
             return None
-        found, value = self._find_queue_object(kind, name)
+        found, value = self._find_named_object(kind, name)
         if found is None or value is None:
             return ObjectDetail(found=False)
         # Reason: the address/symbol fallback stamps the *requested* kind on
@@ -743,12 +922,13 @@ class FreeRtosAdapter(RtosAdapter):
             pairs = mutex_detail(obj, value, self.layout)
         return ObjectDetail(pairs=pairs)
 
-    def _find_queue_object(self, kind: str, name: str):
-        """Return ``(DiscoveredObject, native value)`` for a family name.
+    def _find_named_object(self, kind: str, name: str):
+        """Return ``(DiscoveredObject, native value)`` for a kind's name.
 
         Mirrors :meth:`find_object`: discovery names first, then the explicit
         address/symbol/decimal fallback -- but keeps the found object so the
-        detail builder can render its provenance and inferred kind.
+        detail builder can render its provenance and inferred kind.  Kind-
+        agnostic: timers and the queue family both resolve through it.
         """
         for found in discover(kind, self.layout):
             if found.name == name:
