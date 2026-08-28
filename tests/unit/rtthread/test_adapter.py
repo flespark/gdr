@@ -6,7 +6,29 @@ import pytest
 
 import rtthread.adapter as adapter_module
 from gdr.layout import KernelLayout, StructField, StructLayout
-from rtthread.adapter import Event, Mailbox, MemoryPool, MessageQueue, Timer
+from rtthread.adapter import (
+    Event,
+    Mailbox,
+    MemoryPool,
+    MessageQueue,
+    Mutex,
+    Semaphore,
+    Timer,
+)
+
+
+def _type_info(code: int, struct_name: str, name: str, *, enabled: bool = True):
+    """Build an ObjectTypeInfo with the registry-path fields these tests ignore."""
+    from gdr.layout import ObjectTypeInfo
+
+    return ObjectTypeInfo(
+        type_code=code,
+        struct_name=struct_name,
+        list_path=("parent", "list"),
+        next_path=("next",),
+        enabled=enabled,
+        name=name,
+    )
 
 
 def test_task_table_reads_current_task_once(monkeypatch):
@@ -119,6 +141,36 @@ def test_timer_table_symbolizes_and_falls_back_to_addresses(monkeypatch):
     ("kind", "struct_name", "converted", "headers", "expected_row"),
     (
         (
+            "semaphore",
+            "struct rt_semaphore",
+            Semaphore(name="lock", value=2, address=0x5000),
+            ["Name", "Value", "Policy", "Waiters", "Addr"],
+            ["lock", "2", "N/A", "0", "0x5000"],
+        ),
+        (
+            "mutex",
+            "struct rt_mutex",
+            Mutex(
+                name="guard",
+                value=0,
+                hold=1,
+                owner="worker",
+                original_priority=12,
+                address=0x6000,
+            ),
+            [
+                "Name",
+                "Value",
+                "Hold",
+                "OrigPrio",
+                "Owner",
+                "Policy",
+                "Waiters",
+                "Addr",
+            ],
+            ["guard", "0", "1", "12", "worker", "N/A", "0", "0x6000"],
+        ),
+        (
             "event",
             "struct rt_event",
             Event(name="ready", set=0x3, address=0x1000),
@@ -199,6 +251,8 @@ def test_ipc_object_tables_use_their_own_registry_route(
         lambda code, selected: calls.append((code, selected)) or iter((value,)),
     )
     converter_name = {
+        "semaphore": "value_to_semaphore",
+        "mutex": "value_to_mutex",
         "event": "value_to_event",
         "mailbox": "value_to_mailbox",
         "msgqueue": "value_to_messagequeue",
@@ -1098,3 +1152,161 @@ def test_heap_detail_marks_truncated_walks_without_changing_status(monkeypatch):
     assert result is not None
     assert result.status == "good"
     assert result.pairs[0][1] == "2 used, 1 free, 3 total (truncated)"
+
+
+# ---------------------------------------------------------------------------
+# stack-direction inference and watermark helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stack", "expected"),
+    [
+        (b"", None),  # nothing read
+        (bytes([0x23]) * 32, None),  # both edges untouched: undecidable
+        (bytes([0x23]) * 16 + b"\x01" * 16, False),  # low end untouched: grows down
+        (b"\x01" * 16 + bytes([0x23]) * 16, True),  # high end untouched: grows up
+    ],
+)
+def test_infer_stack_grows_up_needs_exactly_one_untouched_edge(stack, expected):
+    """Direction is only claimed when one boundary still carries the fill.
+
+    Both edges filled means the thread has barely run; guessing a direction
+    there would silently pick a watermark end and report a fabricated number.
+    """
+    assert adapter_module._infer_stack_grows_up(stack) is expected
+
+
+def test_max_stack_used_requires_a_known_direction():
+    """Without a direction the watermark stays unknown rather than assumed."""
+    fill = bytes([adapter_module.RT_THREAD_STACK_FILL])
+    stack = fill * 8 + b"\xaa" * 4 + fill * 8
+
+    assert adapter_module._max_stack_used(stack, None) is None
+    # Grows down: used bytes reach from the first non-fill byte to the top.
+    assert adapter_module._max_stack_used(stack, False) == 12
+    # Grows up: used bytes reach from the bottom to the last non-fill byte.
+    assert adapter_module._max_stack_used(stack, True) == 12
+
+
+def test_event_detail_pairs_each_waiter_with_its_wait_condition(monkeypatch):
+    """A waiter's mask/mode lives on the thread, so detail must pair them.
+
+    Without this the reader sees the event's current set and a waiter list but
+    cannot tell which bits that waiter is still missing.
+    """
+    layout = KernelLayout(
+        structs={
+            "struct rt_event": StructLayout(
+                "struct rt_event",
+                {"suspend_thread": StructField("suspend_thread", ("suspend_thread",))},
+            ),
+            "struct rt_thread": StructLayout(
+                "struct rt_thread",
+                {
+                    "name": StructField("name", ("name",)),
+                    "event_set": StructField("event_set", ("event_set",)),
+                    "event_info": StructField("event_info", ("event_info",)),
+                },
+            ),
+        }
+    )
+    value, head, thread = object(), object(), object()
+    fields = {("name",): "waiter1", ("event_set",): 0x5, ("event_info",): 0x02}
+
+    monkeypatch.setattr(
+        adapter_module.diagnostics, "event_detail", lambda _event: [("Set", "0x1")]
+    )
+    monkeypatch.setattr(adapter_module, "value_to_event", lambda _v, _l: object())
+    monkeypatch.setattr(adapter_module, "_ipc_detail_pairs", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        adapter_module,
+        "read_field",
+        lambda owner, _sl, field: head if owner is value else fields.get((field,)),
+    )
+    monkeypatch.setattr(
+        adapter_module, "iter_suspend_threads", lambda _head: iter((thread,))
+    )
+    monkeypatch.setattr(adapter_module, "read_cstring", lambda raw: raw)
+    monkeypatch.setattr(
+        adapter_module, "read_int", lambda raw: raw if isinstance(raw, int) else None
+    )
+    monkeypatch.setattr(adapter_module, "_event_mode", lambda info: f"mode{info}")
+
+    pairs = adapter_module._event_detail_with_waiters(value, layout)
+
+    assert ("Set", "0x1") in pairs
+    assert ("Waiter: waiter1", "set=0x5 mode=mode2") in pairs
+
+
+def test_event_detail_without_thread_layout_keeps_the_base_pairs(monkeypatch):
+    """A build with no rt_thread layout still renders the event itself."""
+    layout = KernelLayout(structs={"struct rt_event": StructLayout("struct rt_event")})
+    monkeypatch.setattr(
+        adapter_module.diagnostics, "event_detail", lambda _event: [("Set", "0x1")]
+    )
+    monkeypatch.setattr(adapter_module, "value_to_event", lambda _v, _l: object())
+    monkeypatch.setattr(adapter_module, "_ipc_detail_pairs", lambda *_a, **_k: [])
+
+    pairs = adapter_module._event_detail_with_waiters(object(), layout)
+
+    assert pairs == [("Set", "0x1")]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({}, False),
+        ({"thread": StructField("thread", ("thread",))}, True),
+        (
+            {
+                "owner_thread_name": StructField(
+                    "owner_thread_name", ("owner_thread_name",)
+                )
+            },
+            True,
+        ),
+    ],
+)
+def test_memtrace_enabled_follows_the_probed_block_header(fields, expected):
+    """MEMTRACE owner names are reported from the header layout, not a guess."""
+    layout = KernelLayout(
+        structs={"struct rt_small_mem_item": StructLayout("item", fields)}
+    )
+
+    adapter = adapter_module.RtThreadAdapter(layout)
+
+    assert adapter._memtrace_enabled() is expected
+
+
+def test_object_counts_skips_disabled_object_types(monkeypatch):
+    """A disabled kernel component must not report a zero row.
+
+    Zero would read as "none exist" when the truth is "this build cannot have
+    any", which is the distinction the object summary exists to preserve.
+    """
+    layout = KernelLayout(
+        object_types={
+            0: _type_info(0, "struct rt_thread", "thread"),
+            1: _type_info(1, "struct rt_semaphore", "semaphore"),
+            2: _type_info(2, "struct rt_mutex", "mutex", enabled=False),
+        }
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "iter_objects",
+        lambda code, _layout: iter((object(),) * (code + 1)),
+    )
+
+    counts = adapter_module.RtThreadAdapter(layout).object_counts()
+
+    assert counts == {"task": 1, "semaphore": 2}
+    assert "mutex" not in counts
+
+
+def test_registered_objects_returns_none_without_a_route():
+    """A missing struct or type code means "not enumerable", not an empty list."""
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+
+    assert adapter._registered_objects("semaphore", "struct rt_semaphore") is None
+    assert adapter.object_table("semaphore") is None
