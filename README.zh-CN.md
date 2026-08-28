@@ -22,7 +22,7 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 | RTOS | 版本 | 状态 |
 |------|------|------|
 | RT-Thread | 3.1.x、4.0.x、4.1.x | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起 |
-| FreeRTOS | V10.3.0–V11.2.x | 任务导航、pretty-printer 及 `freertos tasks/system/objects` 已在 QEMU B-L475E-IOT01A 验证（10.3.1 fixture） |
+| FreeRTOS | V10.3.0–V11.2.x | 已实现；Cortex-M3 在 QEMU B-L475E-IOT01A（10.3.1 fixture）与 MPS2-AN385（11.1.0）验证 |
 
 ## 快速开始
 
@@ -93,6 +93,13 @@ warning: target RT-Thread version not exported; cannot verify version
 | `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态, 通过 `<rtos> help` 查看每个 RTOS 支持的命令和别名 |
 | `<rtos> <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
+
+FreeRTOS 说明：内核对象没有全局注册表，因此 `frt objects` 与各列表命令会在表上方
+标出每个对象的发现来源（`registry`、`symbol`、`waiter` 等）与枚举限制——计数不等于
+完整清单。给 queue 注册名字（`configQUEUE_REGISTRY_SIZE` + `vQueueAddToRegistry()`）
+是让它们能按名字出现的前提。未开 `configUSE_TRACE_FACILITY` 的 build 不保存精确类型，
+`frt queues`/`semaphores`/`mutexes` 会在 `Type` 后加 `?`（如 `mutex?`）；`Set` 列仅在
+开启 `configUSE_QUEUE_SETS` 时存在。
 
 ## 便捷函数
 

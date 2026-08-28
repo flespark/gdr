@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 try:
@@ -9,9 +10,17 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from freertos.layout import FreeRtosLayout
+from freertos.diagnostics import queue_checks
+from freertos.layout import FreeRtosLayout, queue_type_label
+from freertos.navigation import source_label, task_priority_at
+from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.formatting import format_address, format_optional_int
-from gdr.gdb_bridge import lookup_symbol, read_int
+from gdr.gdb_bridge import (
+    lookup_symbol,
+    read_bytes,
+    read_int,
+)
+from gdr.layout import read_path
 
 if TYPE_CHECKING:
     from freertos.adapter import FreeRtosTask
@@ -133,4 +142,236 @@ def task_detail(task: FreeRtosTask, layout: FreeRtosLayout) -> list[tuple[str, s
         )
     if "tls" in fields:
         pairs.append(("TLS", "present" if task.tls_present else "absent"))
+    return pairs
+
+
+# ---------------------------------------------------------------------------
+# queue-family shared cells and detail builders
+# ---------------------------------------------------------------------------
+
+# Item payloads longer than this are truncated in the Item[i] dump.
+GDR_QUEUE_ITEM_DUMP_BYTES = 64
+
+
+def waiter_summary(names: list[str] | None) -> str:
+    """Render ``count@names`` with the count first so truncation keeps it.
+
+    Mirrors the RT-Thread IPC waiter contract (rtthread/adapter.py): on a
+    narrow terminal the elastic columns shrink from the right, so a
+    names-first format would lose the diagnostics count exactly when it
+    matters most.  ``None`` (unreadable) renders ``N/A``; an empty list
+    renders ``0``.
+    """
+    if names is None:
+        return "N/A"
+    if not names:
+        return "0"
+    return f"{len(names)}@{','.join(names)}"
+
+
+def locks_cell(rx_lock: int | None, tx_lock: int | None) -> str:
+    """Render a queue's lock counters: ``-`` when both are ``queueUNLOCKED``.
+
+    ``queueUNLOCKED == (int8_t) -1`` (queue.c) and is normalized from an
+    unsigned 255 read before it reaches here; any other value is a lock
+    count from a queue locked inside a critical section.
+    """
+    if rx_lock is None or tx_lock is None:
+        return "N/A"
+    if rx_lock == -1 and tx_lock == -1:
+        return "-"
+    return f"rx={rx_lock} tx={tx_lock}"
+
+
+def held_cell(obj) -> str:
+    """Render the mutex ``Held`` cell: ``yes`` when taken, ``no`` when free.
+
+    A mutex is *taken* when its message count is 0 (a take empties it, a
+    give refills it, queue.c xQueueSemaphoreTake/give); the Owner column
+    carries who.  The count is the objective state -- a take issued before
+    the scheduler starts records no holder (pxCurrentTCB is NULL), so the
+    holder pointer alone would mislabel a genuinely taken mutex as free.
+    """
+    if obj.count is None:
+        return "N/A"
+    return "yes" if obj.count == 0 else "no"
+
+
+def checks_pairs(checks: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Render consistency-check results as a verdict row plus problem rows.
+
+    The checks themselves must stay exhaustive -- an inapplicable check is
+    reported so "not checked" is never read as "verified" -- but enumerating
+    every ``skipped: not a data queue`` inline produced a 150-column value
+    that buried the one line a reader acts on.  So the rendering splits by
+    what the reader can do about each outcome, mirroring RT-Thread's
+    named-verdict style (rtthread/diagnostics.py):
+
+    * inapplicable by structure (a mutex has no storage pointers) is
+      *counted* in the verdict as ``n/a``, never spelled out;
+    * an unreadable field means the check could not run -- a degradation the
+      reader may need to explain -- so it gets its own ``Check[<name>]`` row;
+    * a failure gets its own row, because that is the actionable output.
+    """
+    verified = [name for name, status in checks if status == "ok"]
+    problems = [
+        (name, status)
+        for name, status in checks
+        if status.startswith("fail") or "unreadable" in status
+    ]
+    inapplicable = [
+        name
+        for name, status in checks
+        if status.startswith("skipped") and "unreadable" not in status
+    ]
+
+    counts = [f"{len(verified)} verified"]
+    if inapplicable:
+        counts.append(f"{len(inapplicable)} n/a")
+    failures = [name for name, status in problems if status.startswith("fail")]
+    verdict = f"{len(failures)} failed" if failures else "ok"
+    pairs = [("Checks", f"{verdict} ({', '.join(counts)})")]
+    for name, status in problems:
+        pairs.append((f"Check[{name}]", status.removeprefix("fail: ").strip()))
+    return pairs
+
+
+def iter_queue_items(
+    value,
+    layout: FreeRtosLayout,  # noqa: ARG001 (uniform detail-builder signature)
+    max_payload: int = GDR_QUEUE_ITEM_DUMP_BYTES,
+) -> Iterator[tuple[int, int, bytes | None]]:
+    """Yield queued items ``(index, address, payload)`` in FIFO order.
+
+    The dump starts one slot past ``pcReadFrom`` -- that pointer marks the
+    most recent item *consumed*, so the next unread item is ``pcReadFrom +
+    uxItemSize`` -- and wraps at ``pcTail`` with the kernel's own ``>="``
+    comparison (queue.c prvCopyDataFromQueue).  ``pcTail`` itself is the end
+    marker and never holds an item.  Payloads are capped at *max_payload*
+    bytes; the caller renders any truncation.
+    """
+    pc_head = read_int(read_path(value, ("pcHead",)))
+    pc_tail = read_int(read_path(value, ("u", "xQueue", "pcTail")))
+    pc_read = read_int(read_path(value, ("u", "xQueue", "pcReadFrom")))
+    length = read_int(read_path(value, ("uxLength",)))
+    count = read_int(read_path(value, ("uxMessagesWaiting",)))
+    item_size = read_int(read_path(value, ("uxItemSize",)))
+    if (
+        pc_head is None
+        or pc_tail is None
+        or pc_read is None
+        or length is None
+        or count is None
+        or item_size is None
+    ):
+        return
+    if item_size <= 0 or count <= 0 or length <= 0:
+        return
+    span = pc_tail - pc_head
+    if span <= 0:
+        return
+    for index in range(min(count, length, GDR_MAX_TRAVERSAL_COUNT)):
+        # Reason: wording the wrap as modulo keeps it exact at pcTail (the
+        # kernel wraps with >=), so the slot right before pcTail is the
+        # last usable one and pcTail is never read as item storage.
+        pos = pc_head + ((pc_read + (index + 1) * item_size - pc_head) % span)
+        payload = read_bytes(pos, min(item_size, max_payload))
+        yield index, pos, payload
+
+
+def queue_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
+    """Build the vertical pairs for ``frt queue <name>``.
+
+    Key order is a stable output contract; ``Set`` appears only when the
+    build has queue sets, and the FIFO ``Item[i]`` dump trails the checks.
+    """
+    pairs: list[tuple[str, str]] = [
+        ("Name", obj.name),
+        ("Address", format_address(obj.address)),
+        ("Type", queue_type_label(obj.kind, obj.type_code, obj.inferred_kind)),
+        ("Items", format_optional_int(obj.count)),
+        ("Length", format_optional_int(obj.length)),
+        ("ItemSize", format_optional_int(obj.item_size)),
+        ("Free", format_optional_int(obj.free)),
+        ("Head", format_address(read_int(read_path(value, ("pcHead",))))),
+        ("Tail", format_address(read_int(read_path(value, ("u", "xQueue", "pcTail"))))),
+        ("WriteTo", format_address(read_int(read_path(value, ("pcWriteTo",))))),
+        (
+            "ReadFrom",
+            format_address(read_int(read_path(value, ("u", "xQueue", "pcReadFrom")))),
+        ),
+        ("Locks", locks_cell(obj.rx_lock, obj.tx_lock)),
+    ]
+    if layout.config.queue_sets:
+        pairs.append(
+            ("Set", format_address(obj.set_container) if obj.set_container else "-")
+        )
+    pairs.append(("SendWait", waiter_summary(obj.send_waiters)))
+    pairs.append(("RecvWait", waiter_summary(obj.recv_waiters)))
+    pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
+    pairs.extend(checks_pairs(queue_checks(value, obj.kind, layout)))
+    item_size = obj.item_size
+    for index, address, payload in iter_queue_items(value, layout):
+        if payload is None:
+            pairs.append((f"Item[{index}]", f"@0x{address:x}: unreadable"))
+        elif item_size is not None and item_size > GDR_QUEUE_ITEM_DUMP_BYTES:
+            pairs.append(
+                (
+                    f"Item[{index}]",
+                    f"@0x{address:x}: {payload.hex(' ')}"
+                    f"…(+{item_size - len(payload)} bytes)",
+                )
+            )
+        else:
+            pairs.append((f"Item[{index}]", f"@0x{address:x}: {payload.hex(' ')}"))
+    return pairs
+
+
+def semaphore_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
+    """Build the vertical pairs for ``frt semaphore <name>``.
+
+    Deliberately reads no ``u.xSemaphore`` union arm: only mutexes
+    (``pcHead == NULL``) decode that, and reading it on a semaphore -- whose
+    ``u`` member is QueuePointers_t -- would fabricate a holder from
+    pcTail/pcReadFrom bytes (queue.c).
+    """
+    pairs: list[tuple[str, str]] = [
+        ("Name", obj.name),
+        ("Address", format_address(obj.address)),
+        ("Type", queue_type_label(obj.kind, obj.type_code, obj.inferred_kind)),
+        ("Count", format_optional_int(obj.count)),
+        ("Max", format_optional_int(obj.length)),
+        ("Waiters", waiter_summary(obj.recv_waiters)),
+        ("Locks", locks_cell(obj.rx_lock, obj.tx_lock)),
+        ("Src", source_label(obj.source, obj.extra_sources)),
+    ]
+    pairs.extend(checks_pairs(queue_checks(value, obj.kind, layout)))
+    return pairs
+
+
+def mutex_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
+    """Build the vertical pairs for ``frt mutex <name>``.
+
+    Holder priority fields come from the holder TCB (``uxPriority``,
+    ``uxBasePriority`` when present), gated on the same capability as the
+    task table's BasePrio column.
+    """
+    sl = layout.structs["struct tskTaskControlBlock"]
+    priority = task_priority_at(obj.holder_address, layout, "current_priority")
+    pairs: list[tuple[str, str]] = [
+        ("Name", obj.name),
+        ("Address", format_address(obj.address)),
+        ("Type", queue_type_label(obj.kind, obj.type_code, obj.inferred_kind)),
+        ("Held", held_cell(obj)),
+        ("Owner", obj.holder or "-"),
+        ("OwnerPriority", format_optional_int(priority)),
+    ]
+    if "base_priority" in sl.fields:
+        base = task_priority_at(obj.holder_address, layout, "base_priority")
+        pairs.append(("OwnerBasePriority", format_optional_int(base)))
+    pairs.append(("RecursiveCallCount", format_optional_int(obj.recursive_count)))
+    pairs.append(("Waiters", waiter_summary(obj.recv_waiters)))
+    pairs.append(("Locks", locks_cell(obj.rx_lock, obj.tx_lock)))
+    pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
+    pairs.extend(checks_pairs(queue_checks(value, obj.kind, layout)))
     return pairs

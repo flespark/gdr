@@ -10,8 +10,8 @@ complete (FreeRTOS keeps no global registry for most object kinds).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, replace
 
 try:
     import gdb
@@ -50,6 +50,13 @@ if gdb is not None:
 else:
     _TRAVERSAL_ERRORS = (IndexError, TypeError, ValueError)
 
+# Errors expected from a `gdb.execute(...)` probe: the command may be rejected
+# by this GDB build or unavailable before a target is loaded.
+if gdb is not None:
+    _COMMAND_ERRORS: tuple[type[BaseException], ...] = (gdb.error, AttributeError)
+else:
+    _COMMAND_ERRORS = (AttributeError,)
+
 
 def _owner_task(pointer, layout: FreeRtosLayout):
     """Cast ListItem.pvOwner (void *) back to the DWARF TCB type.
@@ -80,7 +87,7 @@ def _mapped_ranges() -> tuple[tuple[int, int], ...]:
         return ()
     try:
         output = gdb.execute("info files", to_string=True)
-    except Exception:
+    except _COMMAND_ERRORS:
         return ()
     ranges: list[tuple[int, int]] = []
     for match in _SECTION_RANGE_RE.finditer(output or ""):
@@ -422,6 +429,137 @@ def list_count(name: str, layout: FreeRtosLayout) -> int | None:
 # Object discovery (six-channel provenance model)
 # ---------------------------------------------------------------------------
 
+# Kinds whose objects are all Queue_t structs.  Which of the three a given
+# address really is needs the Queue_t discriminator (ucQueueType under
+# configUSE_TRACE_FACILITY, else the pcHead/itemSize pointer chain), so any
+# channel that only proves "some Queue_t" (registry, waiter, MPU pool) hands
+# candidates to the queue classifier before the per-kind filter.
+_QUEUE_FAMILY_KINDS = ("queue", "semaphore", "mutex")
+
+
+@dataclass(frozen=True)
+class QueueClassification:
+    """Result of classifying one Queue_t instance.
+
+    Attributes:
+        kind: ``"queue"``, ``"semaphore"`` or ``"mutex"``.
+        type_code: Raw ``ucQueueType`` value when the trace facility is on
+            (queue.h: BASE=0, MUTEX=1, COUNTING_SEMAPHORE=2,
+            BINARY_SEMAPHORE=3, RECURSIVE_MUTEX=4, SET=5); ``None`` without
+            it.
+        inferred: True when the kind could only be discriminated by the
+            pcHead/itemSize chain (no ``ucQueueType``): binary vs counting
+            semaphores and mutexes vs recursive mutexes are
+            indistinguishable.
+        recursive: True when ``type_code == 4``; ``None`` without the trace
+            facility, where only a nonzero ``uxRecursiveCallCount`` proves a
+            recursion is in progress (0 cannot prove it is not).
+        is_set: True when ``type_code == 5``; ``None`` without the trace
+            facility.
+    """
+
+    kind: str
+    type_code: int | None
+    inferred: bool
+    recursive: bool | None
+    is_set: bool | None
+
+
+def _queue_value(address: int, layout: FreeRtosLayout):
+    """Cast a discovered address to the Queue_t (QueueDefinition) struct."""
+    if gdb is None:
+        return None
+    try:
+        struct_name = layout.structs["struct QueueDefinition"].struct_name
+    except KeyError:
+        return None
+    try:
+        typ = gdb.lookup_type(struct_name).pointer()
+        return gdb.Value(address).cast(typ).dereference()
+    except _TRAVERSAL_ERRORS:
+        return None
+
+
+def classify_queue(value, layout: FreeRtosLayout) -> QueueClassification | None:
+    """Classify one Queue_t as ``queue``, ``semaphore`` or ``mutex``.
+
+    Discrimination order is strict and mirrors the kernel's own checks
+    (queue.c / queue.h):
+
+    1. ``ucQueueType`` is read first when ``configUSE_TRACE_FACILITY`` is on;
+       it is definitive and also tells binary from counting semaphores and
+       plain from recursive mutexes (queue.h:73);
+    2. ``pcHead == NULL`` marks a mutex -- the kernel aliases
+       ``uxQueueType`` to ``pcHead`` with ``queueQUEUE_IS_MUTEX == NULL``;
+    3. ``uxItemSize == 0`` marks a semaphore: semaphores carry no storage
+       buffer and ``pcHead`` holds the object address as a benign value
+       (queue.c prvInitialiseNewQueue);
+    4. otherwise it is a data queue.
+
+    Returns ``None`` only when the object cannot be read at all; callers
+    then keep the channel's original classification instead of guessing.
+    """
+    if value is None:
+        return None
+    if layout.config.trace_facility:
+        code = read_int(read_path(value, ("ucQueueType",)))
+        if code is not None:
+            if code in (1, 4):
+                kind: str = "mutex"
+            elif code in (2, 3):
+                kind = "semaphore"
+            else:
+                kind = "queue"
+            return QueueClassification(
+                kind=kind,
+                type_code=code,
+                inferred=False,
+                recursive=(code == 4),
+                is_set=(code == 5),
+            )
+    head = read_int(read_path(value, ("pcHead",)))
+    # Reason: NULL is the mutex marker itself (queue.h), and an unreadable
+    # pcHead cannot prove otherwise, so both read as mutex and the chain
+    # still terminates on an unreadable object.
+    if head in (None, 0):
+        return QueueClassification(
+            kind="mutex", type_code=None, inferred=True, recursive=None, is_set=None
+        )
+    item_size = read_int(read_path(value, ("uxItemSize",)))
+    if item_size is not None and item_size == 0:
+        return QueueClassification(
+            kind="semaphore",
+            type_code=None,
+            inferred=True,
+            recursive=None,
+            is_set=None,
+        )
+    if item_size is None:
+        return None
+    return QueueClassification(
+        kind="queue", type_code=None, inferred=True, recursive=None, is_set=None
+    )
+
+
+def _refine_queue_object(
+    obj: DiscoveredObject, layout: FreeRtosLayout
+) -> DiscoveredObject:
+    """Replace a queue-family candidate's kind with the Queue_t's actual one.
+
+    The registry, waiter and MPU-pool channels only know an address is
+    *some* Queue_t -- registry slots hold QueueHandle_t, waiters sit on
+    Queue_t waiter lists and KERNEL_OBJECT_TYPE_QUEUE covers semaphores,
+    mutexes and queue sets -- so they mark the kind inferred.  A definitive
+    classification clears that flag; an unreadable object keeps the
+    channel's original guess rather than being renamed by accident.
+    """
+    if obj.kind not in _QUEUE_FAMILY_KINDS:
+        return obj
+    classification = classify_queue(_queue_value(obj.address, layout), layout)
+    if classification is None:
+        return obj
+    return replace(obj, kind=classification.kind, inferred_kind=classification.inferred)
+
 
 @dataclass(frozen=True)
 class DiscoveredObject:
@@ -434,7 +572,11 @@ class DiscoveredObject:
         name: Display name when the channel provides one (registry name,
             static symbol name, timer name); ``None`` otherwise.
         source: Discovery channel: ``"mpu-pool"``, ``"registry"``,
-            ``"active"``, ``"symbol"``, ``"waiter"`` or ``"user"``.
+            ``"active"``, ``"symbol"``, ``"waiter"`` or ``"user"``.  This is
+            the highest-priority channel that found the object.
+        extra_sources: Lower-priority channels that found the same address.
+            Kept so provenance can show every channel that saw the object
+            (``registry+symbol``) while ``source`` stays the one of record.
         inferred_kind: True when the channel cannot tell the precise kind.
             Registry and MPU-pool queue slots also cover semaphores, mutexes
             and queue sets; refinement needs Queue_t's ``ucQueueType``.
@@ -444,7 +586,25 @@ class DiscoveredObject:
     address: int
     name: str | None = None
     source: str = ""
+    extra_sources: tuple[str, ...] = ()
     inferred_kind: bool = False
+
+
+def source_label(source: str, extra_sources: Sequence[str] = ()) -> str:
+    """Render an object's provenance: ``registry`` or ``registry+symbol``.
+
+    Takes the two values rather than an object so both the discovery record
+    (:class:`DiscoveredObject`) and the adapter's display model can render the
+    same cell.
+
+    Reason: showing only the winning channel hid corroboration -- an object
+    seen by both the registry and the symbol scan is better evidence than one
+    seen by the heuristic waiter channel alone, and that difference matters
+    when a name or kind looks wrong.
+    """
+    if not extra_sources:
+        return source
+    return "+".join((source, *extra_sources))
 
 
 # Static-buffer typedef names (include/FreeRTOS.h) -> semantic kind.  GDB
@@ -522,7 +682,7 @@ def iter_registry_entries(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
         # Reason: the registry stores QueueHandle_t, which also covers
         # semaphores, mutexes and queue sets; only ucQueueType
         # (configUSE_TRACE_FACILITY) tells them apart, so the precise kind
-        # is refined by the queue-discrimination phase.
+        # is refined later by _refine_queue_object.
         yield DiscoveredObject(
             kind="queue",
             address=handle,
@@ -538,7 +698,7 @@ def _info_variables_text() -> str:
         return ""
     try:
         return gdb.execute("info variables", to_string=True) or ""
-    except Exception:
+    except _COMMAND_ERRORS:
         warn("symbol object scan failed: 'info variables' is unavailable")
         return ""
 
@@ -781,6 +941,38 @@ def _host_from_container(
         return None
 
 
+def tcb_field_at(address: int, layout: FreeRtosLayout, field: str):
+    """Read one logical TCB field from the task control block at *address*.
+
+    Mutex holders are stored by the kernel as a bare TCB address
+    (``u.xSemaphore.xMutexHolder`` in queue.c), so a caller holding only that
+    address has no ``gdb.Value`` to read from. Returns ``None`` when the
+    address is unusable, the cast fails, or the field is absent from this
+    build's TCB.
+    """
+    if gdb is None or not address:
+        return None
+    try:
+        # Reason: the cast type name comes from the layout description, never
+        # a literal, so a renamed kernel struct stays correct.
+        sl = layout.structs["struct tskTaskControlBlock"]
+        typ = gdb.lookup_type(sl.struct_name).pointer()
+        task = gdb.Value(address).cast(typ).dereference()
+        return read_field(task, sl, field)
+    except (*_TRAVERSAL_ERRORS, KeyError, AttributeError):
+        return None
+
+
+def task_name_at(address: int, layout: FreeRtosLayout) -> str | None:
+    """Return the ``pcTaskName`` of the TCB at *address*, or ``None``."""
+    return read_cstring(tcb_field_at(address, layout, "name")) or None
+
+
+def task_priority_at(address: int, layout: FreeRtosLayout, field: str) -> int | None:
+    """Return one priority field (``current_priority``/``base_priority``)."""
+    return read_int(tcb_field_at(address, layout, field))
+
+
 def _list_contains_item(
     head,
     item_address: int,
@@ -917,13 +1109,30 @@ def iter_waiter_hosts(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
             )
 
 
-def discover(kind: str, layout: FreeRtosLayout) -> list[DiscoveredObject]:
+def _merge_source(obj: DiscoveredObject, source: str) -> DiscoveredObject:
+    """Record *source* as an additional channel that found the same object."""
+    if not source or source == obj.source or source in obj.extra_sources:
+        return obj
+    return replace(obj, extra_sources=(*obj.extra_sources, source))
+
+
+def discover(
+    kind: str,
+    layout: FreeRtosLayout,
+    *,
+    waiter_hosts: Sequence[DiscoveredObject] | None = None,
+) -> list[DiscoveredObject]:
     """Collect objects of *kind* from every channel, deduplicated by address.
 
     Channels run in priority order (mpu-pool, registry, active, symbol,
     waiter); when two channels find the same address the earlier one keeps
     its name and source, so a registry-named queue never gets its name
     overwritten by the symbol channel.
+
+    Queue-family candidates are refined against the Queue_t discriminator
+    before the kind filter (see :func:`_refine_queue_object`), so a registry
+    or waiter entry that is really a semaphore or mutex lands in the right
+    table instead of being double-counted as a queue.
     """
     kind = kind.strip().lower()
     channels = [
@@ -931,17 +1140,78 @@ def discover(kind: str, layout: FreeRtosLayout) -> list[DiscoveredObject]:
         iter_registry_entries(layout),
         iter_active_timer_hosts(layout),
         iter_static_symbol_objects(layout),
-        iter_waiter_hosts(layout),
     ]
-    seen: set[int] = set()
+    if kind in _QUEUE_FAMILY_KINDS:
+        # Reason: the waiter channel walks every task list -- the most
+        # expensive channel -- so the queue family shares one per-call
+        # result (see discover_all). Never cache across calls: the target is
+        # live and its memory changes between commands.
+        if waiter_hosts is None:
+            waiter_hosts = list(iter_waiter_hosts(layout))
+        channels.append(iter(waiter_hosts))
+    else:
+        channels.append(iter_waiter_hosts(layout))
+    index: dict[int, int] = {}
+    filtered: set[int] = set()
     found: list[DiscoveredObject] = []
     for channel in channels:
         for obj in channel:
-            if obj.kind != kind or not obj.address or obj.address in seen:
+            if not obj.address:
                 continue
-            seen.add(obj.address)
+            position = index.get(obj.address)
+            if position is not None:
+                # Reason: a later channel seeing the same address is
+                # corroboration, not noise -- record it so provenance can
+                # show every channel while the first one stays of record.
+                found[position] = _merge_source(found[position], obj.source)
+                continue
+            if obj.address in filtered:
+                # Reason: the address already refined to a different kind, so
+                # a later channel must not re-add it under the requested one.
+                continue
+            if kind in _QUEUE_FAMILY_KINDS:
+                obj = _refine_queue_object(obj, layout)
+            if obj.kind != kind:
+                filtered.add(obj.address)
+                continue
+            index[obj.address] = len(found)
             found.append(obj)
     return found
+
+
+def discover_all(layout: FreeRtosLayout) -> dict[str, list[DiscoveredObject]]:
+    """Return ``{kind: [DiscoveredObject]}`` from one pass over every channel.
+
+    The waiter channel runs exactly once for the whole summary, so
+    ``frt objects`` never re-scans task lists per kind.  Every call is a
+    fresh scan -- results are deliberately not cached across commands
+    because target memory keeps changing while the target runs.
+    """
+    groups: dict[str, list[DiscoveredObject]] = {}
+    channels = [
+        iter_mpu_pool_objects(layout),
+        iter_registry_entries(layout),
+        iter_active_timer_hosts(layout),
+        iter_static_symbol_objects(layout),
+        iter_waiter_hosts(layout),
+    ]
+    placed: dict[int, tuple[str, int]] = {}
+    for channel in channels:
+        for obj in channel:
+            if not obj.address:
+                continue
+            slot = placed.get(obj.address)
+            if slot is not None:
+                group, position = slot
+                groups[group][position] = _merge_source(
+                    groups[group][position], obj.source
+                )
+                continue
+            obj = _refine_queue_object(obj, layout)
+            bucket = groups.setdefault(obj.kind, [])
+            placed[obj.address] = (obj.kind, len(bucket))
+            bucket.append(obj)
+    return groups
 
 
 def _address_from_symbol(value) -> int | None:
@@ -981,17 +1251,20 @@ def resolve_object(
         if not address:
             return None
         return DiscoveredObject(kind=kind, address=address, source="user")
+    # Reason: a name wins over a decimal-address reading -- a numeric object
+    # name (e.g. ``"42"``) must be looked up as a symbol first, and digits
+    # only fall back to an address when that lookup fails.
+    if is_plain_identifier(text) or text.isdecimal():
+        value = lookup_symbol(text)
+        if value is not None:
+            address = _address_from_symbol(value)
+            if address:
+                return DiscoveredObject(
+                    kind=kind, address=address, name=text, source="user"
+                )
     if text.isdecimal():
         address = int(text, 10)
         if not address:
             return None
         return DiscoveredObject(kind=kind, address=address, source="user")
-    if is_plain_identifier(text):
-        value = lookup_symbol(text)
-        if value is None:
-            return None
-        address = _address_from_symbol(value)
-        if not address:
-            return None
-        return DiscoveredObject(kind=kind, address=address, name=text, source="user")
     return None

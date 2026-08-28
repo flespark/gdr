@@ -46,7 +46,7 @@ def render_object_detail(kind: str, name: str) -> None:
         warn(f"object kind {requested!r} is not reliably enumerable")
         return
     if not detail.found:
-        warn(f"{requested} {name!r}: not found or type not enabled")
+        warn(detail.message or f"{requested} {name!r}: not found or type not enabled")
         return
     print_detail(detail.pairs)
 

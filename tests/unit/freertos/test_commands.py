@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
+import freertos.adapter as adapter_module
 import freertos.commands as commands
+from freertos.layout import FreeRtosConfig, build_layout
+from freertos.navigation import DiscoveredObject
 
 
 class _FakeAdapter:
@@ -384,3 +387,206 @@ def test_complete_second_arg_walks_discovered_object_names(monkeypatch):
     candidates = commands._complete("queue gdr_", "gdr_")
 
     assert candidates == ["gdr_other", "gdr_queue"]
+
+
+# ---------------------------------------------------------------------------
+# queue-family list tables
+# ---------------------------------------------------------------------------
+
+
+def _queue_adapter(monkeypatch, config, found, objects):
+    """Build an adapter whose object_table renders *objects* row cells."""
+    adapter = adapter_module.FreeRtosAdapter(build_layout(config, (10, 3, 1)))
+    monkeypatch.setattr(adapter_module, "discover", lambda _kind, _layout: found)
+    monkeypatch.setattr(adapter_module, "_cast_object", lambda _a, _k, _l: object())
+    monkeypatch.setattr(
+        adapter_module,
+        "value_to_queue_object",
+        lambda _value, found_obj, _layout: objects[found.index(found_obj)],
+    )
+    return adapter
+
+
+def test_queues_table_headers_and_locks_column(monkeypatch):
+    """frt queues owns its verbatim header contract and the Locks cell."""
+    found = [
+        DiscoveredObject(
+            kind="queue", address=0x2000, name="gdr_queue", source="registry"
+        ),
+        DiscoveredObject(
+            kind="queue", address=0x3000, name="gdr_locked", source="symbol"
+        ),
+    ]
+    unlocked = adapter_module.FreeRtosQueueObject(
+        name="gdr_queue",
+        address=0x2000,
+        kind="queue",
+        type_code=0,
+        source="registry",
+        length=4,
+        item_size=4,
+        count=0,
+        free=4,
+        send_waiters=[],
+        recv_waiters=["gdr_qrecv"],
+        rx_lock=-1,
+        tx_lock=-1,
+    )
+    locked = adapter_module.FreeRtosQueueObject(
+        name="gdr_locked",
+        address=0x3000,
+        kind="queue",
+        type_code=0,
+        source="symbol",
+        length=2,
+        item_size=4,
+        count=1,
+        free=1,
+        send_waiters=None,
+        recv_waiters=None,
+        rx_lock=2,
+        tx_lock=5,
+        set_container=0x4000,
+    )
+    with_sets = _queue_adapter(
+        monkeypatch,
+        FreeRtosConfig(queue_sets=True, trace_facility=True),
+        found,
+        [unlocked, locked],
+    )
+
+    table = with_sets.object_table("queue")
+
+    assert table.headers == [
+        "Name",
+        "Type",
+        "Items",
+        "Length",
+        "ItemSize",
+        "Free",
+        "SendWait",
+        "RecvWait",
+        "Locks",
+        "Set",
+        "Src",
+        "Addr",
+    ]
+    assert table.elastic == ("SendWait", "RecvWait", "Name")
+    rows = {row[0]: row for row in table.rows}
+    assert rows["gdr_queue"][8] == "-"
+    assert rows["gdr_locked"][8] == "rx=2 tx=5"
+    assert rows["gdr_queue"][9] == "-"  # not a set member
+    assert rows["gdr_locked"][9] == "0x4000"
+    assert rows["gdr_queue"][6] == "0"
+    assert rows["gdr_queue"][7] == "1@gdr_qrecv"
+
+    # Without queue sets the Set column is dropped entirely, not N/A-filled.
+    without_sets = _queue_adapter(
+        monkeypatch,
+        FreeRtosConfig(trace_facility=True),
+        found,
+        [unlocked, locked],
+    )
+    no_set_table = without_sets.object_table("queue")
+    assert no_set_table.headers == [
+        "Name",
+        "Type",
+        "Items",
+        "Length",
+        "ItemSize",
+        "Free",
+        "SendWait",
+        "RecvWait",
+        "Locks",
+        "Src",
+        "Addr",
+    ]
+
+
+def test_semaphores_and_mutexes_table_headers(monkeypatch):
+    """frt semaphores/mutexes own their verbatim header contracts."""
+    sem_found = [
+        DiscoveredObject(
+            kind="semaphore", address=0x5000, name="gdr_semaphore", source="registry"
+        )
+    ]
+    sem_obj = adapter_module.FreeRtosQueueObject(
+        name="gdr_semaphore",
+        address=0x5000,
+        kind="semaphore",
+        type_code=2,
+        source="registry",
+        length=3,
+        count=0,
+        recv_waiters=["gdr_semw"],
+    )
+    sem_table = _queue_adapter(
+        monkeypatch, FreeRtosConfig(trace_facility=True), sem_found, [sem_obj]
+    ).object_table("semaphore")
+    assert sem_table.headers == [
+        "Name",
+        "Type",
+        "Count",
+        "Max",
+        "Waiters",
+        "Src",
+        "Addr",
+    ]
+    assert sem_table.rows[0] == [
+        "gdr_semaphore",
+        "counting-sem",
+        "0",
+        "3",
+        "1@gdr_semw",
+        "registry",
+        "0x5000",
+    ]
+
+    mtx_found = [
+        DiscoveredObject(
+            kind="mutex", address=0x6000, name="gdr_mutex", source="registry"
+        )
+    ]
+    mtx_obj = adapter_module.FreeRtosQueueObject(
+        name="gdr_mutex",
+        address=0x6000,
+        kind="mutex",
+        type_code=1,
+        source="registry",
+        count=0,
+        holder_address=0x7000,
+        holder="main",
+        recursive_count=0,
+        recv_waiters=["gdr_mtxw"],
+    )
+    mtx_table = _queue_adapter(
+        monkeypatch, FreeRtosConfig(trace_facility=True), mtx_found, [mtx_obj]
+    ).object_table("mutex")
+    assert mtx_table.headers == [
+        "Name",
+        "Type",
+        "Held",
+        "Owner",
+        "Recursive",
+        "Waiters",
+        "Src",
+        "Addr",
+    ]
+    assert mtx_table.rows[0] == [
+        "gdr_mutex",
+        "mutex",
+        "yes",
+        "main",
+        "0",
+        "1@gdr_mtxw",
+        "registry",
+        "0x6000",
+    ]
+
+    # Non-family kinds still have no list table.
+    assert (
+        adapter_module.FreeRtosAdapter(
+            build_layout(FreeRtosConfig(), (10, 3, 1))
+        ).object_table("timer")
+        is None
+    )

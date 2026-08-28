@@ -138,13 +138,19 @@
 #define xPortPendSVHandler PendSV_Handler
 #endif
 
-#ifndef configASSERT
 void gdr_fixture_assert_failed(int line);
-#define configASSERT(value)                  \
-    do {                                     \
-        if (!(value)) {                      \
-            gdr_fixture_assert_failed(__LINE__); \
-        }                                    \
+
+/* Report an unreachable point (a failed kernel hook, a scheduler that
+ * returned).  The line number is the *call site* line, because __LINE__ is
+ * expanded where the macro is used. */
+#define GDR_FIXTURE_UNREACHABLE() gdr_fixture_assert_failed(__LINE__)
+
+#ifndef configASSERT
+#define configASSERT(value)                      \
+    do {                                         \
+        if (!(value)) {                          \
+            GDR_FIXTURE_UNREACHABLE();           \
+        }                                        \
     } while (0)
 #endif
 

@@ -293,14 +293,35 @@ class FreeRtosLayout:
 
 
 # FreeRTOS ucQueueType values (queue.h).  Used to summarize a queue's kind in
-# the pretty-printed fold.
+# the pretty-printed fold and to render the ``Type`` cell of the queue-family
+# tables/details.
 _QUEUE_TYPE_NAMES: dict[int, str] = {
     0: "queue",
     1: "mutex",
     2: "counting-sem",
     3: "binary-sem",
     4: "recursive-mutex",
+    5: "queue-set",
 }
+
+
+def queue_type_label(kind: str, type_code: int | None, inferred: bool) -> str:
+    """Render the ``Type`` cell for one queue-family object.
+
+    With ``ucQueueType`` the exact label comes from the type code (queue.h:
+    BASE=0 ... SET=5).  Without it (``configUSE_TRACE_FACILITY`` off) only
+    the discriminated family is known -- binary vs counting semaphores and
+    plain vs recursive mutexes are indistinguishable -- so the label falls
+    back to the kind and carries a ``?`` suffix to say the precise variant
+    is guessed.
+    """
+    if type_code is not None:
+        base = _QUEUE_TYPE_NAMES.get(type_code, str(type_code))
+    else:
+        base = {"queue": "queue", "semaphore": "semaphore", "mutex": "mutex"}.get(
+            kind, kind
+        )
+    return f"{base}?" if inferred else base
 
 
 def build_layout(

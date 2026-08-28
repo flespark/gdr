@@ -126,3 +126,44 @@ print(f"registered={handle in queue_addrs}")
 """
     )
     assert "registered=True" in probe, probe
+
+
+def test_inferred_kind_on_trace_off_variant(gdb_session):
+    """Without ucQueueType the pointer chain still separates the family.
+
+    A mutex's distinguishing marker is pcHead == NULL (queueQUEUE_IS_MUTEX),
+    which exists without the trace facility, so frt mutexes stays populated
+    and the Type cells carry the '?' inference marker instead of the exact
+    variant name.
+    """
+    if _PROFILE.trace_facility:
+        pytest.skip("requires the trace-off fixture")
+    gdb_session.run("set width 200")
+    try:
+        mutexes = gdb_session.run("freertos mutexes", timeout=20)
+        queues = gdb_session.run("freertos queues", timeout=20)
+        objects = gdb_session.run("freertos objects", timeout=20)
+    finally:
+        gdb_session.run("set width 160")
+    assert "[gdr] error:" not in mutexes, mutexes
+    assert "Traceback" not in mutexes, mutexes
+
+    mtx_row = _variant_row(mutexes, "gdr_mutex")
+    assert mtx_row[1] == "mutex?"
+    queue_row = _variant_row(queues, "gdr_queue")
+    assert queue_row[1] == "queue?"
+    mutex_count = next(
+        int(line.split()[1])
+        for line in objects.splitlines()
+        if line.lstrip().startswith("mutex ")
+    )
+    assert mutex_count >= 1, objects
+
+
+def _variant_row(output: str, name: str) -> list[str]:
+    """Return one whitespace-delimited table row by leading name."""
+    return next(
+        line.split()
+        for line in output.splitlines()
+        if line.lstrip().startswith(name + " ")
+    )

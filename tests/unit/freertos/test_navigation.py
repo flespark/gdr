@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+import freertos.adapter as adapter_module
+import freertos.details as details_module
 import freertos.navigation as navigation
 from freertos.layout import FreeRtosConfig, build_layout
 
@@ -172,3 +174,53 @@ def test_list_count_ready_is_unknown_without_a_priority_count(monkeypatch):
     monkeypatch.setattr(navigation, "warn", lambda _message: None)
 
     assert navigation.list_count("ready", layout) is None
+
+
+def test_tcb_field_at_is_the_single_holder_read_implementation():
+    """adapter and details share navigation's TCB cast, not private copies."""
+    assert adapter_module.task_name_at is navigation.task_name_at
+    assert details_module.task_priority_at is navigation.task_priority_at
+    for module in (adapter_module, details_module):
+        assert not hasattr(module, "_task_name_at")
+        assert not hasattr(module, "_holder_priority")
+
+
+def test_tcb_field_at_returns_none_without_gdb_or_address():
+    """A null holder address and a GDB-less host both degrade to None."""
+    layout = build_layout(FreeRtosConfig())
+    assert navigation.tcb_field_at(0, layout, "name") is None
+    assert navigation.task_name_at(0, layout) is None
+    assert navigation.task_priority_at(0, layout, "current_priority") is None
+
+
+def test_tcb_field_at_contains_expected_probe_errors(monkeypatch):
+    """A missing struct/type degrades to None instead of raising."""
+    layout = build_layout(FreeRtosConfig())
+
+    class _Gdb:
+        error = RuntimeError
+        MemoryError = MemoryError
+
+        @staticmethod
+        def lookup_type(_name):
+            raise KeyError("no such type")
+
+    monkeypatch.setattr(navigation, "gdb", _Gdb)
+    assert navigation.tcb_field_at(0x2000, layout, "name") is None
+
+
+def test_tcb_field_at_propagates_unexpected_errors(monkeypatch):
+    """Anything outside the expected set bubbles to a command guard."""
+    layout = build_layout(FreeRtosConfig())
+
+    class _Gdb:
+        error = RuntimeError
+        MemoryError = MemoryError
+
+        @staticmethod
+        def lookup_type(_name):
+            raise ZeroDivisionError("unexpected probe failure")
+
+    monkeypatch.setattr(navigation, "gdb", _Gdb)
+    with pytest.raises(ZeroDivisionError, match="unexpected probe failure"):
+        navigation.tcb_field_at(0x2000, layout, "name")

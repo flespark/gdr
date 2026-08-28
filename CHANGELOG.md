@@ -8,6 +8,30 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- FreeRTOS `frt queues` / `frt semaphores` / `frt mutexes` print their own
+  column-contract tables instead of the neutral Kind/Count fallback:
+  `Name Type Items Length ItemSize Free SendWait RecvWait Locks [Set] Src
+  Addr` for queues, `Name Type Count Max Waiters Src Addr` for semaphores and
+  `Name Type Held Owner Recursive Waiters Src Addr` for mutexes. The `Set`
+  column exists only on `configUSE_QUEUE_SETS` builds, where it holds the
+  queue-set address of a member.
+- FreeRTOS `frt queue|semaphore|mutex <name>` vertical details: the queue view
+  dumps the pending items in FIFO order (`Item[i]`, starting at
+  `pcReadFrom + uxItemSize`, wrapping at `pcTail`, payload truncated to 64
+  bytes), the mutex view adds `Held`/`Owner`/`OwnerPriority`/
+  `OwnerBasePriority`/`RecursiveCallCount`, and the semaphore view
+  deliberately has no owner field at all (its `u.xSemaphore` arm is not a
+  holder record).
+- FreeRTOS queue-family consistency checks (`freertos/diagnostics.py`) shown as
+  a `Checks` line in every queue-family detail: `Count`, `Storage`,
+  `WritePtr`, `ReadPtr`, `MutexAccounting`, `SemaphoreSelfHead`. Each check
+  reports `ok`, `fail: <what>` or `skipped: <why>`; the storage-window pointer
+  invariants only apply to real data queues, so they are explicitly skipped
+  for mutexes and semaphores rather than fabricating failures.
+- FreeRTOS `Queue_t` discrimination: the exact kind comes from `ucQueueType`
+  when `configUSE_TRACE_FACILITY` is on; otherwise the `pcHead == NULL` mutex
+  marker and `uxItemSize == 0` semaphore marker still separate the family and
+  the `Type` cell carries a trailing `?` to mark the inference.
 - FreeRTOS object discovery: six provenance channels (optional `xQueueRegistry`,
   static/handle global symbols found by one cached `info variables` scan, the
   active timer lists, the MPU wrappers v2 `xKernelObjectPool`, reverse
@@ -51,14 +75,25 @@ All notable changes to GDR are documented in this file.
 
 ### Changed
 
+- FreeRTOS queue-family objects found through the registry, MPU pool or waiter
+  channels are now refined to their real kind and deduplicated across
+  queue/semaphore/mutex, so `frt objects` no longer counts a mutex or
+  semaphore as a queue and one address never appears in two tables.
+- FreeRTOS object discovery scans the waiter channel once per command instead
+  of once per kind (`frt objects` previously walked every task list six
+  times). Nothing is cached across commands, since target memory keeps moving.
+- FreeRTOS name resolution prefers names: a purely numeric argument is looked
+  up as a discovered name or global symbol first, and decimal address parsing
+  is only the fallback. `0x`-prefixed addresses are unchanged.
 - `read_cstring` reads `char*` values as a bounded window truncated at the
   first NUL. The previous implementation dereferenced the pointer first and
   always returned `None` for pointer-typed names, which hid every `char*`
   kernel object name (such as `pcQueueName`); RT-Thread names are `char[]`
   arrays and are unaffected (re-verified across the Cortex-A9 matrix).
-- FreeRTOS single-kind list commands (`frt queues`, `frt semaphores`, …) now
-  print a `Kind`/`Count` table instead of warning that the kind is not
-  reliably enumerable. Per-object detail tables are still absent.
+- FreeRTOS single-kind list commands (`frt queues`, `frt semaphores`, …) no
+  longer warn that the kind is not reliably enumerable; the queue family has
+  full tables and details, while `timers`/`eventgroups`/`streambuffers` still
+  print the neutral `Kind`/`Count` table.
 - FreeRTOS supported version range is now continuous `(10,3,0)-(11,2,99)`;
   previously rejected versions such as 10.4.x, 10.7+, and 11.2.x are now
   accepted.

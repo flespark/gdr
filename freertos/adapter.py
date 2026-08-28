@@ -9,15 +9,30 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from freertos.details import task_detail
-from freertos.layout import FreeRtosLayout
+from freertos.details import (
+    held_cell,
+    locks_cell,
+    mutex_detail,
+    queue_detail,
+    semaphore_detail,
+    task_detail,
+    waiter_summary,
+)
+from freertos.layout import FreeRtosLayout, queue_type_label
 from freertos.navigation import (
+    _QUEUE_FAMILY_KINDS,
+    DiscoveredObject,
+    _iter_list,
+    _refine_queue_object,
     discover,
+    discover_all,
     is_idle_task,
     iter_tasks,
     list_count,
     resolve_object,
+    source_label,
     system_value,
+    task_name_at,
     task_state,
 )
 from gdr.adapter_api import (
@@ -35,7 +50,7 @@ from gdr.gdb_bridge import (
     read_int,
     value_address,
 )
-from gdr.layout import read_field
+from gdr.layout import read_field, read_path
 
 
 @dataclass
@@ -69,6 +84,38 @@ class FreeRtosTask:
     is_idle: bool = False
 
 
+@dataclass
+class FreeRtosQueueObject:
+    """Display model for one queue-family object (queue/semaphore/mutex).
+
+    Scalar fields that are unreadable stay ``None`` and render as ``N/A``;
+    ``free`` is ``max(length - count, 0)`` and only set when both are known.
+    Mutex-only fields (``holder``/``recursive_count``) are decoded strictly
+    for ``kind == "mutex"`` -- a semaphore's ``u`` union member holds
+    QueuePointers_t and must never be read as SemaphoreData_t.
+    """
+
+    name: str = "-"
+    address: int = 0
+    kind: str = "queue"
+    inferred_kind: bool = False
+    type_code: int | None = None
+    source: str = ""
+    extra_sources: tuple[str, ...] = ()
+    length: int | None = None
+    item_size: int | None = None
+    count: int | None = None
+    free: int | None = None
+    send_waiters: list[str] | None = None
+    recv_waiters: list[str] | None = None
+    rx_lock: int | None = None
+    tx_lock: int | None = None
+    set_container: int | None = None
+    holder: str | None = None
+    holder_address: int | None = None
+    recursive_count: int | None = None
+
+
 def _ptr(value) -> int:
     return read_int(value) or 0
 
@@ -87,10 +134,26 @@ def _stack_type_size() -> int:
         typ = gdb.lookup_type("StackType_t")
         if typ is not None:
             return int(typ.sizeof)
-    except Exception:
+    except _PROBE_ERRORS:
         pass
     arch = get_arch_info()
     return arch.ptrsize if arch is not None else 4
+
+
+# Errors expected while probing DWARF types or casting a raw address: the
+# type may be absent from this build, or the address may be unreadable.
+# Anything outside the set intentionally bubbles to a command/function guard.
+if gdb is not None:
+    _PROBE_ERRORS: tuple[type[BaseException], ...] = (
+        gdb.error,
+        gdb.MemoryError,
+        KeyError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    )
+else:
+    _PROBE_ERRORS = (KeyError, TypeError, ValueError, AttributeError)
 
 
 def _count_fill(stack: bytes) -> int:
@@ -271,7 +334,7 @@ def _cast_object(address: int, kind: str, layout: FreeRtosLayout) -> gdb.Value |
         struct_name = layout.structs[struct_key].struct_name
         typ = gdb.lookup_type(struct_name).pointer()
         return gdb.Value(address).cast(typ).dereference()
-    except Exception:
+    except _PROBE_ERRORS:
         return None
 
 
@@ -301,6 +364,103 @@ def _kind_enabled(kind: str, layout: FreeRtosLayout) -> bool:
     if kind == "streambuffer":
         return layout.config.stream_buffers
     return False
+
+
+# Message attached to the queue-family tables when the build has no
+# configUSE_TRACE_FACILITY: the Type cells then only carry the discriminated
+# family (with a ``?``) because binary/counting and plain/recursive variants
+# leave no runtime trace to tell them apart.
+_INFERRED_KIND_MESSAGE = (
+    "no configUSE_TRACE_FACILITY: queue-family kinds are inferred from "
+    "Queue_t pointers and item size; binary vs counting semaphores and "
+    "mutexes vs recursive mutexes are indistinguishable"
+)
+
+
+def _normalize_lock(lock: int | None) -> int | None:
+    """Normalize an int8_t lock counter; 255 (unsigned) == -1 (unlocked).
+
+    ``cRxLock``/``cTxLock`` are ``volatile int8_t`` (queue.c) whose unlocked
+    sentinel is ``queueUNLOCKED == -1``; a read that comes back as 255 is
+    the same byte seen unsigned, so it is normalized before the "-" check.
+    """
+    if lock is None:
+        return None
+    return -1 if lock == 255 else lock
+
+
+def waiter_names(value, layout: FreeRtosLayout, wait_list: str) -> list[str] | None:
+    """Return names of tasks blocked on one of the object's wait lists.
+
+    Args:
+        wait_list: ``"send"`` for ``xTasksWaitingToSend`` (blocked senders,
+            e.g. a full queue) or ``"receive"`` for
+            ``xTasksWaitingToReceive`` (blocked takers, e.g. an empty queue,
+            a semaphore take or a mutex take).
+
+    Walks the List_t head the same way the scheduler lists are walked; each
+    item's owner is the blocked task's TCB (queue.c vListInsertEnd).
+    Returns ``None`` when the list head is unreadable.
+    """
+    member = "xTasksWaitingToSend" if wait_list == "send" else "xTasksWaitingToReceive"
+    head = read_path(value, (member,))
+    if head is None:
+        return None
+    sl = layout.structs["struct tskTaskControlBlock"]
+    names: list[str] = []
+    for task in _iter_list(head, layout):
+        name = read_cstring(read_field(task, sl, "name")) or ""
+        names.append(name or "-")
+    return names
+
+
+def value_to_queue_object(
+    value,
+    found: DiscoveredObject,
+    layout: FreeRtosLayout,
+) -> FreeRtosQueueObject:
+    """Convert a discovered queue-family address into the display model.
+
+    The ``u.xSemaphore`` union arm is decoded only for mutexes
+    (``pcHead == NULL``); a semaphore's ``u`` member is QueuePointers_t and
+    reading the other arm would fabricate a holder from pcTail/pcReadFrom
+    bytes (queue.c).
+    """
+    obj = FreeRtosQueueObject(
+        name=found.name or "-",
+        address=found.address,
+        kind=found.kind,
+        inferred_kind=found.inferred_kind,
+        source=found.source,
+        extra_sources=found.extra_sources,
+    )
+    if value is None:
+        return obj
+    length = read_int(read_path(value, ("uxLength",)))
+    count = read_int(read_path(value, ("uxMessagesWaiting",)))
+    item_size = read_int(read_path(value, ("uxItemSize",)))
+    obj.length = length
+    obj.count = count
+    obj.item_size = item_size
+    if length is not None and count is not None:
+        obj.free = max(length - count, 0)
+    obj.send_waiters = waiter_names(value, layout, "send")
+    obj.recv_waiters = waiter_names(value, layout, "receive")
+    obj.rx_lock = _normalize_lock(read_int(read_path(value, ("cRxLock",))))
+    obj.tx_lock = _normalize_lock(read_int(read_path(value, ("cTxLock",))))
+    if layout.config.trace_facility:
+        obj.type_code = read_int(read_path(value, ("ucQueueType",)))
+    if layout.config.queue_sets:
+        obj.set_container = read_int(read_path(value, ("pxQueueSetContainer",)))
+    if found.kind == "mutex":
+        holder = read_int(read_path(value, ("u", "xSemaphore", "xMutexHolder")))
+        obj.holder_address = holder
+        if holder:
+            obj.holder = task_name_at(holder, layout)
+        obj.recursive_count = read_int(
+            read_path(value, ("u", "xSemaphore", "uxRecursiveCallCount"))
+        )
+    return obj
 
 
 class FreeRtosAdapter(RtosAdapter):
@@ -346,16 +506,23 @@ class FreeRtosAdapter(RtosAdapter):
 
         The task count comes from the scheduler-list snapshot (authoritative:
         it covers dynamically created tasks too); other kinds count the
-        discovery channels' deduplicated results.
+        discovery channels' deduplicated results from one shared scan, so
+        the waiter channel runs once for the whole summary instead of once
+        per kind.
         """
         tasks = list(iter_converted_tasks(self.layout))
         rows: list[tuple[str, int, str]] = [
             ("task", len(tasks), f"scheduler={len(tasks)}")
         ]
-        for kind in _OBJECT_KIND_ORDER[1:]:
-            if not _kind_enabled(kind, self.layout):
-                continue
-            found = discover(kind, self.layout)
+        enabled_kinds = [
+            kind for kind in _OBJECT_KIND_ORDER[1:] if _kind_enabled(kind, self.layout)
+        ]
+        # Reason: the shared channel scan walks every task list, so it only
+        # runs when at least one non-task kind can actually exist; a build
+        # with no such kind (or a test layout) never triggers it.
+        all_found = discover_all(self.layout) if enabled_kinds else {}
+        for kind in enabled_kinds:
+            found = all_found.get(kind, [])
             sources: dict[str, int] = {}
             for obj in found:
                 sources[obj.source] = sources.get(obj.source, 0) + 1
@@ -393,18 +560,203 @@ class FreeRtosAdapter(RtosAdapter):
             elastic=("Sources",),
         )
 
-    def object_table(self, kind: str) -> ObjectTable | None:  # noqa: ARG002
-        return None
+    def object_table(self, kind: str) -> ObjectTable | None:
+        """Return the list table for one queue-family kind, or ``None``.
+
+        Semaphores and mutexes are Queue_t objects refined by the discovery
+        layer, so this one entry point serves ``frt queues``, ``frt
+        semaphores`` and ``frt mutexes`` with their own column contracts.
+        """
+        kind = kind.strip().lower()
+        if kind not in _QUEUE_FAMILY_KINDS:
+            return None
+        objects = [
+            value_to_queue_object(
+                _cast_object(found.address, found.kind, self.layout),
+                found,
+                self.layout,
+            )
+            for found in discover(kind, self.layout)
+        ]
+        if kind == "queue":
+            return self._queue_table(objects)
+        if kind == "semaphore":
+            return self._semaphore_table(objects)
+        return self._mutex_table(objects)
+
+    def _table_messages(self) -> list[str]:
+        """Capability messages for the queue-family tables."""
+        messages: list[str] = []
+        if not self.layout.config.trace_facility:
+            messages.append(_INFERRED_KIND_MESSAGE)
+        return messages
+
+    def _queue_table(self, objects: list[FreeRtosQueueObject]) -> ObjectTable:
+        """Build the ``frt queues`` table.
+
+        The ``Set`` column exists only when the build has queue sets
+        (``configUSE_QUEUE_SETS``): the member struct only exists then, so an
+        unconditional column would render a whole ``N/A`` column that looks
+        like "not in a set" instead of "no sets in this build".
+        """
+        layout = self.layout
+        headers = [
+            "Name",
+            "Type",
+            "Items",
+            "Length",
+            "ItemSize",
+            "Free",
+            "SendWait",
+            "RecvWait",
+            "Locks",
+        ]
+        if layout.config.queue_sets:
+            headers.append("Set")
+        headers += ["Src", "Addr"]
+        rows = []
+        for obj in objects:
+            row = [
+                obj.name,
+                queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
+                format_optional_int(obj.count),
+                format_optional_int(obj.length),
+                format_optional_int(obj.item_size),
+                format_optional_int(obj.free),
+                waiter_summary(obj.send_waiters),
+                waiter_summary(obj.recv_waiters),
+                locks_cell(obj.rx_lock, obj.tx_lock),
+            ]
+            if layout.config.queue_sets:
+                row.append(
+                    format_address(obj.set_container) if obj.set_container else "-"
+                )
+            row += [
+                source_label(obj.source, obj.extra_sources),
+                format_address(obj.address),
+            ]
+            rows.append(row)
+        return ObjectTable(
+            headers=headers,
+            rows=rows,
+            messages=self._table_messages(),
+            elastic=("SendWait", "RecvWait", "Name"),
+        )
+
+    def _semaphore_table(self, objects: list[FreeRtosQueueObject]) -> ObjectTable:
+        """Build the ``frt semaphores`` table.
+
+        ``Count`` is the semaphore's available count (uxMessagesWaiting),
+        ``Max`` its upper bound (uxLength); waiters are the tasks blocked on
+        take (xTasksWaitingToReceive).
+        """
+        rows = [
+            [
+                obj.name,
+                queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
+                format_optional_int(obj.count),
+                format_optional_int(obj.length),
+                waiter_summary(obj.recv_waiters),
+                source_label(obj.source, obj.extra_sources),
+                format_address(obj.address),
+            ]
+            for obj in objects
+        ]
+        return ObjectTable(
+            headers=["Name", "Type", "Count", "Max", "Waiters", "Src", "Addr"],
+            rows=rows,
+            messages=self._table_messages(),
+            elastic=("Waiters", "Name"),
+        )
+
+    def _mutex_table(self, objects: list[FreeRtosQueueObject]) -> ObjectTable:
+        """Build the ``frt mutexes`` table.
+
+        ``Held``/``Owner``/``Recursive`` come from the ``u.xSemaphore`` arm,
+        which is only decodable for mutexes (``pcHead == NULL``).
+        """
+        rows = [
+            [
+                obj.name,
+                queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
+                held_cell(obj),
+                obj.holder or "-",
+                format_optional_int(obj.recursive_count),
+                waiter_summary(obj.recv_waiters),
+                source_label(obj.source, obj.extra_sources),
+                format_address(obj.address),
+            ]
+            for obj in objects
+        ]
+        return ObjectTable(
+            headers=[
+                "Name",
+                "Type",
+                "Held",
+                "Owner",
+                "Recursive",
+                "Waiters",
+                "Src",
+                "Addr",
+            ],
+            rows=rows,
+            messages=self._table_messages(),
+            elastic=("Waiters", "Name"),
+        )
 
     def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
-        """Return one object's detail; only ``task`` is enumerable so far."""
-        if kind.strip().lower() == "task":
+        """Return one object's vertical detail (task or queue family)."""
+        kind = kind.strip().lower()
+        if kind == "task":
             value = find_task(name, self.layout)
             if value is None:
                 return ObjectDetail(found=False)
             task = value_to_task(value, *task_state(value, self.layout), self.layout)
             return ObjectDetail(pairs=task_detail(task, self.layout))
-        return None  # queue/timer/etc detail needs the object discovery channels
+        if kind not in _QUEUE_FAMILY_KINDS:
+            # timer/eventgroup/streambuffer detail needs their discovery
+            # channels, not yet enumerable at this depth.
+            return None
+        found, value = self._find_queue_object(kind, name)
+        if found is None or value is None:
+            return ObjectDetail(found=False)
+        # Reason: the address/symbol fallback stamps the *requested* kind on
+        # whatever it resolved, so `frt semaphore <a mutex>` used to render a
+        # semaphore block whose every consistency check failed. Refine the
+        # kind and redirect instead; an inferred kind (no trace facility)
+        # cannot justify a refusal, so it renders with the usual `?` marker.
+        actual = _refine_queue_object(found, self.layout)
+        if actual.kind != kind and not actual.inferred_kind:
+            return ObjectDetail(
+                found=False,
+                message=(
+                    f"{name!r} is a {actual.kind}, not a {kind}; "
+                    f"try `freertos {actual.kind} {name}`"
+                ),
+            )
+        obj = value_to_queue_object(value, found, self.layout)
+        if kind == "queue":
+            pairs = queue_detail(obj, value, self.layout)
+        elif kind == "semaphore":
+            pairs = semaphore_detail(obj, value, self.layout)
+        else:
+            pairs = mutex_detail(obj, value, self.layout)
+        return ObjectDetail(pairs=pairs)
+
+    def _find_queue_object(self, kind: str, name: str):
+        """Return ``(DiscoveredObject, native value)`` for a family name.
+
+        Mirrors :meth:`find_object`: discovery names first, then the explicit
+        address/symbol/decimal fallback -- but keeps the found object so the
+        detail builder can render its provenance and inferred kind.
+        """
+        for found in discover(kind, self.layout):
+            if found.name == name:
+                return found, _cast_object(found.address, found.kind, self.layout)
+        resolved = resolve_object(kind, name, self.layout)
+        if resolved is None:
+            return None, None
+        return resolved, _cast_object(resolved.address, resolved.kind, self.layout)
 
     def iter_tasks(self):
         for value, _state, _core in iter_tasks(self.layout):

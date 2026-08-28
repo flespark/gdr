@@ -580,9 +580,15 @@ def test_discover_dedups_by_priority(monkeypatch):
     found = navigation.discover("queue", layout)
 
     assert len(found) == 1
-    assert found[0] is symbol_obj
+    assert found[0].address == symbol_obj.address
     assert found[0].source == "symbol"
     assert found[0].name == "gdr_queue"
+    # The later channel is corroboration, not a duplicate: it is recorded as
+    # an extra source so provenance can render "symbol+waiter".
+    assert found[0].extra_sources == ("waiter",)
+    assert navigation.source_label(found[0].source, found[0].extra_sources) == (
+        "symbol+waiter"
+    )
 
 
 def test_discover_registry_beats_symbol(monkeypatch):
@@ -746,7 +752,7 @@ def test_object_counts_only_includes_present_types(monkeypatch):
         adapter_module, "iter_converted_tasks", lambda _layout: iter(())
     )
     monkeypatch.setattr(adapter_module, "_queue_type_present", lambda: True)
-    monkeypatch.setattr(adapter_module, "discover", lambda _kind, _layout: [])
+    monkeypatch.setattr(adapter_module, "discover_all", lambda _layout: {})
 
     counts = adapter_module.FreeRtosAdapter(layout).object_counts()
 
@@ -766,8 +772,8 @@ def test_object_summary_rows_break_down_sources(monkeypatch):
     monkeypatch.setattr(adapter_module, "_queue_type_present", lambda: True)
     monkeypatch.setattr(
         adapter_module,
-        "discover",
-        lambda kind, _layout: {
+        "discover_all",
+        lambda _layout: {
             "queue": [
                 navigation.DiscoveredObject(
                     kind="queue", address=0x1, name="a", source="registry"
@@ -784,7 +790,7 @@ def test_object_summary_rows_break_down_sources(monkeypatch):
                     kind="timer", address=0x4, name="t", source="active"
                 )
             ],
-        }.get(kind, []),
+        },
     )
 
     rows = adapter_module.FreeRtosAdapter(layout).object_summary_rows()

@@ -23,7 +23,7 @@ the [Asterinas GDB helper](#acknowledgements):
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | V10.3.0–V11.2.x | Task navigation, pretty-printers, and `freertos tasks/system/objects` verified on QEMU B-L475E-IOT01A (10.3.1 fixture) |
+| FreeRTOS | V10.3.0–V11.2.x | implemented; Cortex-M3 verified on QEMU B-L475E-IOT01A (10.3.1 fixture) and MPS2-AN385 (11.1.0) |
 
 ## Quick start
 
@@ -97,6 +97,16 @@ warning: target RT-Thread version not exported; cannot verify version
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
 | `<rtos> <objects>` | List the kernel object type collective status, show supported command usage and aliases by `<rtos> help` |
 | `<rtos> <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
+
+FreeRTOS notes: kernel objects have no global registry, so `frt objects` and
+every list command print where each object was found (`registry`, `symbol`,
+`waiter`, …) plus the enumeration limit above the table — a count is never a
+complete inventory. Registering queues (`configQUEUE_REGISTRY_SIZE` plus
+`vQueueAddToRegistry()`) is what makes them appear by name. Builds without
+`configUSE_TRACE_FACILITY` cannot store the exact queue kind, so `frt queues`/
+`semaphores`/`mutexes` mark such rows with a trailing `?` in `Type`
+(`mutex?`), and the `Set` column exists only when `configUSE_QUEUE_SETS` is
+on.
 
 ## Convenience functions
 

@@ -50,11 +50,15 @@ class ObjectDetail:
     """Vertical key/value detail for one named object.
 
     ``found`` is ``False`` when the object does not exist or its type is not
-    enabled in the current target configuration.
+    enabled in the current target configuration.  ``message`` replaces the
+    renderer's generic "not found" line with a precise reason -- e.g. the name
+    resolved to a different object kind -- so the user gets an actionable
+    redirect instead of a misleading detail block.
     """
 
     pairs: list[tuple[str, str]] = field(default_factory=list)
     found: bool = True
+    message: str | None = None
 
 
 _active: RtosAdapter | None = None

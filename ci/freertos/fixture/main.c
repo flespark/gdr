@@ -62,6 +62,7 @@ GDR_USED static TaskHandle_t gdr_queue_recv_task;
 GDR_USED static TaskHandle_t gdr_queue_send_task;
 GDR_USED static TaskHandle_t gdr_sem_take_task;
 GDR_USED static TaskHandle_t gdr_mutex_take_task;
+GDR_USED static TaskHandle_t gdr_mutex_hold_task;
 GDR_USED static TaskHandle_t gdr_event_wait_task;
 GDR_USED static TaskHandle_t gdr_notify_wait_task;
 GDR_USED static TaskHandle_t gdr_maxdelay_task;
@@ -112,6 +113,8 @@ static StaticTask_t gdr_sem_take_tcb;
 static StackType_t gdr_sem_take_stack[GDR_STACK_WORDS];
 static StaticTask_t gdr_mutex_take_tcb;
 static StackType_t gdr_mutex_take_stack[GDR_STACK_WORDS];
+static StaticTask_t gdr_mutex_hold_tcb;
+static StackType_t gdr_mutex_hold_stack[GDR_STACK_WORDS];
 static StaticTask_t gdr_event_wait_tcb;
 static StackType_t gdr_event_wait_stack[GDR_STACK_WORDS];
 static StaticTask_t gdr_notify_wait_tcb;
@@ -187,7 +190,7 @@ void gdr_fixture_assert_failed(int line)
 
 void vApplicationMallocFailedHook(void)
 {
-    gdr_fixture_assert_failed(__LINE__);
+    GDR_FIXTURE_UNREACHABLE();
 }
 
 #if (configENABLE_HEAP_PROTECTOR == 1)
@@ -209,7 +212,7 @@ void vApplicationStackOverflowHook(TaskHandle_t task, char *name)
 {
     (void)task;
     (void)name;
-    gdr_fixture_assert_failed(__LINE__);
+    GDR_FIXTURE_UNREACHABLE();
 }
 #endif
 
@@ -303,9 +306,29 @@ static void gdr_sem_take(void *argument)
     }
 }
 
+/* Reason: the holder must be a real task, not main().  A take issued before
+ * vTaskStartScheduler() records pxCurrentTCB == NULL as the holder, which
+ * leaves Owner/OwnerPriority unobservable and makes the mutex accounting
+ * invariant (count + holder != NULL == 1) permanently fail.  Priority 1 is
+ * below the waiter's 3 so the take also exercises priority inheritance:
+ * uxPriority becomes 3 while uxBasePriority stays 1. */
+static void gdr_mutex_hold(void *argument)
+{
+    (void)argument;
+    configASSERT(xSemaphoreTake(gdr_mutex, portMAX_DELAY) == pdPASS);
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 static void gdr_mutex_take(void *argument)
 {
     (void)argument;
+    /* Reason: yield long enough for the lower-priority holder to acquire the
+     * mutex first; otherwise this higher-priority task would take it itself
+     * and no contended-mutex state would exist. The ready marker fires at
+     * 80 ms, well after this window. */
+    vTaskDelay(pdMS_TO_TICKS(20));
     for (;;) {
         (void)xSemaphoreTake(gdr_mutex, portMAX_DELAY);
     }
@@ -582,8 +605,6 @@ int main(void)
         uint32_t full_item = 1U;
         configASSERT(xQueueSend(gdr_full_queue, &full_item, 0) == pdPASS);
     }
-    configASSERT(xSemaphoreTake(gdr_mutex, 0) == pdPASS);
-
     configASSERT(xTimerStart(gdr_active_timer, 0) == pdPASS);
     configASSERT(xTimerStart(gdr_stopped_timer, 0) == pdPASS);
     configASSERT(xTimerStop(gdr_stopped_timer, 0) == pdPASS);
@@ -626,7 +647,9 @@ int main(void)
                     &gdr_queue_send_task);
     gdr_create_task(gdr_sem_take, "gdr_semw", configMINIMAL_STACK_SIZE, 2,
                     &gdr_sem_take_task);
-    gdr_create_task(gdr_mutex_take, "gdr_mtxw", configMINIMAL_STACK_SIZE, 2,
+    gdr_create_task(gdr_mutex_hold, "gdr_mtxh", configMINIMAL_STACK_SIZE, 1,
+                    &gdr_mutex_hold_task);
+    gdr_create_task(gdr_mutex_take, "gdr_mtxw", configMINIMAL_STACK_SIZE, 3,
                     &gdr_mutex_take_task);
     gdr_create_task(gdr_event_wait, "gdr_evw", configMINIMAL_STACK_SIZE, 2,
                     &gdr_event_wait_task);
@@ -659,8 +682,11 @@ int main(void)
     gdr_create_task_static(gdr_sem_take, "gdr_semw", gdr_sem_take_stack,
                            GDR_STACK_WORDS, 2, &gdr_sem_take_tcb,
                            &gdr_sem_take_task);
+    gdr_create_task_static(gdr_mutex_hold, "gdr_mtxh", gdr_mutex_hold_stack,
+                           GDR_STACK_WORDS, 1, &gdr_mutex_hold_tcb,
+                           &gdr_mutex_hold_task);
     gdr_create_task_static(gdr_mutex_take, "gdr_mtxw", gdr_mutex_take_stack,
-                           GDR_STACK_WORDS, 2, &gdr_mutex_take_tcb,
+                           GDR_STACK_WORDS, 3, &gdr_mutex_take_tcb,
                            &gdr_mutex_take_task);
     gdr_create_task_static(gdr_event_wait, "gdr_evw", gdr_event_wait_stack,
                            GDR_STACK_WORDS, 2, &gdr_event_wait_tcb,
@@ -686,6 +712,6 @@ int main(void)
 #endif
 
     vTaskStartScheduler();
-    gdr_fixture_assert_failed(__LINE__);
+    GDR_FIXTURE_UNREACHABLE();
     return 0;
 }

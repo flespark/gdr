@@ -54,11 +54,12 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | Module | Responsibility |
 | -------- | --------------- |
 | `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. Version detection relies on `-g3` macro debug info and is subject to CU scope limitations (see known constraints below). |
-| `navigation.py` | Pure scheduler-list and current-task traversal functions plus the object discovery channels (`iter_registry_entries`, `iter_static_symbol_objects` with its session cache, `iter_active_timer_hosts`, `iter_mpu_pool_objects`, `iter_waiter_hosts`) and their aggregation (`DiscoveredObject`, `discover`, `resolve_object`). List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
-| `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, system summary, and the object protocol methods (`find_object`, `object_counts`, and the provenance summary table). |
+| `navigation.py` | Pure scheduler-list and current-task traversal functions plus the object discovery channels (`iter_registry_entries`, `iter_static_symbol_objects` with its session cache, `iter_active_timer_hosts`, `iter_mpu_pool_objects`, `iter_waiter_hosts`) and their aggregation (`DiscoveredObject`, `discover`, `discover_all`, `resolve_object`). Queue-family candidates are refined by the `Queue_t` discriminator (`classify_queue`: `ucQueueType` when `configUSE_TRACE_FACILITY` is on, else the `pcHead == NULL` mutex marker and `uxItemSize == 0` semaphore marker), deduplicated across the family so one address never lands in two tables; `discover_all` shares one waiter-channel scan per command call. List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
+| `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, system summary, and the object protocol methods (`find_object`, `object_counts`, the provenance summary table, the queue/semaphore/mutex list tables and their details). |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
-| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; single-kind list commands other than `tasks` currently fall back to the core Kind/Count table because `object_table()` is still a stub, and `heap` is a placeholder. |
-| `details.py` | FreeRTOS `frt task <name>` vertical detail rendering (per-TCB state, high-water mark, notification slots, wake tick, blocked-on). |
+| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes` render their own column-contract tables (`object_table()`), while `timers`/`eventgroups`/`streambuffers` still fall back to the core Kind/Count table, and `heap` is a placeholder. |
+| `details.py` | FreeRTOS vertical detail rendering: `frt task <name>` (per-TCB state, high-water mark, notification slots, wake tick, blocked-on) and the queue family (`frt queue/semaphore/mutex <name>`, including the FIFO `Item[i]` dump and mutex owner priorities). |
+| `diagnostics.py` | Queue-family consistency checks (`queue_checks`): count bound and the storage-window pointer invariants for real data queues only; mutex accounting and semaphore self-head checks for those kinds; inapplicable checks are reported as explicit `skipped` instead of pass/fail. |
 
 ## Key decisions
 
@@ -295,7 +296,14 @@ creates known objects and assert, where an adapter implementation exists:
 The FreeRTOS B-L475E-IOT01A fixture asserts ready-marker delivery, retained
 DWARF for kernel structures, the 32-bit ABI, persistent GDB, scheduler-list
 navigation, current-task marking, system counters, and pretty-printer fold
-for typedef-spelled kernel objects (Task/List/Queue).
+for typedef-spelled kernel objects (Task/List/Queue). The queue family adds
+ground-truth assertions against the objects the fixture creates: the queue
+lengths and item counts, the blocked sender/receiver names in `SendWait`/
+`RecvWait`, the semaphore count/max, the mutex `Held`/`Owner`/`Recursive`
+cells (including a two-level recursive take), the FIFO `Item[0]` byte dump,
+the absence of any owner field in a semaphore detail, the `Set` column
+appearing only on the queue-set variant, and the `?` inference marker on the
+trace-off variant.
 
 ### Test infrastructure
 
@@ -368,6 +376,14 @@ allocation, stream buffers, MPU, runtime stats, queue sets, …) only when a
 live firmware variant or a static snapshot can falsify it. Branches without
 a fixture stay deferred unit-test stubs, never "done".
 
+**FreeRTOS live coverage is 32-bit Cortex-M only.** Every FreeRTOS lane is a
+32-bit target (`b-l475e-iot01a` Cortex-M4F, `mps2-an385` Cortex-M3, the
+Cortex-M33 static snapshot). Pointer and field widths are always taken from
+DWARF (`read_path` reads each union arm at its target type, and the reserved
+MPU-pool handle is compared at the target pointer width), so no literal width
+constant exists in the adapter — but that property is unverified on a 64-bit
+target until a 64-bit lane exists.
+
 **FreeRTOS version detection depends on `-g3` macro debug info and CU scope.**
 `detect_target_version()` reads the `tskKERNEL_VERSION_*` macros via
 identifier eval and `info macro`. Both consult the current compilation unit's
@@ -392,10 +408,14 @@ no runtime statistics / `configMAX_PRIORITIES=6` / stack grows down. Default
 builds still use `pvContainer`; without `pxEndOfStack`, `Stack`/`Used` stay
 N/A and HighWater scans `[pxStack, pxTopOfStack)`.
 
-**Unreachable on QEMU (documented, unit-tested only):**
+**Not covered by any current fixture (documented, unit-tested only):**
 
 - `mpu-pool` (`portUSING_MPU_WRAPPERS` + MPU wrappers v2 / `xKernelObjectPool`):
-  needs an ARM_CM33_NTZ TrustZone port; QEMU `mps2-an505` support is unproven.
+  needs an MPU port (`portable/GCC/ARM_CM33` or `ARM_CM33_NTZ`) plus a fixture
+  built on `xTaskCreateRestricted` and the `MPU_` wrapper API. TrustZone is not
+  required (`NTZ` means "no TrustZone"; QEMU does model the ARMv8-M security
+  extension on `mps2-an505`/`an521`/`musca-*`) -- the blocker is simply that no
+  such build has been booted here yet.
 - `stack_grows_up`: **not supported**. GDR decodes stacks as grow-down only
   (high water mark scans the untouched fill from the low end). The sole
   upstream `portSTACK_GROWTH +1` port is SDCC/Cygnal 8051, which has no GCC
@@ -444,22 +464,48 @@ six channels, each of which attaches its origin to the object:
 | user | explicit `0x`/decimal address or symbol name | all kinds |
 
 `discover(kind)` merges the channels in that priority order, deduplicating by
-address (the first channel to find an address keeps its name/source). The
-`frt objects` summary prints per-kind counts with a `source=count` breakdown
-plus the enumeration limitation, so a count is never mistaken for a complete
-inventory: unregistered dynamic objects without a global handle (and stopped
-or expired timers) are simply not reachable from any channel.
+address: the first channel to find an address keeps its name and stays the
+source of record, and every later channel that finds the same address is
+recorded as an extra source. The `Src` cell therefore shows the full evidence
+(`registry+symbol+waiter`), because corroboration by several channels is
+stronger evidence than a single heuristic hit — which matters exactly when a
+name or kind looks wrong. The `frt objects` summary still counts each object
+under its source of record only, so the per-source counts keep summing to the
+kind's total; it prints that `source=count` breakdown plus the enumeration
+limitation, so a count is never mistaken for a complete inventory:
+unregistered dynamic objects without a global handle (and stopped or expired
+timers) are simply not reachable from any channel.
 
-Two deliberate heuristics: the registry and MPU-pool queue slots cannot tell
-semaphores/mutexes/queue sets apart (`inferred_kind`), and the waiter channel
-validates hosts by field plausibility (`uxLength`/`uxMessagesWaiting`/
+The consistency checks stay exhaustive but their *rendering* is split by what
+the reader can act on: the `Checks` row carries a verdict plus counts
+(`ok (4 verified, 2 n/a)`), a check that is inapplicable by structure (a mutex
+has no storage pointers) is counted rather than named, and only failures or
+unreadable fields get their own `Check[<name>]` row. Enumerating every skip
+inline produced a 150-column value that buried the one line worth reading.
+
+A singular detail command refuses a kind it can prove wrong: resolving a name
+or address stamps the *requested* kind on whatever it found, so
+`frt semaphore <a mutex>` used to render a semaphore block whose every
+consistency check failed. The resolved object is refined through the `Queue_t`
+discriminator and, when the actual kind is known and different, the command
+replies with a redirect (`'gdr_mutex' is a mutex, not a semaphore; try
+`freertos mutex gdr_mutex``). An *inferred* kind never justifies a refusal —
+without `configUSE_TRACE_FACILITY` the discriminator cannot tell a binary from
+a counting semaphore, so the detail renders with the usual `?` marker.
+
+Two deliberate heuristics: the registry and MPU-pool queue slots only prove "some
+`Queue_t`", so the discovery layer refines them through the `Queue_t`
+discriminator — with `configUSE_TRACE_FACILITY` the kind is definitive, without
+it only the family is known and `inferred_kind` stays set (rendered with a `?`).
+The waiter channel validates hosts by field plausibility (`uxLength`/`uxMessagesWaiting`/
 `uxItemSize`, non-null `pcHead` for item queues, and the
 `xListEnd.xItemValue == portMAX_DELAY` sentinel on both waiting lists), which
 can in principle still misread plausible neighbouring memory — every other
 channel outranks it.
 
 The `mpu-pool` channel is implemented with unit-test stubs only: no live
-fixture exists (needs an ARM_CM33_NTZ TrustZone port), so its behaviour has no
+fixture exists (it needs a CM33 MPU port and a restricted-task fixture, not
+TrustZone), so its behaviour has no
 live coverage. The `waiter` channel has no object that is discoverable *only*
 through it in the current fixtures (every blocked-on object also holds a
 global handle), so it is covered by unit tests plus a live no-ghost assertion:

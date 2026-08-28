@@ -17,6 +17,9 @@ _VERSION = os.environ.get("GDR_VERSION", "10.3.1")
 _TARGET = os.environ.get("GDR_QEMU_TARGET", "b-l475e-iot01a")
 _VARIANT = os.environ.get("GDR_FIXTURE_VARIANT", "base")
 _PROFILE = get_freertos_test_profile(_VARIANT, _VERSION, _TARGET)
+# The registry slot names the queue "gdr_queue" (main.c pcQueueName); without
+# a registry the symbol channel names it after the handle variable.
+_FIXTURE_QUEUE_NAME = "gdr_queue" if _PROFILE.registry_size else "gdr_registered_queue"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("GDR_RTOS") != "freertos",
@@ -218,6 +221,7 @@ def test_freertos_state_coverage_on_fixture(gdb_session):
     assert "gdr_qrecv" in tasks and "Blocked" in _fixture_row(tasks, "gdr_qrecv")
     assert "gdr_semw" in tasks and "Blocked" in _fixture_row(tasks, "gdr_semw")
     assert "gdr_mtxw" in tasks and "Blocked" in _fixture_row(tasks, "gdr_mtxw")
+    assert "gdr_mtxh" in tasks and "Blocked" in _fixture_row(tasks, "gdr_mtxh")
     assert "gdr_evw" in tasks and "Blocked" in _fixture_row(tasks, "gdr_evw")
     assert "gdr_ntfy" in tasks and "Blocked" in _fixture_row(tasks, "gdr_ntfy")
     assert "gdr_maxd" in tasks and "Blocked" in _fixture_row(tasks, "gdr_maxd")
@@ -288,3 +292,128 @@ print(f"unknown_hosts={len(unknown)}")
     )
     _assert_clean_command_output(probe)
     assert "unknown_hosts=0" in probe, probe
+
+
+def test_queue_family_tables_match_fixture_ground_truth(gdb_session):
+    """frt queues/semaphores/mutexes agree with the fixture's objects.
+
+    COUPLED: object names come from ci/freertos/fixture/main.c -- the
+    registry names (gdr_queue/gdr_semaphore/gdr_mutex), the handle symbols
+    found via the symbol channel (gdr_full_queue/gdr_empty_queue/
+    gdr_recursive_mutex) and the blocked-task waiters created in main.
+    """
+    with _with_width(gdb_session, 200):
+        queues = gdb_session.run("freertos queues", timeout=20)
+        semaphores_out = gdb_session.run("freertos semaphores", timeout=20)
+        mtxs = gdb_session.run("freertos mutexes", timeout=20)
+    for output in (queues, semaphores_out, mtxs):
+        _assert_clean_command_output(output)
+
+    gdr_queue = _fixture_row(queues, _FIXTURE_QUEUE_NAME)
+    # Name Type Items Length ItemSize Free SendWait RecvWait Locks Src Addr
+    assert gdr_queue[3] == "4" and gdr_queue[4] == "4"
+
+    # The full queue (1/1 item) has a blocked sender; the empty queue a
+    # blocked receiver -- waiter summaries carry the names.
+    full_row = _fixture_row(queues, "gdr_full_queue")
+    assert full_row[2:6] == ["1", "1", "4", "0"]
+    assert "1@gdr_qsend" in full_row[6]
+    empty_row = _fixture_row(queues, "gdr_empty_queue")
+    assert empty_row[2] == "0"
+    assert "1@gdr_qrecv" in empty_row[7]
+
+    sem_row = _fixture_row(semaphores_out, "gdr_semaphore")
+    assert sem_row[2] == "0" and sem_row[3] == "3"  # Count=0 Max=3
+    assert "1@gdr_semw" in sem_row[4]
+
+    mtx_row = _fixture_row(mtxs, "gdr_mutex")
+    assert mtx_row[2] in ("yes", "1")  # Held (taken, count == 0)
+    # gdr_mtxh takes the mutex from a task after the scheduler starts, so the
+    # kernel records a real holder (a pre-scheduler take would store NULL).
+    assert mtx_row[3] == "gdr_mtxh"
+    assert "1@gdr_mtxw" in mtx_row[5]
+    recursive_row = _fixture_row(mtxs, "gdr_recursive_mutex")
+    assert recursive_row[2] == "yes"
+    assert recursive_row[3] == "gdr_recm"
+    assert recursive_row[4] == "2"  # recursive mutex held two levels
+
+
+def test_queue_detail_and_semaphore_detail_field_contract(gdb_session):
+    """The detail views pin the queue Locks/Checks/FIFO and the semaphore's
+    deliberate lack of an Owner block."""
+    with _with_width(gdb_session, 200):
+        queue = gdb_session.run(f"freertos queue {_FIXTURE_QUEUE_NAME}", timeout=20)
+        sem = gdb_session.run("freertos semaphore gdr_semaphore", timeout=20)
+        mtx = gdb_session.run("freertos mutex gdr_mutex", timeout=20)
+        full = gdb_session.run("freertos queue gdr_full_queue", timeout=20)
+    for output in (queue, sem, mtx, full):
+        _assert_clean_command_output(output)
+
+    q = _detail_pairs(queue)
+    assert q["Locks"] == "-"  # queueUNLOCKED (-1/-1)
+    assert q["Items"] == "0"
+    # Reason: the verdict row carries counts only; a healthy queue must not
+    # emit any Check[...] problem row (see freertos/details.checks_pairs).
+    assert q["Checks"].startswith("ok (")
+    assert not any(key.startswith("Check[") for key in q)
+    assert not any(key.startswith("Item[") for key in q)  # empty queue
+
+    s = _detail_pairs(sem)
+    assert not any(key.startswith("Owner") for key in s)
+    assert s["Count"] == "0" and s["Max"] == "3"
+    assert "1@gdr_semw" in s["Waiters"]
+
+    m = _detail_pairs(mtx)
+    assert m["Held"] == "yes"
+    assert m["RecursiveCallCount"] == "0"
+    # The holder block is read from the holder TCB: gdr_mtxh takes the mutex at
+    # base priority 1 and the priority-3 waiter gdr_mtxw then blocks on it, so
+    # the kernel raises uxPriority to 3 while uxBasePriority stays 1. Asserting
+    # both numbers pins that OwnerPriority and OwnerBasePriority read different
+    # TCB members -- a single-member bug would make them equal.
+    assert m["Owner"] == "gdr_mtxh"
+    assert m["OwnerPriority"] == "3"
+    assert m["OwnerBasePriority"] == "1"
+    holder_row = _fixture_row(gdb_session.run("freertos tasks", timeout=20), "gdr_mtxh")
+    assert holder_row[2] == m["OwnerPriority"]
+    assert holder_row[3] == m["OwnerBasePriority"]
+    # count(0) + holder(non-NULL) == 1 now holds, so no problem row is emitted.
+    assert m["Checks"].startswith("ok (")
+    assert not any(key.startswith("Check[") for key in m)
+
+    rec = _detail_pairs(
+        gdb_session.run("freertos mutex gdr_recursive_mutex", timeout=20)
+    )
+    assert rec["Owner"] == "gdr_recm"
+    assert rec["OwnerPriority"] != "N/A"
+    assert "OwnerBasePriority" in rec
+    assert rec["RecursiveCallCount"] == "2"
+
+    # The FIFO dump starts at pcReadFrom + item size: the full queue holds
+    # the uint32 1U, little-endian on the Cortex-M fixture.
+    f = _detail_pairs(full)
+    assert f["Items"] == "1"
+    assert f["Item[0]"].endswith(": 01 00 00 00")
+
+
+def test_queue_set_column_only_on_full_variant(gdb_session):
+    """The Set column exists only when configUSE_QUEUE_SETS is on.
+
+    The member's pxQueueSetContainer is the queue-set address; without the
+    config the column must disappear entirely instead of rendering N/A.
+    """
+    with _with_width(gdb_session, 200):
+        queues = gdb_session.run("freertos queues", timeout=20)
+    _assert_clean_command_output(queues)
+    header = next(
+        line for line in queues.splitlines() if line.lstrip().startswith("Name ")
+    ).split()
+    if not _PROFILE.queue_sets:
+        assert "Set" not in header, queues
+        return
+    assert "Set" in header, queues
+    set_addr = gdb_session.run_python(
+        "import gdb; print(hex(int(gdb.parse_and_eval('gdr_queue_set'))))"
+    ).strip()
+    member = _fixture_row(queues, "gdr_set_member_a")
+    assert member[header.index("Set")] == set_addr, queues

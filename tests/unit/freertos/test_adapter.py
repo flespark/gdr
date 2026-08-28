@@ -467,8 +467,9 @@ def test_object_detail_task_routes_via_task_state_and_builder(monkeypatch):
 
     assert detail is not None
     assert detail.pairs == [("Name", "worker")]
-    # Non-task kinds are not reliably enumerable yet.
-    assert adapter.object_detail("queue", "q") is None
+    # Queue-family kinds have vertical details; the remaining kinds
+    # (timer/eventgroup/...) still need their discovery channels.
+    assert adapter.object_detail("eventgroup", "q") is None
 
 
 def test_task_table_high_water_header_matches_the_cell_position(monkeypatch):

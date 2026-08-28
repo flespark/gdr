@@ -132,8 +132,15 @@ member's existence depends on the config. Gating must be proved on a live lane.
 
 - **MPU object pool** (`portUSING_MPU_WRAPPERS 1` with
   `configUSE_MPU_WRAPPERS_V1 0`, the only complete kernel object registry)
-  needs an ARM_CM33_NTZ / TrustZone port, and QEMU support for that wrapper set
-  on `mps2-an505` is unproven. The probe stays unit-tested only.
+  needs an MPU port -- `portable/GCC/ARM_CM33` or `ARM_CM33_NTZ`, since
+  `portUSING_MPU_WRAPPERS` is a port-layer macro that the current `ARM_CM3`
+  fixture never sets -- plus a fixture built around `xTaskCreateRestricted`
+  and the `MPU_`-prefixed wrapper API. TrustZone is *not* required (`NTZ`
+  literally means "no TrustZone", and QEMU does model the ARMv8-M security
+  extension on `mps2-an505`/`an521`/`musca-*` anyway); the blocker is that
+  nobody has built and booted that port/config combination here, which is a
+  new lane rather than one more `FreeRTOSConfig.h`. The probe stays
+  unit-tested only.
 - **Upward-growing stacks** (`portSTACK_GROWTH +1`) exist only in
   `portable/SDCC/Cygnal`. No GCC port and no QEMU machine can host it; GDR
   therefore treats stacks as grow-down only (the `stack_grows_up` field and its
