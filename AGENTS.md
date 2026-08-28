@@ -169,8 +169,8 @@ drives the two live lanes.
 ```bash
 bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-dynamic
 
-# Point the fixture cache elsewhere; a cached fixture is reused, a missing one
-# is built and then installed into the cache.
+# Point the fixture cache elsewhere. A cached fixture is reused only while it is
+# newer than the fixture sources; a missing or stale one is rebuilt and installed.
 FREERTOS_FIXTURE_CACHE=/path/to/cache \
   bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
 ```

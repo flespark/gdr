@@ -125,6 +125,26 @@ build_one() {
     GDR_ELF_OVERRIDE="$cache_dir/freertos.elf" run_pytest "$target" "$version" "$variant"
 }
 
+# Newest mtime among the fixture sources that end up inside a firmware image.
+# Reason: a cached ELF built before a fixture edit boots the *old* objects, so
+# assertions about new fixture state fail (or worse, stale state silently
+# passes) with nothing in the output pointing at the cache. Compare timestamps
+# and rebuild instead of trusting mere file existence.
+fixture_sources_newer_than() {
+    local elf="$1" variant="$2" target="$3"
+    local -a sources=(
+        "$SCRIPT_DIR/fixture/main.c"
+        "$SCRIPT_DIR/fixture/config/gdr_fixture_common.h"
+        "$SCRIPT_DIR/fixture/config/$variant"
+        "$SCRIPT_DIR/fixture/board/$target"
+        "$SCRIPT_DIR/build-fixture-cubel4.sh"
+        "$SCRIPT_DIR/build-fixture-kernel.sh"
+    )
+    local newer
+    newer="$(find "${sources[@]}" -newer "$elf" -print -quit 2>/dev/null || true)"
+    [[ -n "$newer" ]]
+}
+
 main() {
     local target="${1:-$DEFAULT_TARGET}"
     local version="${2:-$DEFAULT_VERSION}"
@@ -148,11 +168,15 @@ main() {
     local variant cached_elf
     for variant in "${variants[@]}"; do
         cached_elf="$CACHE_ROOT/$target/$version/$variant/freertos.elf"
-        if [[ -f "$cached_elf" && "${GDR_FORCE_BUILD:-0}" != 1 ]]; then
+        if [[ ! -f "$cached_elf" || "${GDR_FORCE_BUILD:-0}" == 1 ]]; then
+            build_one "$target" "$version" "$variant"
+        elif fixture_sources_newer_than "$cached_elf" "$variant" "$target"; then
+            log_matrix_entry "$target" "$version" "$variant" \
+                "cached fixture is older than its sources; rebuilding"
+            build_one "$target" "$version" "$variant"
+        else
             log_matrix_entry "$target" "$version" "$variant" "reusing cached fixture"
             GDR_ELF_OVERRIDE="$cached_elf" run_pytest "$target" "$version" "$variant"
-        else
-            build_one "$target" "$version" "$variant"
         fi
     done
 }

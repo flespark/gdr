@@ -29,6 +29,15 @@ without copying, and `GDR_FORCE_BUILD=1` makes the matrix rebuild even when a
 cached fixture is present. A missing artifact makes the corresponding test
 `pytest.skip`, so partial caches stay usable.
 
+`run-qemu-matrix.sh` reuses a cached ELF only while it is newer than the fixture
+sources it was built from (`fixture/main.c`, `fixture/config/gdr_fixture_common.h`,
+`fixture/config/<variant>/`, `fixture/board/<target>/`, and the two builders);
+otherwise it rebuilds and logs `cached fixture is older than its sources;
+rebuilding`. Reason: a fixture edit silently invalidates every variant that is
+not rebuilt, and the resulting failures point at the decoder rather than at the
+cache -- a stale image can also *pass* obsolete assertions, hiding a real
+regression.
+
 ## Toolchain
 
 All three builders use `arm-none-eabi-gcc`, resolved from `--toolchain-path`,
