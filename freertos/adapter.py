@@ -10,15 +10,18 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.details import (
+    event_group_detail,
     held_cell,
     locks_cell,
     mutex_detail,
     queue_detail,
     semaphore_detail,
+    stream_buffer_detail,
     task_detail,
     timer_detail,
     waiter_summary,
 )
+from freertos.events import event_group_table, value_to_event_group_object
 from freertos.layout import FreeRtosLayout, queue_type_label
 from freertos.navigation import (
     _QUEUE_FAMILY_KINDS,
@@ -35,6 +38,10 @@ from freertos.navigation import (
     system_value,
     task_name_at,
     task_state,
+)
+from freertos.streams import (
+    stream_buffer_table,
+    value_to_stream_buffer_object,
 )
 from freertos.timers import (
     DAEMON_CURRENT_MESSAGE,
@@ -642,6 +649,30 @@ class FreeRtosAdapter(RtosAdapter):
         kind = kind.strip().lower()
         if kind == "timer":
             return self._timer_table()
+        if kind == "eventgroup":
+            return event_group_table(
+                [
+                    value_to_event_group_object(
+                        _cast_object(found.address, found.kind, self.layout),
+                        found,
+                        self.layout,
+                    )
+                    for found in discover(kind, self.layout)
+                ],
+                self.layout,
+            )
+        if kind == "streambuffer":
+            return stream_buffer_table(
+                [
+                    value_to_stream_buffer_object(
+                        _cast_object(found.address, found.kind, self.layout),
+                        found,
+                        self.layout,
+                    )
+                    for found in discover(kind, self.layout)
+                ],
+                self.layout,
+            )
         if kind not in _QUEUE_FAMILY_KINDS:
             return None
         objects = [
@@ -878,7 +909,8 @@ class FreeRtosAdapter(RtosAdapter):
         )
 
     def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
-        """Return one object's vertical detail (task, timer or queue family)."""
+        """Return one object's vertical detail (task, timer, event group,
+        stream buffer or queue family)."""
         kind = kind.strip().lower()
         if kind == "task":
             value = find_task(name, self.layout)
@@ -892,9 +924,19 @@ class FreeRtosAdapter(RtosAdapter):
                 return ObjectDetail(found=False)
             obj = value_to_timer_object(value, found, self.layout)
             return ObjectDetail(pairs=timer_detail(obj, value, self.layout))
+        if kind == "eventgroup":
+            found, value = self._find_named_object(kind, name)
+            if found is None or value is None:
+                return ObjectDetail(found=False)
+            obj = value_to_event_group_object(value, found, self.layout)
+            return ObjectDetail(pairs=event_group_detail(obj, value, self.layout))
+        if kind == "streambuffer":
+            found, value = self._find_named_object(kind, name)
+            if found is None or value is None:
+                return ObjectDetail(found=False)
+            obj = value_to_stream_buffer_object(value, found, self.layout)
+            return ObjectDetail(pairs=stream_buffer_detail(obj, value, self.layout))
         if kind not in _QUEUE_FAMILY_KINDS:
-            # eventgroup/streambuffer detail needs their discovery channels,
-            # not yet enumerable at this depth.
             return None
         found, value = self._find_named_object(kind, name)
         if found is None or value is None:

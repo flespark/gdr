@@ -465,6 +465,11 @@ def build_layout(
             "struct EventGroupDef_t",
             fields={
                 "value": StructField("value", ("uxEventBits",), summary=True),
+                # Detail-only fields for ``frt eventgroup <name>``.  The
+                # waiter list is walked the same way the scheduler lists are;
+                # ``number``/``static_alloc`` are injected below on their
+                # config gates.
+                "waiting": StructField("waiting", ("xTasksWaitingForBits",)),
             },
             display_name="EventGroup",
         ),
@@ -472,11 +477,19 @@ def build_layout(
             "struct StreamBufferDef_t",
             fields={
                 "size": StructField("size", ("xLength",), summary=True),
-                # Reason: upstream StreamBufferDef_t (stream_buffer.c) has no
-                # item/byte-count field; xHead/xTail are byte offsets whose
-                # difference is not a DWARF field (computing it would need
-                # inferior arithmetic, which is forbidden). Keep only the
-                # buffer length as the one-line summary.
+                # Detail-only geometry for ``frt streambuffer <name>``.
+                # Upstream StreamBufferDef_t (stream_buffer.c) carries no
+                # byte-count member: bytes/space are derived from the
+                # head/tail/trigger offsets by freertos.streams (never via
+                # inferior arithmetic).  Waiter fields are a single
+                # TaskHandle_t, not a list.
+                "head": StructField("head", ("xHead",)),
+                "tail": StructField("tail", ("xTail",)),
+                "trigger": StructField("trigger", ("xTriggerLevelBytes",)),
+                "flags": StructField("flags", ("ucFlags",)),
+                "buffer": StructField("buffer", ("pucBuffer",)),
+                "recv_waiter": StructField("recv_waiter", ("xTaskWaitingToReceive",)),
+                "send_waiter": StructField("send_waiter", ("xTaskWaitingToSend",)),
             },
             display_name="StreamBuffer",
         ),
@@ -499,5 +512,31 @@ def build_layout(
         # build from fabricating a stable-looking timer id.
         structs["struct tmrTimerControl"].fields["number"] = StructField(
             "number", ("uxTimerNumber",)
+        )
+        # Reason: uxEventGroupNumber / uxStreamBufferNumber only exist under
+        # configUSE_TRACE_FACILITY and, like uxTimerNumber, are never written
+        # by prvInitialiseNewStreamBuffer / prvINITIALISE_EVENT_GROUP, so they
+        # are not usable as identifiers; gating keeps a trace-off build from
+        # fabricating a stable-looking object id (timers.c / stream_buffer.c /
+        # event_groups.c).
+        structs["struct EventGroupDef_t"].fields["number"] = StructField(
+            "number", ("uxEventGroupNumber",)
+        )
+        structs["struct StreamBufferDef_t"].fields["number"] = StructField(
+            "number", ("uxStreamBufferNumber",)
+        )
+    if cfg.static_and_dynamic:
+        # Reason: ucStaticallyAllocated only exists when both static and
+        # dynamic allocation are possible (FreeRTOS.h tstSTATIC_AND_DYNAMIC_
+        # ALLOCATION_POSSIBLE), mirroring the TCB probe in detect_config.
+        structs["struct EventGroupDef_t"].fields["static_alloc"] = StructField(
+            "static_alloc", ("ucStaticallyAllocated",)
+        )
+    if cfg.stream_buffer_notification_index:
+        # Reason: uxNotificationIndex only exists from V11.1.0 (stream_buffer.c);
+        # declaring it unconditionally would fabricate a silent N/A on older
+        # kernels instead of surfacing the version gate.
+        structs["struct StreamBufferDef_t"].fields["notification_index"] = StructField(
+            "notification_index", ("uxNotificationIndex",)
         )
     return FreeRtosLayout(structs=structs, lists=lists, config=cfg, version=version)

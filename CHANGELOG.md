@@ -8,6 +8,46 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- FreeRTOS `frt eventgroups` prints its own column-contract table
+  `Name Bits Waiters Src Addr` instead of the neutral Kind/Count fallback, and
+  `frt eventgroup <name|addr>` renders one line per blocked task:
+  `wants=0x.. mode=ALL|ANY clearOnExit=yes|no missing=0x..`. The control bits
+  that share `xItemValue` with the wanted bits are compile-time macros with no
+  debug info, so every mask is derived from the tick width
+  (`EventBits_t == TickType_t`) rather than assuming 32 bits. A waiter whose
+  bits are already set but is still on the wait list is marked
+  `(satisfied — mid-unblock)` — the kernel unblocks such a task by removing
+  the item, so this state means the setter has not finished running.
+  `StaticallyAllocated` appears only on builds where the kernel declares
+  `ucStaticallyAllocated` (static *and* dynamic allocation both enabled).
+- FreeRTOS `frt streambuffers` prints its own column-contract table
+  `Name Type Bytes Space Capacity Trigger NextMsg RecvWait SendWait Src Addr`,
+  and `frt streambuffer <name|addr>` adds `TriggerMet` (batching buffers use
+  `>`, every other kind `>=`), `MsgLenBytes`, `NotificationIndex` and
+  `BoundsCheck`. Bytes and space use the kernel's own wrap-safe arithmetic;
+  `Capacity` is `xLength - 1` (only the dynamic create path adds the extra
+  byte, so a static buffer's capacity is one less than an equally sized
+  dynamic one). `NextMsg` is read as the length prefix at `pucBuffer + xTail`
+  with the kernel's two-part ring wrap and is `N/A` for non-message buffers;
+  `MsgLenBytes` is labelled as an assumed `size_t` because
+  `sbBYTES_TO_STORE_MESSAGE_LENGTH` leaves no debug info. A buffer with
+  `xLength == 0` and a readable NULL `pucBuffer` is reported as `deleted`
+  instead of computing geometry from a zero length. Stream buffers keep their
+  waiters in single task-handle fields rather than lists, so they have no
+  waiter discovery channel — an unregistered dynamic buffer with no global
+  handle can never be enumerated, and the commands say so.
+- FreeRTOS `EventGroupDef_t` and `StreamBufferDef_t` layouts gained their
+  detail fields; `uxEventGroupNumber` / `uxStreamBufferNumber` are registered
+  only on `configUSE_TRACE_FACILITY` builds, `ucStaticallyAllocated` only when
+  both allocation modes are on, and `uxNotificationIndex` only on kernels
+  >= 11.1.0 (verified by comparing `ptype` output on a 10.3.1 and an 11.1.0
+  fixture: `sizeof(StreamBufferDef_t)` 36 vs 40).
+- FreeRTOS fixture: a task now blocks forever on an event group whose handle
+  lives only on its own stack, giving the `waiter` discovery channel its first
+  object that no other channel can find. The live no-ghost assertion allows
+  exactly that one anonymous event group and still fails if the channel
+  fabricates hosts out of neighbouring memory.
+
 - FreeRTOS `frt timers` prints its own column-contract table
   `Name State Mode Period Expiry ExpiresIn Callback ID Src Addr` instead of the
   neutral Kind/Count fallback. Timers reachable from the daemon's active lists

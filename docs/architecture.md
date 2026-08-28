@@ -56,10 +56,12 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. Version detection relies on `-g3` macro debug info and is subject to CU scope limitations (see known constraints below). |
 | `navigation.py` | Pure scheduler-list and current-task traversal functions plus the object discovery channels (`iter_registry_entries`, `iter_static_symbol_objects` with its session cache, `iter_active_timer_hosts`, `iter_mpu_pool_objects`, `iter_waiter_hosts`) and their aggregation (`DiscoveredObject`, `discover`, `discover_all`, `resolve_object`). Queue-family candidates are refined by the `Queue_t` discriminator (`classify_queue`: `ucQueueType` when `configUSE_TRACE_FACILITY` is on, else the `pcHead == NULL` mutex marker and `uxItemSize == 0` semaphore marker), deduplicated across the family so one address never lands in two tables; `discover_all` shares one waiter-channel scan per command call. The symbol channel names timer objects by their `pcTimerName` (read from the cast `Timer_t`) instead of the handle/buffer variable, so dormant timers stay reachable by the name the firmware gave them. List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
 | `timers.py` | FreeRTOS software-timer decoding for the daemon's two active lists and its command queue (`xTimerQueue`): the current/overflow list epoch, the `pvOwner` vs object-address check (container decides `uninitialised`), the wrap-safe `ExpiresIn` formula for both epochs, and `iter_timer_commands()` which ring-reads the queue (item-size and DWARF-type prechecks, slots cast to `DaemonTaskMessage_t`) and maps the 12 `tmrCOMMAND_*` ids to names. |
-| `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, system summary, and the object protocol methods (`find_object`, `object_counts`, the provenance summary table, the queue/semaphore/mutex list tables and their details, and the `FreeRtosTimerObject` model feeding the `frt timers` table). |
+| `events.py` | Event-group inspection: control-bit masks derived from `cfg.tick_bits` (the `CLEAR_ON_EXIT` / `UNBLOCKED_DUE_TO_BIT_SET` / `WAIT_FOR_ALL` / `CONTROL_BYTES` / `eventIN_USE` bits are compile-time macros with no DWARF), the raw `xEventListItem` decode for every task blocked on `xTasksWaitingForBits`, the ALL vs ANY `missing` computation, and the `(satisfied — mid-unblock)` marker for a waiter the kernel already unblocked. Feeds the `frt eventgroups` table and the `frt eventgroup <name>` detail via the `uchStaticallyAllocated` config gate. |
+| `streams.py` | Stream/message/batching buffer geometry: the wrap-safe bytes (`prvBytesInBuffer`) and space formulas, the batching `>` vs plain `>=` trigger comparison, the six `ucFlags` classifications (static stays out of the table Type, so the column contract does not drift between variants), the `xLength == 0 && pucBuffer == NULL` deleted-buffer short-circuit, the `NextMsg` length-prefix read gated on the `size_t`-fallback assumption, and the single-`TaskHandle_t` waiter rendering (no waiter discovery channel exists for stream buffers). |
+| `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, system summary, and the object protocol methods (`find_object`, `object_counts`, the provenance summary table, the queue/semaphore/mutex list tables and their details, the `FreeRtosTimerObject` model feeding the `frt timers` table, and the event group / stream buffer tables delegated to `events` / `streams`). |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
-| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes`/`timers` render their own column-contract tables (`object_table()`), while `eventgroups`/`streambuffers` still fall back to the core Kind/Count table, and `heap` is a placeholder. |
-| `details.py` | FreeRTOS vertical detail rendering: `frt task <name>` (per-TCB state, high-water mark, notification slots, wake tick, blocked-on), the queue family (`frt queue/semaphore/mutex <name>`, including the FIFO `Item[i]` dump and mutex owner priorities), and `frt timer <name>` (List epoch, OwnerCheck, and the pending daemon-command section). |
+| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers` render their own column-contract tables (`object_table()`), and `heap` is a placeholder. |
+| `details.py` | FreeRTOS vertical detail rendering: `frt task <name>` (per-TCB state, high-water mark, notification slots, wake tick, blocked-on), the queue family (`frt queue/semaphore/mutex <name>`, including the FIFO `Item[i]` dump and mutex owner priorities), `frt timer <name>` (List epoch, OwnerCheck, and the pending daemon-command section), `frt eventgroup <name>` (per-waiter wants/mode/clearOnExit/missing decode), and `frt streambuffer <name>` (geometry, trigger-met verdict, NextMsg, the `size_t`-assumed length prefix, the version-gated NotificationIndex and the three-state bounds check). |
 | `diagnostics.py` | Queue-family consistency checks (`queue_checks`): count bound and the storage-window pointer invariants for real data queues only; mutex accounting and semaphore self-head checks for those kinds; inapplicable checks are reported as explicit `skipped` instead of pass/fail. Timer checks (`timer_checks`): `ucStatus`-vs-list sync, nonzero period/callback, and the daemon queue item size vs `sizeof(DaemonTaskMessage_t)`. |
 
 ## Key decisions
@@ -430,6 +432,28 @@ N/A and HighWater scans `[pxStack, pxTopOfStack)`.
   (INCLUDE_xTimerPendFunctionCall=0)` instead of decoding garbage; a config
   variant that enables the macro and leaves a negative-id slot in the queue
   is fixture-pending.
+- Event-group control bits are only exercised at 32-bit tick width: every
+  FreeRTOS lane is 32-bit (`EventBits_t == TickType_t`), so the 16/64-bit
+  mask derivation (`event_bit_masks`) and the width-agnostic decode are
+  verified by unit tests only.
+- Stream/message buffer **ring wrap** (`xHead < xTail`) has no live evidence:
+  the fixture never sends to its stream/message/batching buffers
+  (`xStreamBufferSend`/`xMessageBufferSend` are never called), so Bytes is
+  always 0 and the wrap branch of `bytes_in_buffer`/`spaces_available` is
+  unit-test-only. The batching `>` trigger asymmetry is likewise unobservable
+  while the batching buffer is empty, and the `xLength == 0 && pucBuffer ==
+  NULL` deleted-buffer signature has no fixture (no `vStreamBufferDelete`
+  call) -- all three are documented as unit-tested only. The same empty-buffer
+  fact keeps `NextMsg` on the unit-test-only list: the length prefix is read at
+  `pucBuffer + xTail` with the kernel's two-part wrap, but no fixture ever puts
+  a message in a message buffer, so live rows always print `-`.
+- Event-group `ucStaticallyAllocated` is gated by the value of the field only
+  in unit tests. The *presence* of the member is live-verified on two lanes
+  (`ptype struct EventGroupDef_t` has it on `static-dynamic`, not on `base`,
+  because the kernel declares it only when static *and* dynamic allocation are
+  both enabled), but the `static-dynamic` variant sets
+  `GDR_FIXTURE_MIXED_ALLOCATION`, so its "static" event group is in fact
+  created dynamically and no live object reports `StaticallyAllocated: yes`.
 
 **Static snapshot lane** (`ci/freertos/build-fixture-snapshot.sh` with sources
 in `ci/freertos/snapshot/`) covers states a healthy kernel cannot produce
@@ -515,9 +539,10 @@ channel outranks it.
 The `mpu-pool` channel is implemented with unit-test stubs only: no live
 fixture exists (it needs a CM33 MPU port and a restricted-task fixture, not
 TrustZone), so its behaviour has no
-live coverage. The `waiter` channel has no object that is discoverable *only*
-through it in the current fixtures (every blocked-on object also holds a
-global handle), so it is covered by unit tests plus a live no-ghost assertion:
-every host the channel reverse-derives must also be findable through an
-earlier channel, which would fail if it fabricated objects out of plausible
-neighbouring memory.
+live coverage. The `waiter` channel is pinned by a deliberate fixture object:
+`gdr_waiter_only_eg_task` (ci/freertos/fixture/main.c) blocks forever on an
+event group whose handle lives only on its own stack, so that group is
+discoverable *only* through the waiter channel -- the live no-ghost assertion
+now permits exactly one host (that anonymous event group) that no earlier
+channel finds, and would fail if the container_of probe fabricated objects out
+of plausible neighbouring memory beyond it.

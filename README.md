@@ -112,6 +112,19 @@ never-started timers appear in `frt timers` (as `dormant`, with `Expiry`/
 `ExpiresIn` printed as `N/A`) only when the build keeps a static timer buffer
 or a global handle for them.
 
+Event groups and stream buffers differ in how far that reach goes. An event
+group with a task blocked on it is found even when no symbol names it (the
+blocked task's list item is reverse-derived), so `frt eventgroups` can list an
+anonymous group as `-` and `frt eventgroup <addr>` still decodes every waiter's
+`wants` / `mode` / `clearOnExit` / `missing` — the answer to "why is this task
+still blocked". Stream and message buffers store their waiters as single task
+handles rather than lists, so no such reverse channel exists: a dynamically
+created buffer whose handle is not in a global variable can never be
+enumerated. `frt streambuffer <name>` also marks `MsgLenBytes` as an assumed
+`size_t` (the `sbBYTES_TO_STORE_MESSAGE_LENGTH` macro leaves no debug info) and
+prints `NotificationIndex: N/A (kernel < 11.1.0)` on kernels without the field
+instead of dropping the key.
+
 ## Convenience functions
 
 | Function | Returns | Example |

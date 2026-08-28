@@ -467,9 +467,18 @@ def test_object_detail_task_routes_via_task_state_and_builder(monkeypatch):
 
     assert detail is not None
     assert detail.pairs == [("Name", "worker")]
-    # Queue-family kinds have vertical details; the remaining kinds
-    # (timer/eventgroup/...) still need their discovery channels.
-    assert adapter.object_detail("eventgroup", "q") is None
+    # Event groups and stream buffers route through the discovery channels
+    # like the queue family: an unknown name reports not-found instead of
+    # bubbling the old "not enumerable at this depth" None.
+    monkeypatch.setattr(
+        adapter_module.FreeRtosAdapter,
+        "_find_named_object",
+        lambda _self, _kind, _name: (None, None),
+    )
+    eg = adapter.object_detail("eventgroup", "q")
+    assert eg is not None and eg.found is False
+    sb = adapter.object_detail("streambuffer", "q")
+    assert sb is not None and sb.found is False
 
 
 def test_task_table_high_water_header_matches_the_cell_position(monkeypatch):

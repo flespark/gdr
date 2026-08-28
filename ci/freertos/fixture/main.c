@@ -70,6 +70,7 @@ GDR_USED static TaskHandle_t gdr_suspended_task;
 GDR_USED static TaskHandle_t gdr_recursive_task;
 GDR_USED static TaskHandle_t gdr_exhaust_task;
 GDR_USED static TaskHandle_t gdr_ready_spin_task;
+GDR_USED static TaskHandle_t gdr_waiter_only_eg_handle;
 
 GDR_USED static QueueHandle_t gdr_registered_queue;
 GDR_USED static QueueHandle_t gdr_unregistered_queue;
@@ -129,6 +130,8 @@ static StaticTask_t gdr_exhaust_tcb;
 static StackType_t gdr_exhaust_stack_mem[GDR_EXHAUST_STACK_WORDS];
 static StaticTask_t gdr_ready_spin_tcb;
 static StackType_t gdr_ready_spin_stack[GDR_STACK_WORDS];
+static StaticTask_t gdr_waiter_only_eg_tcb;
+static StackType_t gdr_waiter_only_eg_stack[GDR_STACK_WORDS];
 
 static StaticQueue_t gdr_registered_queue_buf;
 static uint8_t gdr_registered_queue_storage[4 * sizeof(uint32_t)];
@@ -392,6 +395,28 @@ static void gdr_exhaust_stack_task(void *argument)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         (void)pad[0];
+    }
+}
+
+/* Reason: the only live evidence of the heuristic waiter channel.  The EG's
+ * handle (or buffer on static-only builds) lives purely on this task's stack
+ * -- no global, no registry -- so the symbol/registry channels can never find
+ * it; only the waiter channel's container_of reverse discovery (navigation.py
+ * iter_waiter_hosts) reconstructs it from the creator's blocked xEventListItem.
+ * gdr_evw's gdr_event_group has a global handle and cannot serve that proof. */
+static void gdr_waiter_only_eg_task(void *argument)
+{
+    (void)argument;
+#if (configSUPPORT_DYNAMIC_ALLOCATION == 1)
+    EventGroupHandle_t eg = xEventGroupCreate();
+    configASSERT(eg != NULL);
+#else
+    StaticEventGroup_t eg_buf;
+    EventGroupHandle_t eg = xEventGroupCreateStatic(&eg_buf);
+    configASSERT(eg != NULL);
+#endif
+    for (;;) {
+        (void)xEventGroupWaitBits(eg, 0x5U, pdFALSE, pdTRUE, portMAX_DELAY);
     }
 }
 
@@ -665,6 +690,8 @@ int main(void)
                     (uint16_t)GDR_EXHAUST_STACK_WORDS, 2, &gdr_exhaust_task);
     gdr_create_task(gdr_ready_spin, "gdr_spin", configMINIMAL_STACK_SIZE, 0,
                     &gdr_ready_spin_task);
+    gdr_create_task(gdr_waiter_only_eg_task, "gdr_egw",
+                    configMINIMAL_STACK_SIZE, 2, &gdr_waiter_only_eg_handle);
 #else
     gdr_create_task_static(gdr_ready_task, "gdr_ready", gdr_ready_stack,
                            GDR_STACK_WORDS, 4, &gdr_ready_tcb, &gdr_high_task);
@@ -709,6 +736,9 @@ int main(void)
     gdr_create_task_static(gdr_ready_spin, "gdr_spin", gdr_ready_spin_stack,
                            GDR_STACK_WORDS, 0, &gdr_ready_spin_tcb,
                            &gdr_ready_spin_task);
+    gdr_create_task_static(gdr_waiter_only_eg_task, "gdr_egw",
+                           gdr_waiter_only_eg_stack, GDR_STACK_WORDS, 2,
+                           &gdr_waiter_only_eg_tcb, &gdr_waiter_only_eg_handle);
 #endif
 
     vTaskStartScheduler();

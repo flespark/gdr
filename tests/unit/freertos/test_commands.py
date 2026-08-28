@@ -591,9 +591,20 @@ def test_semaphores_and_mutexes_table_headers(monkeypatch):
     assert timer_table is not None
     assert timer_table.rows == []
     assert any("no software timers" in message for message in timer_table.messages)
-    assert (
-        adapter_module.FreeRtosAdapter(
-            build_layout(FreeRtosConfig(), (10, 3, 1))
-        ).object_table("eventgroup")
-        is None
-    )
+    # Event groups and stream buffers behave the same way: an absent
+    # subsystem is a capability note over an empty table, never a silent
+    # zero-count or a "not enumerable" None (discovery is stubbed empty so
+    # the rows cannot leak other kinds in).
+    monkeypatch.setattr(adapter_module, "discover", lambda _kind, _layout: [])
+    eg_table = adapter_module.FreeRtosAdapter(
+        build_layout(FreeRtosConfig(), (10, 3, 1))
+    ).object_table("eventgroup")
+    assert eg_table is not None
+    assert eg_table.rows == []
+    assert any("no event groups" in message for message in eg_table.messages)
+    sb_table = adapter_module.FreeRtosAdapter(
+        build_layout(FreeRtosConfig(), (10, 3, 1))
+    ).object_table("streambuffer")
+    assert sb_table is not None
+    assert sb_table.rows == []
+    assert any("no stream buffers" in message for message in sb_table.messages)

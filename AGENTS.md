@@ -38,12 +38,24 @@ freertos/              FreeRTOS adapter
                        wrap-safe `ExpiresIn`, `pvOwner` owner check (container
                        decides `uninitialised`), and the `xTimerQueue` ring
                        read with the 12 `tmrCOMMAND_*` names
+  events.py            event-group decoding: control-bit masks derived from
+                       `cfg.tick_bits` (16/32/64), per-waiter
+                       wants/mode/clearOnExit/missing from `xItemValue`, and
+                       the `(satisfied - mid-unblock)` marker
+  streams.py           stream/message/batching buffer geometry: wrap-safe
+                       bytes/space, batching `>` vs plain `>=` trigger, the six
+                       `ucFlags` classifications, deleted-buffer short-circuit
+                       and the `size_t`-assumed `NextMsg` length prefix
   adapter.py           complete task model, conversion, summaries and tables,
                        object lookup, per-kind provenance counts, and the
-                       queue/semaphore/mutex and timer list tables
+                       queue/semaphore/mutex, timer, event group and stream
+                       buffer list tables
   details.py           vertical detail rendering for `frt task <name>`, the
-                       queue family (`frt queue/semaphore/mutex <name>`) and
-                       `frt timer <name>` (List epoch, OwnerCheck, Commands)
+                       queue family (`frt queue/semaphore/mutex <name>`),
+                       `frt timer <name>` (List epoch, OwnerCheck, Commands),
+                       `frt eventgroup <name>` (per-waiter decode) and
+                       `frt streambuffer <name>` (TriggerMet, NextMsg,
+                       NotificationIndex, BoundsCheck)
   diagnostics.py       queue-family and timer consistency checks (data-queue
                        pointer invariants, mutex accounting, semaphore
                        self-head, `ucStatus`-vs-list sync, daemon queue item

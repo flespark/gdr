@@ -19,6 +19,7 @@ import freertos.diagnostics as diagnostics
 import freertos.navigation as navigation
 from freertos.adapter import FreeRtosQueueObject
 from freertos.layout import FreeRtosConfig, build_layout
+from freertos.streams import FreeRtosStreamBufferObject
 
 
 class _FakeValue:
@@ -739,6 +740,16 @@ def test_object_detail_routes_queue_family_kinds(monkeypatch):
     monkeypatch.setattr(
         adapter_module, "mutex_detail", lambda _o, _v, _l: [("Owner", "main")]
     )
+    monkeypatch.setattr(
+        adapter_module,
+        "value_to_stream_buffer_object",
+        lambda _v, found_obj, _l: FreeRtosStreamBufferObject(name=found_obj.name),
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "stream_buffer_detail",
+        lambda _o, _v, _l: [("Capacity", "31")],
+    )
 
     queue_pairs = adapter.object_detail("queue", "gdr_queue")
     sem_pairs = adapter.object_detail("semaphore", "gdr_semaphore")
@@ -749,7 +760,15 @@ def test_object_detail_routes_queue_family_kinds(monkeypatch):
     assert sem_pairs.pairs == [("Count", "0")]
     assert mtx_pairs.pairs == [("Owner", "main")]
     assert missing.found is False
-    assert adapter.object_detail("eventgroup", "gdr_evw") is None
+    # Event groups and stream buffers reach their own detail builders now;
+    # only an unknown kind degrades to the not-enumerable None.
+    eg_pairs = adapter.object_detail("eventgroup", "gdr_evw")
+    assert eg_pairs is not None
+    assert eg_pairs.pairs[0] == ("Name", "gdr_queue")
+    sb_pairs = adapter.object_detail("streambuffer", "gdr_sb")
+    assert sb_pairs is not None
+    assert sb_pairs.pairs == [("Capacity", "31")]
+    assert adapter.object_detail("bogus", "x") is None
 
 
 def test_find_named_object_falls_back_to_resolve_object(monkeypatch):

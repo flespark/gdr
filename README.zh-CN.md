@@ -103,6 +103,15 @@ FreeRTOS 说明：内核对象没有全局注册表，因此 `frt objects` 与�
 timer，因此已停止 / 已过期的一次性 / 创建后未启动的 timer 只有在 build 里留有静态 timer
 缓冲区或全局句柄时才会出现在 `frt timers`（标为 `dormant`，`Expiry`/`ExpiresIn` 显示 `N/A`）。
 
+event group 与 stream buffer 的可达范围不同。有任务阻塞在上面的 event group 即使没有
+任何符号命名它也能被发现（从阻塞任务的列表项反推），因此 `frt eventgroups` 可以把匿名
+对象以 `-` 列出，`frt eventgroup <addr>` 仍能逐个等待者解码 `wants` / `mode` /
+`clearOnExit` / `missing`——也就是「这个任务为何仍在阻塞」的答案。stream / message
+buffer 的等待者是单个任务句柄而非列表，没有这样的反推通道：动态创建且句柄不在全局变量里的
+buffer 永远无法枚举。`frt streambuffer <name>` 还会把 `MsgLenBytes` 标注为假设的
+`size_t`（`sbBYTES_TO_STORE_MESSAGE_LENGTH` 宏不留调试信息），并在没有该字段的内核上
+打印 `NotificationIndex: N/A (kernel < 11.1.0)` 而不是省略这一键。
+
 ## 便捷函数
 
 | 函数 | 返回值 | 示例 |

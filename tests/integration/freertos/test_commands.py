@@ -272,26 +272,47 @@ def test_waiter_channel_hosts_are_known_objects(gdb_session):
     """The waiter channel's heuristic hosts are all real kernel objects.
 
     The reverse container_of probe is the only heuristic discovery channel;
-    live corroboration pins it to zero fabricated hosts: every host address
-    must already be reachable through an earlier (registry/symbol/active)
-    channel on fixtures whose objects all hold global handles.
+    live corroboration pins it to at most the waiter-only fixture object:
+    every host address must either already be reachable through an earlier
+    (registry/symbol/active) channel or be the deliberately anonymous event
+    group that only the waiter channel can see (gdr_waiter_only_eg_task's
+    stack-local group, COUPLED to ci/freertos/fixture/main.c).
     """
     probe = gdb_session.run_python(
         """
 from freertos.layout import detect_config, build_layout
-from freertos.navigation import discover, iter_waiter_hosts
+from freertos.navigation import (
+    iter_active_timer_hosts,
+    iter_mpu_pool_objects,
+    iter_registry_entries,
+    iter_static_symbol_objects,
+    iter_waiter_hosts,
+)
 layout = build_layout(detect_config())
+# Earlier (non-waiter) channels only: the waiter channel's own results must
+# not count as corroboration, or the anonymous group would "know itself".
 known = {
     obj.address
-    for kind in ("queue", "semaphore", "mutex", "eventgroup", "timer")
-    for obj in discover(kind, layout)
+    for channel in (
+        iter_mpu_pool_objects(layout),
+        iter_registry_entries(layout),
+        iter_active_timer_hosts(layout),
+        iter_static_symbol_objects(layout),
+    )
+    for obj in channel
 }
 unknown = [obj for obj in iter_waiter_hosts(layout) if obj.address not in known]
 print(f"unknown_hosts={len(unknown)}")
+if unknown:
+    print(f"unknown_kind={unknown[0].kind}")
 """
     )
     _assert_clean_command_output(probe)
-    assert "unknown_hosts=0" in probe, probe
+    # Exactly one unknown host is allowed: the waiter-only event group (no
+    # global handle / registry / static symbol by construction).  Any other
+    # unknown host would mean the container_of probe fabricated an object.
+    assert "unknown_hosts=1" in probe, probe
+    assert "unknown_kind=eventgroup" in probe, probe
 
 
 def test_queue_family_tables_match_fixture_ground_truth(gdb_session):
@@ -501,3 +522,144 @@ def test_queue_set_column_only_on_full_variant(gdb_session):
     ).strip()
     member = _fixture_row(queues, "gdr_set_member_a")
     assert member[header.index("Set")] == set_addr, queues
+
+
+# ---------------------------------------------------------------------------
+# event group / stream buffer commands
+# ---------------------------------------------------------------------------
+
+
+def test_event_group_table_and_detail_decode_live_waiter(gdb_session):
+    """frt eventgroups/detail pin the waiter decode on the live gdr_evw.
+
+    COUPLED: ci/freertos/fixture/main.c makes gdr_evw wait ALL on bits 0x3 of
+    gdr_event_group forever and never calls xEventGroupSetBits, so Bits=0x0,
+    missing=0x3 and the waiter is unsatisfied -- the ``(satisfied —
+    mid-unblock)`` marker must not appear.
+    """
+    with _with_width(gdb_session, 200):
+        egs = gdb_session.run("freertos eventgroups", timeout=20)
+    _assert_clean_command_output(egs)
+    header = next(
+        line for line in egs.splitlines() if line.lstrip().startswith("Name ")
+    ).split()
+    assert header == ["Name", "Bits", "Waiters", "Src", "Addr"], egs
+    row = _fixture_row(egs, "gdr_event_group")
+    assert row[1] == "0x0"  # nothing ever sets the bits
+    assert row[2] == "1"  # gdr_evw blocked with ALL
+    detail = gdb_session.run("freertos eventgroup gdr_event_group", timeout=20)
+    _assert_clean_command_output(detail)
+    assert "wants=0x3" in detail
+    assert "mode=ALL" in detail
+    assert "clearOnExit=no" in detail
+    assert "missing=0x3" in detail
+    assert "(satisfied" not in detail
+
+
+def test_stream_buffer_table_matches_fixture_geometry(gdb_session):
+    """frt streambuffers renders the 11-column contract with live geometry.
+
+    COUPLED: the fixture never sends to its stream/message buffers, so
+    Bytes=0, Space==Capacity and empty single-handle waiter cells; Capacity
+    is xLength-1, which differs between the dynamic (32) and static-only
+    (31) creation paths (stream_buffer.c xBufferSizeBytes++ runs on the
+    dynamic path only).
+    """
+    with _with_width(gdb_session, 200):
+        sbs = gdb_session.run("freertos streambuffers", timeout=20)
+    _assert_clean_command_output(sbs)
+    header = next(
+        line for line in sbs.splitlines() if line.lstrip().startswith("Name ")
+    ).split()
+    assert header == [
+        "Name",
+        "Type",
+        "Bytes",
+        "Space",
+        "Capacity",
+        "Trigger",
+        "NextMsg",
+        "RecvWait",
+        "SendWait",
+        "Src",
+        "Addr",
+    ], sbs
+    stream_row = _fixture_row(sbs, "gdr_stream_buffer")
+    assert stream_row[1] == "stream"
+    msg_row = _fixture_row(sbs, "gdr_message_buffer")
+    assert msg_row[1] == "message"
+    assert msg_row[6] == "-"  # empty message buffer: no length prefix yet
+    assert stream_row[2] == "0"  # Bytes
+    assert stream_row[3] == stream_row[4]  # Space == Capacity when empty
+    assert stream_row[7] == "-" and stream_row[8] == "-"  # single-handle waiters
+    expected_capacity = (
+        "31" if _PROFILE.static_allocation and not _PROFILE.static_and_dynamic else "32"
+    )
+    assert stream_row[4] == expected_capacity, sbs
+
+
+def test_notification_index_gated_by_kernel_version(gdb_session):
+    """uxNotificationIndex exists from V11.1.0 only; the detail says so."""
+    detail = gdb_session.run("freertos streambuffer gdr_stream_buffer", timeout=20)
+    _assert_clean_command_output(detail)
+    major, minor, _patch = (int(part) for part in _VERSION.split("."))
+    if (major, minor) >= (11, 1):
+        assert "NotificationIndex: 0" in detail, detail
+    else:
+        assert "NotificationIndex" in detail
+        assert "N/A (kernel < 11.1.0)" in detail, detail
+
+
+def test_batching_buffer_only_on_11_1(gdb_session):
+    """The batching buffer exists on V11.1+ lanes only (Type=batching)."""
+    with _with_width(gdb_session, 200):
+        sbs = gdb_session.run("freertos streambuffers", timeout=20)
+    _assert_clean_command_output(sbs)
+    if _PROFILE.batching_buffer:
+        row = _fixture_row(sbs, "gdr_batching_buffer")
+        assert row[1] == "batching"
+    else:
+        assert "gdr_batching_buffer" not in sbs, sbs
+
+
+def test_waiter_only_event_group_is_listed(gdb_session):
+    """The waiter-only event group is listed by frt eventgroups as '-'
+    and shows up in frt objects' waiter= provenance count.
+
+    The anonymous group exists only on the waiter task's stack (or heap) and
+    is deliberately invisible to the symbol/registry channels; the waiter
+    channel's container_of reconstruction must surface it as a real row.
+    """
+    probe = gdb_session.run_python(
+        """
+from freertos.layout import detect_config, build_layout
+from freertos.navigation import discover
+layout = build_layout(detect_config())
+anon = [obj for obj in discover("eventgroup", layout) if not obj.name]
+print(f"anon={len(anon)}")
+print(f"addr={hex(anon[0].address)}" if anon else "addr=none")
+"""
+    )
+    _assert_clean_command_output(probe)
+    addr = next(
+        (
+            line.split("=", 1)[1]
+            for line in probe.splitlines()
+            if line.startswith("addr=")
+        ),
+        None,
+    )
+    assert addr is not None and addr != "none", probe
+
+    egs = gdb_session.run("freertos eventgroups", timeout=20)
+    _assert_clean_command_output(egs)
+    assert addr in egs, egs
+    # The anonymous group renders as a '-' name row.
+    assert any(line.lstrip().startswith("- ") for line in egs.splitlines()), egs
+
+    objects = gdb_session.run("freertos objects", timeout=20)
+    _assert_clean_command_output(objects)
+    eg_line = next(
+        line for line in objects.splitlines() if line.lstrip().startswith("eventgroup ")
+    )
+    assert "waiter=1" in eg_line, objects

@@ -11,8 +11,10 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.diagnostics import queue_checks, timer_checks
+from freertos.events import bits_cell, format_waiter_line
 from freertos.layout import FreeRtosLayout, queue_type_label
 from freertos.navigation import source_label, system_value, task_priority_at
+from freertos.streams import bounds_check, stream_label
 from freertos.timers import (
     DAEMON_CURRENT_MESSAGE,
     callback_cell,
@@ -38,6 +40,8 @@ from gdr.layout import read_path
 
 if TYPE_CHECKING:
     from freertos.adapter import FreeRtosTask, FreeRtosTimerObject
+    from freertos.events import FreeRtosEventGroupObject
+    from freertos.streams import FreeRtosStreamBufferObject
 
 # ucNotifyState values (tasks.c). Used to label notification slots in detail.
 _NOTIFY_STATE_NAMES = {
@@ -439,4 +443,105 @@ def timer_detail(
         # the section instead of replacing a decodable command table.
         cell = f"{DAEMON_CURRENT_MESSAGE}\n{cell}"
     pairs.append(("Commands", cell))
+    return pairs
+
+
+# ---------------------------------------------------------------------------
+# event group / stream buffer detail builders
+# ---------------------------------------------------------------------------
+
+
+def event_group_detail(
+    obj: FreeRtosEventGroupObject,
+    value,  # noqa: ARG001 (uniform detail-builder signature)
+    layout: FreeRtosLayout,  # noqa: ARG001 (model carries decoded state)
+) -> list[tuple[str, str]]:
+    """Build the vertical pairs for ``frt eventgroup <name>``.
+
+    Every waiter renders its own ``wants/mode/clearOnExit/missing`` line; a
+    waiter whose wanted bits are already set but is still on the list is the
+    transient state where ``xEventGroupSetBits`` has not run yet, marked
+    ``(satisfied — mid-unblock)`` instead of silently reporting "blocked".
+    """
+    pairs: list[tuple[str, str]] = [
+        ("Name", obj.name),
+        ("Address", format_address(obj.address)),
+        ("Bits", bits_cell(obj.bits)),
+        ("Waiters", str(len(obj.waiters))),
+    ]
+    if obj.statically_allocated is not None:
+        pairs.append(
+            ("StaticallyAllocated", "yes" if obj.statically_allocated else "no")
+        )
+    for index, waiter in enumerate(obj.waiters):
+        prefix = f"{waiter.task} " if waiter.task and waiter.task != "-" else ""
+        line = prefix + format_waiter_line(waiter)
+        pairs.append((f"Waiter[{index}]", line))
+    pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
+    return pairs
+
+
+def stream_buffer_detail(
+    obj: FreeRtosStreamBufferObject,
+    value,
+    layout: FreeRtosLayout,
+) -> list[tuple[str, str]]:
+    """Build the vertical pairs for ``frt streambuffer <name>``.
+
+    A deleted buffer (``xLength == 0 && pucBuffer == NULL``) short-circuits:
+    computing bytes/space/capacity would divide by the zero length, so the
+    detail explains the deletion instead of fabricating geometry.  ``NextMsg``
+    is N/A for non-message buffers (a bare 0 would read as a real 0-length
+    message), ``MsgLenBytes`` declares whether the length-prefix width is an
+    assumed ``size_t`` fallback, and ``NotificationIndex`` states the kernel
+    version gate instead of silently dropping the key.
+    """
+    pairs: list[tuple[str, str]] = [
+        ("Name", obj.name),
+        ("Address", format_address(obj.address)),
+    ]
+    if obj.deleted:
+        pairs.append(("Type", "deleted"))
+        pairs.append(
+            (
+                "Note",
+                "xLength==0 and pucBuffer==NULL: vStreamBufferDeleteStatic "
+                "memset the buffer; bytes/space/capacity are not computed",
+            )
+        )
+        pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
+        return pairs
+    pairs.append(("Type", stream_label(obj.flags)))
+    pairs.append(("Capacity", format_optional_int(obj.capacity)))
+    pairs.append(("Bytes", format_optional_int(obj.bytes_used)))
+    pairs.append(("Space", format_optional_int(obj.space)))
+    pairs.append(("Trigger", format_optional_int(obj.trigger)))
+    if obj.trigger_met is None:
+        pairs.append(("TriggerMet", "N/A"))
+    else:
+        pairs.append(("TriggerMet", "yes" if obj.trigger_met else "no"))
+    if obj.kind == "message":
+        pairs.append(
+            (
+                "NextMsg",
+                "-" if obj.next_message is None else f"0x{obj.next_message:x}",
+            )
+        )
+    else:
+        pairs.append(("NextMsg", "N/A"))
+    assumed = " (assumed size_t)" if obj.message_length_assumed else ""
+    pairs.append(("MsgLenBytes", f"{obj.message_length_bytes}{assumed}"))
+    pairs.append(("RecvWait", obj.recv_waiter or "-"))
+    pairs.append(("SendWait", obj.send_waiter or "-"))
+    if layout.config.stream_buffer_notification_index:
+        pairs.append(
+            (
+                "NotificationIndex",
+                "-" if obj.notification_index is None else str(obj.notification_index),
+            )
+        )
+    else:
+        pairs.append(("NotificationIndex", "N/A (kernel < 11.1.0)"))
+    pairs.append(("BoundsCheck", bounds_check(obj, value)))
+    pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
     return pairs
