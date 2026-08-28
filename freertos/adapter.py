@@ -9,6 +9,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
+from freertos import heap as heap_module
 from freertos.details import (
     event_group_detail,
     held_cell,
@@ -1051,6 +1052,15 @@ class FreeRtosAdapter(RtosAdapter):
             rows.append(row)
         return ObjectTable(headers=headers, rows=rows, elastic=("Name",))
 
+    def heap_report(self) -> tuple[list[tuple[str, str]], ObjectTable | None]:
+        """One collected heap snapshot formatted for ``frt heap``.
+
+        The snapshot is collected once and both the pairs and the block
+        table derive from it, so ``frt heap`` never walks the heap twice.
+        """
+        snap = heap_module.heap_snapshot(self.layout)
+        return heap_module.heap_pairs(snap), heap_module.heap_block_table(snap)
+
     def system_summary(self) -> SystemSummary:
         tasks = list(iter_converted_tasks(self.layout))
         current = next((task.name for task in tasks if task.core is not None), None)
@@ -1068,6 +1078,43 @@ class FreeRtosAdapter(RtosAdapter):
         }
         scheduler = system_value("xSchedulerRunning")
         total = system_value("uxCurrentNumberOfTasks")
+        # Reason: the heap snapshot is best-effort -- outside GDB the symbol
+        # probes raise RuntimeError, and a broken target heap must not take
+        # down ``frt system`` -- so a snapshot failure degrades to the
+        # layout-only allocator label instead of aborting the summary.
+        try:
+            snap = heap_module.heap_snapshot(self.layout)
+        except Exception:
+            snap = None
+        if snap is not None:
+            # Reason: pre-init the counters hold their static initializers
+            # (heap_4's xFreeBytesRemaining is 0), so total - free would
+            # report the whole heap as used; used bytes are only meaningful
+            # once the heap manager has initialised.
+            heap_used = (
+                snap.total - snap.free
+                if (
+                    snap.initialised
+                    and snap.total is not None
+                    and snap.free is not None
+                )
+                else None
+            )
+            heap_status = heap_module.heap_status(snap)
+            if snap.geometry.kind is not None:
+                heap_allocator = f"heap_{snap.geometry.kind}"
+            elif snap.geometry.algorithm == "heap_3":
+                heap_allocator = "heap_3"
+            else:
+                heap_allocator = None
+        else:
+            heap_used = None
+            heap_status = None
+            heap_allocator = (
+                f"heap_{self.layout.config.heap_kind}"
+                if self.layout.config.heap_kind is not None
+                else None
+            )
         return SystemSummary(
             kernel_version=(
                 ".".join(map(str, self.layout.version))
@@ -1088,9 +1135,8 @@ class FreeRtosAdapter(RtosAdapter):
                 name: value for name, value in counts.items() if value is not None
             },
             object_counts={"task": len(tasks)},
-            heap_allocator=(
-                f"heap_{self.layout.config.heap_kind}"
-                if self.layout.config.heap_kind is not None
-                else None
-            ),
+            heap_allocator=heap_allocator,
+            heap_used=heap_used,
+            heap_total=(snap.total if snap is not None else None),
+            heap_status=heap_status,
         )

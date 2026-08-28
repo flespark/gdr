@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 
 import pytest
 
@@ -663,3 +664,102 @@ print(f"addr={hex(anon[0].address)}" if anon else "addr=none")
         line for line in objects.splitlines() if line.lstrip().startswith("eventgroup ")
     )
     assert "waiter=1" in eg_line, objects
+
+
+_HEAP_KEYS = [
+    "Algorithm",
+    "TotalSize",
+    "FreeSize",
+    "MinEver",
+    "Allocs",
+    "Frees",
+    "Protector",
+    "Blocks",
+    "Holes",
+    "CrossCheck",
+]
+
+
+def test_freertos_heap_contract_matches_variant(gdb_session):
+    """frt heap renders the ten stable keys; live values follow the variant.
+
+    COUPLED: heap expectations come from ci/freertos/fixture/config/<variant>/
+    (which MemMang source is linked) and the profile table in
+    tests/support/freertos_fixture_profiles.py.
+    """
+    output = gdb_session.run("freertos heap", timeout=20)
+    _assert_clean_command_output(output)
+    # The block-table messages ride on [gdr] info lines; only the vertical
+    # Key: Value pairs belong to the ten-key contract.
+    pairs = {
+        key: value
+        for key, value in _detail_pairs(output).items()
+        if not key.startswith("[gdr]")
+    }
+    assert list(pairs) == _HEAP_KEYS, output
+
+    kind = _PROFILE.heap_kind
+    if kind == 1:
+        assert pairs["Algorithm"] == "heap_1 (bump pointer)"
+        assert pairs["CrossCheck"].startswith("unavailable")
+        assert pairs["Blocks"] == "unavailable" and pairs["Holes"] == "unavailable"
+    elif kind == 2:
+        assert pairs["Algorithm"] == "heap_2"
+        assert pairs["MinEver"] == "unavailable"
+        assert pairs["Allocs"] == "unavailable"
+        assert pairs["Frees"] == "unavailable"
+        assert pairs["CrossCheck"] == "ok"
+        assert pairs["Blocks"].split()[0].isdigit()
+    elif kind == 4:
+        assert pairs["Algorithm"] == "heap_4"
+        assert pairs["CrossCheck"] == "ok"
+        assert pairs["Blocks"].split()[0].isdigit()
+        # The linear walk must start at the heap base (align_up(&ucHeap)),
+        # not at the free-list head: heap_4 carves allocations from the front
+        # of the first free block, so the fixture's boot-time task stacks and
+        # objects sit below the head and must show up in the block count
+        # (b-l475e base: 57 blocks, only 1 free).
+        match = re.search(r"linear walk: (\d+) block", output)
+        assert match, output
+        assert int(match.group(1)) > 1, output
+        if _PROFILE.heap_protector:
+            # The fixture's canary is 0xBEEF: without XOR decoding the first
+            # chain hop would land on garbage and CrossCheck could never be ok.
+            assert pairs["Protector"] == "enabled"
+    elif kind == 5:
+        # heap_5 without the heap protector exports no region bases, so the
+        # linear walk is skipped and CrossCheck states the reason.
+        assert pairs["Algorithm"] == "heap_5"
+        assert pairs["CrossCheck"] != "ok"
+        assert "heap_5" in pairs["CrossCheck"]
+        assert pairs["Blocks"].split()[0].isdigit()
+    elif _PROFILE.variant == "heap-3":
+        assert pairs["Algorithm"] == "heap_3"
+        assert "not inspectable" in output
+    elif _PROFILE.variant == "static-only":
+        assert pairs["Algorithm"] == "none"
+    else:
+        pytest.skip(f"no heap contract expectation for {_PROFILE.variant}")
+
+
+def test_freertos_system_reports_heap_fields(gdb_session):
+    """frt system exposes the allocator and status for walkable heaps."""
+    output = gdb_session.run("freertos system", timeout=20)
+    _assert_clean_command_output(output)
+    pairs = _detail_pairs(output)
+
+    kind = _PROFILE.heap_kind
+    if kind in (1, 2, 4, 5):
+        assert pairs["Heap allocator"] == f"heap_{kind}"
+        assert pairs["Heap status"] == "good"
+        if kind == 5:
+            # No region bases without the protector -> no trustworthy total.
+            assert "Heap total" not in output
+        else:
+            assert "Heap total" in output
+    elif _PROFILE.variant == "heap-3":
+        assert pairs["Heap allocator"] == "heap_3"
+    elif _PROFILE.variant == "static-only":
+        assert pairs["Heap allocator"] == "unavailable"
+    else:
+        pytest.skip(f"no heap system expectation for {_PROFILE.variant}")

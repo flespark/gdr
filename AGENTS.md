@@ -46,6 +46,13 @@ freertos/              FreeRTOS adapter
                        bytes/space, batching `>` vs plain `>=` trigger, the six
                        `ucFlags` classifications, deleted-buffer short-circuit
                        and the `size_t`-assumed `NextMsg` length prefix
+  heap.py              system-heap snapshot for `frt heap` and the `Heap *`
+                       fields of `frt system`: heap_1..heap_5 (plus heap_3 /
+                       none), computed block-header size and `size_t`-MSB
+                       allocation mask, `xHeapCanary` XOR decoding, bounded
+                       free-list and linear walks (linear starts at
+                       `align_up(&ucHeap)`, not the free-list head) and the
+                       three-way `CrossCheck` verdict
   adapter.py           complete task model, conversion, summaries and tables,
                        object lookup, per-kind provenance counts, and the
                        queue/semaphore/mutex, timer, event group and stream

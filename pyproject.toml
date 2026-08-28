@@ -121,6 +121,7 @@ source = [
     "gdr.version",
     "freertos.adapter",
     "freertos.diagnostics",
+    "freertos.heap",
     "freertos.version",
     "rtthread.adapter",
     "rtthread.diagnostics",

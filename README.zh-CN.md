@@ -89,7 +89,7 @@ warning: target RT-Thread version not exported; cannot verify version
 ## 命令
 
 | 命令 | 说明 |
-|------|------|
+| ------ | ------ |
 | `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态, 通过 `<rtos> help` 查看每个 RTOS 支持的命令和别名 |
 | `<rtos> <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
@@ -112,10 +112,18 @@ buffer 永远无法枚举。`frt streambuffer <name>` 还会把 `MsgLenBytes` �
 `size_t`（`sbBYTES_TO_STORE_MESSAGE_LENGTH` 宏不留调试信息），并在没有该字段的内核上
 打印 `NotificationIndex: N/A (kernel < 11.1.0)` 而不是省略这一键。
 
+`frt heap` 打印堆管理器的状态：`Algorithm`（heap_1..heap_5，heap_1 会标注为 bump 指针、
+无 free list）、`TotalSize`/`FreeSize`（取自内核自身计数器，绝不用遍历结果重新合成）、
+heap_4/5 才有的 `MinEver`/`Allocs`/`Frees`、`Protector`（`xHeapCanary` 异或去混淆）、
+free-list 的 `Blocks` 与线性遍历的 `Holes`，以及 `CrossCheck` —— free-list 遍历、
+线性遍历与 `xFreeBytesRemaining` 三者的一致性裁决，不一致时给出具体数字。FreeRTOS 的
+堆块头没有 owner 字段，因此不提供按线程的堆占用归属；heap_5 在不开启堆保护器时没有任何
+region 边界符号，线性遍历会被跳过（`CrossCheck` 会如实说明），free list 仍可显示。
+
 ## 便捷函数
 
 | 函数 | 返回值 | 示例 |
-|------|--------|------|
+| ------ | -------- | ------ |
 | `$gdr_task(name)` | 目标原生任务 `gdb.Value` | `p $gdr_task("worker1")` / `p $gdr_task("worker1").stat` |
 | `$gdr_tasks()` | 目标原生任务指针数组 | `p $gdr_tasks()` / `p *$gdr_tasks()[0]` |
 | `$gdr_object(kind, name)` | 目标原生对象 `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |

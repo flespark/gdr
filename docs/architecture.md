@@ -58,9 +58,10 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `timers.py` | FreeRTOS software-timer decoding for the daemon's two active lists and its command queue (`xTimerQueue`): the current/overflow list epoch, the `pvOwner` vs object-address check (container decides `uninitialised`), the wrap-safe `ExpiresIn` formula for both epochs, and `iter_timer_commands()` which ring-reads the queue (item-size and DWARF-type prechecks, slots cast to `DaemonTaskMessage_t`) and maps the 12 `tmrCOMMAND_*` ids to names. |
 | `events.py` | Event-group inspection: control-bit masks derived from `cfg.tick_bits` (the `CLEAR_ON_EXIT` / `UNBLOCKED_DUE_TO_BIT_SET` / `WAIT_FOR_ALL` / `CONTROL_BYTES` / `eventIN_USE` bits are compile-time macros with no DWARF), the raw `xEventListItem` decode for every task blocked on `xTasksWaitingForBits`, the ALL vs ANY `missing` computation, and the `(satisfied — mid-unblock)` marker for a waiter the kernel already unblocked. Feeds the `frt eventgroups` table and the `frt eventgroup <name>` detail via the `uchStaticallyAllocated` config gate. |
 | `streams.py` | Stream/message/batching buffer geometry: the wrap-safe bytes (`prvBytesInBuffer`) and space formulas, the batching `>` vs plain `>=` trigger comparison, the six `ucFlags` classifications (static stays out of the table Type, so the column contract does not drift between variants), the `xLength == 0 && pucBuffer == NULL` deleted-buffer short-circuit, the `NextMsg` length-prefix read gated on the `size_t`-fallback assumption, and the single-`TaskHandle_t` waiter rendering (no waiter discovery channel exists for stream buffers). |
+| `heap.py` | System-heap snapshotting for `frt heap` and the `Heap *` fields of `frt system`. Consumes `cfg.heap_kind` (the discriminator in `layout.py`); splits the `None` case into `heap_3` vs `none` by `pvPortMalloc` presence. Compute-only version gates: the `xHeapStructSize`/`heapSTRUCT_SIZE` symbol (computed from `align_up(sizeof(BlockLink_t), portBYTE_ALIGNMENT)` as fallback), the size_t-MSB `heapBLOCK_ALLOCATED_BITMASK` (off for heap_2 < V10.5.0), and the `xHeapCanary` XOR deobfuscation of every `pxNextFreeBlock` including the chain head. Bounded raw walks replicate `vPortGetHeapStats` semantics (never inferior-call the function): the free-list walk (terminates at `pxEnd` for heap_4/5, at the `xEnd` *value* for heap_2; heap_5 zero-size region link blocks count but skip the smallest-size statistic) and the linear walk (stepping by `xBlockSize`; allocation from the MSB, or free-list membership before the bit exists; started at the kernel's own `align_up(&ucHeap)` base, not at the free-list head, and skipped when that base is unknowable). `cross_validate` compares free-list bytes, linear free bytes and `xFreeBytesRemaining` plus the free-block address sets; any mismatch reports the three concrete numbers and never synthesises a plausible total. |
 | `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, system summary, and the object protocol methods (`find_object`, `object_counts`, the provenance summary table, the queue/semaphore/mutex list tables and their details, the `FreeRtosTimerObject` model feeding the `frt timers` table, and the event group / stream buffer tables delegated to `events` / `streams`). |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
-| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers` render their own column-contract tables (`object_table()`), and `heap` is a placeholder. |
+| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers` render their own column-contract tables (`object_table()`), and `heap` renders `heap_report()` (algorithm/total/free/min/alloc/free counters, protector state, free-list block count, linear-walk holes and the three-way cross-check verdict, plus the optional block table). |
 | `details.py` | FreeRTOS vertical detail rendering: `frt task <name>` (per-TCB state, high-water mark, notification slots, wake tick, blocked-on), the queue family (`frt queue/semaphore/mutex <name>`, including the FIFO `Item[i]` dump and mutex owner priorities), `frt timer <name>` (List epoch, OwnerCheck, and the pending daemon-command section), `frt eventgroup <name>` (per-waiter wants/mode/clearOnExit/missing decode), and `frt streambuffer <name>` (geometry, trigger-met verdict, NextMsg, the `size_t`-assumed length prefix, the version-gated NotificationIndex and the three-state bounds check). |
 | `diagnostics.py` | Queue-family consistency checks (`queue_checks`): count bound and the storage-window pointer invariants for real data queues only; mutex accounting and semaphore self-head checks for those kinds; inapplicable checks are reported as explicit `skipped` instead of pass/fail. Timer checks (`timer_checks`): `ucStatus`-vs-list sync, nonzero period/callback, and the daemon queue item size vs `sizeof(DaemonTaskMessage_t)`. |
 
@@ -481,6 +482,55 @@ only exists under `configUSE_TRACE_FACILITY == 1`. Layout summary fields that
 reference config-conditional struct members must be gated by the corresponding
 `FreeRtosConfig` flag; unconditional inclusion produces `N/A` on builds where
 the member is absent.
+
+**FreeRTOS heap blocks carry no owner field, so per-task heap usage is not
+attributable.** A `BlockLink_t` is exactly `{pxNextFreeBlock, xBlockSize}`
+(heap_4.c) with no owner member; `frt heap` therefore never offers a thread-occupancy
+breakdown, and `frt help` documents this instead of faking a column. `frt heap`
+renders the `Algorithm/TotalSize/FreeSize/MinEver/Allocs/Frees/Protector/Blocks/
+Holes/CrossCheck` ten-key order on every kind, writing `unavailable` for keys the
+kind has no symbol for, so the column never drifts between variants.
+
+**heap_5 without `configENABLE_HEAP_PROTECTOR` has no linear-walk bounds.**
+The kernel exports no region bases without the protector (`pucHeapLowAddress`/
+`pucHeapHighAddress` only exist then, heap_5.c), the intermediate region-markers
+can be unlinked by forward coalescing, and the region table is a function-local
+array — so `frt heap` skips the linear walk, renders `Blocks` from the free-list
+walk only and reports `CrossCheck: unavailable: heap_5 region bases unknown`.
+With the protector a single-region heap can be walked from its base to `pxEnd`;
+no live fixture exercises that branch (the `heap-protector` variant links
+heap_4), so it is unit-tested only.
+
+**The heap_4/heap_2 linear walk starts at `align_up(&ucHeap)`, never at the
+free-list head.** `pvPortMalloc` carves every allocation from the *front* of the
+first suitable free block and puts the remainder back in the list (heap_4.c:261,
+278-288), so after the first allocation the free-list head sits above the
+allocated blocks at the heap base; heap_2 additionally sorts its free list by
+size, so its head has no relation to the physical base at all. Walking from the
+head therefore silently drops every block below it while the cross-check — which
+compares only free bytes and free-block addresses, all at or above the head —
+still reports `ok`. GDR walks from the kernel's own `pucAlignedHeap`
+(`align_up(&ucHeap, portBYTE_ALIGNMENT)`); when the `ucHeap` symbol cannot be
+resolved the walk is skipped (`Holes`/`CrossCheck` become `unavailable`) rather
+than truncated from the head. Live evidence on `b-l475e-iot01a/10.3.1/base`: the
+aligned base is 13792 bytes below `xStart.pxNextFreeBlock`, and the walk from the
+base covers 57 blocks (56 allocated, 1 free) up to `pxEnd`, summing to exactly
+`xFreeBytesRemaining`.
+
+**An uninitialised heap has no derivable used bytes.** Before `prvHeapInit` runs,
+`xFreeBytesRemaining` still holds its static initializer (0 for heap_4), so
+`total - free` would report the whole heap as used; `frt system` omits the
+`Heap used` line entirely in that state and keeps only the statically knowable
+`Heap total`. heap_2's initialisation flag is not always readable either: at
+`-Og` the fixtures fold `xHeapHasBeenInitialised` into a non-debug local symbol,
+so the state falls back to `xEnd.xBlockSize` (written by `prvHeapInit`, zero
+before it).
+
+**Live heap coverage is 32-bit Cortex-M only.** Every FreeRTOS lane has a 32-bit
+`size_t` and `portBYTE_ALIGNMENT == 8`, so the 64-bit allocation-mask arithmetic
+is unit-tested only, and so are the cross-check `mismatch` and walk `corrupt`
+verdicts — a healthy kernel cannot produce a corrupt heap, so those branches need
+a crafted snapshot rather than a live fixture.
 
 **Object discovery is a six-channel provenance model, not a registry walk.**
 FreeRTOS keeps no global object registry for most kinds (only the optional

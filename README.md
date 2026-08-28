@@ -93,7 +93,7 @@ warning: target RT-Thread version not exported; cannot verify version
 ## Commands
 
 | Command | Description |
-|---------|-------------|
+| --------- | ------------- |
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
 | `<rtos> <objects>` | List the kernel object type collective status, show supported command usage and aliases by `<rtos> help` |
 | `<rtos> <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
@@ -125,10 +125,21 @@ enumerated. `frt streambuffer <name>` also marks `MsgLenBytes` as an assumed
 prints `NotificationIndex: N/A (kernel < 11.1.0)` on kernels without the field
 instead of dropping the key.
 
+`frt heap` prints the heap manager's state: `Algorithm` (heap_1..heap_5, with
+heap_1 marked as a bump pointer and no free list), `TotalSize`/`FreeSize`
+(from the kernel's own counters, never resynthesised from a walk), the
+heap_4/5 `MinEver`/`Allocs`/`Frees`, `Protector` (the `xHeapCanary` XOR
+decode), the free-list `Blocks` and linear-walk `Holes`, and `CrossCheck` - a
+three-way consistency verdict between the free-list walk, the linear walk and
+`xFreeBytesRemaining`, reporting the concrete figures on mismatch. FreeRTOS
+block headers carry no owner field, so there is no per-task heap attribution;
+heap_5 without the heap protector exports no region bases, so its linear walk
+is skipped (`CrossCheck` says so) while the free list still renders.
+
 ## Convenience functions
 
 | Function | Returns | Example |
-|----------|---------|---------|
+| ---------- | --------- | --------- |
 | `$gdr_task(name)` | target-native task `gdb.Value` | `p $gdr_task("worker1")` / `p $gdr_task("worker1").stat` |
 | `$gdr_tasks()` | target-native task pointer array | `p $gdr_tasks()` / `p *$gdr_tasks()[0]` |
 | `$gdr_object(kind, name)` | target-native object `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |

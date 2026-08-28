@@ -8,6 +8,34 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- FreeRTOS `frt heap` now renders the real heap snapshot instead of the
+  placeholder: `Algorithm` (heap_1..heap_5 plus the heap_3/none split on
+  `pvPortMalloc` presence), `TotalSize`/`FreeSize` from the kernel's own
+  counters, the heap_4/5 `MinEver`/`Allocs`/`Frees`, `Protector` (the
+  `xHeapCanary` XOR decode of every `pxNextFreeBlock` including the chain
+  head), the free-list `Blocks`, the linear-walk `Holes`, and `CrossCheck`, a
+  three-way consistency verdict between the free-list byte sum, the linear
+  free-byte sum and `xFreeBytesRemaining` (plus free-block address sets) that
+  reports the concrete figures on mismatch and never synthesises a plausible
+  total. The block-header size comes from `xHeapStructSize`/`heapSTRUCT_SIZE`
+  with an `align_up(sizeof(BlockLink_t), portBYTE_ALIGNMENT)` fallback; the
+  allocation mask is computed from `sizeof(size_t)` and is off for heap_2
+  before V10.5.0 (no MSB bit existed). heap_2's free list terminates at the
+  `xEnd` *value*, heap_4/5 at `pxEnd`; heap_5 counts its zero-size region
+  link blocks but skips them for the smallest statistic. `frt system` gains
+  `Heap used`/`Heap total`/`Heap status` (`good`/`corrupt`) and splits the
+  allocator label into `heap_3` vs `unavailable`. Help and README document
+  that FreeRTOS block headers carry no owner field, so no per-task heap
+  attribution is offered; heap_5 without the heap protector has no region
+  bases, so its linear walk is skipped with an explicit `CrossCheck` reason.
+  The linear walk starts at the kernel's own `align_up(&ucHeap)` base rather
+  than at the free-list head - heap_4 carves allocations from the front of the
+  first free block and heap_2 sorts its list by size, so the head sits above
+  the blocks at the heap base - and is skipped outright when `ucHeap` cannot be
+  resolved. `frt system` omits `Heap used` while the heap is still
+  uninitialised (the counters hold static initializers, so `total - free` would
+  claim the whole heap is in use) and keeps only the knowable `Heap total`.
+
 - FreeRTOS `frt eventgroups` prints its own column-contract table
   `Name Bits Waiters Src Addr` instead of the neutral Kind/Count fallback, and
   `frt eventgroup <name|addr>` renders one line per blocked task:

@@ -16,7 +16,7 @@ from gdr.commands import (
     render_system,
     render_tasks,
 )
-from gdr.gdb_bridge import gdb_command_guard, info, print_table, warn
+from gdr.gdb_bridge import gdb_command_guard, info, print_detail, print_table, warn
 
 _command_registered = False
 _alias_registered = False
@@ -62,7 +62,7 @@ _COMMAND_DESCRIPTIONS = {
     "streambuffers": "List stream buffers",
     "system": "Show the system summary",
     "objects": "Show object counts",
-    "heap": "Show system heap status (not implemented yet)",
+    "heap": "Show system heap status",
 }
 _DETAIL_DESCRIPTIONS = {
     "task": "Show one task's detail (frt task <name>)",
@@ -81,6 +81,14 @@ _NO_ENTRY_COLUMN = (
     "No 'Entry' column: FreeRTOS TCBs do not store a task entry function "
     "pointer, so there is no reliable field to display."
 )
+# Reason: a heap block header is exactly ``{pxNextFreeBlock, xBlockSize}``
+# (heap_4.c BlockLink_t) and carries no owner field, so per-task heap usage
+# cannot be attributed; help says why instead of faking a column.
+_HEAP_NO_OWNER = (
+    "No thread-ownership attribution for the heap: FreeRTOS block headers "
+    "carry only pxNextFreeBlock + xBlockSize (no owner field), so per-task "
+    "heap usage is not attributable."
+)
 _HELP = (
     "FreeRTOS commands:\n"
     + "\n".join(
@@ -92,7 +100,7 @@ _HELP = (
         f"  frt {command:<14} {description}"
         for command, description in _DETAIL_DESCRIPTIONS.items()
     )
-    + f"\n\n{_NO_ENTRY_COLUMN}\n\nAliases:\n"
+    + f"\n\n{_NO_ENTRY_COLUMN}\n{_HEAP_NO_OWNER}\n\nAliases:\n"
     + "\n".join(
         f"  {alias:<10} -> {command}" for alias, command in _COMMAND_ALIASES.items()
     )
@@ -101,8 +109,22 @@ _HELP = (
 
 @gdb_command_guard
 def render_heap() -> None:
-    """Placeholder for the system-heap snapshot."""
-    warn("FreeRTOS heap diagnostics are not implemented yet")
+    """Render the system-heap snapshot, block walk and cross-check."""
+    adapter = active()
+    if not isinstance(adapter, FreeRtosAdapter):
+        warn("run `gdr init freertos <version>` first")
+        return
+    pairs, table = adapter.heap_report()
+    print_detail(pairs)
+    algorithm = dict(pairs).get("Algorithm", "")
+    if algorithm == "heap_3":
+        info("heap_3 wraps the C library malloc; the libc heap is not inspectable")
+    elif algorithm == "none":
+        info("no FreeRTOS heap allocator is linked (no pvPortMalloc)")
+    if table is not None:
+        for message in table.messages:
+            info(message)
+        print_table(table.rows, table.headers, elastic=table.elastic)
 
 
 @gdb_command_guard
