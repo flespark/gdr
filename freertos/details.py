@@ -10,7 +10,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from freertos.diagnostics import queue_checks, timer_checks
+from freertos.diagnostics import event_checks, queue_checks, task_checks, timer_checks
 from freertos.events import bits_cell, format_waiter_line
 from freertos.layout import FreeRtosLayout, queue_type_label
 from freertos.navigation import source_label, system_value, task_priority_at
@@ -91,13 +91,19 @@ def _runtime_percent(task: FreeRtosTask, layout: FreeRtosLayout) -> str | None:
     return f"{100.0 * task.runtime_counter / total:.1f}%"
 
 
-def task_detail(task: FreeRtosTask, layout: FreeRtosLayout) -> list[tuple[str, str]]:
+def task_detail(
+    task: FreeRtosTask,
+    layout: FreeRtosLayout,
+    tcb_value=None,
+) -> list[tuple[str, str]]:
     """Build vertical ``(key, value)`` pairs for ``frt task <name>``.
 
     Key order is a stable output contract; config-conditional fields appear
     only when the corresponding TCB member exists in DWARF. ``WakeTick`` is
     only meaningful while blocked, and ``BlockedOn`` is still a placeholder
-    (resolving the waiter host needs the object discovery channels).
+    (resolving the waiter host needs the object discovery channels).  The
+    consistency checks (``Checks:`` rows) need the raw TCB value; without it
+    (model-only callers) the section is omitted.
     """
     tcb_layout = layout.structs["struct tskTaskControlBlock"]
     fields = tcb_layout.fields
@@ -160,6 +166,8 @@ def task_detail(task: FreeRtosTask, layout: FreeRtosLayout) -> list[tuple[str, s
         )
     if "tls" in fields:
         pairs.append(("TLS", "present" if task.tls_present else "absent"))
+    if tcb_value is not None:
+        pairs.extend(checks_pairs(task_checks(tcb_value, task.address, layout)))
     return pairs
 
 
@@ -453,8 +461,8 @@ def timer_detail(
 
 def event_group_detail(
     obj: FreeRtosEventGroupObject,
-    value,  # noqa: ARG001 (uniform detail-builder signature)
-    layout: FreeRtosLayout,  # noqa: ARG001 (model carries decoded state)
+    value,
+    layout: FreeRtosLayout,
 ) -> list[tuple[str, str]]:
     """Build the vertical pairs for ``frt eventgroup <name>``.
 
@@ -462,6 +470,8 @@ def event_group_detail(
     waiter whose wanted bits are already set but is still on the list is the
     transient state where ``xEventGroupSetBits`` has not run yet, marked
     ``(satisfied — mid-unblock)`` instead of silently reporting "blocked".
+    The ``EventWaiterSatisfied`` consistency check surfaces the same
+    transient in the ``Checks:`` section.
     """
     pairs: list[tuple[str, str]] = [
         ("Name", obj.name),
@@ -478,6 +488,7 @@ def event_group_detail(
         line = prefix + format_waiter_line(waiter)
         pairs.append((f"Waiter[{index}]", line))
     pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
+    pairs.extend(checks_pairs(event_checks(value, layout)))
     return pairs
 
 

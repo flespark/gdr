@@ -57,16 +57,26 @@ freertos/              FreeRTOS adapter
                        object lookup, per-kind provenance counts, and the
                        queue/semaphore/mutex, timer, event group and stream
                        buffer list tables
-  details.py           vertical detail rendering for `frt task <name>`, the
-                       queue family (`frt queue/semaphore/mutex <name>`),
+  details.py           vertical detail rendering for `frt task <name>` (plus its
+                       `Checks:` section), the queue family
+                       (`frt queue/semaphore/mutex <name>`),
                        `frt timer <name>` (List epoch, OwnerCheck, Commands),
                        `frt eventgroup <name>` (per-waiter decode) and
                        `frt streambuffer <name>` (TriggerMet, NextMsg,
                        NotificationIndex, BoundsCheck)
-  diagnostics.py       queue-family and timer consistency checks (data-queue
-                       pointer invariants, mutex accounting, semaphore
-                       self-head, `ucStatus`-vs-list sync, daemon queue item
-                       size; inapplicable checks report `skipped`)
+  diagnostics.py       bounded raw list walks (`walk_list_raw`: cycle, NULL
+                       `pxNext`, out-of-section node and traversal bound all
+                       reported, never silently truncated) plus the check
+                       groups consumed by the detail commands: list/task
+                       (ListInit/ListCount/ListIndex/ListIntegrity/
+                       ListIntegrityBytes/ItemOwner/ItemContainer/
+                       StackFillPresent), system (TaskCount/
+                       SchedulerSuspended/NextUnblockTime/HeapCrossCheck),
+                       queue family (pointer invariants, mutex accounting,
+                       semaphore self-head, QueueLock), timer
+                       (`ucStatus`-vs-list sync, daemon queue item size) and
+                       event group (EventWaiterSatisfied); inapplicable
+                       checks report `skipped`
   version.py           FreeRTOS version policy and target symbols
   commands.py          FreeRTOS command tree (`frt tasks/task/system/help/objects/heap`,
                        7 plural + 7 singular + 6 aliases)
@@ -178,9 +188,16 @@ one fixture cache (details in `ci/freertos/README.md`):
   clones `FreeRTOS-Kernel` at a tag and links `portable/GCC/ARM_CM3`, so it
   carries the **kernel version** matrix.
 - **Static snapshot:** `ci/freertos/build-fixture-snapshot.sh` builds a
-  Cortex-M33 ELF whose `.data` holds pre-initialized SMP scheduler structures.
-  `tests/integration/freertos/test_snapshot.py` loads it with `file` only (no
-  QEMU), so this lane can run on `validate-py310/314`.
+  Cortex-M33 ELF whose `.data` holds pre-initialized SMP scheduler structures
+  plus the diagnostic negatives a healthy kernel cannot produce (corrupt
+  lists, a timer on the overflow list, a heap whose free-list/linear/counter
+  triple disagrees). Its `--source`/`--cache-name` options build a second,
+  heap-only ELF (`snapshot/snapshot_heap.c` -> `snapshot_heap.elf`) for the
+  free-list-member-with-allocated-bit case, which cannot share one heap symbol
+  set with the mismatch case.
+  `tests/integration/freertos/test_snapshot.py` loads them with `file` only (no
+  QEMU), so this lane can run on `validate-py310/314`; a cached snapshot ELF
+  older than its sources is rebuilt, like the live lanes.
 
 `bash ci/freertos/run-qemu-matrix.sh [<target>] [<version>] [<variant>...]`
 drives the two live lanes.
@@ -195,7 +212,8 @@ FREERTOS_FIXTURE_CACHE=/path/to/cache \
 ```
 
 Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` plus
-`<cache>/snapshot/snapshot.elf`, rooted at `FREERTOS_FIXTURE_CACHE`
+`<cache>/snapshot/snapshot.elf` and `<cache>/snapshot/snapshot_heap.elf`, rooted
+at `FREERTOS_FIXTURE_CACHE`
 (default `~/Project/gdr-fixture/freertos`). `GDR_FIXTURE_VARIANT` selects the
 variant, `GDR_FORCE_BUILD=1` forces a rebuild, and a missing artifact is
 `pytest.skip` so partial local caches stay usable. The B-L475E fixture uses the

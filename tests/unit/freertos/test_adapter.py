@@ -459,7 +459,7 @@ def test_object_detail_task_routes_via_task_state_and_builder(monkeypatch):
     monkeypatch.setattr(
         adapter_module,
         "task_detail",
-        lambda converted, _layout: [("Name", converted.name)],
+        lambda converted, _layout, **_kwargs: [("Name", converted.name)],
     )
     adapter = adapter_module.FreeRtosAdapter(FreeRtosLayout(version=(10, 3, 1)))
 

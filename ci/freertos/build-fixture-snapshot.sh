@@ -3,6 +3,7 @@
 #
 # Usage:
 #   build-fixture-snapshot.sh [--kernel-dir DIR] [--tag TAG] [--out-elf PATH]
+#                     [--source FILE] [--cache-name NAME]
 #                     [--cache-dir DIR] [--no-cache-install]
 #                     [--toolchain-path DIR]
 #
@@ -10,6 +11,9 @@
 # supplied it shallow-clones the tag into FREERTOS_KERNEL_CACHE
 # (default /tmp/gdr-freertos-kernel-source), so the lane never depends on a
 # developer-specific path and never mutates a caller-owned reference tree.
+#
+# ``--source`` selects the fixture C file (default snapshot.c); the heap-only
+# negative ELF (snapshot_heap.c) uses it so one build script serves both.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,6 +34,8 @@ die() {
 KERNEL_DIR="${FREERTOS_KERNEL_DIR:-}"
 TAG="$DEFAULT_TAG"
 OUT_ELF="$DEFAULT_OUT"
+SOURCE_FILE="$SNAPSHOT_DIR/snapshot.c"
+CACHE_NAME="snapshot.elf"
 CACHE_DIR=""
 CACHE_INSTALL=1
 TOOLCHAIN_PATH=""
@@ -48,6 +54,14 @@ while [[ $# -gt 0 ]]; do
         OUT_ELF="$2"
         shift 2
         ;;
+    --source)
+        SOURCE_FILE="$2"
+        shift 2
+        ;;
+    --cache-name)
+        CACHE_NAME="$2"
+        shift 2
+        ;;
     --cache-dir)
         CACHE_DIR="$2"
         shift 2
@@ -61,7 +75,7 @@ while [[ $# -gt 0 ]]; do
         shift 2
         ;;
     -h | --help)
-        sed -n '2,13p' "$0" | sed 's/^# \?//'
+        sed -n '2,16p' "$0" | sed 's/^# \?//'
         exit 0
         ;;
     *) die "unknown argument: $1" ;;
@@ -101,15 +115,15 @@ mkdir -p "$(dirname "$OUT_ELF")"
 "$cc" -mcpu=cortex-m33 -mthumb -Og -g3 -std=c11 \
     -Wall -Wextra -Werror -ffunction-sections -fdata-sections -fno-lto \
     -I"$SNAPSHOT_DIR" -I"$KERNEL_DIR/include" \
-    "$SNAPSHOT_DIR/snapshot.c" \
+    "$SOURCE_FILE" \
     -T"$SNAPSHOT_DIR/linker.ld" -nostdlib -nostartfiles \
     -Wl,--gc-sections -o "$OUT_ELF"
 echo "[gdr-ci] built snapshot ELF: $OUT_ELF"
 
 if [[ "$CACHE_INSTALL" == 1 ]]; then
     mkdir -p "$CACHE_DIR"
-    if [[ "$OUT_ELF" != "$CACHE_DIR/snapshot.elf" ]]; then
-        cp -f "$OUT_ELF" "$CACHE_DIR/snapshot.elf"
+    if [[ "$OUT_ELF" != "$CACHE_DIR/$CACHE_NAME" ]]; then
+        cp -f "$OUT_ELF" "$CACHE_DIR/$CACHE_NAME"
     fi
-    echo "[gdr-ci] cached snapshot: $CACHE_DIR/snapshot.elf"
+    echo "[gdr-ci] cached snapshot: $CACHE_DIR/$CACHE_NAME"
 fi

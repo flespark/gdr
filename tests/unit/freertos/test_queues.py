@@ -589,6 +589,72 @@ def test_queue_checks_skip_pointer_bounds_for_mutex_and_semaphore(monkeypatch):
     assert sem_results["MutexAccounting"].startswith("skipped: not a mutex")
 
 
+RX = ("cRxLock",)
+TX = ("cTxLock",)
+
+
+@pytest.mark.parametrize(
+    ("paths", "expect_ok"),
+    [
+        ({RX: -1, TX: -1}, True),  # queueUNLOCKED on both ends
+        ({RX: 255, TX: 255}, True),  # int8_t -1 read back unsigned
+        ({RX: 1, TX: 0}, False),  # stale locks while the scheduler runs
+        ({RX: 2, TX: 3}, False),
+    ],
+)
+def test_queue_lock_check_flags_stale_lock_counts(monkeypatch, paths, expect_ok):
+    """A non-queueUNLOCKED lock with the scheduler running is stale."""
+    _patch_reads(
+        monkeypatch,
+        diagnostics,
+        {L: 2, W: 0, ITEM: 4, H: 0x2000, **paths},
+    )
+    monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+
+    results = dict(
+        diagnostics.queue_checks(object(), "queue", build_layout(FreeRtosConfig()))
+    )
+
+    if expect_ok:
+        assert results["QueueLock"] == "ok", results
+    else:
+        assert results["QueueLock"].startswith("fail:"), results
+        assert "rx=" in results["QueueLock"] and "tx=" in results["QueueLock"]
+
+
+def test_queue_lock_is_ok_while_scheduler_suspended(monkeypatch):
+    """Non-(-1) locks are the normal state while the scheduler is suspended."""
+    _patch_reads(
+        monkeypatch,
+        diagnostics,
+        {L: 2, W: 0, ITEM: 4, H: 0x2000, RX: 1, TX: 0},
+    )
+    monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+    monkeypatch.setattr(diagnostics, "lookup_symbol", lambda _name: 1)
+
+    results = dict(
+        diagnostics.queue_checks(object(), "queue", build_layout(FreeRtosConfig()))
+    )
+
+    assert results["QueueLock"] == "ok", results
+
+
+def test_queue_lock_skips_when_unreadable(monkeypatch):
+    """Unreadable lock counters degrade to skipped, not a failure."""
+    _patch_reads(
+        monkeypatch,
+        diagnostics,
+        {L: 2, W: 0, ITEM: 4, H: 0x2000, RX: None, TX: None},
+    )
+    monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+
+    results = dict(
+        diagnostics.queue_checks(object(), "queue", build_layout(FreeRtosConfig()))
+    )
+
+    assert results["QueueLock"] == "skipped: unreadable", results
+
+
 # ---------------------------------------------------------------------------
 # shared cells
 # ---------------------------------------------------------------------------
@@ -870,6 +936,37 @@ def test_checks_pairs_reports_unreadable_separately_from_inapplicable():
         ("Checks", "ok (0 verified, 1 n/a)"),
         ("Check[Count]", "skipped: unreadable"),
     ]
+
+
+def test_checks_pairs_keeps_verdict_row_shape():
+    """A mixed ok/fail/skipped set keeps the aggregate verdict row shape.
+
+    The list diagnostics emit one verdict row (``Checks: <n> failed (...)`)
+    plus one ``Check[<name>]`` row per failure or unreadable check; a
+    structural skip (``skipped: ...`` without ``unreadable``) is only
+    counted, never spelled out -- so the reader sees actionable output on
+    its own rows without a wall of text.
+    """
+    pairs = details_module.checks_pairs(
+        [
+            ("ListCount", "ok"),
+            ("ListIndex", "fail: pxIndex 0x4 != &xListEnd 0x8"),
+            ("ListIntegrity", "skipped: traversal bound reached"),
+            (
+                "ListIntegrityBytes",
+                "skipped: configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES off",
+            ),
+            ("ItemOwner", "skipped: unreadable"),
+        ]
+    )
+
+    assert pairs[0][0] == "Checks"
+    assert pairs[0][1].startswith("1 failed")
+    assert "1 verified" in pairs[0][1]
+    assert "2 n/a" in pairs[0][1]
+    assert pairs[1] == ("Check[ListIndex]", "pxIndex 0x4 != &xListEnd 0x8")
+    assert pairs[2] == ("Check[ItemOwner]", "skipped: unreadable")
+    assert len(pairs) == 3
 
 
 def test_object_detail_redirects_when_the_name_is_another_kind(monkeypatch):

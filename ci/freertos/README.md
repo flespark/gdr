@@ -109,7 +109,18 @@ silently degrade to the unprotected layout.
 an ELF that is never executed: `tests/integration/freertos/test_snapshot.py`
 loads it with GDB's `file` command only, with no QEMU and no `target remote`.
 It keeps 4-byte pointers and the real ABI types so DWARF matches a genuine
-target.
+target. A second, heap-only ELF (`snapshot/snapshot_heap.c`, built via the
+script's `--source`/`--cache-name` options) carries the free-list-member-
+with-allocated-bit corruption, because one heap symbol set can only show one
+corruption and `cross_validate` refuses to compare numbers over a corrupt
+walk.
+
+The snapshot carries the diagnostic negatives a healthy kernel cannot
+produce: a timer on the overflow list, a heap whose free-list/linear/counter
+triple disagrees, and corrupted scheduler lists (`gdr_bad_*`). The test
+module rebuilds a cached ELF when its sources are newer (same
+source-newer-than-cache rule as the live lanes), so stale cached negatives
+cannot silently satisfy new assertions.
 
 Two measured facts shape the design:
 

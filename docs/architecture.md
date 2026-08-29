@@ -63,7 +63,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
 | `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers` render their own column-contract tables (`object_table()`), and `heap` renders `heap_report()` (algorithm/total/free/min/alloc/free counters, protector state, free-list block count, linear-walk holes and the three-way cross-check verdict, plus the optional block table). |
 | `details.py` | FreeRTOS vertical detail rendering: `frt task <name>` (per-TCB state, high-water mark, notification slots, wake tick, blocked-on), the queue family (`frt queue/semaphore/mutex <name>`, including the FIFO `Item[i]` dump and mutex owner priorities), `frt timer <name>` (List epoch, OwnerCheck, and the pending daemon-command section), `frt eventgroup <name>` (per-waiter wants/mode/clearOnExit/missing decode), and `frt streambuffer <name>` (geometry, trigger-met verdict, NextMsg, the `size_t`-assumed length prefix, the version-gated NotificationIndex and the three-state bounds check). |
-| `diagnostics.py` | Queue-family consistency checks (`queue_checks`): count bound and the storage-window pointer invariants for real data queues only; mutex accounting and semaphore self-head checks for those kinds; inapplicable checks are reported as explicit `skipped` instead of pass/fail. Timer checks (`timer_checks`): `ucStatus`-vs-list sync, nonzero period/callback, and the daemon queue item size vs `sizeof(DaemonTaskMessage_t)`. |
+| `diagnostics.py` | Bounded raw list walking and the consistency checks the detail commands consume. `walk_list_raw` starts at `xListEnd.pxNext`, resolves `List_t`/`ListItem_t` member offsets from DWARF (so the optional integrity fields cannot shift it), and reports a cycle, a NULL `pxNext` (a healthy chain always links back to the sentinel, so zero is a cut chain, not an end), a node outside every loadable section, an unreadable item, or the `GDR_MAX_TRAVERSAL_COUNT` bound — never a clean short list. `list_checks`/`task_checks`: `ListInit`, `ListCount`, `ListIndex` (SMP only — on single core `pxIndex` legitimately parks on the rotation cursor, so the check is `skipped`), `ListIntegrity`, `ListIntegrityBytes` (magic derived from `cfg.tick_bits`, not a hard-coded `0x5a5a5a5a`), `ItemOwner`, `ItemContainer`, `StackFillPresent`. `system_checks` (rendered by `frt system`): `TaskCount`, `SchedulerSuspended`, `NextUnblockTime`, `HeapCrossCheck`. Queue-family checks (`queue_checks`): count bound and the storage-window pointer invariants for real data queues only; mutex accounting and semaphore self-head checks for those kinds; `QueueLock` (`cRxLock`/`cTxLock` must be `queueUNLOCKED` outside a `vTaskSuspendAll`, and an unreadable suspend counter is reported as unreadable rather than asserted to be zero). Timer checks (`timer_checks`): `ucStatus`-vs-list sync, nonzero period/callback, and the daemon queue item size vs `sizeof(DaemonTaskMessage_t)`. Event-group check (`event_checks`): `EventWaiterSatisfied`. Inapplicable checks are reported as explicit `skipped` instead of pass/fail. |
 
 ## Key decisions
 
@@ -455,13 +455,30 @@ N/A and HighWater scans `[pxStack, pxTopOfStack)`.
   both enabled), but the `static-dynamic` variant sets
   `GDR_FIXTURE_MIXED_ALLOCATION`, so its "static" event group is in fact
   created dynamically and no live object reports `StaticallyAllocated: yes`.
+- `ListIntegrityBytes` is `skipped` on every fixture. No build defines
+  `configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES`, so
+  `xListItemIntegrityValue1`/`2` do not exist and `cfg.list_integrity_check`
+  is false everywhere; the magic derivation (`0x5a5a` / `0x5a5a5a5a` /
+  `0x5a5a5a5a5a5a5a5a` from the tick width, `include/projdefs.h`) is
+  unit-tested only. A live kernel cannot supply the negative either: the
+  integrity bytes are only ever validated by `configASSERT` inside
+  `vListInsert`, so a corrupted value crashes the target instead of being
+  observable. Enabling the macro on the static snapshot adds two `TickType_t`
+  members to `List_t`/`ListItem_t` and therefore rewrites every list and TCB
+  initializer in the snapshot; that is the fixture work this check waits on.
 
 **Static snapshot lane** (`ci/freertos/build-fixture-snapshot.sh` with sources
 in `ci/freertos/snapshot/`) covers states a healthy kernel cannot produce
 (corrupt lists, SMP `xTaskRunState` of `0`/`1`/`-1`/`-2` without a live
-dual-core port). Snapshot data is non-zero-initialized into `.data`; file-only
-GDB synthesises zeros for `.bss`, so a BSS-resident structure would read back
-as a successful decode of empty lists (see `ci/freertos/README.md`).
+dual-core port, a timer on the overflow list, and corrupt-heap cells). Snapshot
+data is non-zero-initialized into `.data`; file-only GDB synthesises zeros for
+`.bss`, so a BSS-resident structure would read back as a successful decode of
+empty lists (see `ci/freertos/README.md`). Zero-valued standalone globals are
+forced into `.data` with `__attribute__((section(".data")))` for the same
+reason. The heap *mismatch* cell (free-list vs linear vs counter disagree) and
+the *allocated-bit* cell (free-list member with the size_t MSB) cannot share
+one heap symbol set — a corrupt walk swallows the mismatch verdict — so the
+allocated-bit cell lives in a second, heap-only ELF (`snapshot_heap.c`).
 
 **FreeRTOS does not provide an `Entry` column.** The FreeRTOS TCB
 (`tskTaskControlBlock`) does not store the task entry function pointer after
@@ -528,9 +545,11 @@ before it).
 
 **Live heap coverage is 32-bit Cortex-M only.** Every FreeRTOS lane has a 32-bit
 `size_t` and `portBYTE_ALIGNMENT == 8`, so the 64-bit allocation-mask arithmetic
-is unit-tested only, and so are the cross-check `mismatch` and walk `corrupt`
-verdicts — a healthy kernel cannot produce a corrupt heap, so those branches need
-a crafted snapshot rather than a live fixture.
+is unit-tested only. The cross-check `mismatch` and walk `corrupt` verdicts
+were historically unit-tested only too (a healthy kernel cannot produce a
+corrupt heap); the static snapshot lane now carries crafted `mismatch` (free-list
+skips a linear-free block) and allocated-bit (free-list member with the size_t
+MSB) cells, so those verdicts have live evidence.
 
 **Object discovery is a six-channel provenance model, not a registry walk.**
 FreeRTOS keeps no global object registry for most kinds (only the optional
@@ -565,6 +584,9 @@ the reader can act on: the `Checks` row carries a verdict plus counts
 has no storage pointers) is counted rather than named, and only failures or
 unreadable fields get their own `Check[<name>]` row. Enumerating every skip
 inline produced a 150-column value that buried the one line worth reading.
+`frt system` reaches the same rendering through `SystemSummary.extra_pairs`,
+an adapter-owned list of vertical rows the neutral renderer appends verbatim,
+so the RTOS-specific verdict strings never enter `gdr/`.
 
 A singular detail command refuses a kind it can prove wrong: resolving a name
 or address stamps the *requested* kind on whatever it found, so

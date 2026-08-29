@@ -11,6 +11,7 @@ except ImportError:
 
 from freertos import heap as heap_module
 from freertos.details import (
+    checks_pairs,
     event_group_detail,
     held_cell,
     locks_cell,
@@ -22,6 +23,7 @@ from freertos.details import (
     timer_detail,
     waiter_summary,
 )
+from freertos.diagnostics import system_checks
 from freertos.events import event_group_table, value_to_event_group_object
 from freertos.layout import FreeRtosLayout, queue_type_label
 from freertos.navigation import (
@@ -918,7 +920,7 @@ class FreeRtosAdapter(RtosAdapter):
             if value is None:
                 return ObjectDetail(found=False)
             task = value_to_task(value, *task_state(value, self.layout), self.layout)
-            return ObjectDetail(pairs=task_detail(task, self.layout))
+            return ObjectDetail(pairs=task_detail(task, self.layout, tcb_value=value))
         if kind == "timer":
             found, value = self._find_named_object(kind, name)
             if found is None or value is None:
@@ -1115,6 +1117,14 @@ class FreeRtosAdapter(RtosAdapter):
                 if self.layout.config.heap_kind is not None
                 else None
             )
+        # Reason: the system checks are best-effort -- a broken heap or an
+        # unreadable scheduler list must not take down ``frt system``, so a
+        # checks failure degrades to an empty section (the summary rows are
+        # still rendered from whatever symbols did read).
+        try:
+            checks = checks_pairs(system_checks(self.layout))
+        except Exception:
+            checks = []
         return SystemSummary(
             kernel_version=(
                 ".".join(map(str, self.layout.version))
@@ -1139,4 +1149,5 @@ class FreeRtosAdapter(RtosAdapter):
             heap_used=heap_used,
             heap_total=(snap.total if snap is not None else None),
             heap_status=heap_status,
+            extra_pairs=checks,
         )

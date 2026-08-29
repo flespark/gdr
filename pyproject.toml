@@ -120,6 +120,7 @@ source = [
     "gdr.formatting",
     "gdr.version",
     "freertos.adapter",
+    "freertos.details",
     "freertos.diagnostics",
     "freertos.heap",
     "freertos.version",

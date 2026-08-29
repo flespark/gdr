@@ -86,6 +86,7 @@ def render_system() -> None:
         pairs.append(("Heap total", format_optional_int(summary.heap_total)))
     if summary.heap_status is not None:
         pairs.append(("Heap status", summary.heap_status))
+    pairs.extend(summary.extra_pairs)
     print_detail(pairs)
 
 

@@ -27,6 +27,10 @@ class SystemSummary:
     heap_used: int | None = None
     heap_total: int | None = None
     heap_status: str | None = None
+    extra_pairs: list[tuple[str, str]] = field(default_factory=list)
+    # Adapter-owned vertical rows beyond the normalized fields (consistency
+    # checks, provenance notes).  ``gdr.commands.render_system`` appends them
+    # verbatim, so RTOS-specific verdict strings never leak into the core.
 
 
 @dataclass
