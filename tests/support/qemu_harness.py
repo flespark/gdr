@@ -7,6 +7,7 @@ GDB Python registrations remain available to every test in a suite.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import os
 import re
@@ -130,7 +131,16 @@ class QemuSession:
         return f"serial output:\n{read_log(self.serial_log)}\nQEMU output:\n{read_log(self.qemu_log)}"
 
     def start(self, boot_wait: float) -> None:
-        """Launch QEMU and wait until the fixture has created its test objects."""
+        """Launch QEMU and wait until the fixture has created its test objects.
+
+        Every failure path stops the process before raising. Reason: the caller
+        registers teardown *after* start() returns (``session.start(...)`` then
+        ``yield`` in the pytest fixture), so an exception here used to leave a
+        live QEMU behind. Those orphans accumulate silently across runs -- a
+        boot-timeout lane leaked one per attempt -- and a leaked process keeps
+        its stdout pipe open, which later wedges any tool that waits for the
+        pipe to close.
+        """
         command = self._command()
         log_file = self.qemu_log.open("wb")
         self._qemu = subprocess.Popen(
@@ -139,20 +149,28 @@ class QemuSession:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        # Reason: a hard interpreter exit (Ctrl-C, pytest internal error) never
+        # runs fixture teardown; this net is idempotent because stop() clears
+        # the handle.
+        atexit.register(self.stop)
         deadline = time.monotonic() + boot_wait
-        while time.monotonic() < deadline:
-            if self._qemu.poll() is not None:
-                raise RuntimeError(
-                    "QEMU exited while booting "
-                    f"(exit={self._qemu.returncode}): {command}\n{self._logs()}"
-                )
-            if self.profile.ready_marker in self._logs():
-                return
-            time.sleep(0.1)
-        raise RuntimeError(
-            f"QEMU did not emit {self.profile.ready_marker!r} within {boot_wait}s. "
-            f"Command: {command}\n{self._logs()}"
-        )
+        try:
+            while time.monotonic() < deadline:
+                if self._qemu.poll() is not None:
+                    raise RuntimeError(
+                        "QEMU exited while booting "
+                        f"(exit={self._qemu.returncode}): {command}\n{self._logs()}"
+                    )
+                if self.profile.ready_marker in self._logs():
+                    return
+                time.sleep(0.1)
+            raise RuntimeError(
+                f"QEMU did not emit {self.profile.ready_marker!r} within {boot_wait}s. "
+                f"Command: {command}\n{self._logs()}"
+            )
+        except BaseException:
+            self.stop()
+            raise
 
     def stop(self) -> None:
         """Terminate QEMU, escalating only after a bounded graceful wait."""
