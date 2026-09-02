@@ -103,6 +103,50 @@ fixture returns a fixed non-zero canary (0xBEEF) so tests can XOR heap link
 fields back and prove the obfuscation is really active - a zero canary would
 silently degrade to the unprotected layout.
 
+### Kernel-direct SMP (`mps2-an521`)
+
+`build-fixture-kernel.sh` with `--target mps2-an521` links the same shared
+fixture against the **dual-core** ARMv8-M port `portable/GCC/ARM_CM33_NTZ/non_secure`
+and the `mps2-an521` board (QEMU machine `mps2-an521`, two Cortex-M33s, SSE-200).
+This lane needs kernel `V11.3.1` or later: ARMv8-M SMP support was added in
+`V11.3.1` (History.txt), and the CM33_NTZ port is the only mainline GCC port
+with `portVALIDATED_FOR_SMP == 1`. Earlier tags have no `configCORE_ID_REGISTER` /
+`configWAKE_SECONDARY_CORES` and fail at `#error` under `configNUMBER_OF_CORES 2`.
+
+The `config/smp/FreeRTOSConfig.h` variant sets two cores, core affinity, task
+preemption disable, and `configENABLE_TRUSTZONE/MPU/FPU 0`; the four SMP-required
+knobs (`configRUN_MULTIPLE_PRIORITIES`, `configUSE_PASSIVE_IDLE_HOOK`,
+`configUSE_PORT_OPTIMISED_TASK_SELECTION 0`, and `configCORE_ID_REGISTER` +
+`configWAKE_SECONDARY_CORES`) are all spelled out because omitting any of them
+is a compile-time `#error` on this port. The board header fixes `configCPU_CLOCK_HZ`
+to the AN521's 20 MHz sysclk (not the AN385's 25 MHz).
+
+QEMU boots both cores from one vector table (`INITSVTOR1` default `0x10000000`
+aliases the `0x00000000` image); `configWAKE_SECONDARY_CORES` writes
+`INITSVTOR1` then clears `CPUWAIT` bit 1 to release CPU1's warm reset, and
+CPU1's private entry runs the official secondary-core flow (spin on
+`ucPrimaryCoreInitDoneFlag`, program interrupt priorities, set
+`ucSecondaryCoresReadyFlags`, `svc 102`). The CPU identity register
+`0x5001F000` (secure alias) reads 0 on CPU0 and 1 on CPU1 and is used for
+`configCORE_ID_REGISTER`; the SCB `CPUID` is *not* usable because both cores
+report the same value.
+
+**Known fixture limitation (cross-core preemption).** The port's
+`vInterruptCore` is a weak no-op and this board does not override it, so a
+cross-core yield request is not delivered as an interrupt: a blocked task
+caught mid-yield renders as `Running(yielding)` and its waiter count reads 0
+until its own tick. This is a fixture limitation, not a GDR defect; the SMP
+user-visible output (CPU / Affinity / RunState / PreemptionDisable) all render
+from shared memory. main.c mitigates the shared single-core assertions by
+pinning every ground-truth waiter task to core 0 under
+`configNUMBER_OF_CORES > 1`, so no shared test ever needs a cross-core yield
+(`gdr_bound` on core 1 and the two idle tasks keep the lane genuinely
+dual-core). QEMU does model SSE-200 MHU doorbells, but they sit in the shared
+container at `0x40003000`/`0x40004000` (the `0x5000_0000` secure alias maps
+the per-CPU container, not the MHU block), and delivering a cross-core
+interrupt into this `configRUN_FREERTOS_SECURE_ONLY 1` build was not validated
+here; it is left for a future lane.
+
 ## Static snapshot lane
 
 `build-fixture-snapshot.sh` compiles `snapshot/snapshot.c` for Cortex-M33 into

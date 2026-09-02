@@ -7,7 +7,7 @@ import freertos.version as version
 
 @pytest.mark.parametrize(
     "value",
-    ("10.3.0", "10.3.1", "10.4.0", "10.5.0", "11.1.0", "11.2.0"),
+    ("10.3.0", "10.3.1", "10.4.0", "10.5.0", "11.1.0", "11.2.0", "11.3.0", "11.3.1"),
 )
 def test_validate_version_accepts_supported_ranges(value, monkeypatch):
     monkeypatch.setattr(version, "warn", lambda _message: None)
@@ -21,10 +21,14 @@ def test_validate_version_rejects_invalid_and_unsupported_values(monkeypatch):
     with pytest.raises(SystemExit):
         version.validate_version("10.3")
     with pytest.raises(SystemExit):
+        version.validate_version("11.4.0")
+    with pytest.raises(SystemExit):
         version.validate_version("12.0.0")
 
     assert "invalid FreeRTOS version" in warnings[0]
-    assert "unsupported FreeRTOS version" in warnings[1]
+    assert (
+        sum(1 for message in warnings if "unsupported FreeRTOS version" in message) == 2
+    )
 
 
 def _stub_cu_fallback(monkeypatch) -> None:

@@ -23,9 +23,10 @@ _SUPPORTED_VARIANTS = (
     "heap-5",
     "heap-protector",
     "registry-0",
+    "smp",
 )
 
-_SUPPORTED_BOARDS = ("b-l475e-iot01a", "mps2-an385")
+_SUPPORTED_BOARDS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521")
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,11 @@ def get_freertos_test_profile(
         runtime_stats=variant == "full",
         queue_sets=variant == "full",
         registry_size=0 if variant == "registry-0" else 8,
-        number_of_cores=1,
+        # Reason: the core count is a fixture fact written here independently
+        # (never backfilled from freertos.layout's detect_config()); it is the
+        # ground truth the live probe is compared against.  The smp variant is
+        # only built for the dual-core mps2-an521 board.
+        number_of_cores=2 if variant == "smp" else 1,
         heap_protector=variant == "heap-protector" and v11,
         stream_buffers=True,
         batching_buffer=v11_1,

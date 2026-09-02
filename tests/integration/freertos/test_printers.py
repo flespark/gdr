@@ -6,15 +6,28 @@ import os
 
 import pytest
 
+from tests.support.freertos_fixture_profiles import get_freertos_test_profile
+
+_VERSION = os.environ.get("GDR_VERSION", "10.3.1")
+_TARGET = os.environ.get("GDR_QEMU_TARGET", "b-l475e-iot01a")
+_VARIANT = os.environ.get("GDR_FIXTURE_VARIANT", "base")
+_PROFILE = get_freertos_test_profile(_VARIANT, _VERSION, _TARGET)
+
 pytestmark = pytest.mark.skipif(
     os.environ.get("GDR_RTOS") != "freertos",
     reason="requires the FreeRTOS QEMU profile",
 )
 
 
+def _current_tcb_expr() -> str:
+    """SMP kernels expose the running-task array pxCurrentTCBs[N]; the
+    single-core pxCurrentTCB symbol does not exist there."""
+    return "pxCurrentTCBs[0]" if _PROFILE.number_of_cores > 1 else "pxCurrentTCB"
+
+
 def test_task_fold_contains_name_and_priority(gdb_session):
     """A TCB reached through the kernel typedef still folds as Task(...)."""
-    output = gdb_session.run("p *pxCurrentTCB", timeout=20)
+    output = gdb_session.run(f"p *{_current_tcb_expr()}", timeout=20)
     assert "Task(" in output, output
     assert "name=" in output, output
     assert "current_priority=" in output, output
@@ -53,5 +66,5 @@ def test_list_fold(gdb_session):
 
 def test_list_item_fold(gdb_session):
     """A TCB state-list item folds as ListItem(...)."""
-    output = gdb_session.run("p pxCurrentTCB->xStateListItem", timeout=20)
+    output = gdb_session.run(f"p {_current_tcb_expr()}->xStateListItem", timeout=20)
     assert "ListItem(" in output, output

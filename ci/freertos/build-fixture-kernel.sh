@@ -97,6 +97,11 @@ board_flags() {
     mps2-an385)
         echo "-mcpu=cortex-m3 -mthumb"
         ;;
+    mps2-an521)
+        # Reason: the AN521 runs two Cortex-M33s; pin the FPU off to match
+        # configENABLE_FPU 0 so the lazy-stacking path stays out of the build.
+        echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=soft"
+        ;;
     *)
         die "unsupported kernel-direct target: $TARGET"
         ;;
@@ -119,6 +124,7 @@ compile_fixture() {
 
     case "$TARGET" in
     mps2-an385) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM3" ;;
+    mps2-an521) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM33_NTZ/non_secure" ;;
     esac
 
     mkdir -p "$BUILD_DIR" "$(dirname "$OUT_ELF")" "$(dirname "$OUT_BIN")"
@@ -136,16 +142,45 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
-    sources=(
-        "$SCRIPT_DIR/fixture/main.c"
-        "$board_dir/system_init.c"
-        "$board_dir/syscalls.c"
-        "$board_dir/startup.s"
-        "$KERNEL_DIR/tasks.c" "$KERNEL_DIR/queue.c" "$KERNEL_DIR/list.c"
-        "$KERNEL_DIR/timers.c" "$KERNEL_DIR/event_groups.c"
-        "$KERNEL_DIR/stream_buffer.c"
-        "$port_dir/port.c"
-    )
+    local -a port_sources=()
+    case "$TARGET" in
+    mps2-an521)
+        # Reason: the CM33_NTZ port keeps context switching and the SVC/
+        # PendSV handler in portasm.c -- ARM_CM3 has only port.c, so the
+        # kernel-direct lane used to compile exactly one port file.  Omitting
+        # portasm.c fails only at link time (missing SVC_Handler /
+        # PendSV_Handler / vRestoreContextOfFirstTask), which reads like a
+        # wrong-port error.  cpu1_start.c is this board's secondary-core
+        # bootstrap and lives alongside the other board sources.
+        port_sources+=("$port_dir/portasm.c" "$board_dir/cpu1_start.c")
+        ;;
+    esac
+    # Reason: set -u treats "${port_sources[@]}" on an empty array as an
+    # unbound-variable error on older bash, so gate the expansion on length.
+    if [[ ${#port_sources[@]} -gt 0 ]]; then
+        sources=(
+            "$SCRIPT_DIR/fixture/main.c"
+            "$board_dir/system_init.c"
+            "$board_dir/syscalls.c"
+            "$board_dir/startup.s"
+            "$KERNEL_DIR/tasks.c" "$KERNEL_DIR/queue.c" "$KERNEL_DIR/list.c"
+            "$KERNEL_DIR/timers.c" "$KERNEL_DIR/event_groups.c"
+            "$KERNEL_DIR/stream_buffer.c"
+            "$port_dir/port.c"
+            "${port_sources[@]}"
+        )
+    else
+        sources=(
+            "$SCRIPT_DIR/fixture/main.c"
+            "$board_dir/system_init.c"
+            "$board_dir/syscalls.c"
+            "$board_dir/startup.s"
+            "$KERNEL_DIR/tasks.c" "$KERNEL_DIR/queue.c" "$KERNEL_DIR/list.c"
+            "$KERNEL_DIR/timers.c" "$KERNEL_DIR/event_groups.c"
+            "$KERNEL_DIR/stream_buffer.c"
+            "$port_dir/port.c"
+        )
+    fi
     if [[ -n "$heap" ]]; then
         sources+=("$heap")
     fi

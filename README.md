@@ -23,7 +23,7 @@ the [Asterinas GDB helper](#acknowledgements):
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | V10.3.0–V11.2.x | implemented; Cortex-M3 verified on QEMU B-L475E-IOT01A (10.3.1 fixture) and MPS2-AN385 (11.1.0) |
+| FreeRTOS | V10.3.0–V11.3.x | implemented; verified on QEMU B-L475E-IOT01A (Cortex-M4, 10.3.1), MPS2-AN385 (Cortex-M3, 10.4/10.5/11.1) and MPS2-AN521 (dual Cortex-M33, SMP, 11.3.1) |
 
 ## Quick start
 

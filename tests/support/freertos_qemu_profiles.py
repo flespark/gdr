@@ -17,7 +17,7 @@ _ELF_NAME = "freertos.elf"
 # Reason: the build scripts install every fixture into this cache root, so the
 # test-side default has to be the same path (overridable per host/CI).
 _DEFAULT_FIXTURE_CACHE = Path.home() / "Project" / "gdr-fixture" / "freertos"
-_KNOWN_TARGETS = ("b-l475e-iot01a", "mps2-an385")
+_KNOWN_TARGETS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521")
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -57,8 +57,16 @@ def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
     firmware_path = _env_path("GDR_FIRMWARE_PATH", elf_path)
     machine = _env_str(
         "GDR_QEMU_MACHINE",
-        "mps2-an385" if target == "mps2-an385" else "b-l475e-iot01a",
+        {
+            "mps2-an385": "mps2-an385",
+            "mps2-an521": "mps2-an521",
+            "b-l475e-iot01a": "b-l475e-iot01a",
+        }[target],
     )
+    # Reason: mps2-an521 is fixed at two CPUs (default_cpus == min == max),
+    # so an explicit -smp 2 is redundant and -smp 1 would be rejected;
+    # leave the machine default alone.
+    qemu_args = ("-semihosting-config", "enable=on,target=native")
     return QemuProfile(
         rtos="freertos",
         version=version,
@@ -72,6 +80,6 @@ def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
         ready_marker="GDR FreeRTOS fixture ready.",
         pointer_width=4,
         init_command=f"gdr init freertos {version}",
-        qemu_args=("-semihosting-config", "enable=on,target=native"),
+        qemu_args=qemu_args,
         extra_env={"GDR_RTOS": "", "GDR_VERSION": ""},
     )

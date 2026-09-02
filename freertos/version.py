@@ -21,7 +21,10 @@ from gdr.version import (
     version_in_ranges,
 )
 
-SUPPORTED_RANGES: tuple[VersionRange, ...] = (((10, 3, 0), (11, 2, 99)),)
+# Reason: V11.3.1 introduced ARMv8-M SMP support (History.txt, V11.3.1), and
+# the six kernel header structs are identical between V11.2.0 and V11.3.1, so
+# the public range extends through 11.3.x without new layout branches.
+SUPPORTED_RANGES: tuple[VersionRange, ...] = (((10, 3, 0), (11, 3, 99)),)
 
 # Matches the tskKERNEL_VERSION_NUMBER string macro, e.g. "V10.3.1" or
 # "V11.1.0+": an optional leading V, three decimal components, and an

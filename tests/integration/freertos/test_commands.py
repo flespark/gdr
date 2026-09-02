@@ -27,6 +27,13 @@ pytestmark = pytest.mark.skipif(
     reason="requires the FreeRTOS QEMU profile",
 )
 
+
+def _idle_name() -> str:
+    """SMP kernels append the core digit to the idle task name
+    (tasks.c: IDLE0/IDLE1); single-core keeps configIDLE_TASK_NAME."""
+    return "IDLE" if _PROFILE.number_of_cores == 1 else "IDLE0"
+
+
 _PUBLIC_COMMANDS = (
     "help",
     "tasks",
@@ -136,7 +143,7 @@ print(f"state={value.state}")
 
 def test_freertos_task_detail_key_order(gdb_session):
     """``frt task <name>`` emits the documented keys in the documented order."""
-    detail = gdb_session.run("freertos task IDLE", timeout=20)
+    detail = gdb_session.run(f"freertos task {_idle_name()}", timeout=20)
     _assert_clean_command_output(detail)
     pairs = _detail_pairs(detail)
     keys = list(pairs)
@@ -244,7 +251,7 @@ def test_freertos_high_water_matches_variant(gdb_session):
     if _PROFILE.high_water_source == "pxEndOfStack":
         assert "Stack" in tasks
         assert "Used" in tasks
-    idle = gdb_session.run("freertos task IDLE", timeout=20)
+    idle = gdb_session.run(f"freertos task {_idle_name()}", timeout=20)
     high_water = [line for line in idle.splitlines() if "HighWater" in line]
     assert high_water, idle
     assert "unavailable" not in high_water[0]

@@ -246,6 +246,7 @@ main: # branch: main
             bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 base
             bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.5.1 base
             bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base heap-protector
+            bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp
 
   pull_request:
     # Mirror of the push pipelines, for pre-merge feedback on PRs.
@@ -374,6 +375,7 @@ main: # branch: main
             bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 base
             bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.5.1 base
             bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base heap-protector
+            bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp
 
 # `$` applies to every reference. CNB sets CNB_BRANCH to the pushed tag when
 # `tag_push` fires. The imported Secret repository file provides

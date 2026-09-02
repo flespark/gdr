@@ -184,9 +184,16 @@ one fixture cache (details in `ci/freertos/README.md`):
   STM32CubeL4 `v1.18.2` (commit
   `5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`), so it is pinned to kernel
   `10.3.1` and carries the **config variant** matrix.
-- **Kernel-direct live (`mps2-an385`):** `ci/freertos/build-fixture-kernel.sh`
-  clones `FreeRTOS-Kernel` at a tag and links `portable/GCC/ARM_CM3`, so it
-  carries the **kernel version** matrix.
+- **Kernel-direct live (`mps2-an385`, `mps2-an521`):**
+  `ci/freertos/build-fixture-kernel.sh` clones `FreeRTOS-Kernel` at a tag and
+  links a port directory chosen by target, so it carries the **kernel version**
+  matrix. `mps2-an385` links `portable/GCC/ARM_CM3` (single core).
+  `mps2-an521` links `portable/GCC/ARM_CM33_NTZ/non_secure` and is the
+  **dual-core SMP** lane: QEMU models that board as SSE-200 with two
+  Cortex-M33, and ARMv8-M SMP support exists only from kernel `V11.3.1`
+  (`portVALIDATED_FOR_SMP` is 0 in every earlier tag), so the lane is pinned to
+  `11.3.1` with the `smp` config variant. Unlike the CM3 port, CM33 needs
+  `portasm.c` compiled alongside `port.c`.
 - **Static snapshot:** `ci/freertos/build-fixture-snapshot.sh` builds a
   Cortex-M33 ELF whose `.data` holds pre-initialized SMP scheduler structures
   plus the diagnostic negatives a healthy kernel cannot produce (corrupt
@@ -204,6 +211,7 @@ drives the two live lanes.
 
 ```bash
 bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-dynamic
+bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp   # dual-core SMP
 
 # Point the fixture cache elsewhere. A cached fixture is reused only while it is
 # newer than the fixture sources; a missing or stale one is rebuilt and installed.
@@ -220,6 +228,18 @@ variant, `GDR_FORCE_BUILD=1` forces a rebuild, and a missing artifact is
 Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, not the
 board's unsupported LPTIM. Shared fixture sources live in
 `ci/freertos/fixture/` (`config/<variant>/`, `board/<board>/`, `main.c`).
+Board code owns the platform details a shared `main.c` must not carry: the
+`mps2-an521` board directory holds the CPU1 entry point and the
+`configWAKE_SECONDARY_CORES` implementation (write `INITSVTOR1`, then clear the
+`CPUWAIT` bit -- that order matters, because clearing the bit warm-resets CPU1
+from whatever `INITSVTOR1` holds at that moment).
+
+That fixture has one documented limitation: it does not override the port's weak
+`vInterruptCore`, so cross-core yield requests are not delivered as interrupts
+and a task caught mid-yield can render as `Running(yielding)`. Every
+ground-truth waiter task is pinned to core 0 so no shared assertion depends on a
+cross-core yield. See `ci/freertos/README.md` for why the MHU doorbell is not
+wired.
 
 `GDR_GDB` must name a GDB with embedded Python: xPack's `arm-none-eabi-gdb`
 has none, its sibling `arm-none-eabi-gdb-py3` does. Probe with

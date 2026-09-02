@@ -3,6 +3,10 @@
  * Variant differences are selected by FreeRTOSConfig.h knobs
  * (configSUPPORT_*_ALLOCATION, configUSE_QUEUE_SETS, configUSE_TRACE_FACILITY,
  * tskKERNEL_VERSION_*). Heap_5 region setup is gated by GDR_FIXTURE_HEAP_5.
+ *
+ * The kernel/config/board headers below resolve only through the ARM cross
+ * include paths supplied by ci/freertos/build-fixture-kernel.sh; host-side
+ * analyzers without those paths report spurious "file not found" errors.
  */
 #include "FreeRTOS.h"
 #include "event_groups.h"
@@ -11,6 +15,14 @@
 #include "stream_buffer.h"
 #include "task.h"
 #include "timers.h"
+
+/* Reason: the CubeL4 lane bundles kernel 10.3.1, whose FreeRTOS.h predates
+ * the SMP configNUMBER_OF_CORES knob (added in V11); V11 headers default it
+ * to 1 themselves.  Provide the same default here so the shared fixture's
+ * SMP-gated expressions compile on both lanes. */
+#ifndef configNUMBER_OF_CORES
+#define configNUMBER_OF_CORES 1
+#endif
 
 #if (tskKERNEL_VERSION_MAJOR > 11) || \
     (tskKERNEL_VERSION_MAJOR == 11 && tskKERNEL_VERSION_MINOR >= 1)
@@ -27,14 +39,19 @@
 #define GDR_FIXTURE_MIXED_ALLOCATION 0
 #endif
 
-/* Packed decimal encoding of the kernel version for CU-independent probing. */
+/* Packed decimal encoding of the kernel version for CU-independent probing.
+ * The .rodata.gdr_version section name trips host-side clang's
+ * attribute_section_invalid_for_target check, but the section is a plain
+ * string literal that the ARM cross toolchain accepts -- a false positive. */
 GDR_USED __attribute__((section(".rodata.gdr_version")))
 const uint32_t gdr_freertos_version_num =
     (uint32_t)tskKERNEL_VERSION_MAJOR * 10000U +
     (uint32_t)tskKERNEL_VERSION_MINOR * 100U +
     (uint32_t)tskKERNEL_VERSION_BUILD;
 
+#ifndef GDR_PORT_PROVIDES_SYSTICK_HANDLER
 extern void xPortSysTickHandler(void);
+#endif
 #if (configUSE_TICK_HOOK == 1)
 extern void gdr_runtime_timer_tick(void);
 #endif
@@ -71,6 +88,10 @@ GDR_USED static TaskHandle_t gdr_recursive_task;
 GDR_USED static TaskHandle_t gdr_exhaust_task;
 GDR_USED static TaskHandle_t gdr_ready_spin_task;
 GDR_USED static TaskHandle_t gdr_waiter_only_eg_handle;
+#if (configNUMBER_OF_CORES > 1)
+GDR_USED static TaskHandle_t gdr_bound_task;
+GDR_USED static TaskHandle_t gdr_preempt_task;
+#endif
 
 GDR_USED static QueueHandle_t gdr_registered_queue;
 GDR_USED static QueueHandle_t gdr_unregistered_queue;
@@ -420,23 +441,64 @@ static void gdr_waiter_only_eg_task(void *argument)
     }
 }
 
+/* Reason: the SMP lane needs a task pinned to one core and one that runs
+ * with preemption disabled, so the Affinity and PreemptionDisable cells
+ * carry genuine fixture state.  Both are config-gated: single-core lanes
+ * must keep their current object graph. */
+#if (configNUMBER_OF_CORES > 1)
+static void gdr_bound(void *argument)
+{
+    (void)argument;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+static void gdr_preempt(void *argument)
+{
+    (void)argument;
+    vTaskPreemptionDisable(NULL);
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+#endif
+
 /* Reason: the ready marker used to fire after a 20 ms delay, before every
  * extra waiter had entered its stable blocked/suspended state. Stretch the
  * delay so QEMU's boot wait sees a deterministic object graph. */
 static void gdr_ready_task(void *argument)
 {
     (void)argument;
+    /* Reason: on SMP lanes the created tasks first run in parallel across
+     * the cores, so the mutex-holding / blocked / waiter states only reach
+     * their stationary form after the whole task pack has had its first
+     * run (measured: the object graph is stable from ~2 s on; a 2.5 s
+     * marker lands the harness safely past that).  Single-core keeps the
+     * historical 80 ms window where one core serialises the priority
+     * order deterministically. */
+#if (configNUMBER_OF_CORES > 1)
+    vTaskDelay(pdMS_TO_TICKS(2500));
+#else
     vTaskDelay(pdMS_TO_TICKS(80));
+#endif
     gdr_semihosting_write0("GDR FreeRTOS fixture ready.\n");
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
+#ifndef GDR_PORT_PROVIDES_SYSTICK_HANDLER
 void SysTick_Handler(void)
 {
     xPortSysTickHandler();
 }
+#else
+/* Reason: the ARM_CM33_NTZ port defines SysTick_Handler itself in port.c
+ * (no xPortSysTickHandler exists there), so this shared wrapper must not be
+ * compiled on that board or the fixture gets a duplicate-symbol link error.
+ * The board header declares GDR_PORT_PROVIDES_SYSTICK_HANDLER. */
+#endif
 
 #if (configUSE_TICK_HOOK == 1)
 void vApplicationTickHook(void)
@@ -522,8 +584,16 @@ int main(void)
     gdr_semaphore = xSemaphoreCreateCounting(3, 0);
     gdr_mutex = xSemaphoreCreateMutex();
     gdr_recursive_mutex = xSemaphoreCreateRecursiveMutex();
-    gdr_active_timer = xTimerCreate("gdr_active", pdMS_TO_TICKS(100), pdTRUE,
-                                    NULL, gdr_timer_callback);
+    gdr_active_timer = xTimerCreate(
+        "gdr_active",
+        /* Reason: on SMP lanes a short auto-reload wakes the timer daemon
+         * every few ms, so a halted snapshot often catches it mid-command
+         * and the active-list state reads racy (the detail command then
+         * prints the mid-update warning).  A long period keeps the timer on
+         * the active list while the daemon sleeps after boot, so the
+         * assertions see stationary state. */
+        pdMS_TO_TICKS(configNUMBER_OF_CORES > 1 ? 10000 : 100), pdTRUE, NULL,
+        gdr_timer_callback);
     gdr_inactive_timer = xTimerCreate("gdr_idle", pdMS_TO_TICKS(100), pdFALSE,
                                       NULL, gdr_timer_callback);
     gdr_stopped_timer = xTimerCreate("gdr_stopped", pdMS_TO_TICKS(50), pdTRUE,
@@ -692,6 +762,44 @@ int main(void)
                     &gdr_ready_spin_task);
     gdr_create_task(gdr_waiter_only_eg_task, "gdr_egw",
                     configMINIMAL_STACK_SIZE, 2, &gdr_waiter_only_eg_handle);
+#if (configNUMBER_OF_CORES > 1)
+    gdr_create_task(gdr_bound, "gdr_bound", configMINIMAL_STACK_SIZE, 2,
+                    &gdr_bound_task);
+    /* Pin to core 1 only: the Affinity column needs a real mask, and leaving
+     * core 0 to the primary-path tasks keeps the timing independent of which
+     * core wins the scheduler race. */
+    vTaskCoreAffinitySet(gdr_bound_task, 0x2U);
+    gdr_create_task(gdr_preempt, "gdr_preempt", configMINIMAL_STACK_SIZE, 2,
+                    &gdr_preempt_task);
+    /* Reason: on two cores the shared ground-truth tasks (blocked waiters,
+     * mutex holder, delayers) could each win on a different core depending on
+     * the scheduling race, so the blocked graph is not deterministic at
+     * snapshot time; a blocked waiter caught mid-yield renders as
+     * Running(yielding) and its queue/semaphore waiter count reads 0, which
+     * breaks the shared queue-family and state-coverage assertions.  Pinning
+     * every such task to core 0 restores the single-core priority +
+     * creation-order semantics this fixture's assertions rely on, and because
+     * the cross-core doorbell (vInterruptCore) is a weak no-op on this board
+     * no shared assertion ever needs a cross-core yield to be delivered.
+     * gdr_bound (core 1, genuine Affinity mask) and the two idle tasks keep
+     * the lane genuinely dual-core. */
+    vTaskCoreAffinitySet(gdr_mutex_hold_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_mutex_take_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_queue_recv_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_queue_send_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_sem_take_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_event_wait_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_notify_wait_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_maxdelay_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_suspended_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_recursive_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_exhaust_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_ready_spin_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_waiter_only_eg_handle, 0x1U);
+    vTaskCoreAffinitySet(gdr_normal_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_low_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_preempt_task, 0x1U);
+#endif
 #else
     gdr_create_task_static(gdr_ready_task, "gdr_ready", gdr_ready_stack,
                            GDR_STACK_WORDS, 4, &gdr_ready_tcb, &gdr_high_task);

@@ -344,6 +344,7 @@ dynamic ports, logs and timeout diagnostics live in
 | `rv64` | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | M-Mode boot, no SD image, `set architecture riscv:rv64`. |
 | `b-l475e-iot01a` | `qemu-system-arm -M b-l475e-iot01a -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS V10.3.1 Cortex-M4F SysTick fixture, 32-bit pointers. Variant selected by `GDR_FIXTURE_VARIANT`. |
 | `mps2-an385` | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS-Kernel tag builds (10.4.x / 10.5.x / 11.1.x) on Cortex-M3. |
+| `mps2-an521` | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | Dual-core Cortex-M33 (SSE-200) SMP lane, kernel `11.3.1`, `smp` variant. The machine is fixed at two cores, so `-smp` is redundant. GDB sees the second core as a separate *inferior*, not a second thread, so per-core register reads would need `target extended-remote`; every SMP assertion instead derives from shared memory (`pxCurrentTCBs[]`). |
 
 The ELF and firmware image may be separate: RV64 deliberately boots a raw BIN
 while GDB requires the DWARF ELF. The shared suite asserts each profile's
@@ -381,8 +382,9 @@ live firmware variant or a static snapshot can falsify it. Branches without
 a fixture stay deferred unit-test stubs, never "done".
 
 **FreeRTOS live coverage is 32-bit Cortex-M only.** Every FreeRTOS lane is a
-32-bit target (`b-l475e-iot01a` Cortex-M4F, `mps2-an385` Cortex-M3, the
-Cortex-M33 static snapshot). Pointer and field widths are always taken from
+32-bit target (`b-l475e-iot01a` Cortex-M4F, `mps2-an385` Cortex-M3,
+`mps2-an521` dual-core Cortex-M33, the Cortex-M33 static snapshot). Pointer
+and field widths are always taken from
 DWARF (`read_path` reads each union arm at its target type, and the reserved
 MPU-pool handle is compared at the target pointer width), so no literal width
 constant exists in the adapter — but that property is unverified on a 64-bit

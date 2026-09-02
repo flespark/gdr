@@ -117,4 +117,14 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
         bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
         RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
         bash ci/rt-thread/run-qemu-matrix.sh rv64
+        # Reason: the FreeRTOS lane installs freshly built fixtures into its
+        # cache root, so it must target a container-writable directory -- the
+        # host FREERTOS_FIXTURE_CACHE is mounted read-only above and cannot
+        # receive a new build.  The readonly mount still supplies GDR_ELF_*
+        # style reuse when a test later overrides GDR_ELF_PATH explicitly.
+        export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
+        RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+        bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
+        RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+        bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp
     '

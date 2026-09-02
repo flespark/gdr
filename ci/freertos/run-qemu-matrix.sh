@@ -43,6 +43,7 @@ kernel_tag_for_version() {
     10.4.*) echo "V10.4.6" ;;
     10.5.*) echo "V10.5.1" ;;
     11.1.*) echo "V11.1.0" ;;
+    11.3.*) echo "V11.3.1" ;;
     *) echo "V$1" ;;
     esac
 }
@@ -51,6 +52,7 @@ qemu_machine_for_target() {
     case "$1" in
     b-l475e-iot01a) echo "b-l475e-iot01a" ;;
     mps2-an385) echo "mps2-an385" ;;
+    mps2-an521) echo "mps2-an521" ;;
     *) die "unknown FreeRTOS QEMU target: $1" ;;
     esac
 }
