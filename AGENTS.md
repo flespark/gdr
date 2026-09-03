@@ -253,9 +253,18 @@ snapshot that can falsify it.
 ### CI pipelines
 
 CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
-defined in `.cnb.yml` (ruff + unit coverage on Python 3.10/3.14, the GDB 12
-compatibility baseline, the Cortex-A9 and RV64 RT-Thread QEMU matrices, the
-FreeRTOS static-snapshot lane, and the FreeRTOS live variant/version matrix).
+defined in `.cnb.yml`, one per verification axis and named `<rtos>-<axis>`:
+ruff + unit coverage on Python 3.10/3.14, the GDB 12 compatibility baseline,
+RT-Thread split by target (`rtthread-a9-target` / `rtthread-rv64-target`), and
+FreeRTOS split by what
+each lane can falsify — `freertos-snapshot` (static ELF, no QEMU),
+`freertos-config-scope` (kernel 10.3.1, 11 config variants) and
+`freertos-version-scope` (kernel version sweep plus the dual-core SMP lane).
+The FreeRTOS split matches the three fixture builders, so each lane mounts only
+the sources it builds from. Every test pipeline is defined once as a YAML anchor
+and referenced from both `push:` and `pull_request:`; the two event lists differ
+only in the two image publishers, which are push-only so a PR never moves a
+shared tag.
 GitHub Actions mirrors the validate jobs in `.github/workflows/ci.yml`. To
 reproduce the current ARM and RV64 QEMU matrices locally in a Podman machine:
 
