@@ -27,6 +27,7 @@ from freertos.timers import (
     state_cell,
     timer_epoch,
     timer_expires_in,
+    timer_is_on_lists,
     timer_list_label,
 )
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
@@ -421,14 +422,14 @@ def timer_detail(
     renders ``N/A`` expiry cells so a stale list-item value is never read
     as a live deadline.  The pending-command section trails the checks.
     """
-    dormant = obj.source != "active"
+    dormant = not timer_is_on_lists(obj.source, obj.extra_sources)
     tick = system_value("xTickCount")
     mask = (1 << layout.config.tick_bits) - 1
     in_overflow = timer_epoch(obj.container) == "overflow"
     pairs: list[tuple[str, str]] = [
         ("Name", obj.name),
         ("Address", format_address(obj.address)),
-        ("State", state_cell(obj.source, obj.status)),
+        ("State", state_cell(obj.source, obj.status, obj.extra_sources)),
         ("Mode", mode_cell(obj.status)),
         ("Period", format_optional_int(obj.period)),
         ("Expiry", "N/A" if dormant else format_optional_int(obj.expiry)),

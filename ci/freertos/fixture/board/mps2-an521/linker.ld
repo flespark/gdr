@@ -13,6 +13,25 @@
  * read at 0x10000000 falls through to empty RAM and the core boots with a
  * zero vector (INVSTATE fault).  The two addresses alias the same ssram-0,
  * so GDB symbols and the CPU1 INITSVTOR1 handshake stay consistent.
+ *
+ * MPU layout notes (the mpu variant, configENABLE_MPU 1):
+ * - The kernel marks its privileged entry points PRIVILEGED_FUNCTION /
+ *   FREERTOS_SYSTEM_CALL / PRIVILEGED_DATA, and mpu_wrappers.h declares
+ *   them with __attribute__((section("privileged_functions"))) etc. -- the
+ *   GCC section NAMES HAVE NO LEADING DOT.  The script must collect
+ *   *(privileged_functions*), not *(.privileged_functions*): the dotted
+ *   spelling matches nothing, the real section becomes an orphan, and the
+ *   port's SVC gate (port.c: if (ulPC >= start && ulPC <= end)) sees an
+ *   empty region and never starts the scheduler.
+ * - ARMv8-M PMSAv8 forbids overlapping MPU regions.  The three flash
+ *   windows (privileged functions, system calls, unprivileged task code)
+ *   must therefore be disjoint, not three aliases of the whole FLASH
+ *   window: overlapping regions fault with UFSR.INVPC in prvSetupMPU.
+ * - __*_end__ symbols are the RLAR inclusive limit, so they are `start
+ *   + size - 1` (the port writes them straight into the RLAR register).
+ * On the non-MPU variants (smp) the privileged/system-call sections are
+ * empty; their region symbols then span nothing and the port (compiled
+ * without the MPU region setup) ignores them.
  */
 ENTRY(Reset_Handler)
 
@@ -26,60 +45,61 @@ MEMORY
 
 SECTIONS
 {
-    /* Reason: the MPU port maps the SVC handlers' flash region between
-     * __syscalls_flash_start__ and __syscalls_flash_end__ (port.c
-     * vPortInitialiseMPUConfig); the conventional definition spans the
-     * whole flash window.  PROVIDE keeps the symbols out of non-MPU
-     * builds (empty region, port ignores it). */
-    PROVIDE(__syscalls_flash_start__ = ORIGIN(FLASH));
-    PROVIDE(__syscalls_flash_end__ = ORIGIN(FLASH) + LENGTH(FLASH));
-    /* Reason: the unprivileged flash region (port.c vPortInitialiseMPU
-     * Config case for the task-code window) spans the same window; a
-     * fixture task's code then runs unprivileged with read-execute access
-     * while the kernel's PRIVILEGED_FUNCTION entries stay in the separate
-     * privileged_functions section. */
-    PROVIDE(__unprivileged_flash_start__ = ORIGIN(FLASH));
-    PROVIDE(__unprivileged_flash_end__ = ORIGIN(FLASH) + LENGTH(FLASH));
-
-    /* Reason: the MPU port's privileged-SRAM baseline (port.c
-     * xPortIsAuthorizedToAccessBuffer) spans the whole data window in the
-     * upstream demos; PROVIDE keeps it out of non-MPU builds. */
-    PROVIDE(__privileged_sram_start__ = ORIGIN(RAM));
-    PROVIDE(__privileged_sram_end__ = ORIGIN(RAM) + LENGTH(RAM));
-
     .isr_vector :
     {
         KEEP(*(.isr_vector))
-        . = ALIGN(4);
+        . = ALIGN(32);
     } > FLASH
 
-    .text :
-    {
-        *(.text*)
-        *(.rodata*)
-        . = ALIGN(4);
-        _etext = .;
-    } > FLASH
-
-    /* Reason: the ARM_CM33_NTZ port with configENABLE_MPU maps a
-     * "privileged functions" region from __privileged_functions_start__ to
-     * __privileged_functions_end__ (port.c vPortInitialiseMPUConfig); the
-     * kernel marks its privileged entry points PRIVILEGED_FUNCTION, which
-     * GCC places in .privileged_functions.  Empty on the non-MPU variants
-     * of this board (both symbols equal, region disabled). */
+    /* Privileged entry points (PRIVILEGED_FUNCTION) -- region 0 of the
+     * port's MPU setup (port.c prvSetupMPU case for the SVC handlers). */
     .privileged_functions : ALIGN(32)
     {
         __privileged_functions_start__ = .;
-        KEEP(*(.privileged_functions*))
+        KEEP(*(privileged_functions*))
         . = ALIGN(32);
-        __privileged_functions_end__ = .;
+        __privileged_functions_end__ = . - 1;
     } > FLASH
 
-    _sidata = LOADADDR(.data);
+    /* SVC system-call trampolines (FREERTOS_SYSTEM_CALL) -- region 1. */
+    .freertos_system_calls : ALIGN(32)
+    {
+        __syscalls_flash_start__ = .;
+        KEEP(*(freertos_system_calls*))
+        . = ALIGN(32);
+        __syscalls_flash_end__ = . - 1;
+    } > FLASH
+
+    /* Task code runs unprivileged: everything after the privileged regions
+     * is the unprivileged flash window (region 4 of prvSetupMPU). */
+    .text : ALIGN(32)
+    {
+        __unprivileged_flash_start__ = .;
+        *(.text*)
+        *(.rodata*)
+        . = ALIGN(32);
+        _etext = .;
+    } > FLASH
+    __unprivileged_flash_end__ = ORIGIN(FLASH) + LENGTH(FLASH) - 1;
+
+    /* PRIVILEGED_DATA globals live at the start of RAM so the port's
+     * privileged-SRAM region (xPortIsAuthorizedToAccessBuffer) covers just
+     * them, not the whole data window.  This section is the first loadable
+     * data section, so _sidata points at its flash image and the startup
+     * copy covers .privileged_data + .data. */
+    .privileged_data : ALIGN(32)
+    {
+        _sdata = .;
+        __privileged_sram_start__ = .;
+        *(privileged_data*)
+        . = ALIGN(32);
+        __privileged_sram_end__ = . - 1;
+    } > RAM AT > FLASH
+
+    _sidata = LOADADDR(.privileged_data);
 
     .data : ALIGN(4)
     {
-        _sdata = .;
         *(.data*)
         . = ALIGN(4);
         _edata = .;

@@ -271,9 +271,9 @@ ruff + unit coverage on Python 3.10/3.14, the GDB 12 compatibility baseline,
 RT-Thread split by target (`rtthread-a9-target` / `rtthread-rv64-target`), and
 FreeRTOS split by what
 each lane can falsify — `freertos-snapshot` (static ELF, no QEMU),
-`freertos-config-scope` (kernel 10.3.1, 13 config variants) and
-`freertos-version-scope` (kernel version sweep, the dual-core SMP lane and
-the 64-bit RISC-V lane).
+`freertos-config-scope` (kernel 10.3.1, 14 config variants) and
+`freertos-version-scope` (kernel version sweep, the dual-core SMP and
+single-core MPU lanes on mps2-an521, and the 64-bit RISC-V lane).
 The FreeRTOS split matches the three fixture builders, so each lane mounts only
 the sources it builds from. Every test pipeline is defined once as a YAML anchor
 and referenced from both `push:` and `pull_request:`; the two event lists differ

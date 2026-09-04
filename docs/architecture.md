@@ -409,8 +409,9 @@ exported") and skips the mismatch check rather than guessing.
 `heap-protector` (≥V11), `heap-5-protector` (heap_5 + the protector, one
 region), `registry-0`, `pend-callback` (`INCLUDE_xTimerPendFunctionCall`),
 `streams` (write/read/delete actions on the stream/message/batching
-buffers), `mpu` (single-core `configENABLE_MPU`, wrappers v2) and `smp`
-(dual-core 11.3.1). Cache layout is
+buffers), `mpu` (single-core `configENABLE_MPU`, wrappers v2), `smp`
+(dual-core 11.3.1) and `tick16` (`configUSE_16_BIT_TICKS 1`, a 2-byte
+`TickType_t` on either ARM lane's kernel). Cache layout is
 `<cache>/<target>/<version>/<variant>/freertos.elf`. Independent expected
 capabilities live in `tests/support/freertos_fixture_profiles.py` and must not
 be derived from `freertos/layout.py`.
@@ -424,39 +425,33 @@ N/A and HighWater scans `[pxStack, pxTopOfStack)`.
 
 **Not covered by any current fixture (documented, unit-tested only):**
 
-- `mpu-pool` (`portUSING_MPU_WRAPPERS` + MPU wrappers v2 / `xKernelObjectPool`):
-  the `mpu` variant (single-core CM33 on mps2-an521, `configENABLE_MPU 1`,
-  `configUSE_MPU_WRAPPERS_V1 0`) builds, links and boots through every object
-  create and thirteen of sixteen task creates, but its boot is not stable
-  under QEMU's SSE-200 model: the wrappers-v2 SVC path faults (`UsageFault`,
-  with a clean fault-status register) at a point that varies run to run.  The
-  chain was pushed as far as B-L475E-class debugging allows -- pool capacity,
-  `portPRIVILEGE_BIT` task priorities, SVC/privileged linker regions -- and
-  the remaining instability is in the C-model's MPU/SVC execution, not in GDR
-  (the same firmware boots deterministically on the same machine without
-  `configENABLE_MPU`).  **Proven unreachable under QEMU** therefore stays
-  documented here: the channel semantics (empty/reserved-slot skip,
-  `ulKernelObjectType` kind mapping, QUEUE-slot `inferred_kind`) remain
-  covered by unit tests and the channel degrades to a no-symbol skip on every
-  live lane.  On real hardware the pool is populated by *every*
-  `MPU_xQueueGenericCreate` (the headers macro-rewrite plain creates even for
-  non-restricted tasks), so a hardware CM33 lane -- or a single-core
-  `mps2-an505` machine, which this instability has not been reproduced on --
-  remains the way to close it.
 - `stack_grows_up`: **not supported**. GDR decodes stacks as grow-down only
   (high water mark scans the untouched fill from the low end). The sole
   upstream `portSTACK_GROWTH +1` port is SDCC/Cygnal 8051, which has no GCC
   toolchain and no QEMU machine, so no grow-up target can exist; the dead
   field/branch was removed rather than kept as an untestable probe.
-- Event-group control bits at **16-bit** tick width (`event_bit_masks` with
-  `configTICK_TYPE_WIDTH_IN_BITS` 16): a fixture gap, not an impossibility.
-  The width is config-selectable on the existing ARM lanes (FreeRTOS.h), no
-  cell selects it yet, and the derivation is unit-tested at all three widths.
-  32-bit is live on every ARM lane and 64-bit on the RISC-V lane.
 
 **Closed by the fixture matrix (formerly unit-test-only; do not re-add them
 to the list above without re-checking the fixture):**
 
+- The `mpu-pool` channel (`portUSING_MPU_WRAPPERS` + MPU wrappers v2 /
+  `xKernelObjectPool`): live on the `mpu` variant (single-core CM33 on
+  mps2-an521, `configENABLE_MPU 1`, `configUSE_MPU_WRAPPERS_V1 0`,
+  `configRUN_FREERTOS_SECURE_ONLY 1`).  Every object create macro-rewrites to
+  an `MPU_*` entry, so the pool is populated at boot and the channel's
+  empty/reserved-slot skip, `ulKernelObjectType` kind mapping and QUEUE-slot
+  `inferred_kind` are exercised live; `frt objects` reports an `mpu-pool=N`
+  source for every kind.  The live assertion checks `N >= 1` rather than an
+  exact census, which would drift with the fixture's object set.
+- Event-group control bits at **16-bit** tick width: live on the `tick16`
+  variant (`configUSE_16_BIT_TICKS 1`; the legacy knob is defined before the
+  shared header -- it is the one spelling every supported kernel accepts, and
+  `configTICK_TYPE_WIDTH_IN_BITS` exists only from V10.6.0, while FreeRTOS.h
+  rejects a config defining both).
+  `sizeof(TickType_t) == 2`, the top-byte control masks still decode
+  `wants`/`missing` exactly like the 32-bit cells, and the `ListInit` /
+  `NextUnblockTime` sentinel reads are width-correct (a raw pointer-width
+  read would fold the padding bytes after each `xItemValue`).
 - Timer daemon queue `pended callback` arm (`xMessageID < 0`): live on the
   `pend-callback` variant, which enables `INCLUDE_xTimerPendFunctionCall` and
   suspends the daemon before enqueueing a callback plus six timer commands.
@@ -586,7 +581,7 @@ six channels, each of which attaches its origin to the object:
 | MPU pool | `xKernelObjectPool` (file-static, wrappers v2 only) | all kinds |
 | registry | `xQueueRegistry`, whole array scanned (holes included) | queue/semaphore/mutex |
 | active | `pxCurrentTimerList` / `pxOverflowTimerList` | timers (active only) |
-| symbol | one `info variables` scan per session, cached; `Static*_t` buffers use the symbol address, `*Handle_t` uses the pointer value | all kinds |
+| symbol | one `info variables` scan per session, cached; `Static*_t` buffers use the symbol address, `*Handle_t` uses the pointer value (translated through the kernel object pool on MPU builds, where the handle is an opaque slot index) | all kinds |
 | waiter | reverse `container_of` from a blocked TCB's `xEventListItem.pxContainer`, confirmed by list membership and struct plausibility | queue/semaphore/mutex/event group |
 | user | explicit `0x`/decimal address or symbol name | all kinds |
 
@@ -633,10 +628,15 @@ The waiter channel validates hosts by field plausibility (`uxLength`/`uxMessages
 can in principle still misread plausible neighbouring memory — every other
 channel outranks it.
 
-The `mpu-pool` channel is implemented with unit-test stubs only: no live
-fixture covers it (the `mpu` variant builds and links, but the wrappers-v2
-SVC path faults under QEMU's SSE-200 model -- proven unreachable there, see
-the "Not covered" list above). The `waiter` channel is pinned by a deliberate
+The `mpu-pool` channel is live on the `mpu` variant (see the "Closed by the
+fixture matrix" list); the empty/reserved-slot skip, kind mapping and
+QUEUE-slot `inferred_kind` semantics were unit-tested before any bootable
+fixture existed.  On an MPU build the application-visible handle is an opaque
+pool index (wrappers v2 `CONVERT_TO_EXTERNAL_INDEX` = slot + 1), never a
+pointer, so the symbol and user channels translate such a value through
+`xKernelObjectPool[value - 1].xInternalObjectHandle` (and skip a value that
+is neither a valid index nor a pointer inside a mapped section) instead of
+reading `0x3` as an address. The `waiter` channel is pinned by a deliberate
 fixture object:
 `gdr_waiter_only_eg_task` (ci/freertos/fixture/main.c) blocks forever on an
 event group whose handle lives only on its own stack, so that group is

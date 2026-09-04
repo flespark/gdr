@@ -55,6 +55,7 @@ from freertos.timers import (
     state_cell,
     timer_epoch,
     timer_expires_in,
+    timer_is_on_lists,
     timer_subsystem_ready,
 )
 from gdr.adapter_api import (
@@ -822,14 +823,19 @@ class FreeRtosAdapter(RtosAdapter):
         # Reason: partition keeps the active (list-reachable) timers first
         # and the dormant ones (static buffers / global handles) after them,
         # so a reader never has to guess which rows the kernel references.
-        objects.sort(key=lambda obj: 0 if obj.source == "active" else 1)
+        # List membership is the active channel's signal, which on a pool-
+        # based build arrives as an extra source (see timer_is_on_lists).
+        objects.sort(
+            key=lambda obj: 0 if timer_is_on_lists(obj.source, obj.extra_sources) else 1
+        )
         tick = system_value("xTickCount")
         mask = (1 << layout.config.tick_bits) - 1
         rows = []
         transition = False
         for obj in objects:
-            dormant = obj.source != "active"
-            state = state_cell(obj.source, obj.status)
+            listed = timer_is_on_lists(obj.source, obj.extra_sources)
+            dormant = not listed
+            state = state_cell(obj.source, obj.status, obj.extra_sources)
             transition = transition or state.endswith("?")
             in_overflow = timer_epoch(obj.container) == "overflow"
             rows.append(

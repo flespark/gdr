@@ -78,7 +78,16 @@ def test_gdr_object_queue_by_name_and_address(gdb_session):
 import gdb
 by_name = gdb.parse_and_eval('$gdr_object("queue", "gdr_empty_queue")')
 handle = int(gdb.parse_and_eval('gdr_empty_queue'))
-by_addr = gdb.parse_and_eval(f'$gdr_object("queue", "{hex(handle)}")')
+real = handle
+# Reason: on an MPU build the handle is an opaque pool index, so the
+# by-hex form must be fed the pool slot's internal address; other builds
+# have no xKernelObjectPool symbol and the handle is already the address.
+try:
+    slot = gdb.parse_and_eval("xKernelObjectPool")[handle - 1]
+    real = int(slot["xInternalObjectHandle"])
+except gdb.error:
+    pass
+by_addr = gdb.parse_and_eval(f'$gdr_object("queue", "{hex(real)}")')
 print(f"tag={by_name.type.strip_typedefs().tag}")
 print(f"same={int(by_name.address) == int(by_addr.address)}")
 print(f"length={int(by_name['uxLength'])}")

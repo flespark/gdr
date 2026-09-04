@@ -28,6 +28,13 @@
  * configENABLE_* macros be defined explicitly. */
 #define configENABLE_FPU 0
 #define configENABLE_TRUSTZONE 0
+/* Reason: run the CM33_NTZ port on the Secure side only (port.c:61: the
+ * valid combo is configRUN_FREERTOS_SECURE_ONLY 1 + configENABLE_TRUSTZONE
+ * 0).  QEMU's AN521 boots CPU0 secure, and every boot experiment without
+ * this knob faults inside prvSetupMPU (UsageFault; the fault register
+ * varies with the MPU region setup) -- the non-secure-only variant of the
+ * port setup is what a Secure-only machine cannot run. */
+#define configRUN_FREERTOS_SECURE_ONLY 1
 
 #include "gdr_fixture_common.h"
 

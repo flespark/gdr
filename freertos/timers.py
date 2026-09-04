@@ -184,7 +184,21 @@ def owner_check(container: int | None, owner: int | None, obj_address: int) -> s
     return f"mismatch (pvOwner={hex(owner)})"
 
 
-def state_cell(source: str, status: int | None) -> str:
+def timer_is_on_lists(source: str, extra_sources: tuple[str, ...] = ()) -> bool:
+    """Whether a timer was found by the active-list channel.
+
+    The active channel (``pxCurrentTimerList`` / ``pxOverflowTimerList``) is
+    the only channel that proves list membership.  It is usually the channel
+    of record; on a build with the MPU wrappers pool the pool claims every
+    object first and the active channel only corroborates (``extra_sources``
+    carries ``"active"``), so membership must be checked across both.
+    """
+    return source == "active" or "active" in extra_sources
+
+
+def state_cell(
+    source: str, status: int | None, extra_sources: tuple[str, ...] = ()
+) -> str:
     """Render the State cell: ``active``/``dormant``/``unknown``.
 
     The daemon updates ``ucStatus`` and the lists together while processing
@@ -195,7 +209,7 @@ def state_cell(source: str, status: int | None) -> str:
     if status is None:
         return "unknown"
     active = bool(status & _TMR_STATUS_ACTIVE)
-    linked = source == "active"
+    linked = timer_is_on_lists(source, extra_sources)
     if linked and active:
         return "active"
     if not linked and not active:

@@ -101,6 +101,47 @@ def _list_mem(
 
 
 # ---------------------------------------------------------------------------
+def _list_mem16(
+    head: int,
+    count: int,
+    items: list[int],
+    *,
+    end_value: int = 0xFFFF,
+    pad: int = 0,
+    index: int | None = None,
+    item_values: list[int] | None = None,
+    item_nexts: list[int] | None = None,
+    item_prevs: list[int] | None = None,
+    item_owners: list[int] | None = None,
+) -> dict[int, bytes]:
+    """Memory image of a List_t + item chain on a 32-bit target with a
+    16-bit TickType_t: every xItemValue is 1 halfword followed by 2 padding
+    bytes (pointer alignment), so a pointer-width read at offset 0 would
+    fold the padding into the value -- exactly the corruption the 16-bit
+    tick lane must ignore.
+    """
+    end = head + _END_OFFSET
+    index = end if index is None else index
+    first = items[0] if items else end
+    mem = {
+        head: struct.pack("<II", count, index),
+        end: struct.pack("<HHII", end_value, pad, first, end),
+    }
+    values = item_values or [0] * len(items)
+    if items:
+        nexts = item_nexts if item_nexts is not None else items[1:] + [end]
+        prevs = item_prevs if item_prevs is not None else [end] + items[:-1]
+    else:
+        nexts = item_nexts or []
+        prevs = item_prevs or []
+    owners = item_owners or [0] * len(items)
+    for item, value, nxt, prv, owner in zip(
+        items, values, nexts, prevs, owners, strict=True
+    ):
+        mem[item] = struct.pack("<HHIII", value, pad, nxt, prv, owner)
+    return mem
+
+
 # walk_list_raw
 # ---------------------------------------------------------------------------
 
@@ -342,6 +383,43 @@ def test_list_init_failure_reports_sentinel_mismatch(monkeypatch):
     assert results["ListInit"].startswith("fail:")
     assert "0x1234" in results["ListInit"]
     assert "0xffffffff" in results["ListInit"]
+
+
+def test_list_init_reads_end_value_at_tick_width(monkeypatch):
+    """A 16-bit tick reads xListEnd.xItemValue as 2 bytes, never 4.
+
+    Live padding bytes behind the sentinel (the kernel never reads them) are
+    arbitrary; the old pointer-width read folded them into the comparison
+    and fabricated a ListInit failure on a clean list.
+    """
+    head = 0x20000000
+    _patch_mem(
+        monkeypatch,
+        _list_mem16(head, count=0, items=[], end_value=0xFFFF, pad=0xDEAD),
+    )
+    layout = _layout(monkeypatch, tick_bits=16, smp=True)
+
+    results = dict(diagnostics.list_checks(head, layout))
+
+    assert results["ListInit"] == "ok"
+
+
+def test_list_init_reports_16bit_value_failure(monkeypatch):
+    """A genuinely wrong 16-bit sentinel reports the 2-byte value."""
+    head = 0x20000000
+    _patch_mem(
+        monkeypatch,
+        _list_mem16(head, count=0, items=[], end_value=0x1234, pad=0xDEAD),
+    )
+    layout = _layout(monkeypatch, tick_bits=16, smp=True)
+
+    results = dict(diagnostics.list_checks(head, layout))
+
+    status = results["ListInit"]
+    assert status.startswith("fail:")
+    assert "0x1234" in status
+    assert "0xffff" in status
+    assert "0xdead" not in status
 
 
 def test_list_count_skips_on_truncated_walk(monkeypatch):
@@ -655,7 +733,7 @@ def test_build_prefills_stacks_probes_the_population(monkeypatch):
 
 
 def _patch_system(
-    monkeypatch, symbols: dict, task_count: int | None, mem, delayed_head
+    monkeypatch, symbols: dict, task_count: int | None, mem, delayed_head, **config
 ):
     monkeypatch.setattr(
         diagnostics,
@@ -688,7 +766,7 @@ def _patch_system(
         monkeypatch.setattr(diagnostics, "member_offset", _offsets)
     else:
         monkeypatch.setattr(diagnostics, "safe_dereference", lambda _value: None)
-    return _layout(monkeypatch)
+    return _layout(monkeypatch, **config)
 
 
 def test_system_checks_pass_on_a_healthy_snapshot(monkeypatch):
@@ -803,6 +881,43 @@ def test_system_next_unblock_time_mismatch_reports_both_numbers(monkeypatch):
     status = results["NextUnblockTime"]
     assert status.startswith("fail:")
     assert "42" in status and "10" in status
+
+
+def test_next_unblock_time_reads_item_value_at_tick_width(monkeypatch):
+    """The delayed-list minimum is read at the tick width on a 16-bit build.
+
+    Poison padding behind each item value must not participate in the
+    minimum; the old pointer-width read made the front compare against
+    ``0xdead000a``-style values and failed a healthy kernel.
+    """
+    delayed_head = 0x3000
+    mem = _list_mem16(
+        delayed_head,
+        count=1,
+        items=[0x3200],
+        item_values=[10],
+        pad=0xDEAD,
+        item_owners=[0x1000],
+    )
+    heap = types.SimpleNamespace(cross_check="ok")
+    monkeypatch.setattr(diagnostics, "heap_snapshot", lambda _layout: heap)
+    layout = _patch_system(
+        monkeypatch,
+        symbols={
+            "uxCurrentNumberOfTasks": 4,
+            "uxSchedulerSuspended": 0,
+            "xNextTaskUnblockTime": 10,
+            "pxDelayedTaskList": object(),
+        },
+        task_count=4,
+        mem=mem,
+        delayed_head=delayed_head,
+        tick_bits=16,
+    )
+
+    results = dict(diagnostics.system_checks(layout))
+
+    assert results["NextUnblockTime"] == "ok"
 
 
 def test_system_heap_cross_check_reports_mismatch(monkeypatch):

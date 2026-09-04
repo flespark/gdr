@@ -166,6 +166,13 @@ Non-debugging symbols:
 50:\tstatic TaskHandle_t gdr_after_marker;
 """
 
+_MPU_INFO_VARIABLES = """\
+All defined variables:
+
+File /fixture/main.c:
+60:\tstatic QueueHandle_t gdr_empty_queue;
+"""
+
 
 def test_iter_static_symbol_objects_maps_typedef_names(monkeypatch):
     """Static buffers use their symbol address; handles use their value.
@@ -240,6 +247,136 @@ def test_iter_static_symbol_objects_degrades_on_scan_failure(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("must not re-scan")),
     )
     assert list(navigation.iter_static_symbol_objects(layout)) == []
+
+
+def _mpu_symbol_channel(monkeypatch, handle_value, pool_slots, ranges=()):
+    """Wire the symbol channel against an MPU build's opaque handles.
+
+    The wrappers v2 external index in a *Handle_t variable is translated
+    through xKernelObjectPool[value - 1].xInternalObjectHandle (see
+    _opaque_mpu_symbol_address); pool slots expose ``handle`` and
+    ``type_code`` attributes read through the same read_path wire the
+    mpu-pool channel tests use.
+    """
+    layout = build_layout(FreeRtosConfig(mpu_object_pool=True))
+    monkeypatch.setattr(navigation, "_info_variables_text", lambda: _MPU_INFO_VARIABLES)
+    by_name = {
+        "gdr_empty_queue": _FakeValue("QueueHandle_t", 0x20001000, handle_value),
+        "xKernelObjectPool": _FakePool(pool_slots),
+    }
+    monkeypatch.setattr(navigation, "lookup_symbol", by_name.get)
+    monkeypatch.setattr(navigation, "_array_item", lambda value, index: value[index])
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+    monkeypatch.setattr(
+        navigation,
+        "read_path",
+        lambda item, path: (
+            item.handle if path == ("xInternalObjectHandle",) else item.type_code
+        ),
+    )
+    monkeypatch.setattr(navigation, "_pointer_size", lambda: 4)
+    monkeypatch.setattr(navigation, "_mapped_ranges", lambda: ranges)
+    return layout
+
+
+def _mpu_pool_of(slots: dict[int, int]) -> list[types.SimpleNamespace]:
+    """48-slot pool stub where *slots* maps internal index to handle."""
+    return [
+        types.SimpleNamespace(handle=slots.get(i, 0xFFFFFFFF), type_code=1)
+        for i in range(48)
+    ]
+
+
+def test_symbol_channel_resolves_mpu_external_index(monkeypatch):
+    """A wrappers-v2 handle (pool index + 1) resolves to the slot's internal
+    object address instead of being read as a raw address."""
+    layout = _mpu_symbol_channel(
+        monkeypatch, handle_value=3, pool_slots=_mpu_pool_of({2: 0x280005E0})
+    )
+
+    found = list(navigation.iter_static_symbol_objects(layout))
+
+    assert len(found) == 1
+    assert found[0].address == 0x280005E0
+    assert found[0].kind == "queue"
+    assert found[0].source == "symbol"
+
+
+def test_symbol_channel_skips_unresolvable_mpu_index(monkeypatch):
+    """An index whose slot carries no object is an honest skip, never an
+    address-looking row."""
+    layout = _mpu_symbol_channel(
+        monkeypatch,
+        handle_value=7,
+        pool_slots=_mpu_pool_of({}),  # slot 6 is empty (0)
+        ranges=((0x10000000, 0x10040000), (0x28000000, 0x28200000)),
+    )
+
+    found = list(navigation.iter_static_symbol_objects(layout))
+
+    assert found == []
+
+
+def test_symbol_channel_skips_pointer_outside_sections_on_mpu_build(monkeypatch):
+    """A handle value that is neither a valid index nor inside a mapped
+    section cannot be trusted on an MPU build either."""
+    layout = _mpu_symbol_channel(
+        monkeypatch,
+        handle_value=0x20002000,
+        pool_slots=_mpu_pool_of({2: 0x280005E0}),
+        ranges=((0x28000000, 0x28200000), (0x10000000, 0x10040000)),
+    )
+
+    found = list(navigation.iter_static_symbol_objects(layout))
+
+    assert found == []
+
+
+def test_symbol_channel_keeps_pointer_values_on_mpu_build(monkeypatch):
+    """A pointer-sized value inside the mapped sections stays an address."""
+    layout = _mpu_symbol_channel(
+        monkeypatch,
+        handle_value=0x28002000,
+        pool_slots=_mpu_pool_of({2: 0x280005E0}),
+        ranges=((0x28000000, 0x28200000), (0x10000000, 0x10040000)),
+    )
+
+    found = list(navigation.iter_static_symbol_objects(layout))
+
+    assert len(found) == 1
+    assert found[0].address == 0x28002000
+
+
+def test_symbol_channel_unaffected_without_mpu_pool(monkeypatch):
+    """On a non-MPU build the pool is never consulted and the existing
+    pointer-value semantics stay untouched."""
+    layout = build_layout(FreeRtosConfig(mpu_object_pool=False))
+    monkeypatch.setattr(navigation, "_info_variables_text", lambda: _MPU_INFO_VARIABLES)
+    monkeypatch.setattr(
+        navigation,
+        "lookup_symbol",
+        lambda name: {
+            "gdr_empty_queue": _FakeValue("QueueHandle_t", 0x20001000, 0x20002000)
+        }.get(name),
+    )
+
+    found = list(navigation.iter_static_symbol_objects(layout))
+
+    assert len(found) == 1
+    assert found[0].address == 0x20002000
+
+
+def test_resolve_object_resolves_mpu_handle_via_pool(monkeypatch):
+    """The user channel (frt queue <name>) translates an MPU handle too."""
+    layout = _mpu_symbol_channel(
+        monkeypatch, handle_value=3, pool_slots=_mpu_pool_of({2: 0x280005E0})
+    )
+
+    obj = navigation.resolve_object("queue", "gdr_empty_queue", layout)
+
+    assert obj is not None
+    assert obj.address == 0x280005E0
+    assert obj.source == "user"
 
 
 # ---------------------------------------------------------------------------

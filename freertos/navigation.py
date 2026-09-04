@@ -755,11 +755,17 @@ def _scan_symbol_objects(layout: FreeRtosLayout):
         # pxTaskBuffer straight to the TCB), so its symbol address is the
         # object address; a *Handle_t variable holds a pointer to the object,
         # so the pointer value is. Mixing the two up yields fake objects in
-        # .bss that still cast and read plausibly.
+        # .bss that still cast and read plausibly.  On an MPU build the
+        # *Handle_t value is additionally an opaque pool index (see
+        # _opaque_mpu_symbol_address), never a pointer.
         if type_name in _KIND_BY_STATIC_TYPE:
             address = value_address(value)
         else:
             address = safe_int(value)
+            if address and layout.config.mpu_object_pool:
+                address = _opaque_mpu_symbol_address(address, layout)
+                if address is None:
+                    continue
         if not address:
             continue
         if kind == "timer":
@@ -811,6 +817,61 @@ def _pointer_size() -> int:
         return arch.ptrsize
     warn("target pointer width unknown; assuming 32-bit for MPU object pool")
     return 4
+
+
+def _mpu_pool_count(layout: FreeRtosLayout) -> int | None:
+    """Return the wrappers-v2 xKernelObjectPool slot count, or ``None``.
+
+    The pool is a file-static array (mpu_wrappers_v2.c) reached through the
+    static-symbol path; a missing symbol or an undecodable array bound hides
+    the pool entirely rather than guessing a size.
+    """
+    if not layout.config.mpu_object_pool:
+        return None
+    pool = lookup_symbol("xKernelObjectPool")
+    if pool is None:
+        return None
+    count = _value_array_bound(pool)
+    return count if count and count > 0 else None
+
+
+def _opaque_mpu_symbol_address(handle: int, layout: FreeRtosLayout) -> int | None:
+    """Translate a *Handle_t value on an MPU-wrappers build to an address.
+
+    With ``configENABLE_MPU`` every create macro-rewrites to its ``MPU_``
+    counterpart (mpu_wrappers.h) and ``MPU_x*Create`` returns
+    ``CONVERT_TO_EXTERNAL_INDEX(lIndex)`` -- the ``xKernelObjectPool`` index
+    plus one, a small integer (mpu_wrappers_v2.c).  A handle variable therefore
+    holds an opaque index, never a pointer; reading it as an address fabricates
+    object rows like ``Addr 0x3``.  A valid index is resolved through the
+    slot's ``xInternalObjectHandle``; a value that is neither a valid index
+    nor a pointer inside a mapped section returns ``None`` so the caller can
+    skip the symbol instead.  Returns *handle* unchanged when no map exists
+    and the value is not an index (unit tests with synthetic addresses).
+    """
+    if not handle:
+        return None
+    pool_count = _mpu_pool_count(layout)
+    if pool_count is not None and 0 < handle <= pool_count:
+        pool = lookup_symbol("xKernelObjectPool")
+        item = _array_item(pool, handle - 1) if pool is not None else None
+        if item is None:
+            return None
+        internal = read_int(read_path(item, ("xInternalObjectHandle",)))
+        mask = (1 << (8 * _pointer_size())) - 1
+        # Reason: an empty slot is 0 and a slot reserved mid-create is ~0;
+        # neither translates to an object, so the symbol is skipped instead
+        # of registering a fake address.
+        if not internal or internal == mask:
+            return None
+        return internal
+    ranges = _mapped_ranges()
+    if ranges and not any(low <= handle < high for low, high in ranges):
+        # Reason: on a live MPU build the only values below the pool size
+        # are indices; anything outside every loadable section is not an
+        # address either, so trust neither and skip.
+        return None
+    return handle
 
 
 def _value_array_bound(value) -> int | None:
@@ -1158,6 +1219,28 @@ def _merge_source(obj: DiscoveredObject, source: str) -> DiscoveredObject:
     return replace(obj, extra_sources=(*obj.extra_sources, source))
 
 
+def _merge_corroboration(
+    record: DiscoveredObject, later: DiscoveredObject
+) -> DiscoveredObject:
+    """Fold a later channel's finding of the same address into *record*.
+
+    ``extra_sources`` accumulates; additionally, a later channel may supply
+    the display name when the record-holder has none.
+
+    Reason: on an MPU build the wrappers v2 pool is the first channel for
+    every object (every create macro-rewrites to an ``MPU_*`` entry) but its
+    ``KernelObject_t`` slots carry no name (mpu_wrappers_v2.c), so pool-
+    found objects would render a ``-`` row even though the registry or the
+    symbol channel named the same address.  Adopting is safe everywhere
+    else: no other lane has a nameless record-holder that a later channel
+    re-finds.
+    """
+    merged = _merge_source(record, later.source)
+    if record.name is None and later.name is not None:
+        merged = replace(merged, name=later.name)
+    return merged
+
+
 def discover(
     kind: str,
     layout: FreeRtosLayout,
@@ -1205,7 +1288,7 @@ def discover(
                 # Reason: a later channel seeing the same address is
                 # corroboration, not noise -- record it so provenance can
                 # show every channel while the first one stays of record.
-                found[position] = _merge_source(found[position], obj.source)
+                found[position] = _merge_corroboration(found[position], obj)
                 continue
             if obj.address in filtered:
                 # Reason: the address already refined to a different kind, so
@@ -1245,8 +1328,8 @@ def discover_all(layout: FreeRtosLayout) -> dict[str, list[DiscoveredObject]]:
             slot = placed.get(obj.address)
             if slot is not None:
                 group, position = slot
-                groups[group][position] = _merge_source(
-                    groups[group][position], obj.source
+                groups[group][position] = _merge_corroboration(
+                    groups[group][position], obj
                 )
                 continue
             obj = _refine_queue_object(obj, layout)
@@ -1256,24 +1339,30 @@ def discover_all(layout: FreeRtosLayout) -> dict[str, list[DiscoveredObject]]:
     return groups
 
 
-def _address_from_symbol(value) -> int | None:
+def _address_from_symbol(value, layout: FreeRtosLayout | None = None) -> int | None:
     """Return the object address a Static*_t / *Handle_t symbol refers to.
 
     Static buffers are the object itself (symbol address); handles hold a
-    pointer to the object (pointer value).
+    pointer to the object (pointer value).  With *layout* given, a handle
+    value on an MPU build is translated through the kernel object pool first
+    (wrappers v2 opaque indices), so ``frt <kind> <name>`` resolves an MPU
+    handle to its real address too.
     """
     type_name = getattr(value.type, "name", None)
     if type_name in _KIND_BY_STATIC_TYPE:
         return value_address(value)
     if type_name in _KIND_BY_HANDLE_TYPE:
-        return safe_int(value)
+        address = safe_int(value)
+        if address and layout is not None and layout.config.mpu_object_pool:
+            return _opaque_mpu_symbol_address(address, layout)
+        return address
     return None
 
 
 def resolve_object(
     kind: str,
     text: str,
-    layout: FreeRtosLayout,  # noqa: ARG001 (uniform channel signature)
+    layout: FreeRtosLayout,
 ) -> DiscoveredObject | None:
     """Resolve an explicit address or symbol name to a discovered object.
 
@@ -1299,7 +1388,7 @@ def resolve_object(
     if is_plain_identifier(text) or text.isdecimal():
         value = lookup_symbol(text)
         if value is not None:
-            address = _address_from_symbol(value)
+            address = _address_from_symbol(value, layout)
             if address:
                 return DiscoveredObject(
                     kind=kind, address=address, name=text, source="user"

@@ -30,6 +30,7 @@ _COMPARED_FIELDS = (
     "number_of_cores",
     "heap_protector",
     "stream_buffers",
+    "tick_bits",
 )
 
 
@@ -73,6 +74,7 @@ print(f"registry_size={cfg.queue_registry_size}")
 print(f"number_of_cores={cfg.number_of_cores}")
 print(f"heap_protector={cfg.heap_protector}")
 print(f"stream_buffers={cfg.stream_buffers}")
+print(f"tick_bits={cfg.tick_bits}")
 print(f"stack_end={cfg.stack_end_field}")
 """
     )

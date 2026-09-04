@@ -29,6 +29,7 @@ _SUPPORTED_VARIANTS = (
     "mpu",
     "rv64",
     "smp",
+    "tick16",
 )
 
 _SUPPORTED_BOARDS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521", "qemu-virt-rv64")
@@ -56,6 +57,7 @@ class FreeRtosTestProfile:
     stream_buffers: bool
     batching_buffer: bool
     stack_watermark: bool
+    tick_bits: int = 32
 
 
 def _parse_version(version: str) -> tuple[int, int, int]:
@@ -107,10 +109,23 @@ def get_freertos_test_profile(
         variant=variant,
         version=version,
         target=target,
+        # Reason: 16-bit ticks are a pure config knob (configUSE_16_BIT_TICKS
+        # 1) and the RISC-V port hardcodes TickType_t to the architecture
+        # width (the rv64 lane also declares configTICK_TYPE_WIDTH_IN_BITS
+        # 64, so the kernel's control-bit placement matches); both widths are
+        # written here independently and compared against detect_config()'s
+        # sizeof(TickType_t) probe, never backfilled from freertos.layout.
+        tick_bits=16 if variant == "tick16" else 64 if variant == "rv64" else 32,
         heap_kind=_heap_kind_for(variant),
         trace_facility=variant != "trace-off",
         static_allocation=variant in {"static-only", "static-dynamic", "streams"},
-        static_and_dynamic=variant in {"static-dynamic", "streams"},
+        # Reason: tskSTATIC_AND_DYNAMIC_ALLOCATION_POSSIBLE (FreeRTOS.h) is
+        # true when (both allocation modes are on) OR (MPU wrappers are on
+        # and dynamic allocation is on) -- portUSING_MPU_WRAPPERS makes the
+        # TCB declare ucStaticallyAllocated even with no static create API,
+        # so the mpu variant is probed True while static_allocation stays
+        # False (xTaskCreateStatic is macro-rewritten to MPU_xTaskCreateStatic).
+        static_and_dynamic=variant in {"static-dynamic", "streams", "mpu"},
         notification_array=v10_4,
         # Reason: configUSE_MINI_LIST_ITEM defaults to 1 from V10.5.0; earlier
         # kernels always used MiniListItem_t without the config switch, so the

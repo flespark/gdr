@@ -151,13 +151,26 @@ All notable changes to GDR are documented in this file.
   always uses 64-bit ticks, so the event-group decode runs on a 64-bit
   tick width too.
 - FreeRTOS fixture variant `mpu` (single-core CM33 on mps2-an521 with
-  `configENABLE_MPU` and `configUSE_MPU_WRAPPERS_V1 0`) builds and links the
-  MPU wrappers v2, but its boot is not stable under QEMU's SSE-200 model
-  (UsageFault in the wrappers-v2 SVC path with clean fault-status registers),
-  so it is documented as unreachable under QEMU and stays out of CI: the
-  `mpu-pool` discovery channel keeps unit-test coverage (on real hardware
-  the pool would be populated by every plain task or queue create, since the
-  headers macro-rewrite the creates to their `MPU_` counterparts).
+  `configENABLE_MPU`, `configUSE_MPU_WRAPPERS_V1 0` and
+  `configRUN_FREERTOS_SECURE_ONLY 1`) now boots and is on CI: the
+  `mpu-pool` discovery channel gets its first live fixture (`frt objects`
+  reports an `mpu-pool=N` source for every kind, the pool is populated at
+  boot, and every object create macro-rewrites to its `MPU_*` counterpart
+  since the headers rewrite plain creates too).  The previous "boot is not
+  stable under QEMU's SSE-200" conclusion was wrong: the fixture's own
+  linker script collected `*(.privileged_functions*)` (wrong -- the kernel's
+  section names have no leading dot, so the real section was an orphan and
+  the SVC gate saw an empty region) and overlapped every flash region
+  (PMSAv8 forbids overlapping MPU regions, `UFSR.INVPC`).  Both are fixed in
+  `board/mps2-an521/linker.ld`, which `smp` and `mpu` share, so the two
+  variants boot from the same board directory and one CI stage.
+- FreeRTOS fixture variant `tick16` selects `configUSE_16_BIT_TICKS 1`
+  (defined before the shared common header, which would otherwise force its
+  own 0; the legacy knob is the only spelling every supported kernel
+  accepts).  It is the live cell for the 16-bit tick-width-derived event-
+  group control masks (the decode stays byte-identical to the 32-bit cells),
+  the `portMAX_DELAY == 0xffff` sentinels, and the width-correct raw reads
+  of `xItemValue` in the list and delayed-list checks.
 - FreeRTOS `frt queues` / `frt semaphores` / `frt mutexes` print their own
   column-contract tables instead of the neutral Kind/Count fallback:
   `Name Type Items Length ItemSize Free SendWait RecvWait Locks [Set] Src
@@ -258,6 +271,18 @@ All notable changes to GDR are documented in this file.
 
 ### Fixed
 
+- FreeRTOS `frt system` next-unblock and list-sentinel checks (`ListInit`,
+  `NextUnblockTime`) read `xItemValue` at the **tick width** (2 bytes on the
+  new tick16 lane) instead of the pointer width, so the two padding bytes
+  after every 16-bit `xItemValue` can no longer fold into the comparison and
+  fabricate failures on a healthy kernel.
+- FreeRTOS symbol and user object channels translate wrappers-v2 opaque
+  handles on MPU builds: `MPU_x*Create` returns `CONVERT_TO_EXTERNAL_INDEX`
+  (pool index + 1), which is not a pointer, so a `*Handle_t` whose value is
+  a valid pool index is resolved through
+  `xKernelObjectPool[value - 1].xInternalObjectHandle` and a value that is
+  neither a valid index nor a pointer inside a mapped section is skipped --
+  `frt queues` no longer prints `Addr 0x3`-style rows on the mpu variant.
 - The waiter channel's event-group plausibility check no longer scales its
   threshold with the tick width: on a 64-bit tick the old `(1 <<
   (tick_bits - 8))` bound was `(1 << 56)` and every RAM pointer passed it,

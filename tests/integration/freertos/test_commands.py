@@ -316,6 +316,13 @@ if unknown:
 """
     )
     _assert_clean_command_output(probe)
+    if _PROFILE.variant == "mpu":
+        # Reason: on an MPU build every create macro-rewrites to an MPU_*
+        # entry, so xKernelObjectPool is a complete object registry -- the
+        # waiter-only group's address is pool-known and the probe can never
+        # see an unknown host by construction.
+        assert "unknown_hosts=0" in probe, probe
+        return
     # Exactly one unknown host is allowed: the waiter-only event group (no
     # global handle / registry / static symbol by construction).  Any other
     # unknown host would mean the container_of probe fabricated an object.
@@ -457,7 +464,15 @@ def test_timers_table_matches_fixture_ground_truth(gdb_session):
     assert active[1] == "active"
     assert active[2] == "auto"
     assert "active" in active[8]  # Src provenance
-    assert "gdr_timer_callback" in active[6]  # Callback symbolised
+    if _PROFILE.variant == "mpu":
+        # Reason: MPU_xTimerCreate stores the port's privileged callback
+        # wrapper as the Timer_t's pxCallbackFunction (mpu_wrappers_v2.c) so
+        # the daemon can transition privilege; the app callback lives in the
+        # pool slot's pvKernelObjectData and the column truthfully shows the
+        # wrapper.
+        assert "MPU_TimerCallback" in active[6]
+    else:
+        assert "gdr_timer_callback" in active[6]  # Callback symbolised
     assert active[7] == "-"  # pvTimerID is NULL in the fixture
     # Dormant rows are named by their pcTimerName and never render a stale
     # list-item value as a live deadline.
@@ -485,7 +500,12 @@ def test_timer_detail_reports_list_and_owner(gdb_session):
     assert a["Mode"] == "auto"
     assert a["List"].startswith(("current(", "overflow("))
     assert a["OwnerCheck"] == "ok"
-    assert "gdr_timer_callback" in a["Callback"]
+    if _PROFILE.variant == "mpu":
+        # Reason: see the table test -- MPU_xTimerCreate stores the
+        # privileged MPU_TimerCallback wrapper, not the app callback.
+        assert "MPU_TimerCallback" in a["Callback"]
+    else:
+        assert "gdr_timer_callback" in a["Callback"]
     c = _detail_pairs(created)
     assert c["List"] == "none"
     assert c["OwnerCheck"] == "uninitialised"
@@ -600,6 +620,109 @@ def test_event_group_table_and_detail_decode_live_waiter(gdb_session):
     assert "clearOnExit=no" in detail
     assert "missing=0x3" in detail
     assert "(satisfied" not in detail
+
+
+def test_tick16_lane_width_and_event_group_decode(gdb_session):
+    """The 16-bit tick cell keeps the event-group decode identical to the
+    32-bit cells and proves the ListInit sentinel read is 2 bytes wide.
+
+    COUPLED: tick16 variant + the fixture's gdr_evw (ALL on bits 0x3); the
+    kernel packs the request | eventIN_USE | control bits into a 16-bit
+    xEventListItem (0x8403 live), so wants=0x3 must survive the 16-bit
+    control-byte mask and the padding bytes after every xItemValue must not
+    leak into the checks.
+    """
+    if _PROFILE.variant != "tick16":
+        pytest.skip("requires the tick16 fixture")
+    probe = gdb_session.run_python(
+        """
+import gdb
+from freertos.layout import detect_config
+cfg = detect_config()
+tick = gdb.lookup_type("TickType_t").sizeof
+event = gdb.lookup_type("EventBits_t").sizeof
+print(f"tick={tick} event={event} tick_bits={cfg.tick_bits}")
+"""
+    )
+    assert "tick=2 event=2 tick_bits=16" in probe, probe
+    with _with_width(gdb_session, 200):
+        egs = gdb_session.run("freertos eventgroups", timeout=20)
+    _assert_clean_command_output(egs)
+    row = _fixture_row(egs, "gdr_event_group")
+    assert row[1] == "0x0"
+    assert row[2] == "1"
+    detail = gdb_session.run("freertos eventgroup gdr_event_group", timeout=20)
+    _assert_clean_command_output(detail)
+    assert "wants=0x3" in detail
+    assert "mode=ALL" in detail
+    assert "clearOnExit=no" in detail
+    assert "missing=0x3" in detail
+    # The portMAX_DELAY (0xffff) xListEnd sentinel must be read at 2 bytes;
+    # a pointer-width read would pull the padding after the value.
+    task = gdb_session.run("freertos task gdr_evw", timeout=20)
+    _assert_clean_command_output(task)
+    assert "Check[ListInit]" not in task, task
+    assert "Checks:" in task
+
+
+def test_mpu_lane_pool_channel_and_opaque_handles(gdb_session):
+    """The mpu cell proves the xKernelObjectPool channel live and the
+    wrappers-v2 opaque-index fix: symbol/user channels resolve a *Handle_t
+    (pool index + 1) to the slot's internal object address, so no table row
+    reads the index as an address.
+
+    COUPLED: mpu variant -- every create macro-rewrites to MPU_* and the
+    fixture's queue handles are CONVERT_TO_EXTERNAL_INDEX values; the pool's
+    xInternalObjectHandle is the ground-truth address.
+    """
+    if _PROFILE.variant != "mpu":
+        pytest.skip("requires the mpu fixture")
+    objects = gdb_session.run("freertos objects", timeout=20)
+    _assert_clean_command_output(objects)
+    assert "mpu-pool=" in objects, objects
+    queue_line = next(
+        line for line in objects.splitlines() if line.lstrip().startswith("queue ")
+    )
+    assert "mpu-pool=" in queue_line, objects
+    pool_count = int(re.search(r"mpu-pool=(\d+)", queue_line).group(1))
+    assert pool_count >= 1, objects
+
+    with _with_width(gdb_session, 200):
+        queues = gdb_session.run("freertos queues", timeout=20)
+    _assert_clean_command_output(queues)
+    # Every Addr cell must be a real section address.  Before the opaque-
+    # handle fix the symbol channel emitted rows whose Addr was the raw
+    # wrappers-v2 index (0x3, 0x4, 0x1...) -- far below any mapped section.
+    rows = [line.split() for line in queues.splitlines()]
+    addrs = [
+        int(cols[-1], 16)
+        for cols in rows
+        if cols
+        and cols[0] not in {"Name", "-"}
+        and len(cols) >= 2
+        and cols[-1].startswith("0x")
+    ]
+    assert addrs and all(addr >= 0x10000000 for addr in addrs), queues
+    probe = gdb_session.run_python(
+        """
+import gdb
+from freertos.layout import detect_config, build_layout
+from freertos.navigation import resolve_object
+layout = build_layout(detect_config())
+obj = resolve_object("queue", "gdr_empty_queue", layout)
+handle = int(gdb.parse_and_eval("gdr_empty_queue"))
+slot = gdb.parse_and_eval("xKernelObjectPool")[handle - 1]
+print(f"resolved={obj.address if obj else 0:#x}")
+print(f"slot={int(slot['xInternalObjectHandle']):#x}")
+"""
+    )
+    values = dict(line.split("=", 1) for line in probe.splitlines() if "=" in line)
+    assert values["resolved"] == values["slot"], probe
+
+    # A single-object detail must resolve through the same path (pool slot).
+    detail = gdb_session.run("freertos queue gdr_empty_queue", timeout=20)
+    _assert_clean_command_output(detail)
+    assert "Checks:" in detail, detail
 
 
 def test_stream_buffer_table_matches_fixture_geometry(gdb_session):
@@ -770,10 +893,9 @@ print(f"size_t={size_t} stack={stack_t} tick={tick_t}")
     assert 0 <= used < (1 << 63), system
 
 
-# The mpu-pool channel keeps unit-test-only coverage: the mpu variant
-# builds but its boot is not stable under QEMU's SSE-200 (proven
-# unreachable there, see docs/architecture.md), so no integration test
-# targets it.
+# The mpu-pool channel is exercised by test_mpu_lane_pool_channel_and_
+# opaque_handles above (the mpu variant is a live CI cell since the board
+# linker script's MPU regions were fixed).
 
 
 def test_static_event_group_flag_value_live(gdb_session):
@@ -862,7 +984,15 @@ print(f"addr={hex(anon[0].address)}" if anon else "addr=none")
     eg_line = next(
         line for line in objects.splitlines() if line.lstrip().startswith("eventgroup ")
     )
-    assert "waiter=1" in eg_line, objects
+    if _PROFILE.variant == "mpu":
+        # Reason: on an MPU build the pool is the complete object registry,
+        # so the waiter-only group is pool-known and the waiter channel only
+        # corroborates (source of record stays mpu-pool) -- the source counts
+        # can never show waiter=N there.
+        assert "waiter" not in eg_line, objects
+        assert "mpu-pool=" in eg_line, objects
+    else:
+        assert "waiter=1" in eg_line, objects
 
 
 _HEAP_KEYS = [

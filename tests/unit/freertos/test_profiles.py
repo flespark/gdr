@@ -71,12 +71,29 @@ def test_static_only_has_no_heap_manager():
 
 def test_mpu_pool_has_a_live_variant():
     """The mpu variant (single-core CM33 with configENABLE_MPU) is registered
-    and builds on mps2-an521; booting it is proven unreachable under QEMU
-    (see docs/architecture.md), so the xKernelObjectPool channel keeps
-    unit-test coverage.  The old 'mpu-pool' name is gone -- the pool symbol
-    is reached through the mpu variant's build."""
+    and boots live on mps2-an521 (the xKernelObjectPool channel's first live
+    fixture); it is not the old 'mpu-pool' name -- the pool symbol is reached
+    through the mpu variant's build.  The MPU wrappers v2 TCB declares
+    ucStaticallyAllocated whenever dynamic allocation is on, so the probed
+    static_and_dynamic is True even though the fixture never creates a
+    static task."""
     assert "mpu" in list_freertos_variants()
     assert "mpu-pool" not in list_freertos_variants()
+    profile = get_freertos_test_profile("mpu", "11.3.1", "mps2-an521")
+    assert profile.static_and_dynamic is True
+    assert profile.static_allocation is False
+
+
+def test_tick_widths_by_variant():
+    """Only tick16 declares a 16-bit tick; rv64 is 64-bit (RISC-V port)."""
+    assert get_freertos_test_profile("tick16", "10.3.1").tick_bits == 16
+    assert get_freertos_test_profile("tick16", "11.1.0", "mps2-an385").tick_bits == 16
+    assert get_freertos_test_profile("rv64", "11.1.0", "qemu-virt-rv64").tick_bits == 64
+    for variant in list_freertos_variants():
+        if variant in {"tick16", "rv64"}:
+            continue
+        profile = get_freertos_test_profile(variant, "11.1.0")
+        assert profile.tick_bits == 32, variant
 
 
 def test_stack_watermark_is_off_only_without_trace_facility():

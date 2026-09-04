@@ -438,10 +438,16 @@ def list_checks(
             (name, "skipped: list offsets unavailable") for name in _LIST_CHECK_NAMES
         ]
     ptrsize, _endian = _arch()
+    # Reason: xItemValue is a TickType_t, whose width follows the tick
+    # configuration (configTICK_TYPE_WIDTH_IN_BITS): 2 bytes on a 16-bit
+    # build.  Reading it at pointer width pulls the two padding bytes after
+    # the value into the comparison, so a 16-bit lane would fail ListInit
+    # whenever those (kernel-ignored) bytes are non-zero.
+    tick_bytes = layout.config.tick_bits // 8
     end_addr = head_address + offsets.end
     count = _read_field_at(head_address, offsets.count, ptrsize)
     index = _read_field_at(head_address, offsets.index, ptrsize)
-    end_value = _read_field_at(end_addr, offsets.end_value, ptrsize)
+    end_value = _read_field_at(end_addr, offsets.end_value, tick_bytes)
     walk = walk_list_raw(head_address, layout, max_count)
     results: list[tuple[str, str]] = []
     tick_mask = (1 << layout.config.tick_bits) - 1
@@ -707,11 +713,14 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
     offsets = _list_offsets(layout)
     if offsets is None:
         return ("NextUnblockTime", "skipped: list offsets unavailable")
-    ptrsize, _endian = _arch()
+    # Reason: xItemValue is a TickType_t -- on a 16-bit tick build a raw
+    # pointer-width read would fold the padding bytes after each item value
+    # into the minimum and falsely fail NextUnblockTime.
+    tick_bytes = layout.config.tick_bits // 8
     if walk.items:
         values = []
         for item in walk.items:
-            value = _read_field_at(item, offsets.item_value, ptrsize)
+            value = _read_field_at(item, offsets.item_value, tick_bytes)
             if value is None:
                 return ("NextUnblockTime", "skipped: unreadable")
             values.append(value)

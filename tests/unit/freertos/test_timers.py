@@ -79,6 +79,21 @@ def test_state_and_mode_cells_cover_transitions():
     assert timers.mode_cell(None) == "N/A"
 
 
+def test_state_cell_treats_active_extra_source_as_linked():
+    """A pool-of-record timer corroborated by the active channel is active.
+
+    On an MPU-wrappers build the pool claims every timer first and the
+    active channel only adds itself as an extra source; ucStatus and list
+    membership do agree, so the row must not render the in-flight ``?``.
+    """
+    assert timers.timer_is_on_lists("mpu-pool", ("active",)) is True
+    assert timers.timer_is_on_lists("mpu-pool", ()) is False
+    assert timers.timer_is_on_lists("active", ("mpu-pool",)) is True
+    assert timers.state_cell("mpu-pool", 0x05, ("active",)) == "active"
+    assert timers.state_cell("mpu-pool", 0x04, ("active",)) == "active?"
+    assert timers.state_cell("mpu-pool", 0x05) == "dormant?"
+
+
 def test_timer_expires_in_handles_overdue_and_overflow():
     """Current-list deltas render overdue instead of a giant wrap value; the
     overflow list belongs to the next tick epoch."""

@@ -147,6 +147,57 @@ the per-CPU container, not the MHU block), and delivering a cross-core
 interrupt into this `configRUN_FREERTOS_SECURE_ONLY 1` build was not validated
 here; it is left for a future lane.
 
+### Single-core MPU wrappers (`mps2-an521`, variant `mpu`)
+
+The same board directory hosts a **single-core** `configENABLE_MPU 1` variant
+(`config/smp/FreeRTOSConfig.h` sets two cores; `config/mpu/FreeRTOSConfig.h`
+keeps `configNUMBER_OF_CORES 1`, because SMP and MPU are mutually exclusive on
+ARMv8-M -- portmacrocommon.h `#error`s on the combination). The build links
+`portable/Common/mpu_wrappers_v2.c` and the port's `mpu_wrappers_v2_asm.c`; the
+headers macro-rewrite every plain create to its `MPU_*` counterpart, which
+records the object in `xKernelObjectPool` -- the only complete kernel object
+registry, and the `mpu-pool` discovery channel's live fixture.
+
+The variant needs `configRUN_FREERTOS_SECURE_ONLY 1` + `configENABLE_TRUSTZONE 0`
+(the port's secure-side-only combination, port.c) and **the board linker script
+must lay the MPU regions out correctly**. Two joint requirements, both in
+`board/mps2-an521/linker.ld`:
+
+1. The kernel marks its privileged entry points with
+   `__attribute__((section("privileged_functions")))` (mpu_wrappers.h -- the GCC
+   section names have **no leading dot**), so the script must collect
+   `*(privileged_functions*)`, `*(freertos_system_calls*)` and
+   `*(privileged_data*)`. A dotted spelling matches nothing, silently leaves the
+   real section as an orphan and produces
+   `__privileged_functions_start__ == __privileged_functions_end__`, so
+   `port.c`'s SVC gate (`ulPC >= start && ulPC <= end`) never admits
+   `xPortStartScheduler` and the scheduler never starts.
+2. ARMv8-M PMSAv8 forbids overlapping MPU regions: the three flash windows
+   (privileged functions, system calls, unprivileged task code) must be
+   disjoint subregions, not three aliases of the whole flash window -- an
+   overlap faults with `UFSR.INVPC` inside `prvSetupMPU`. The region end
+   symbols are the RLAR **inclusive** limit, so `__*_end__ = start + size - 1`.
+
+The earlier "boots are unstable/unreachable under QEMU's SSE-200" conclusion
+was wrong: it was this fixture linker script (both points at once). With the
+regions fixed the variant boots on the same machine the `smp` fixture boots,
+and the pool is populated at boot (36 of 48 slots with the current fixture
+object set -- a figure that drifts when the fixture creates more objects, so
+the live assertion only requires a non-empty pool). `smp` and `mpu` share the
+one linker script, so a regression on either variant fails the same CI stage.
+
+### 16-bit tick (`tick16`)
+
+`config/tick16/FreeRTOSConfig.h` defines `configUSE_16_BIT_TICKS 1` **before**
+`gdr_fixture_common.h` (the shared header's `#ifndef` guard would otherwise
+force its own 0; the variant cannot use `configTICK_TYPE_WIDTH_IN_BITS`, which
+only exists from V10.6.0, and FreeRTOS.h rejects a config defining both).
+`sizeof(TickType_t) == 2` and `portMAX_DELAY` shrinks to `0xffff`, so this is
+the live cell for the tick-width-derived event-group masks, the `portMAX_DELAY`
+sentinels and the width-correct list-value raw reads on every supported lane
+(10.3.1 CubeL4 and the 11.1.0 kernel-direct build). The tick wraps every
+~65.5 s at 1000 Hz, so no assertion may hard-code absolute tick values.
+
 ## Static snapshot lane
 
 `build-fixture-snapshot.sh` compiles `snapshot/snapshot.c` for Cortex-M33 into
@@ -194,21 +245,6 @@ member's existence depends on the config. Gating must be proved on a live lane.
 
 ## Variants that no fixture can reach
 
-- **MPU object pool** (`portUSING_MPU_WRAPPERS 1` with
-  `configUSE_MPU_WRAPPERS_V1 0`, the only complete kernel object registry)
-  is **proven unreachable under QEMU**: the `mpu` variant (single-core
-  `configENABLE_MPU` build on mps2-an521 using `portable/GCC/ARM_CM33_NTZ`,
-  wrappers v2 plus `portable/Common/mpu_wrappers_v2.c`) compiles, links and
-  runs through every object create and most task creates, but the
-  wrappers-v2 SVC path faults in QEMU's SSE-200 model (UsageFault with a
-  clean fault-status register, at a point that varies run to run) -- pushed
-  through pool capacity, `portPRIVILEGE_BIT` task priorities and the
-  SVC/privileged linker regions.  On real hardware the pool is populated by
-  *every* `MPU_xQueueGenericCreate` (the headers macro-rewrite the plain
-  creates even for non-restricted tasks); the probe stays unit-tested only.
-  The instability has only been observed on this dual-core SSE-200 model, so
-  a single-core `mps2-an505` machine or real CM33 hardware is where a live
-  pool could still come from.
 - **Upward-growing stacks** (`portSTACK_GROWTH +1`) exist only in
   `portable/SDCC/Cygnal`. No GCC port and no QEMU machine can host it; GDR
   therefore treats stacks as grow-down only (the `stack_grows_up` field and its
