@@ -1,6 +1,8 @@
-"""FreeRTOS task-navigation adapter for GDR.
+"""FreeRTOS adapter for GDR.
 
-The adapter covers version/config probing, DWARF layouts, scheduler-list
-navigation, task conversion, and the ``freertos tasks/system`` commands.
-Queue and timer object enumeration is not currently implemented.
+Covers version/config probing, DWARF layouts, scheduler-list navigation,
+task conversion, the six-channel kernel-object discovery model (registry /
+symbol / active / mpu-pool / waiter / user), and the ``freertos`` command
+tree (tasks/system/objects/heap plus the queue-family, timer, event-group
+and stream-buffer tables and details).
 """

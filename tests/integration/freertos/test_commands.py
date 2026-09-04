@@ -496,6 +496,44 @@ def test_timer_detail_reports_list_and_owner(gdb_session):
     assert s["OwnerCheck"] == "uninitialised"
 
 
+def test_pended_callback_and_command_queue_live(gdb_session):
+    """On the pend-callback variant the daemon queue holds a real pended
+    callback plus timer commands: the Commands table decodes the
+    xCallbackParameters (Value column) and names the timer arms.
+
+    COUPLED: the fixture suspends the daemon, then enqueues one
+    xTimerPendFunctionCall + six timer commands (main.c
+    gdr_timer_command_task); the daemon's pre-scheduler drain leaves
+    pcReadFrom at slot 4, so the seven pending messages wrap the ring.
+    Every other variant reports "no pending" or the arm-absent reason and
+    is covered by test_timer_commands_section_is_honest.
+    """
+    if _PROFILE.variant != "pend-callback":
+        pytest.skip("requires the pend-callback fixture")
+    with _with_width(gdb_session, 240):
+        detail = gdb_session.run("freertos timer gdr_active", timeout=20)
+    _assert_clean_command_output(detail)
+    assert "Commands:" in detail
+    assert "execute-callback" in detail, detail
+    assert "pended-callback arm absent" not in detail, detail
+    assert "gdr_pended_function" in detail, detail
+    assert "p1=0xcafef00d" in detail and "p2=0x5a5a5a5a" in detail, detail
+    # Seven messages: one callback + two starts + a change-period + two
+    # more starts + a change-period (main.c gdr_timer_command_task).
+    rows = [line.split() for line in detail.splitlines() if line.lstrip()[:1].isdigit()]
+    assert len(rows) == 7, detail
+    # The table's row count equals the queue's uxMessagesWaiting (the
+    # daemon is suspended, so nothing drains between enqueue and break).
+    waiting = gdb_session.run_python(
+        """
+import gdb
+q = gdb.parse_and_eval("xTimerQueue").dereference()
+print(f"waiting={int(q['uxMessagesWaiting'])}")
+"""
+    )
+    assert "waiting=7" in waiting, waiting
+
+
 def test_timer_commands_section_is_honest(gdb_session):
     """The daemon queue section either shows the pending table or states why
     it is empty -- a silent absence would hide a stale command queue."""
@@ -568,11 +606,14 @@ def test_stream_buffer_table_matches_fixture_geometry(gdb_session):
     """frt streambuffers renders the 11-column contract with live geometry.
 
     COUPLED: the fixture never sends to its stream/message buffers, so
-    Bytes=0, Space==Capacity and empty single-handle waiter cells; Capacity
-    is xLength-1, which differs between the dynamic (32) and static-only
-    (31) creation paths (stream_buffer.c xBufferSizeBytes++ runs on the
-    dynamic path only).
+    Bytes=0, Space==Capacity and empty single-handle waiter cells (the
+    streams variant does send and is asserted separately in
+    test_stream_actions_live_geometry); Capacity is xLength-1, which
+    differs between the dynamic (32) and static-only (31) creation paths
+    (stream_buffer.c xBufferSizeBytes++ runs on the dynamic path only).
     """
+    if _PROFILE.variant == "streams":
+        pytest.skip("geometry contract asserted by test_stream_actions_live_geometry")
     with _with_width(gdb_session, 200):
         sbs = gdb_session.run("freertos streambuffers", timeout=20)
     _assert_clean_command_output(sbs)
@@ -604,6 +645,157 @@ def test_stream_buffer_table_matches_fixture_geometry(gdb_session):
         "31" if _PROFILE.static_allocation and not _PROFILE.static_and_dynamic else "32"
     )
     assert stream_row[4] == expected_capacity, sbs
+
+
+def test_stream_actions_live_geometry(gdb_session):
+    """On the streams variant the fixture actually wrote/read/deleted its
+    buffers before the ready marker: Bytes/Space match the writes with
+    xHead < xTail (wrap), TriggerMet is asymmetric exactly at the trigger
+    level, NextMsg decodes the first message length, and the deleted static
+    buffer detail short-circuits instead of computing geometry.
+
+    COUPLED: ci/freertos/fixture/main.c's GDR_FIXTURE_STREAM_ACTIONS block
+    (1 byte to gdr_stream_buffer, 1 byte to gdr_batching_buffer, three
+    4-byte messages written/two read/three written to gdr_message_buffer,
+    and a static buffer deleted).
+    """
+    if _PROFILE.variant != "streams":
+        pytest.skip("requires the streams fixture")
+    with _with_width(gdb_session, 200):
+        sbs = gdb_session.run("freertos streambuffers", timeout=20)
+    _assert_clean_command_output(sbs)
+    header = next(
+        line for line in sbs.splitlines() if line.lstrip().startswith("Name ")
+    ).split()
+    stream_row = _fixture_row(sbs, "gdr_stream_buffer")
+    assert stream_row[1] == "stream"
+    assert stream_row[2] == "1"  # Bytes: exactly the trigger level
+    # Reason: xStreamBatchingBufferCreate is a V11.1+ API, so the fixture
+    # #if-gates its batching write on GDR_HAS_BATCHING_BUFFER; mirror that
+    # gate here instead of demanding the row on every lane. Everything else
+    # this variant proves (ring wrap, NextMsg, deleted signature) is
+    # version-neutral, so an older kernel still exercises those.
+    if _PROFILE.batching_buffer:
+        batching_row = _fixture_row(sbs, "gdr_batching_buffer")
+        assert batching_row[1] == "batching"
+        assert batching_row[2] == "1"  # Bytes: exactly the trigger level
+    else:
+        assert "gdr_batching_buffer" not in sbs, sbs
+    msg_row = _fixture_row(sbs, "gdr_message_buffer")
+    assert msg_row[1] == "message"
+    assert msg_row[2] == "32"  # Bytes: 6 writes - 2 reads of 4-byte messages
+    assert msg_row[6] == "0x4"  # NextMsg: first message's length
+    assert header[0] == "Name"  # keep the column contract stable
+    deleted_row = _fixture_row(sbs, "gdr_deleted_stream_buffer")
+    # The deleted struct's ucFlags reads 0 after vStreamBufferDeleteStatic's
+    # memset, so the table Type is "stream"; the *detail* reports the
+    # deletion (asserted below).
+    assert deleted_row[1] == "stream", sbs
+    assert deleted_row[2] == "-", sbs  # no geometry on a deleted buffer
+
+    # xHead < xTail on the message buffer: the ring wrapped.
+    wrap = gdb_session.run_python(
+        """
+import gdb
+q = gdb.parse_and_eval("gdr_message_buffer").dereference()
+print(f"head={int(q['xHead'])} tail={int(q['xTail'])}")
+"""
+    )
+    assert "head=15 tail=16" in wrap, wrap
+
+    # TriggerMet asymmetry at exactly the trigger level:
+    # stream uses >=, batching uses strictly greater.
+    stream_detail = gdb_session.run(
+        "freertos streambuffer gdr_stream_buffer", timeout=20
+    )
+    assert "TriggerMet: yes" in stream_detail, stream_detail
+    if _PROFILE.batching_buffer:
+        batching_detail = gdb_session.run(
+            "freertos streambuffer gdr_batching_buffer", timeout=20
+        )
+        assert "TriggerMet: no" in batching_detail, batching_detail
+
+    # The deleted buffer detail short-circuits (no geometry).
+    deleted_detail = gdb_session.run(
+        "freertos streambuffer gdr_deleted_stream_buffer", timeout=20
+    )
+    assert "Type: deleted" in deleted_detail, deleted_detail
+    assert "Bytes:" not in deleted_detail, deleted_detail
+    assert "Traceback" not in deleted_detail
+
+
+def test_rv64_lane_pointer_width_and_heap_mask(gdb_session):
+    """The 64-bit lane proves the width-independent claims live: size_t is
+    8 bytes, the heap's allocated-bit mask is the 64-bit MSB (no polluted
+    block sizes), and `Heap used + Heap free == Heap total`.
+
+    COUPLED: qemu-virt-rv64 + the rv64 variant (the RISC-V port hardcodes
+    64-bit ticks too, which the event-group decode already asserts).
+    """
+    if _PROFILE.target != "qemu-virt-rv64":
+        pytest.skip("requires the 64-bit RISC-V fixture")
+    probe = gdb_session.run_python(
+        """
+import gdb
+size_t = gdb.lookup_type("size_t").sizeof
+stack_t = gdb.lookup_type("StackType_t").sizeof
+tick_t = gdb.lookup_type("TickType_t").sizeof
+print(f"size_t={size_t} stack={stack_t} tick={tick_t}")
+"""
+    )
+    assert "size_t=8 stack=8 tick=8" in probe, probe
+
+    output = gdb_session.run("freertos heap", timeout=20)
+    _assert_clean_command_output(output)
+    pairs = _detail_pairs(output)
+    assert pairs["Algorithm"] == "heap_4"
+    assert pairs["CrossCheck"] == "ok", output
+    # The MSB-of-size_t allocated bit must be stripped: no block size may
+    # carry a 0x8000000000000000-magnitude pollution.
+    assert pairs["Blocks"].split()[0].isdigit()
+    for key in ("TotalSize", "FreeSize"):
+        value = pairs[key]
+        assert value != "unavailable"
+        assert 0 <= int(value) < (1 << 63), output
+
+    system = gdb_session.run("freertos system", timeout=20)
+    spairs = _detail_pairs(system)
+    used = int(spairs["Heap used"])
+    total = int(spairs["Heap total"])
+    # Free size comes from the heap command (the system summary has no
+    # separate free-size key): used + free == total is the 64-bit
+    # mask-arithmetic sanity check.
+    free = int(pairs["FreeSize"])
+    assert used + free == total, system
+    assert 0 <= used < (1 << 63), system
+
+
+# The mpu-pool channel keeps unit-test-only coverage: the mpu variant
+# builds but its boot is not stable under QEMU's SSE-200 (proven
+# unreachable there, see docs/architecture.md), so no integration test
+# targets it.
+
+
+def test_static_event_group_flag_value_live(gdb_session):
+    """The static-dynamic variant's static event group is genuinely
+    xEventGroupCreateStatic: the detail's StaticallyAllocated key reports
+    yes on it, no on the sibling dynamic group, and is absent on base (the
+    member itself does not exist there).
+    """
+    if _PROFILE.variant == "static-dynamic":
+        static_detail = gdb_session.run(
+            "freertos eventgroup gdr_static_event_group", timeout=20
+        )
+        dynamic_detail = gdb_session.run(
+            "freertos eventgroup gdr_event_group", timeout=20
+        )
+        assert "StaticallyAllocated: yes" in static_detail, static_detail
+        assert "StaticallyAllocated: no" in dynamic_detail, dynamic_detail
+    elif _PROFILE.variant == "base":
+        detail = gdb_session.run("freertos eventgroup gdr_event_group", timeout=20)
+        assert "StaticallyAllocated" not in detail, detail
+    else:
+        pytest.skip("requires the static-dynamic or base fixture")
 
 
 def test_notification_index_gated_by_kernel_version(gdb_session):
@@ -734,11 +926,20 @@ def test_freertos_heap_contract_matches_variant(gdb_session):
             # chain hop would land on garbage and CrossCheck could never be ok.
             assert pairs["Protector"] == "enabled"
     elif kind == 5:
-        # heap_5 without the heap protector exports no region bases, so the
-        # linear walk is skipped and CrossCheck states the reason.
         assert pairs["Algorithm"] == "heap_5"
-        assert pairs["CrossCheck"] != "ok"
-        assert "heap_5" in pairs["CrossCheck"]
+        if _PROFILE.heap_protector:
+            # Protector + one region: the extremes ARE the total, the walk
+            # completes and the three-way cross-check passes.
+            assert pairs["Protector"] == "enabled"
+            assert pairs["TotalSize"] != "unavailable", output
+            assert pairs["CrossCheck"] == "ok", output
+            match = re.search(r"linear walk: (\d+) block", output)
+            assert match and int(match.group(1)) > 1, output
+        else:
+            # heap_5 without the heap protector exports no region bases, so
+            # the linear walk is skipped and CrossCheck states the reason.
+            assert pairs["CrossCheck"] != "ok"
+            assert "heap_5" in pairs["CrossCheck"]
         assert pairs["Blocks"].split()[0].isdigit()
     elif _PROFILE.variant == "heap-3":
         assert pairs["Algorithm"] == "heap_3"
@@ -759,7 +960,7 @@ def test_freertos_system_reports_heap_fields(gdb_session):
     if kind in (1, 2, 4, 5):
         assert pairs["Heap allocator"] == f"heap_{kind}"
         assert pairs["Heap status"] == "good"
-        if kind == 5:
+        if kind == 5 and not _PROFILE.heap_protector:
             # No region bases without the protector -> no trustworthy total.
             assert "Heap total" not in output
         else:

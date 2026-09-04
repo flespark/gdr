@@ -196,15 +196,19 @@ member's existence depends on the config. Gating must be proved on a live lane.
 
 - **MPU object pool** (`portUSING_MPU_WRAPPERS 1` with
   `configUSE_MPU_WRAPPERS_V1 0`, the only complete kernel object registry)
-  needs an MPU port -- `portable/GCC/ARM_CM33` or `ARM_CM33_NTZ`, since
-  `portUSING_MPU_WRAPPERS` is a port-layer macro that the current `ARM_CM3`
-  fixture never sets -- plus a fixture built around `xTaskCreateRestricted`
-  and the `MPU_`-prefixed wrapper API. TrustZone is *not* required (`NTZ`
-  literally means "no TrustZone", and QEMU does model the ARMv8-M security
-  extension on `mps2-an505`/`an521`/`musca-*` anyway); the blocker is that
-  nobody has built and booted that port/config combination here, which is a
-  new lane rather than one more `FreeRTOSConfig.h`. The probe stays
-  unit-tested only.
+  is **proven unreachable under QEMU**: the `mpu` variant (single-core
+  `configENABLE_MPU` build on mps2-an521 using `portable/GCC/ARM_CM33_NTZ`,
+  wrappers v2 plus `portable/Common/mpu_wrappers_v2.c`) compiles, links and
+  runs through every object create and most task creates, but the
+  wrappers-v2 SVC path faults in QEMU's SSE-200 model (UsageFault with a
+  clean fault-status register, at a point that varies run to run) -- pushed
+  through pool capacity, `portPRIVILEGE_BIT` task priorities and the
+  SVC/privileged linker regions.  On real hardware the pool is populated by
+  *every* `MPU_xQueueGenericCreate` (the headers macro-rewrite the plain
+  creates even for non-restricted tasks); the probe stays unit-tested only.
+  The instability has only been observed on this dual-core SSE-200 model, so
+  a single-core `mps2-an505` machine or real CM33 hardware is where a live
+  pool could still come from.
 - **Upward-growing stacks** (`portSTACK_GROWTH +1`) exist only in
   `portable/SDCC/Cygnal`. No GCC port and no QEMU machine can host it; GDR
   therefore treats stacks as grow-down only (the `stack_grows_up` field and its

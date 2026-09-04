@@ -26,6 +26,27 @@ MEMORY
 
 SECTIONS
 {
+    /* Reason: the MPU port maps the SVC handlers' flash region between
+     * __syscalls_flash_start__ and __syscalls_flash_end__ (port.c
+     * vPortInitialiseMPUConfig); the conventional definition spans the
+     * whole flash window.  PROVIDE keeps the symbols out of non-MPU
+     * builds (empty region, port ignores it). */
+    PROVIDE(__syscalls_flash_start__ = ORIGIN(FLASH));
+    PROVIDE(__syscalls_flash_end__ = ORIGIN(FLASH) + LENGTH(FLASH));
+    /* Reason: the unprivileged flash region (port.c vPortInitialiseMPU
+     * Config case for the task-code window) spans the same window; a
+     * fixture task's code then runs unprivileged with read-execute access
+     * while the kernel's PRIVILEGED_FUNCTION entries stay in the separate
+     * privileged_functions section. */
+    PROVIDE(__unprivileged_flash_start__ = ORIGIN(FLASH));
+    PROVIDE(__unprivileged_flash_end__ = ORIGIN(FLASH) + LENGTH(FLASH));
+
+    /* Reason: the MPU port's privileged-SRAM baseline (port.c
+     * xPortIsAuthorizedToAccessBuffer) spans the whole data window in the
+     * upstream demos; PROVIDE keeps it out of non-MPU builds. */
+    PROVIDE(__privileged_sram_start__ = ORIGIN(RAM));
+    PROVIDE(__privileged_sram_end__ = ORIGIN(RAM) + LENGTH(RAM));
+
     .isr_vector :
     {
         KEEP(*(.isr_vector))
@@ -38,6 +59,20 @@ SECTIONS
         *(.rodata*)
         . = ALIGN(4);
         _etext = .;
+    } > FLASH
+
+    /* Reason: the ARM_CM33_NTZ port with configENABLE_MPU maps a
+     * "privileged functions" region from __privileged_functions_start__ to
+     * __privileged_functions_end__ (port.c vPortInitialiseMPUConfig); the
+     * kernel marks its privileged entry points PRIVILEGED_FUNCTION, which
+     * GCC places in .privileged_functions.  Empty on the non-MPU variants
+     * of this board (both symbols equal, region disabled). */
+    .privileged_functions : ALIGN(32)
+    {
+        __privileged_functions_start__ = .;
+        KEEP(*(.privileged_functions*))
+        . = ALIGN(32);
+        __privileged_functions_end__ = .;
     } > FLASH
 
     _sidata = LOADADDR(.data);

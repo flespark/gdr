@@ -443,6 +443,110 @@ def test_waiter_host_rejects_pointer_like_event_group_bits(monkeypatch):
     assert plausible is False
 
 
+def test_waiter_host_rejects_address_in_map_on_64_bit_tick(monkeypatch):
+    """On a 64-bit tick the (1 << 56) control-byte threshold admits every RAM
+    pointer, so the loadable-section test must do the rejection: a
+    pointer-looking uxEventBits inside a mapped range is not a bit field."""
+    layout = build_layout(FreeRtosConfig(tick_bits=64))
+    host = object()
+    member_list = object()
+    paths = {
+        ("xTasksWaitingForBits",): member_list,
+        ("uxEventBits",): 0x80009BF0,
+    }
+    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    monkeypatch.setattr(navigation, "value_address", lambda _value: 0x80009DE0)
+    monkeypatch.setattr(
+        navigation, "_list_contains_item", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+    monkeypatch.setattr(
+        navigation, "_mapped_ranges", lambda: ((0x80000000, 0x80010000),)
+    )
+
+    plausible = navigation._plausible_waiter_host(
+        host,
+        "struct EventGroupDef_t",
+        "xTasksWaitingForBits",
+        # Reason: the container must equal the stubbed value_address so the
+        # flow passes the identity guard and actually reaches the event-bits
+        # branch -- an earlier revision passed the ghost address here and the
+        # test passed vacuously at the first guard (verified by deleting the
+        # mapped-ranges rejection and seeing it stay green).
+        0x80009DE0,
+        0x80009E00,
+        layout,
+    )
+
+    assert plausible is False
+
+
+def test_waiter_host_accepts_small_bits_on_64_bit_tick(monkeypatch):
+    """A genuine bit field (small value, outside every loadable section)
+    still confirms the host on a 64-bit tick."""
+    layout = build_layout(FreeRtosConfig(tick_bits=64))
+    host = object()
+    member_list = object()
+    paths = {
+        ("xTasksWaitingForBits",): member_list,
+        ("uxEventBits",): 0x5,
+    }
+    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    monkeypatch.setattr(navigation, "value_address", lambda _value: 0x80009DE0)
+    monkeypatch.setattr(
+        navigation, "_list_contains_item", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+    monkeypatch.setattr(
+        navigation, "_mapped_ranges", lambda: ((0x80000000, 0x80010000),)
+    )
+
+    plausible = navigation._plausible_waiter_host(
+        host,
+        "struct EventGroupDef_t",
+        "xTasksWaitingForBits",
+        0x80009DE0,
+        0x80009E00,
+        layout,
+    )
+
+    assert plausible is True
+
+
+def test_waiter_host_accepts_zero_bits_even_when_flash_maps_low(monkeypatch):
+    """mps2 boards load flash at 0x00000000, so a quiescent event group
+    (uxEventBits == 0) lies inside the first mapped range; the address test
+    must not reject values below the 24 user event bits: 0 means 'no bits
+    set', never an address."""
+    layout = build_layout(FreeRtosConfig())
+    host = object()
+    member_list = object()
+    paths = {
+        ("xTasksWaitingForBits",): member_list,
+        ("uxEventBits",): 0x0,
+    }
+    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    monkeypatch.setattr(navigation, "value_address", lambda _value: 0x20001000)
+    monkeypatch.setattr(
+        navigation, "_list_contains_item", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+    monkeypatch.setattr(
+        navigation, "_mapped_ranges", lambda: ((0x00000000, 0x00040000),)
+    )
+
+    plausible = navigation._plausible_waiter_host(
+        host,
+        "struct EventGroupDef_t",
+        "xTasksWaitingForBits",
+        0x20001000,
+        0x20002000,
+        layout,
+    )
+
+    assert plausible is True
+
+
 def test_waiter_host_rejects_null_head_with_items(monkeypatch):
     """A queue with items must own a storage buffer (non-null pcHead).
 

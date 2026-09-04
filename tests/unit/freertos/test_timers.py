@@ -522,18 +522,74 @@ def test_commands_cell_renders_table_names_and_messages(monkeypatch):
     commands = [
         TimerCommand(seq=0, message_id=1, timer_address=0x3000, message_value=77),
         TimerCommand(seq=1, message_id=3, timer_address=0x3100, message_value=0),
-        TimerCommand(seq=2, message_id=-1, callback_arm=True),
+        TimerCommand(
+            seq=2,
+            message_id=-1,
+            callback_arm=True,
+            callback_function=0x80001000,
+            callback_parameter1=0xCAFEF00D,
+            callback_parameter2=0x5A5A5A5A,
+        ),
         TimerCommand(seq=3, message_id=None),
     ]
+    monkeypatch.setattr(timers, "lookup_symbol_at", lambda _addr: "gdr_pended_function")
     cell = timers.commands_cell([], commands, layout)
     assert "start" in cell and "gdr_active" in cell
-    assert "pended callback" in cell
+    assert "execute-callback" in cell
+    assert "gdr_pended_function" in cell
+    assert "0xcafef00d" in cell and "0x5a5a5a5a" in cell
     assert "unreadable" in cell
     assert "Seq" in cell and "Command" in cell and "Timer" in cell and "Value" in cell
 
     assert timers.commands_cell(["no pending timer commands"], [], layout) == (
         "no pending timer commands"
     )
+
+
+def test_negative_id_decodes_callback_parameters(monkeypatch):
+    """With the union arm present the negative-ID slot carries the real
+    u.xCallbackParameters (function + both arguments), not a label."""
+    layout = build_layout(FreeRtosConfig(timers=True), (10, 3, 1))
+    params = object()
+    param_paths = {
+        ("pxCallbackFunction",): 0x80001000,
+        ("pvParameter1",): 0xCAFEF00D,
+        ("ulParameter2",): 0x5A5A5A5A,
+    }
+    paths: dict[tuple[str, ...], object] = {
+        ("pcHead",): 0x2000,
+        ("u", "xQueue", "pcTail"): 0x200C,
+        ("u", "xQueue", "pcReadFrom"): 0x2000,
+        ("uxLength",): 1,
+        ("uxMessagesWaiting",): 1,
+        ("uxItemSize",): 12,
+        ("xMessageID",): -1,  # tmrCOMMAND_EXECUTE_CALLBACK
+        ("u", "xCallbackParameters"): params,
+    }
+
+    def _read_path(value, path):
+        if value is params:
+            return param_paths[path]
+        return paths[path]
+
+    _wire_command_queue(monkeypatch, paths)
+    monkeypatch.setattr(timers, "read_path", _read_path)
+    monkeypatch.setattr(timers, "_message_value", lambda _a, _t: object())
+    monkeypatch.setattr(timers, "_callback_arm_present", lambda _t: True)
+
+    messages, commands = timers.iter_timer_commands(layout)
+    assert messages == []
+    assert commands[0].message_id == -1
+    assert commands[0].callback_arm is True
+    assert commands[0].callback_function == 0x80001000
+    assert commands[0].callback_parameter1 == 0xCAFEF00D
+    assert commands[0].callback_parameter2 == 0x5A5A5A5A
+
+    monkeypatch.setattr(timers, "lookup_symbol_at", lambda _addr: "gdr_pended_function")
+    cell = timers.commands_cell(messages, commands, layout)
+    assert "gdr_pended_function" in cell
+    assert "0xcafef00d" in cell and "0x5a5a5a5a" in cell
+    assert "pended-callback arm absent" not in cell
 
 
 def test_timer_commands_skip_slot_when_message_unreadable(monkeypatch):

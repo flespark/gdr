@@ -108,6 +108,56 @@ All notable changes to GDR are documented in this file.
   `ucStatus` and `xTimerListItem`; `uxTimerNumber` is registered only on
   `configUSE_TRACE_FACILITY` builds (it is absent from DWARF otherwise) and is
   never used as an identity.
+- FreeRTOS fixture: a new dual-core SMP lane builds kernel 11.3.1 for the
+  QEMU mps2-an521 board (ARMv8-M, `portable/GCC/ARM_CM33_NTZ/non_secure`,
+  the first kernel tag whose `portVALIDATED_FOR_SMP` is 1), with one task
+  pinned to core 1 and one running with preemption disabled, so the
+  `Affinity`/`PreemptionDisable` cells and the core-affinity probes carry
+  live fixture state.  Cross-core yields are not exercised: the port's weak
+  `vInterruptCore` is a no-op on this board and every ground-truth waiter
+  is pinned to core 0 for deterministic scheduling.
+- FreeRTOS snapshot fixture enables `configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES`,
+  so `ListIntegrityBytes` verifies against a real `List_t` instead
+  of always reporting `skipped`: every list (and the mini `xListEnd` item)
+  is stamped with `pdINTEGRITY_CHECK_VALUE` and a dedicated negative list
+  corrupts only `xListIntegrityValue1` (0xdeadbeef vs 0x5a5a5a5a) -- the
+  first live fixture for the failure arm.
+- FreeRTOS fixture variant `pend-callback` enables
+  `INCLUDE_xTimerPendFunctionCall` and suspends the timer daemon before
+  enqueueing a pended callback plus six timer commands, so the daemon
+  queue's negative-ID slot and a ring-wrapping non-empty command queue
+  survive to the harness breakpoint; the timer detail's `Commands` table
+  decodes the real `xCallbackParameters` (function + both arguments) when
+  the union arm exists in DWARF.
+- FreeRTOS fixture variant `streams` writes/reads/deletes its
+  stream/message/batching buffers before the ready marker: exactly the
+  trigger level into the stream and batching buffers (the `>=` vs `>`
+  asymmetry, on V11.1+ cells where `xStreamBatchingBufferCreate` exists),
+  a wrapping message-buffer ring (`xHead < xTail`) whose
+  `NextMsg` is the first message length, and a static buffer deleted while
+  its handle symbol survives (`Type: deleted`).
+- FreeRTOS fixture variant `heap-5-protector` links heap_5 with
+  `configENABLE_HEAP_PROTECTOR` and one heap region, so the protector's
+  region extremes become the true heap total (`TotalSize` no longer
+  `unavailable`) and the linear walk + `CrossCheck: ok` get live heap_5
+  evidence.
+- FreeRTOS version lane `mps2-an385/11.1.0/heap-2` pins a live heap_2
+  grid on the V10.5+ semantics (the allocation MSB in `xBlockSize`), where
+  the previous live heap_2 cell (10.3.1) predates the bit.
+- FreeRTOS fixture: a new 64-bit lane on QEMU `-machine virt`
+  (`qemu-system-riscv64` + `portable/GCC/RISC-V`, rv64imac, SiFive CLINT
+  tick at 10 MHz) gives the discovery layer, queue-family decode and the
+  heap `size_t` MSB mask their first live 64-bit evidence; the RISC-V port
+  always uses 64-bit ticks, so the event-group decode runs on a 64-bit
+  tick width too.
+- FreeRTOS fixture variant `mpu` (single-core CM33 on mps2-an521 with
+  `configENABLE_MPU` and `configUSE_MPU_WRAPPERS_V1 0`) builds and links the
+  MPU wrappers v2, but its boot is not stable under QEMU's SSE-200 model
+  (UsageFault in the wrappers-v2 SVC path with clean fault-status registers),
+  so it is documented as unreachable under QEMU and stays out of CI: the
+  `mpu-pool` discovery channel keeps unit-test coverage (on real hardware
+  the pool would be populated by every plain task or queue create, since the
+  headers macro-rewrite the creates to their `MPU_` counterparts).
 - FreeRTOS `frt queues` / `frt semaphores` / `frt mutexes` print their own
   column-contract tables instead of the neutral Kind/Count fallback:
   `Name Type Items Length ItemSize Free SendWait RecvWait Locks [Set] Src
@@ -208,6 +258,15 @@ All notable changes to GDR are documented in this file.
 
 ### Fixed
 
+- The waiter channel's event-group plausibility check no longer scales its
+  threshold with the tick width: on a 64-bit tick the old `(1 <<
+  (tick_bits - 8))` bound was `(1 << 56)` and every RAM pointer passed it,
+  so each queue with a blocked receiver forged a ghost event group (RV64
+  probe: `Bits` column showing the neighbour pointer).  The pointer
+  rejection now delegates to the loadable-section check `_mapped_ranges()`
+  (width-independent; values below the 24 user event bits are exempt so a
+  quiescent group on a board that maps flash at 0 stays accepted), keeping
+  the control-byte check for genuine bit values.
 - StreamBuffer summary field path corrected from `uxLength` (Queue member)
   to `xLength` (actual `StreamBufferDef_t` member).
 - Queue `type` summary field is now gated by `cfg.trace_facility`; builds

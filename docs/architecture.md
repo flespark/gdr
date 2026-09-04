@@ -381,14 +381,18 @@ allocation, stream buffers, MPU, runtime stats, queue sets, …) only when a
 live firmware variant or a static snapshot can falsify it. Branches without
 a fixture stay deferred unit-test stubs, never "done".
 
-**FreeRTOS live coverage is 32-bit Cortex-M only.** Every FreeRTOS lane is a
-32-bit target (`b-l475e-iot01a` Cortex-M4F, `mps2-an385` Cortex-M3,
-`mps2-an521` dual-core Cortex-M33, the Cortex-M33 static snapshot). Pointer
+**FreeRTOS live coverage is 32-bit Cortex-M plus one 64-bit RISC-V lane.**
+The 32-bit lanes are `b-l475e-iot01a` Cortex-M4F, `mps2-an385` Cortex-M3,
+`mps2-an521` dual-core Cortex-M33 and the Cortex-M33 static snapshot; a
+`qemu-virt-rv64` lane (QEMU `-machine virt`, `portable/GCC/RISC-V`
+rv64imac) covers 64-bit pointers and 64-bit ticks (the RISC-V port hardcodes
+`TickType_t` to the architecture width; the lane's config also declares
+`configTICK_TYPE_WIDTH_IN_BITS` 64 so the kernel's event-group control
+bits sit in the top byte, matching the tick-width-derived masks).  Pointer
 and field widths are always taken from
 DWARF (`read_path` reads each union arm at its target type, and the reserved
 MPU-pool handle is compared at the target pointer width), so no literal width
-constant exists in the adapter — but that property is unverified on a 64-bit
-target until a 64-bit lane exists.
+constant exists in the adapter.
 
 **FreeRTOS version detection depends on `-g3` macro debug info and CU scope.**
 `detect_target_version()` reads the `tskKERNEL_VERSION_*` macros via
@@ -402,7 +406,11 @@ exported") and skips the mismatch check rather than guessing.
 `ci/freertos/fixture/config/<variant>/` plus a shared `main.c` produce
 `base` (the historical B-L475E-IOT01A / 10.3.1 combination), `full`,
 `static-only`, `static-dynamic`, `trace-off`, `heap-1`/`2`/`3`/`5`,
-`heap-protector` (≥V11), and `registry-0`. Cache layout is
+`heap-protector` (≥V11), `heap-5-protector` (heap_5 + the protector, one
+region), `registry-0`, `pend-callback` (`INCLUDE_xTimerPendFunctionCall`),
+`streams` (write/read/delete actions on the stream/message/batching
+buffers), `mpu` (single-core `configENABLE_MPU`, wrappers v2) and `smp`
+(dual-core 11.3.1). Cache layout is
 `<cache>/<target>/<version>/<variant>/freertos.elf`. Independent expected
 capabilities live in `tests/support/freertos_fixture_profiles.py` and must not
 be derived from `freertos/layout.py`.
@@ -417,57 +425,66 @@ N/A and HighWater scans `[pxStack, pxTopOfStack)`.
 **Not covered by any current fixture (documented, unit-tested only):**
 
 - `mpu-pool` (`portUSING_MPU_WRAPPERS` + MPU wrappers v2 / `xKernelObjectPool`):
-  needs an MPU port (`portable/GCC/ARM_CM33` or `ARM_CM33_NTZ`) plus a fixture
-  built on `xTaskCreateRestricted` and the `MPU_` wrapper API. TrustZone is not
-  required (`NTZ` means "no TrustZone"; QEMU does model the ARMv8-M security
-  extension on `mps2-an505`/`an521`/`musca-*`) -- the blocker is simply that no
-  such build has been booted here yet.
+  the `mpu` variant (single-core CM33 on mps2-an521, `configENABLE_MPU 1`,
+  `configUSE_MPU_WRAPPERS_V1 0`) builds, links and boots through every object
+  create and thirteen of sixteen task creates, but its boot is not stable
+  under QEMU's SSE-200 model: the wrappers-v2 SVC path faults (`UsageFault`,
+  with a clean fault-status register) at a point that varies run to run.  The
+  chain was pushed as far as B-L475E-class debugging allows -- pool capacity,
+  `portPRIVILEGE_BIT` task priorities, SVC/privileged linker regions -- and
+  the remaining instability is in the C-model's MPU/SVC execution, not in GDR
+  (the same firmware boots deterministically on the same machine without
+  `configENABLE_MPU`).  **Proven unreachable under QEMU** therefore stays
+  documented here: the channel semantics (empty/reserved-slot skip,
+  `ulKernelObjectType` kind mapping, QUEUE-slot `inferred_kind`) remain
+  covered by unit tests and the channel degrades to a no-symbol skip on every
+  live lane.  On real hardware the pool is populated by *every*
+  `MPU_xQueueGenericCreate` (the headers macro-rewrite plain creates even for
+  non-restricted tasks), so a hardware CM33 lane -- or a single-core
+  `mps2-an505` machine, which this instability has not been reproduced on --
+  remains the way to close it.
 - `stack_grows_up`: **not supported**. GDR decodes stacks as grow-down only
   (high water mark scans the untouched fill from the low end). The sole
   upstream `portSTACK_GROWTH +1` port is SDCC/Cygnal 8051, which has no GCC
   toolchain and no QEMU machine, so no grow-up target can exist; the dead
   field/branch was removed rather than kept as an untestable probe.
-- Timer daemon queue `pended callback` arm (`xMessageID < 0`): the arm only
-  exists when `INCLUDE_xTimerPendFunctionCall == 1` (timers.c/timers.h), and
-  no current fixture variant defines that macro. The queue decoder therefore
-  gates on the presence of the `u.xCallbackParameters` DWARF member and
-  renders a missing arm as `pended-callback arm absent
-  (INCLUDE_xTimerPendFunctionCall=0)` instead of decoding garbage; a config
-  variant that enables the macro and leaves a negative-id slot in the queue
-  is fixture-pending.
-- Event-group control bits are only exercised at 32-bit tick width: every
-  FreeRTOS lane is 32-bit (`EventBits_t == TickType_t`), so the 16/64-bit
-  mask derivation (`event_bit_masks`) and the width-agnostic decode are
-  verified by unit tests only.
-- Stream/message buffer **ring wrap** (`xHead < xTail`) has no live evidence:
-  the fixture never sends to its stream/message/batching buffers
-  (`xStreamBufferSend`/`xMessageBufferSend` are never called), so Bytes is
-  always 0 and the wrap branch of `bytes_in_buffer`/`spaces_available` is
-  unit-test-only. The batching `>` trigger asymmetry is likewise unobservable
-  while the batching buffer is empty, and the `xLength == 0 && pucBuffer ==
-  NULL` deleted-buffer signature has no fixture (no `vStreamBufferDelete`
-  call) -- all three are documented as unit-tested only. The same empty-buffer
-  fact keeps `NextMsg` on the unit-test-only list: the length prefix is read at
-  `pucBuffer + xTail` with the kernel's two-part wrap, but no fixture ever puts
-  a message in a message buffer, so live rows always print `-`.
-- Event-group `ucStaticallyAllocated` is gated by the value of the field only
-  in unit tests. The *presence* of the member is live-verified on two lanes
-  (`ptype struct EventGroupDef_t` has it on `static-dynamic`, not on `base`,
-  because the kernel declares it only when static *and* dynamic allocation are
-  both enabled), but the `static-dynamic` variant sets
-  `GDR_FIXTURE_MIXED_ALLOCATION`, so its "static" event group is in fact
-  created dynamically and no live object reports `StaticallyAllocated: yes`.
-- `ListIntegrityBytes` is `skipped` on every fixture. No build defines
-  `configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES`, so
-  `xListItemIntegrityValue1`/`2` do not exist and `cfg.list_integrity_check`
-  is false everywhere; the magic derivation (`0x5a5a` / `0x5a5a5a5a` /
-  `0x5a5a5a5a5a5a5a5a` from the tick width, `include/projdefs.h`) is
-  unit-tested only. A live kernel cannot supply the negative either: the
-  integrity bytes are only ever validated by `configASSERT` inside
-  `vListInsert`, so a corrupted value crashes the target instead of being
-  observable. Enabling the macro on the static snapshot adds two `TickType_t`
-  members to `List_t`/`ListItem_t` and therefore rewrites every list and TCB
-  initializer in the snapshot; that is the fixture work this check waits on.
+- Event-group control bits at **16-bit** tick width (`event_bit_masks` with
+  `configTICK_TYPE_WIDTH_IN_BITS` 16): a fixture gap, not an impossibility.
+  The width is config-selectable on the existing ARM lanes (FreeRTOS.h), no
+  cell selects it yet, and the derivation is unit-tested at all three widths.
+  32-bit is live on every ARM lane and 64-bit on the RISC-V lane.
+
+**Closed by the fixture matrix (formerly unit-test-only; do not re-add them
+to the list above without re-checking the fixture):**
+
+- Timer daemon queue `pended callback` arm (`xMessageID < 0`): live on the
+  `pend-callback` variant, which enables `INCLUDE_xTimerPendFunctionCall` and
+  suspends the daemon before enqueueing a callback plus six timer commands.
+  The queue decoder still gates on the presence of the
+  `u.xCallbackParameters` DWARF member and renders a missing arm as
+  `pended-callback arm absent (INCLUDE_xTimerPendFunctionCall=0)` on every
+  other variant.
+- Event-group control bits at 64-bit tick width: live on the
+  `qemu-virt-rv64` lane (`TickType_t` is 64-bit on the RISC-V port, and the
+  lane declares `configTICK_TYPE_WIDTH_IN_BITS` 64, so the top-byte masks
+  match the kernel).
+- Stream/message buffer **ring wrap** (`xHead < xTail`), the `xLength == 0 &&
+  pucBuffer == NULL` deleted-buffer signature and a non-empty `NextMsg`: live
+  on the `streams` variant, which writes/reads/deletes the buffers before the
+  ready marker. The batching `>` trigger asymmetry needs the V11.1+
+  `xStreamBatchingBufferCreate`, so it is live on the V11.1 cell of that
+  variant only (the fixture and the assertion are gated the same way).
+- Event-group `ucStaticallyAllocated == 1`: live on the `static-dynamic`
+  variant (whose "static" event group is now genuinely
+  `xEventGroupCreateStatic`, while `gdr_event_group` stays dynamic); `base`
+  keeps no such key.
+- `ListIntegrityBytes`: live on the static snapshot, which enables
+  `configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES` and stamps every `List_t` (plus
+  the mini `xListEnd` item) with `pdINTEGRITY_CHECK_VALUE`, plus a dedicated
+  negative list with a corrupted `xListIntegrityValue1` (0xdeadbeef vs
+  0x5a5a5a5a).  A live kernel cannot supply the negative either (the bytes
+  are only validated by `configASSERT` inside `vListInsert`, so a corrupted
+  value crashes the target), which is why the negative lives in the snapshot.
 
 **Static snapshot lane** (`ci/freertos/build-fixture-snapshot.sh` with sources
 in `ci/freertos/snapshot/`) covers states a healthy kernel cannot produce
@@ -517,8 +534,11 @@ can be unlinked by forward coalescing, and the region table is a function-local
 array — so `frt heap` skips the linear walk, renders `Blocks` from the free-list
 walk only and reports `CrossCheck: unavailable: heap_5 region bases unknown`.
 With the protector a single-region heap can be walked from its base to `pxEnd`;
-no live fixture exercises that branch (the `heap-protector` variant links
-heap_4), so it is unit-tested only.
+the `heap-5-protector` variant (heap_5 + `configENABLE_HEAP_PROTECTOR`, one
+region) is the live fixture for that branch: the linear walk runs, `CrossCheck`
+passes and the region extremes become the true `TotalSize` (a multi-region
+extent would span gaps, so the total is only set when the walk reaches `pxEnd`
+-- the single-region witness).
 
 **The heap_4/heap_2 linear walk starts at `align_up(&ucHeap)`, never at the
 free-list head.** `pvPortMalloc` carves every allocation from the *front* of the
@@ -545,9 +565,12 @@ base covers 57 blocks (56 allocated, 1 free) up to `pxEnd`, summing to exactly
 so the state falls back to `xEnd.xBlockSize` (written by `prvHeapInit`, zero
 before it).
 
-**Live heap coverage is 32-bit Cortex-M only.** Every FreeRTOS lane has a 32-bit
-`size_t` and `portBYTE_ALIGNMENT == 8`, so the 64-bit allocation-mask arithmetic
-is unit-tested only. The cross-check `mismatch` and walk `corrupt` verdicts
+**Live heap coverage includes one 64-bit lane.** The `qemu-virt-rv64` lane has
+`sizeof(size_t) == 8`, so the 64-bit allocation-mask arithmetic
+(`_allocated_bitmask` with the size_t MSB) and the `Heap used + Heap free ==
+Heap total` arithmetic are live-verified there; `_pointer_bits` still falls
+back to 32 only when no type information exists at all. The cross-check
+`mismatch` and walk `corrupt` verdicts
 were historically unit-tested only too (a healthy kernel cannot produce a
 corrupt heap); the static snapshot lane now carries crafted `mismatch` (free-list
 skips a linear-free block) and allocated-bit (free-list member with the size_t
@@ -611,9 +634,10 @@ can in principle still misread plausible neighbouring memory — every other
 channel outranks it.
 
 The `mpu-pool` channel is implemented with unit-test stubs only: no live
-fixture exists (it needs a CM33 MPU port and a restricted-task fixture, not
-TrustZone), so its behaviour has no
-live coverage. The `waiter` channel is pinned by a deliberate fixture object:
+fixture covers it (the `mpu` variant builds and links, but the wrappers-v2
+SVC path faults under QEMU's SSE-200 model -- proven unreachable there, see
+the "Not covered" list above). The `waiter` channel is pinned by a deliberate
+fixture object:
 `gdr_waiter_only_eg_task` (ci/freertos/fixture/main.c) blocks forever on an
 event group whose handle lives only on its own stack, so that group is
 discoverable *only* through the waiter channel -- the live no-ghost assertion

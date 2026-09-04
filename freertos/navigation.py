@@ -1047,11 +1047,30 @@ def _plausible_waiter_host(
     if not _list_contains_item(member_list, item_address, layout):
         return False
     if struct_name == "struct EventGroupDef_t":
-        # Reason: EventBits_t reserves the high byte for control bits
-        # (eventEVENT_BITS_CONTROL_BYTES); a pointer-looking uxEventBits
-        # means the "host" is really memory inside another object.
         bits = read_int(read_path(host, ("uxEventBits",)))
-        return bits is not None and bits < (1 << (layout.config.tick_bits - 8))
+        if bits is None:
+            return False
+        # Reason: the top byte of EventBits_t is reserved for control bits
+        # (eventEVENT_BITS_CONTROL_BYTES) and a quiescent event group keeps
+        # it zero, so a non-zero control byte means memory from a neighbour
+        # object.  This check alone is not enough: it scales with tick width,
+        # so on a 64-bit tick the threshold is (1 << 56) and any RAM pointer
+        # passes it -- every queue with a blocked receiver then forged a
+        # ghost event group on the RV64 probe.  The width-independent test is
+        # the loadable-section one below: a real bit field never lands inside
+        # a loadable segment of the target.  The (1 << 24) floor keeps the
+        # documented 24 user event bits accepted regardless of the map --
+        # mps2 boards load flash at 0x00000000, so values like 0/0x5 would
+        # otherwise look "in range" and a real quiescent event group would
+        # be rejected.
+        if bits >= (1 << (layout.config.tick_bits - 8)):
+            return False
+        ranges = _mapped_ranges()
+        return not (
+            ranges
+            and bits >= (1 << 24)
+            and any(low <= bits < high for low, high in ranges)
+        )
     length = read_int(read_path(host, ("uxLength",)))
     waiting = read_int(read_path(host, ("uxMessagesWaiting",)))
     item_size = read_int(read_path(host, ("uxItemSize",)))

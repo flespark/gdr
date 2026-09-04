@@ -216,7 +216,7 @@
     - <<: *gdb-python-qemu-sanity
     - name: FreeRTOS config variant matrix (kernel 10.3.1)
       script: |
-        bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-only static-dynamic trace-off heap-1 heap-2 heap-3 heap-5 heap-protector registry-0
+        bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-only static-dynamic trace-off heap-1 heap-2 heap-3 heap-5 heap-protector registry-0 pend-callback streams
 
 .freertos-version-scope: &freertos-version-scope
   name: freertos-version-scope
@@ -235,12 +235,22 @@
       script: |
         bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 base
         bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.5.1 base
-        bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base heap-protector
+        bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base heap-protector heap-2 heap-5-protector streams pend-callback
     # Reason: kept a separate stage so a dual-core failure is attributable at a
     # glance. ARMv8-M SMP exists only from 11.3.1, so this cannot fold into the
-    # single-core version sweep above.
+    # single-core version sweep above.  The mpu variant (single-core
+    # configENABLE_MPU on the same board) builds and links but its boot is not
+    # stable under QEMU's SSE-200 model (UsageFault in the wrappers-v2 SVC
+    # path with clean fault status), so it stays out of CI -- see the
+    # "proven unreachable under QEMU" note in docs/architecture.md and
+    # ci/freertos/README.md.
     - name: FreeRTOS dual-core SMP (mps2-an521, kernel 11.3.1)
       script: bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp
+    # Reason: the 64-bit lane is a separate stage so a RISC-V failure is not
+    # conflated with the 32-bit sweep; gdb-multiarch speaks riscv:rv64 and the
+    # container env provides XPACK_RISCV_TOOLCHAIN_PATH.
+    - name: FreeRTOS 64-bit RISC-V (qemu-virt-rv64, kernel 11.1.0)
+      script: bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
 
 main: # branch: main
   push:

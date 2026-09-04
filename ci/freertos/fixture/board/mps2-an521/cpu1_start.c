@@ -123,7 +123,16 @@ long ConfigWakeSecondaryCores(void)
 
 /* Single-core build: CPU1 is never released (no configWAKE_SECONDARY_CORES
  * call), so no kernel SMP symbols exist.  startup.s still branches to this
- * entry symbol, so it must resolve; a parked loop is correct. */
+ * entry symbol, so it must resolve; a parked loop is correct.  The private
+ * stack label lives in the same #if as the entry so the unconditional
+ * `ldr r0, =gdr_cpu1_stack_top` in startup.s also resolves. */
+__asm__(
+    ".section .bss.gdr_cpu1_stack,\"aw\",%nobits\n"
+    ".balign 8\n"
+    ".space 2048\n"
+    ".global gdr_cpu1_stack_top\n"
+    "gdr_cpu1_stack_top:\n"
+    ".previous\n");
 __attribute__((noreturn))
 void gdr_secondary_core_entry(void)
 {

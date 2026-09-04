@@ -817,6 +817,21 @@ def heap_snapshot(layout: FreeRtosLayout) -> HeapSnapshot:
     linear = walk_linear(geom, free_list=free_list)
     snap.free_list = free_list
     snap.linear = linear
+    # Reason: heap_5's total is not a kernel symbol -- under the protector
+    # only the region extremes exist, and the extremes cover *all* regions,
+    # so the difference is a real size only for a single-region heap.  The
+    # linear walk decides single-region-ness: a complete walk reaches pxEnd
+    # without hitting an intermediate zero-size region-end marker.  The
+    # multi-region heap-5 cell (no protector) never reaches this branch
+    # because its walk is skipped entirely and total stays unavailable.
+    if (
+        geom.kind == 5
+        and snap.total is None
+        and linear.incomplete_reason is None
+        and geom.linear_low is not None
+        and geom.heap_limit is not None
+    ):
+        snap.total = geom.heap_limit - geom.linear_low
     snap.cross_check = cross_validate(free_list, linear, snap.free, geom)
     return snap
 

@@ -30,6 +30,14 @@ DEFAULT_TARGET="mps2-an385"
 DEFAULT_VARIANT="base"
 DEFAULT_BUILD_DIR="/tmp/gdr-freertos-kernel-build"
 TOOLCHAIN_PREFIX="arm-none-eabi-"
+# Reason: the RISC-V lane compiles with the riscv-none-elf- toolchain; the
+# prefix is resolved after --target is parsed (setup_toolchain runs in main).
+toolchain_prefix_for() {
+    case "$TARGET" in
+    qemu-virt-rv64) echo "riscv-none-elf-" ;;
+    *) echo "$TOOLCHAIN_PREFIX" ;;
+    esac
+}
 
 die() {
     echo "[gdr-ci] FAILED: $*" >&2
@@ -47,15 +55,16 @@ version_from_tag() {
 }
 
 setup_toolchain() {
-    local gcc tool
+    local gcc tool prefix
+    prefix="$(toolchain_prefix_for)"
     if [[ -z "$TOOLCHAIN_PATH" ]]; then
-        gcc="$(command -v "${TOOLCHAIN_PREFIX}gcc" || true)"
-        [[ -n "$gcc" ]] || die "${TOOLCHAIN_PREFIX}gcc is not on PATH"
+        gcc="$(command -v "${prefix}gcc" || true)"
+        [[ -n "$gcc" ]] || die "${prefix}gcc is not on PATH"
         TOOLCHAIN_PATH="$(dirname "$gcc")"
     fi
     for tool in gcc objcopy; do
-        [[ -x "$TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}$tool" ]] ||
-            die "required tool not found: $TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}$tool"
+        [[ -x "$TOOLCHAIN_PATH/${prefix}$tool" ]] ||
+            die "required tool not found: $TOOLCHAIN_PATH/${prefix}$tool"
     done
 }
 
@@ -87,7 +96,7 @@ heap_source() {
     heap-1) echo "$kernel/portable/MemMang/heap_1.c" ;;
     heap-2) echo "$kernel/portable/MemMang/heap_2.c" ;;
     heap-3) echo "$kernel/portable/MemMang/heap_3.c" ;;
-    heap-5) echo "$kernel/portable/MemMang/heap_5.c" ;;
+    heap-5 | heap-5-protector) echo "$kernel/portable/MemMang/heap_5.c" ;;
     *) echo "$kernel/portable/MemMang/heap_4.c" ;;
     esac
 }
@@ -102,6 +111,15 @@ board_flags() {
         # configENABLE_FPU 0 so the lazy-stacking path stays out of the build.
         echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=soft"
         ;;
+    qemu-virt-rv64)
+        # Reason: integer-only rv64imac keeps portContext.h's FPU sections out
+        # (configENABLE_FPU 0); medany makes every RAM address reachable from
+        # the 0x80000000 load base.  The explicit _zicsr suffix is required by
+        # the xPack 15.2 assembler, which splits the I extension and rejects
+        # CSR opcodes (port.c/portASM.S use csrr/csrs heavily) under plain
+        # rv64imac.
+        echo "-march=rv64imac_zicsr -mabi=lp64 -mcmodel=medany"
+        ;;
     *)
         die "unsupported kernel-direct target: $TARGET"
         ;;
@@ -109,8 +127,8 @@ board_flags() {
 }
 
 compile_fixture() {
-    local cc="$TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}gcc"
-    local objcopy="$TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}objcopy"
+    local cc="$TOOLCHAIN_PATH/$(toolchain_prefix_for)gcc"
+    local objcopy="$TOOLCHAIN_PATH/$(toolchain_prefix_for)objcopy"
     local config_dir="$SCRIPT_DIR/fixture/config/$VARIANT"
     local board_dir="$SCRIPT_DIR/fixture/board/$TARGET"
     local heap
@@ -125,6 +143,45 @@ compile_fixture() {
     case "$TARGET" in
     mps2-an385) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM3" ;;
     mps2-an521) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM33_NTZ/non_secure" ;;
+    qemu-virt-rv64) port_dir="$KERNEL_DIR/portable/GCC/RISC-V" ;;
+    esac
+
+    local -a port_sources=()
+    local -a chip_include_paths=()
+    case "$TARGET" in
+    mps2-an521)
+        # Reason: the CM33_NTZ port keeps context switching and the SVC/
+        # PendSV handler in portasm.c -- ARM_CM3 has only port.c, so the
+        # kernel-direct lane used to compile exactly one port file.  Omitting
+        # portasm.c fails only at link time (missing SVC_Handler /
+        # PendSV_Handler / vRestoreContextOfFirstTask), which reads like a
+        # wrong-port error.  cpu1_start.c is this board's secondary-core
+        # bootstrap and lives alongside the other board sources.
+        port_sources+=("$port_dir/portasm.c" "$board_dir/cpu1_start.c")
+        if [[ "$VARIANT" == "mpu" ]]; then
+            # Reason: the MPU wrappers v2 (portable/Common/mpu_wrappers_v2.c
+            # + this port's mpu_wrappers_v2_asm.c) implement the SVC gate;
+            # without them a configENABLE_MPU build fails to link on the
+            # MPU_xQueueGenericCreate / MPU_GetFreeIndexInKernelObjectPool
+            # references from port.c.
+            port_sources+=(
+                "$KERNEL_DIR/portable/Common/mpu_wrappers_v2.c"
+                "$port_dir/mpu_wrappers_v2_asm.c"
+            )
+        fi
+        ;;
+    qemu-virt-rv64)
+        # Reason: the RISC-V port keeps the context switch and M-mode trap
+        # handler in portASM.S (port.c alone would link but never switch
+        # tasks).  The chip-specific extension header (mtime/CLINT macros)
+        # is found through the preprocessor include path of the assembler
+        # pass, exactly as the port readme demands; each entry carries the
+        # -I prefix because it is appended to cflags, not sources.
+        port_sources+=("$port_dir/portASM.S")
+        chip_include_paths+=(
+            "-I$KERNEL_DIR/portable/GCC/RISC-V/chip_specific_extensions/RISCV_MTIME_CLINT_no_extensions"
+        )
+        ;;
     esac
 
     mkdir -p "$BUILD_DIR" "$(dirname "$OUT_ELF")" "$(dirname "$OUT_BIN")"
@@ -142,19 +199,20 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
-    local -a port_sources=()
-    case "$TARGET" in
-    mps2-an521)
-        # Reason: the CM33_NTZ port keeps context switching and the SVC/
-        # PendSV handler in portasm.c -- ARM_CM3 has only port.c, so the
-        # kernel-direct lane used to compile exactly one port file.  Omitting
-        # portasm.c fails only at link time (missing SVC_Handler /
-        # PendSV_Handler / vRestoreContextOfFirstTask), which reads like a
-        # wrong-port error.  cpu1_start.c is this board's secondary-core
-        # bootstrap and lives alongside the other board sources.
-        port_sources+=("$port_dir/portasm.c" "$board_dir/cpu1_start.c")
-        ;;
-    esac
+    # Reason: set -u treats "${chip_include_paths[@]}" on an empty array as
+    # an unbound-variable error on older bash (the same reason port_sources
+    # is gated below), so only expand when the target added paths.
+    if [[ ${#chip_include_paths[@]} -gt 0 ]]; then
+        cflags+=("${chip_include_paths[@]}")
+    fi
+    if [[ "$VARIANT" == "mpu" ]]; then
+        # Reason: upstream portable/Common/mpu_wrappers_v2.c and the CM33
+        # mpu_wrappers_v2_asm.c are not -Werror-clean (unused parameters in
+        # the wrapper thunks that only mirror their FreeRTOS.h prototypes);
+        # the -Werror flag is ours, so the suppression is scoped to the
+        # variant that links those files.
+        cflags+=(-Wno-unused-parameter)
+    fi
     # Reason: set -u treats "${port_sources[@]}" on an empty array as an
     # unbound-variable error on older bash, so gate the expansion on length.
     if [[ ${#port_sources[@]} -gt 0 ]]; then
@@ -185,11 +243,28 @@ compile_fixture() {
         sources+=("$heap")
     fi
 
-    "$cc" "${cflags[@]}" "${sources[@]}" \
-        -T"$board_dir/linker.ld" \
-        -Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num \
-        -Wl,-Map,"$BUILD_DIR/freertos.map" \
-        --specs=nano.specs --specs=nosys.specs -nostartfiles -o "$OUT_ELF"
+    # Reason: --specs=nano.specs/nosys.specs are ARM multilib specs; the
+    # RISC-V toolchain carries its own nano/nosys variants, so gate the
+    # specs flags per target.  The empty-array expansion must also be gated
+    # (set -u on bash 3.2 errors on an empty "${specs_flags[@]}").
+    local -a specs_flags=()
+    if [[ "$TARGET" == "qemu-virt-rv64" ]]; then
+        specs_flags=(--specs=nano.specs --specs=nosys.specs)
+    fi
+
+    if [[ ${#specs_flags[@]} -gt 0 ]]; then
+        "$cc" "${cflags[@]}" "${sources[@]}" \
+            -T"$board_dir/linker.ld" \
+            -Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num \
+            -Wl,-Map,"$BUILD_DIR/freertos.map" \
+            -nostartfiles -o "$OUT_ELF" "${specs_flags[@]}"
+    else
+        "$cc" "${cflags[@]}" "${sources[@]}" \
+            -T"$board_dir/linker.ld" \
+            -Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num \
+            -Wl,-Map,"$BUILD_DIR/freertos.map" \
+            -nostartfiles -o "$OUT_ELF"
+    fi
     "$objcopy" -O binary "$OUT_ELF" "$OUT_BIN"
     echo "[gdr-ci] built ELF: $OUT_ELF"
     echo "[gdr-ci] built BIN: $OUT_BIN"

@@ -235,7 +235,7 @@ def test_system_reports_corrupt_heap_status(snapshot_session):
         in output
     ), output
     # The rest of the system stays consistent on the snapshot.
-    assert "Task count: 8" in output, output
+    assert "Task count: 9" in output, output
     assert "Scheduler state: running" in output, output
 
 
@@ -296,5 +296,21 @@ def test_out_of_range_list_node_is_reported(snapshot_session):
 def test_healthy_task_checks_pass(snapshot_session):
     """A scheduler-resident task's list checks all verify."""
     detail = snapshot_session.run("freertos task idle0", timeout=20)
-    assert "Checks: ok (7 verified, 1 n/a)" in detail, detail
+    assert "Checks: ok (8 verified)" in detail, detail
     assert "Check[" not in detail, detail
+
+
+def test_corrupt_list_integrity_magic_is_reported(snapshot_session):
+    """gdr_bad_magic stamps only xListIntegrityValue1 with 0xdeadbeef:
+    ListIntegrityBytes must surface both actual values and the expected
+    magic -- the first live evidence for the integrity-byte branch.
+
+    A healthy kernel cannot reach this state (vListInsert asserts on a bad
+    magic before any command could observe it), so only a snapshot can.
+    """
+    detail = snapshot_session.run("freertos task negmagic", timeout=20)
+    assert (
+        "Check[ListIntegrityBytes]: integrity values 0xdeadbeef/0x5a5a5a5a != 0x5a5a5a5a"
+        in detail
+    ), detail
+    assert "Traceback" not in detail

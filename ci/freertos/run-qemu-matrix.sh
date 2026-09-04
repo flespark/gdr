@@ -53,7 +53,24 @@ qemu_machine_for_target() {
     b-l475e-iot01a) echo "b-l475e-iot01a" ;;
     mps2-an385) echo "mps2-an385" ;;
     mps2-an521) echo "mps2-an521" ;;
+    qemu-virt-rv64) echo "virt" ;;
     *) die "unknown FreeRTOS QEMU target: $1" ;;
+    esac
+}
+
+# Toolchain bin dir per target (the ARM and RISC-V xPack toolchains ship in
+# different directories; the caller's env provides the one matching the lane).
+is_cross_gdb() {
+    [[ "$GDR_GDB" == *riscv* || "$GDR_GDB" == *rv64* ]]
+}
+
+toolchain_path_for() {
+    case "$1" in
+    # Reason: RTOS_TOOLCHAIN_PATH is env-set to the ARM xPack dir (it is the
+    # default for every other lane); the RISC-V-specific variable must win
+    # so the rv64 lane cannot silently compile with the ARM compiler.
+    qemu-virt-rv64) echo "${XPACK_RISCV_TOOLCHAIN_PATH:-${RTOS_TOOLCHAIN_PATH:-}}" ;;
+    *) echo "${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:-}}" ;;
     esac
 }
 
@@ -73,7 +90,18 @@ run_pytest() {
         runner+=("FREERTOS_FIXTURE_CACHE=$CACHE_ROOT")
     fi
     if [[ -n "${GDR_ELF_OVERRIDE:-}" ]]; then
-        runner+=("GDR_ELF_PATH=$GDR_ELF_OVERRIDE" "GDR_FIRMWARE_PATH=$GDR_ELF_OVERRIDE")
+        # Reason: the RISC-V lane boots the raw binary via QEMU -bios (the
+        # virt machine loads it at 0x80000000), while GDB reads the ELF; the
+        # ARM lanes pass the ELF to -kernel.  The firmware is always the .elf
+        # on ARM lanes, the .bin on the RISC-V lane.
+        # Reason: shellcheck SC2155 (declare+assign masks the exit status);
+        # the rest of this lane treats a missing override as "use profile defaults".
+        local firmware
+        firmware="$GDR_ELF_OVERRIDE"
+        if [[ "$target" == "qemu-virt-rv64" ]]; then
+            firmware="${GDR_ELF_OVERRIDE%.elf}.bin"
+        fi
+        runner+=("GDR_ELF_PATH=$GDR_ELF_OVERRIDE" "GDR_FIRMWARE_PATH=$firmware")
     fi
     log_matrix_entry "$target" "$version" "$variant" "pytest"
     (cd "$REPO_ROOT" && "${runner[@]}" uv run pytest tests/integration/freertos -v --tb=short)
@@ -85,7 +113,8 @@ build_one() {
     local cache_dir="$CACHE_ROOT/$target/$version/$variant"
     local elf_path="$build_dir/freertos.elf"
     local bin_path="$build_dir/freertos.bin"
-    local toolchain_path="${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:-}}"
+    local toolchain_path
+    toolchain_path="$(toolchain_path_for "$target")"
     local -a build_args
     mkdir -p "$build_dir"
     if is_cube_lane "$target"; then

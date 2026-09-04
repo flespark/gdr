@@ -15,6 +15,7 @@
 #define configMAX_TASK_NAME_LEN 16
 #define configUSE_TRACE_FACILITY 1
 #define configUSE_16_BIT_TICKS 0
+#define configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES 1
 #define configUSE_MUTEXES 1
 #define configUSE_RECURSIVE_MUTEXES 0
 #define configUSE_COUNTING_SEMAPHORES 0

@@ -17,7 +17,7 @@ _ELF_NAME = "freertos.elf"
 # Reason: the build scripts install every fixture into this cache root, so the
 # test-side default has to be the same path (overridable per host/CI).
 _DEFAULT_FIXTURE_CACHE = Path.home() / "Project" / "gdr-fixture" / "freertos"
-_KNOWN_TARGETS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521")
+_KNOWN_TARGETS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521", "qemu-virt-rv64")
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -61,24 +61,35 @@ def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
             "mps2-an385": "mps2-an385",
             "mps2-an521": "mps2-an521",
             "b-l475e-iot01a": "b-l475e-iot01a",
+            "qemu-virt-rv64": "virt",
         }[target],
     )
     # Reason: mps2-an521 is fixed at two CPUs (default_cpus == min == max),
     # so an explicit -smp 2 is redundant and -smp 1 would be rejected;
-    # leave the machine default alone.
-    qemu_args = ("-semihosting-config", "enable=on,target=native")
+    # leave the machine default alone.  The RISC-V lane uses QEMU's RISC-V
+    # semihosting (ebreak sequence) for the ready marker, which needs the
+    # semihosting switch just like the ARM lanes; -bios loads the raw binary
+    # at 0x80000000 while GDB reads the ELF.
+    qemu_args = (
+        ("-cpu", "rv64", "-m", "256M", "-semihosting-config", "enable=on")
+        if target == "qemu-virt-rv64"
+        else ("-semihosting-config", "enable=on,target=native")
+    )
     return QemuProfile(
         rtos="freertos",
         version=version,
         target=target,
-        qemu_binary=_env_str("GDR_QEMU", "qemu-system-arm"),
+        qemu_binary=_env_str(
+            "GDR_QEMU",
+            "qemu-system-riscv64" if target == "qemu-virt-rv64" else "qemu-system-arm",
+        ),
         machine=machine,
-        gdb_architecture="arm",
+        gdb_architecture="riscv:rv64" if target == "qemu-virt-rv64" else "arm",
         elf_path=elf_path,
         firmware_path=firmware_path,
-        firmware_option="-kernel",
+        firmware_option="-bios" if target == "qemu-virt-rv64" else "-kernel",
         ready_marker="GDR FreeRTOS fixture ready.",
-        pointer_width=4,
+        pointer_width=8 if target == "qemu-virt-rv64" else 4,
         init_command=f"gdr init freertos {version}",
         qemu_args=qemu_args,
         extra_env={"GDR_RTOS": "", "GDR_VERSION": ""},

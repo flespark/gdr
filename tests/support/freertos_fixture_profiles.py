@@ -22,11 +22,16 @@ _SUPPORTED_VARIANTS = (
     "heap-3",
     "heap-5",
     "heap-protector",
+    "heap-5-protector",
     "registry-0",
+    "pend-callback",
+    "streams",
+    "mpu",
+    "rv64",
     "smp",
 )
 
-_SUPPORTED_BOARDS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521")
+_SUPPORTED_BOARDS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521", "qemu-virt-rv64")
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,7 @@ def _heap_kind_for(variant: str) -> int | None:
         "heap-2": 2,
         "heap-3": None,
         "heap-5": 5,
+        "heap-5-protector": 5,
         # Reason: the build scripts link no MemMang source at all for
         # static-only (heap_source() returns empty), so no heap symbol exists
         # and detect_config() reports None -- there is no heap to identify.
@@ -103,8 +109,8 @@ def get_freertos_test_profile(
         target=target,
         heap_kind=_heap_kind_for(variant),
         trace_facility=variant != "trace-off",
-        static_allocation=variant in {"static-only", "static-dynamic"},
-        static_and_dynamic=variant == "static-dynamic",
+        static_allocation=variant in {"static-only", "static-dynamic", "streams"},
+        static_and_dynamic=variant in {"static-dynamic", "streams"},
         notification_array=v10_4,
         # Reason: configUSE_MINI_LIST_ITEM defaults to 1 from V10.5.0; earlier
         # kernels always used MiniListItem_t without the config switch, so the
@@ -119,7 +125,7 @@ def get_freertos_test_profile(
         # ground truth the live probe is compared against.  The smp variant is
         # only built for the dual-core mps2-an521 board.
         number_of_cores=2 if variant == "smp" else 1,
-        heap_protector=variant == "heap-protector" and v11,
+        heap_protector=(variant in {"heap-protector", "heap-5-protector"}) and v11,
         stream_buffers=True,
         batching_buffer=v11_1,
         # Reason: the kernel only memsets a new stack with tskSTACK_FILL_BYTE

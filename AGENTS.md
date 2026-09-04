@@ -184,16 +184,25 @@ one fixture cache (details in `ci/freertos/README.md`):
   STM32CubeL4 `v1.18.2` (commit
   `5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`), so it is pinned to kernel
   `10.3.1` and carries the **config variant** matrix.
-- **Kernel-direct live (`mps2-an385`, `mps2-an521`):**
+- **Kernel-direct live (`mps2-an385`, `mps2-an521`, `qemu-virt-rv64`):**
   `ci/freertos/build-fixture-kernel.sh` clones `FreeRTOS-Kernel` at a tag and
   links a port directory chosen by target, so it carries the **kernel version**
   matrix. `mps2-an385` links `portable/GCC/ARM_CM3` (single core).
-  `mps2-an521` links `portable/GCC/ARM_CM33_NTZ/non_secure` and is the
-  **dual-core SMP** lane: QEMU models that board as SSE-200 with two
-  Cortex-M33, and ARMv8-M SMP support exists only from kernel `V11.3.1`
-  (`portVALIDATED_FOR_SMP` is 0 in every earlier tag), so the lane is pinned to
-  `11.3.1` with the `smp` config variant. Unlike the CM3 port, CM33 needs
-  `portasm.c` compiled alongside `port.c`.
+  `mps2-an521` links `portable/GCC/ARM_CM33_NTZ/non_secure` and hosts two
+  mutually exclusive single-board variants: the **dual-core SMP** lane (QEMU
+  models that board as SSE-200 with two Cortex-M33, ARMv8-M SMP exists only
+  from `V11.3.1` -- `portVALIDATED_FOR_SMP` is 0 in every earlier tag -- so it
+  is pinned to `11.3.1` with the `smp` config variant) and the **single-core
+  `mpu`** variant (`configENABLE_MPU 1`, MPU wrappers v2) that populates
+  `xKernelObjectPool`. Unlike the CM3 port, CM33 needs `portasm.c` compiled
+  alongside `port.c`; the `mpu` variant additionally links
+  `portable/Common/mpu_wrappers_v2.c` and `mpu_wrappers_v2_asm.c`.
+  `qemu-virt-rv64` links `portable/GCC/RISC-V` (rv64imac, `portASM.S` +
+  `chip_specific_extensions/RISCV_MTIME_CLINT_no_extensions`) and boots on
+  QEMU `-machine virt` with the SiFive CLINT tick; it is the 64-bit lane
+  (64-bit pointers, and the RISC-V port always uses 64-bit ticks). The
+  kernel-direct compiler follows the target (`riscv-none-elf-` on
+  `qemu-virt-rv64`, `arm-none-eabi-` elsewhere).
 - **Static snapshot:** `ci/freertos/build-fixture-snapshot.sh` builds a
   Cortex-M33 ELF whose `.data` holds pre-initialized SMP scheduler structures
   plus the diagnostic negatives a healthy kernel cannot produce (corrupt
@@ -211,7 +220,11 @@ drives the two live lanes.
 
 ```bash
 bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-dynamic
-bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp   # dual-core SMP
+bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp        # dual-core SMP
+bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu        # MPU wrappers v2
+bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 base   # 64-bit RISC-V
+# The GDR_GDB used for the closed loop must match the lane's architecture
+# (riscv-none-elf-gdb-py3 for qemu-virt-rv64, arm-none-eabi-gdb-py3 elsewhere).
 
 # Point the fixture cache elsewhere. A cached fixture is reused only while it is
 # newer than the fixture sources; a missing or stale one is rebuilt and installed.
@@ -258,8 +271,9 @@ ruff + unit coverage on Python 3.10/3.14, the GDB 12 compatibility baseline,
 RT-Thread split by target (`rtthread-a9-target` / `rtthread-rv64-target`), and
 FreeRTOS split by what
 each lane can falsify — `freertos-snapshot` (static ELF, no QEMU),
-`freertos-config-scope` (kernel 10.3.1, 11 config variants) and
-`freertos-version-scope` (kernel version sweep plus the dual-core SMP lane).
+`freertos-config-scope` (kernel 10.3.1, 13 config variants) and
+`freertos-version-scope` (kernel version sweep, the dual-core SMP lane and
+the 64-bit RISC-V lane).
 The FreeRTOS split matches the three fixture builders, so each lane mounts only
 the sources it builds from. Every test pipeline is defined once as a YAML anchor
 and referenced from both `push:` and `pull_request:`; the two event lists differ

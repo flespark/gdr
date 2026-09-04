@@ -69,8 +69,13 @@ def test_static_only_has_no_heap_manager():
     assert get_freertos_test_profile("static-only", "10.3.1").heap_kind is None
 
 
-def test_mpu_pool_is_not_a_live_variant():
-    """mpu-pool has no QEMU+port combination; keep it out of the live table."""
+def test_mpu_pool_has_a_live_variant():
+    """The mpu variant (single-core CM33 with configENABLE_MPU) is registered
+    and builds on mps2-an521; booting it is proven unreachable under QEMU
+    (see docs/architecture.md), so the xKernelObjectPool channel keeps
+    unit-test coverage.  The old 'mpu-pool' name is gone -- the pool symbol
+    is reached through the mpu variant's build."""
+    assert "mpu" in list_freertos_variants()
     assert "mpu-pool" not in list_freertos_variants()
 
 

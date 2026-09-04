@@ -6,7 +6,8 @@
  *
  * The kernel/config/board headers below resolve only through the ARM cross
  * include paths supplied by ci/freertos/build-fixture-kernel.sh; host-side
- * analyzers without those paths report spurious "file not found" errors.
+ * analyzers without those paths report spurious "file not found" errors
+ * (see .pi-lens.json ignore for the same class).
  */
 #include "FreeRTOS.h"
 #include "event_groups.h"
@@ -113,6 +114,12 @@ GDR_USED static StreamBufferHandle_t gdr_message_buffer;
 #if (GDR_HAS_BATCHING_BUFFER == 1)
 GDR_USED static StreamBufferHandle_t gdr_batching_buffer;
 #endif
+#if (GDR_FIXTURE_STREAM_ACTIONS == 1)
+/* Reason: the deleted-buffer detail (Type: deleted) needs a handle symbol
+ * that survives vStreamBufferDelete; a dynamic buffer would be freed and
+ * the memory reused, so the deleted one is static. */
+GDR_USED static StreamBufferHandle_t gdr_deleted_stream_buffer;
+#endif
 #if (configUSE_QUEUE_SETS == 1)
 GDR_USED static QueueSetHandle_t gdr_queue_set;
 GDR_USED static QueueHandle_t gdr_set_member_a;
@@ -195,14 +202,29 @@ static StaticTask_t gdr_ready_tcb;
 static StackType_t gdr_ready_stack[GDR_STACK_WORDS];
 static StaticQueue_t gdr_registered_queue_buf;
 static uint8_t gdr_registered_queue_storage[4 * sizeof(uint32_t)];
+/* Reason: the static-dynamic variant must own a genuinely static event group
+ * (ucStaticallyAllocated == 1) while keeping another EG dynamic; the static
+ * storage block below is the only place a buffer for it can live. */
+static StaticEventGroup_t gdr_static_event_group_buf;
+#if (GDR_FIXTURE_STREAM_ACTIONS == 1)
+static StaticStreamBuffer_t gdr_deleted_stream_buffer_buf;
+static uint8_t gdr_deleted_stream_buffer_storage[8];
+#endif
 #endif
 
-static void gdr_semihosting_write0(const char *message)
+#ifndef GDR_BOARD_PROVIDES_SEMIHOSTING
+void gdr_semihosting_write0(const char *message)
 {
     register int operation __asm__("r0") = 0x04;
     register const char *argument __asm__("r1") = message;
     __asm__ volatile("bkpt 0xab" : : "r"(operation), "r"(argument) : "memory");
 }
+#else
+/* Reason: the RISC-V board provides its own ebreak-sequenced
+ * gdr_semihosting_write0 (qemu-virt-rv64/system_init.c); keep a prototype
+ * so the ready-marker call site compiles without an implicit declaration. */
+void gdr_semihosting_write0(const char *message);
+#endif
 
 void gdr_fixture_assert_failed(int line)
 {
@@ -279,6 +301,17 @@ void vApplicationGetTimerTaskMemory(StaticTask_t **tcb_buffer,
     *stack_size = (gdr_stack_depth_t)configTIMER_TASK_STACK_DEPTH;
 }
 #endif
+#endif
+
+#if (INCLUDE_xTimerPendFunctionCall == 1)
+/* Reason: the pended callback's address and arguments must be deterministic
+ * for the command-table assertions (Value column decodes them); the values
+ * are arbitrary but stable. */
+static void gdr_pended_function(void *pvParameter1, uint32_t ulParameter2)
+{
+    (void)pvParameter1;
+    (void)ulParameter2;
+}
 #endif
 
 static void gdr_timer_callback(TimerHandle_t timer)
@@ -464,6 +497,40 @@ static void gdr_preempt(void *argument)
 }
 #endif
 
+/* Reason: the daemon command queue is normally drained within one daemon
+ * pass, so a live fixture would only ever show an empty queue.  Suspending
+ * the daemon (it is a task like any other) before enqueueing freezes the
+ * queue contents: one pended callback (xMessageID < 0) plus the timer
+ * commands below stay pending until the harness breakpoint.  The daemon's
+ * pre-scheduler drain reads exactly the four main() commands (capacity 8),
+ * so pcReadFrom lands at slot 4 and the seven pending messages wrap the
+ * ring during the read -- the wrap arm of iter_timer_commands gets its
+ * first live evidence. */
+#if (INCLUDE_xTimerPendFunctionCall == 1)
+static void gdr_timer_command_task(void *argument)
+{
+    (void)argument;
+    /* Let the daemon perform its first pass (it runs at configTIMER_TASK_
+     * PRIORITY 3, above this task's 2) so xTimerQueue exists and the four
+     * main() start/stop commands are drained deterministically. */
+    vTaskDelay(pdMS_TO_TICKS(5));
+    vTaskSuspend(xTimerGetTimerDaemonTaskHandle());
+    configASSERT(xTimerPendFunctionCall(gdr_pended_function, (void *)0xCAFEF00DU,
+                                        0x5A5A5A5AU, 0) == pdPASS);
+    configASSERT(xTimerStart(gdr_active_timer, 0) == pdPASS);
+    configASSERT(xTimerStart(gdr_inactive_timer, 0) == pdPASS);
+    configASSERT(xTimerChangePeriod(gdr_stopped_timer, pdMS_TO_TICKS(200), 0) ==
+                 pdPASS);
+    configASSERT(xTimerStart(gdr_oneshot_timer, 0) == pdPASS);
+    configASSERT(xTimerChangePeriod(gdr_active_timer, pdMS_TO_TICKS(150), 0) ==
+                 pdPASS);
+    configASSERT(xTimerStart(gdr_created_idle_timer, 0) == pdPASS);
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+#endif
+
 /* Reason: the ready marker used to fire after a 20 ms delay, before every
  * extra waiter had entered its stable blocked/suspended state. Stretch the
  * delay so QEMU's boot wait sees a deterministic object graph. */
@@ -508,11 +575,23 @@ void vApplicationTickHook(void)
 #endif
 
 #if (configSUPPORT_DYNAMIC_ALLOCATION == 1)
+/* Reason: MPU_xTaskCreate (v2 wrappers) refuses priorities without
+ * portPRIVILEGE_BIT -- "xTaskCreate() can only be used to create
+ * privileged tasks in MPU port"; the kernel masks the bit back off
+ * (tasks.c uxPriority &= ~portPRIVILEGE_BIT), and the macro only exists on
+ * MPU ports (ARM_CM3/CM4F have no such macro and no bit to add). */
+#if defined(portPRIVILEGE_BIT)
+#define GDR_TASK_PRIO(prio) ((prio) | portPRIVILEGE_BIT)
+#else
+#define GDR_TASK_PRIO(prio) (prio)
+#endif
+
 static TaskHandle_t gdr_create_task(TaskFunction_t fn, const char *name,
                                     uint16_t stack, UBaseType_t prio,
                                     TaskHandle_t *out)
 {
-    configASSERT(xTaskCreate(fn, name, stack, NULL, prio, out) == pdPASS);
+    configASSERT(xTaskCreate(fn, name, stack, NULL, GDR_TASK_PRIO(prio),
+                             out) == pdPASS);
     return *out;
 }
 #endif
@@ -526,6 +605,26 @@ static TaskHandle_t gdr_create_task_static(TaskFunction_t fn, const char *name,
     *out = xTaskCreateStatic(fn, name, words, NULL, prio, stack, tcb);
     configASSERT(*out != NULL);
     return *out;
+}
+#endif
+
+#if (configENABLE_MPU == 1)
+/* Reason: the MPU wrapper's send path calls
+ * xPortIsAuthorizedToAccessBuffer, which reads the *current* task's MPU
+ * settings (xTaskGetMPUSettings asserts on NULL); before the scheduler
+ * starts pxCurrentTCB is NULL, so every pre-scheduler xQueueSend /
+ * xTimerStart faults.  Run the one-time priming from the highest-priority
+ * task instead -- still deterministic and long before the ready marker. */
+static void gdr_mpu_boot_priming(void *argument)
+{
+    (void)argument;
+    uint32_t full_item = 1U;
+    configASSERT(xQueueSend(gdr_full_queue, &full_item, 0) == pdPASS);
+    configASSERT(xTimerStart(gdr_active_timer, 0) == pdPASS);
+    configASSERT(xTimerStart(gdr_stopped_timer, 0) == pdPASS);
+    configASSERT(xTimerStop(gdr_stopped_timer, 0) == pdPASS);
+    configASSERT(xTimerStart(gdr_oneshot_timer, 0) == pdPASS);
+    vTaskDelete(NULL);
 }
 #endif
 
@@ -544,14 +643,29 @@ static void gdr_register(QueueHandle_t handle, const char *name)
  * addresses (heap_5.c vPortDefineHeapRegions). Two separate globals have no
  * guaranteed link order -- the b-l475e build placed the second array below
  * the first and the fixture died in that configASSERT before reaching
- * vTaskStartScheduler -- so both regions come from one ordered object. */
+ * vTaskStartScheduler -- so the regions come from one ordered object.  The
+ * heap-5-protector cell uses exactly one region so the protector's region
+ * extremes (pucHeapLowAddress/HighAddress) span no gaps. */
 static struct {
     uint8_t low[32 * 1024];
+#if (GDR_FIXTURE_HEAP_5_SINGLE_REGION != 1)
     uint8_t high[16 * 1024];
+#endif
 } gdr_heap_arena __attribute__((aligned(8)));
 
 static void gdr_init_heap_regions(void)
 {
+#if (GDR_FIXTURE_HEAP_5_SINGLE_REGION == 1)
+    /* Reason: the heap-5-protector cell may only claim TotalSize from the
+     * region extremes when they span exactly one region; multiple regions
+     * would make pucHeapLowAddress/HighAddress span gaps.  One 32 KiB
+     * region plus the 0-size terminator (heap_5 walks until
+     * xSizeInBytes == 0). */
+    const HeapRegion_t regions[] = {
+        {gdr_heap_arena.low, sizeof(gdr_heap_arena.low)},
+        {NULL, 0},
+    };
+#else
     /* Two live regions plus a trailing 0-size terminator (heap_5 walks
      * until xSizeInBytes == 0). The zero-size slot terminates the region list. */
     const HeapRegion_t regions[] = {
@@ -559,6 +673,7 @@ static void gdr_init_heap_regions(void)
         {gdr_heap_arena.high, sizeof(gdr_heap_arena.high)},
         {NULL, 0},
     };
+#endif
     vPortDefineHeapRegions(regions);
 }
 #endif
@@ -666,8 +781,13 @@ int main(void)
 #endif
 #endif
 
-#if (configSUPPORT_STATIC_ALLOCATION == 1) && \
-    (GDR_FIXTURE_MIXED_ALLOCATION == 0)
+/* Reason: gdr_static_event_group must be genuinely static whenever static
+ * allocation exists -- on static-dynamic the mixed-allocation branch used to
+ * fall through to a dynamic create, so no object in that variant ever
+ * carried ucStaticallyAllocated == 1 (the member itself only exists under
+ * this double-on config).  static-dynamic keeps gdr_event_group dynamic, so
+ * both values are live on the same lane. */
+#if (configSUPPORT_STATIC_ALLOCATION == 1)
     gdr_static_event_group =
         xEventGroupCreateStatic(&gdr_static_event_group_buf);
 #elif (configSUPPORT_DYNAMIC_ALLOCATION == 1)
@@ -696,6 +816,43 @@ int main(void)
     gdr_register(gdr_semaphore, "gdr_semaphore");
     gdr_register(gdr_mutex, "gdr_mutex");
 
+#if (GDR_FIXTURE_STREAM_ACTIONS == 1)
+    /* Live evidence for the stream-buffer geometry branches (streams.py).
+     * All actions run before the scheduler starts, so the ring state at the
+     * harness breakpoint is deterministic. */
+    {
+        uint8_t pool[24];
+        /* gdr_stream_buffer: exactly the trigger level (1 byte) -> the
+         * TriggerMet >= branch is live on a non-empty buffer. */
+        configASSERT(xStreamBufferSend(gdr_stream_buffer, pool, 1, 0) == 1);
+        /* gdr_batching_buffer: exactly the trigger level (1 byte) -> the
+         * batching > branch (strictly greater) must report no. */
+#if (GDR_HAS_BATCHING_BUFFER == 1)
+        configASSERT(xStreamBufferSend(gdr_batching_buffer, pool, 1, 0) == 1);
+#endif
+        /* gdr_message_buffer: three 4-byte messages written, two read,
+         * three written again wraps the ring (xHead < xTail) and leaves a
+         * valid NextMsg length prefix at xTail. */
+        for (uint32_t i = 0; i < 3; i++) {
+            configASSERT(xMessageBufferSend(gdr_message_buffer, pool, 4, 0) == 4);
+        }
+        configASSERT(xMessageBufferReceive(gdr_message_buffer, pool, sizeof(pool),
+                                           0) == 4);
+        configASSERT(xMessageBufferReceive(gdr_message_buffer, pool, sizeof(pool),
+                                           0) == 4);
+        for (uint32_t i = 0; i < 3; i++) {
+            configASSERT(xMessageBufferSend(gdr_message_buffer, pool, 4, 0) == 4);
+        }
+        (void)pool;
+    }
+    gdr_deleted_stream_buffer = xStreamBufferCreateStatic(
+        sizeof(gdr_deleted_stream_buffer_storage), 1,
+        gdr_deleted_stream_buffer_storage, &gdr_deleted_stream_buffer_buf);
+    configASSERT(gdr_deleted_stream_buffer != NULL);
+    vStreamBufferDelete(gdr_deleted_stream_buffer);
+#endif
+
+#if (configENABLE_MPU == 0)
     {
         uint32_t full_item = 1U;
         configASSERT(xQueueSend(gdr_full_queue, &full_item, 0) == pdPASS);
@@ -704,6 +861,7 @@ int main(void)
     configASSERT(xTimerStart(gdr_stopped_timer, 0) == pdPASS);
     configASSERT(xTimerStop(gdr_stopped_timer, 0) == pdPASS);
     configASSERT(xTimerStart(gdr_oneshot_timer, 0) == pdPASS);
+#endif
 
 #if (configUSE_QUEUE_SETS == 1)
     configASSERT(gdr_queue_set != NULL);
@@ -762,6 +920,16 @@ int main(void)
                     &gdr_ready_spin_task);
     gdr_create_task(gdr_waiter_only_eg_task, "gdr_egw",
                     configMINIMAL_STACK_SIZE, 2, &gdr_waiter_only_eg_handle);
+#if (configENABLE_MPU == 1)
+    /* Above the ready task (4) so the priming completes before the 80 ms
+     * ready marker; it deletes itself after the one-time sends. */
+    gdr_create_task(gdr_mpu_boot_priming, "gdr_bootp", configMINIMAL_STACK_SIZE,
+                    5, NULL);
+#endif
+#if (INCLUDE_xTimerPendFunctionCall == 1)
+    gdr_create_task(gdr_timer_command_task, "gdr_tmrcmd", configMINIMAL_STACK_SIZE,
+                    2, NULL);
+#endif
 #if (configNUMBER_OF_CORES > 1)
     gdr_create_task(gdr_bound, "gdr_bound", configMINIMAL_STACK_SIZE, 2,
                     &gdr_bound_task);

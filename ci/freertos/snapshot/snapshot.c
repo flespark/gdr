@@ -75,9 +75,12 @@ extern ListItem_t gdr_bad_item_b;
 extern ListItem_t gdr_bad_item_c;
 extern ListItem_t gdr_bad_item_d;
 extern ListItem_t gdr_bad_item_e;
+extern ListItem_t gdr_bad_item_f;
+extern List_t gdr_bad_magic;
 extern TCB_t gdr_tcb_negcycle;
 extern TCB_t gdr_tcb_negcount;
 extern TCB_t gdr_tcb_negindex;
+extern TCB_t gdr_tcb_negmagic;
 extern TCB_t gdr_tcb_negoff;
 extern List_t pxReadyTasksLists[configMAX_PRIORITIES];
 extern List_t xDelayedTaskList1;
@@ -100,7 +103,7 @@ GDR_USED volatile configRUN_TIME_COUNTER_TYPE ulTotalRunTime[configNUMBER_OF_COR
     3000U,
 };
 GDR_USED volatile BaseType_t xSchedulerRunning = pdTRUE;
-GDR_USED volatile UBaseType_t uxCurrentNumberOfTasks = 8U;
+GDR_USED volatile UBaseType_t uxCurrentNumberOfTasks = 9U;
 /* Reason: a zero-initialized standalone global is placed in .bss (zero-init
  * optimization), which the file-only snapshot session cannot read; force
  * .data so the initializer bytes are actually present in the ELF. */
@@ -110,13 +113,16 @@ GDR_USED volatile TickType_t xTickCount = 42U;
 
 #define EMPTY_LIST(name)                                                     \
     List_t name = {                                                          \
+        .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,                     \
         .uxNumberOfItems = 0,                                                \
         .pxIndex = (ListItem_t *)&(name).xListEnd,                           \
         .xListEnd = {                                                        \
+            .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,             \
             .xItemValue = portMAX_DELAY,                                     \
             .pxNext = (ListItem_t *)&(name).xListEnd,                        \
             .pxPrevious = (ListItem_t *)&(name).xListEnd,                    \
         },                                                                   \
+        .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,                     \
     }
 
 EMPTY_LIST(xDelayedTaskList2);
@@ -127,13 +133,16 @@ GDR_USED List_t *volatile pxDelayedTaskList = &xDelayedTaskList1;
 GDR_USED List_t *volatile pxOverflowDelayedTaskList = &xDelayedTaskList2;
 
 GDR_USED List_t xDelayedTaskList1 = {
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
     .uxNumberOfItems = 1,
     .pxIndex = (ListItem_t *)&xDelayedTaskList1.xListEnd,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = &gdr_tcb_yield.xStateListItem,
         .pxPrevious = &gdr_tcb_yield.xStateListItem,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 /* ------------------------------------------------------------------
@@ -171,23 +180,29 @@ extern Timer_t gdr_timer_current;
 extern Timer_t gdr_timer_overflow;
 
 GDR_USED List_t xActiveTimerList1 = {
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
     .uxNumberOfItems = 1,
     .pxIndex = (ListItem_t *)&xActiveTimerList1.xListEnd,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = &gdr_timer_current.xTimerListItem,
         .pxPrevious = &gdr_timer_current.xTimerListItem,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 GDR_USED List_t xActiveTimerList2 = {
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
     .uxNumberOfItems = 1,
     .pxIndex = (ListItem_t *)&xActiveTimerList2.xListEnd,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = &gdr_timer_overflow.xTimerListItem,
         .pxPrevious = &gdr_timer_overflow.xTimerListItem,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 GDR_USED List_t *volatile pxCurrentTimerList = &xActiveTimerList1;
@@ -239,47 +254,60 @@ GDR_USED ListItem_t gdr_bad_item_b;
 GDR_USED ListItem_t gdr_bad_item_c;
 GDR_USED ListItem_t gdr_bad_item_d;
 GDR_USED ListItem_t gdr_bad_item_e;
+GDR_USED ListItem_t gdr_bad_item_f;
 
 GDR_USED List_t gdr_bad_cycle = {
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
     .uxNumberOfItems = 2,
     .pxIndex = (ListItem_t *)&gdr_bad_cycle.xListEnd,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = &gdr_bad_item_a,
         .pxPrevious = &gdr_bad_item_b,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 GDR_USED List_t gdr_bad_count = {
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
     .uxNumberOfItems = 3, /* three declared, only two walkable */
     .pxIndex = (ListItem_t *)&gdr_bad_count.xListEnd,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = &gdr_bad_item_c,
         .pxPrevious = &gdr_bad_item_d,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 GDR_USED List_t gdr_bad_index = {
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
     .uxNumberOfItems = 1,
     /* Reason: pxIndex parked on a real item violates the SMP invariant that
      * it rests on &xListEnd between scheduler rotations. */
     .pxIndex = &gdr_bad_item_e,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = &gdr_bad_item_e,
         .pxPrevious = &gdr_bad_item_e,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 GDR_USED List_t gdr_bad_offrange = {
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
     .uxNumberOfItems = 1,
     .pxIndex = (ListItem_t *)&gdr_bad_offrange.xListEnd,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = (ListItem_t *)0x10000000UL, /* inside no loadable section */
         .pxPrevious = (ListItem_t *)&gdr_bad_offrange.xListEnd,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 GDR_USED ListItem_t gdr_bad_item_a = {
@@ -323,22 +351,53 @@ GDR_USED ListItem_t gdr_bad_item_e = {
  * Forced into .data so the zeros are actually readable in the file session. */
 GDR_USED __attribute__((section(".data"))) StackType_t gdr_stack_neg[STACK_WORDS] = {0};
 
+/* Reason: configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES is on for this
+ * snapshot, so every List_t is stamped with pdINTEGRITY_CHECK_VALUE.  This
+ * standalone list corrupts only xListIntegrityValue1 (0xdeadbeef instead of
+ * 0x5a5a5a5a) -- a state the kernel itself can never reach, because it only
+ * asserts integrity inside vListInsert/vListInsertEnd and would abort before
+ * any command could observe the bytes.  A healthy kernel never produces this,
+ * which is exactly why the fixture must. */
+GDR_USED List_t gdr_bad_magic = {
+    .xListIntegrityValue1 = 0xdeadbeefUL,
+    .uxNumberOfItems = 1,
+    .pxIndex = (ListItem_t *)&gdr_bad_magic.xListEnd,
+    .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
+        .xItemValue = portMAX_DELAY,
+        .pxNext = &gdr_bad_item_f,
+        .pxPrevious = &gdr_bad_item_f,
+    },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
+};
+
+GDR_USED ListItem_t gdr_bad_item_f = {
+    .xItemValue = 0x60,
+    .pxNext = (ListItem_t *)&gdr_bad_magic.xListEnd,
+    .pxPrevious = (ListItem_t *)&gdr_bad_magic.xListEnd,
+    .pvOwner = NULL,
+    .pxContainer = &gdr_bad_magic,
+};
+
 GDR_USED TCB_t gdr_tcb_negcycle;
 GDR_USED TCB_t gdr_tcb_negcount;
 GDR_USED TCB_t gdr_tcb_negindex;
 GDR_USED TCB_t gdr_tcb_negoff;
 
-/* The four negative TCBs are discoverable through xTasksWaitingTermination
+/* The negative TCBs are discoverable through xTasksWaitingTermination
  * (so ``frt task negcycle`` resolves them) while each claims one corrupt
  * container list in its state item. */
 GDR_USED List_t xTasksWaitingTermination = {
-    .uxNumberOfItems = 4,
+    .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
+    .uxNumberOfItems = 5,
     .pxIndex = (ListItem_t *)&xTasksWaitingTermination.xListEnd,
     .xListEnd = {
+        .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .xItemValue = portMAX_DELAY,
         .pxNext = &gdr_tcb_negcycle.xStateListItem,
         .pxPrevious = &gdr_tcb_negoff.xStateListItem,
     },
+    .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
 };
 
 #define NEG_TCB(name, container_addr, event_owner_addr, next_item, prev_item, wname) \
@@ -384,15 +443,22 @@ NEG_TCB(
     gdr_tcb_negindex,
     &gdr_bad_index,
     &gdr_tcb_negindex,
-    &gdr_tcb_negoff.xStateListItem,
+    &gdr_tcb_negmagic.xStateListItem,
     &gdr_tcb_negcount.xStateListItem,
     "negindex");
+NEG_TCB(
+    gdr_tcb_negmagic,
+    &gdr_bad_magic,
+    &gdr_tcb_negmagic,
+    &gdr_tcb_negoff.xStateListItem,
+    &gdr_tcb_negindex.xStateListItem,
+    "negmagic");
 NEG_TCB(
     gdr_tcb_negoff,
     &gdr_bad_offrange,
     &gdr_tcb_negoff,
     (ListItem_t *)&xTasksWaitingTermination.xListEnd,
-    &gdr_tcb_negindex.xStateListItem,
+    &gdr_tcb_negmagic.xStateListItem,
     "negoff");
 
 /* ------------------------------------------------------------------
@@ -428,58 +494,76 @@ GDR_USED size_t xFreeBytesRemaining = 64;
 
 GDR_USED List_t pxReadyTasksLists[configMAX_PRIORITIES] = {
     [0] = {
+        .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .uxNumberOfItems = 2,
         .pxIndex = (ListItem_t *)&pxReadyTasksLists[0].xListEnd,
         .xListEnd = {
+            .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
             .xItemValue = portMAX_DELAY,
             .pxNext = &gdr_tcb_core0.xStateListItem,
             .pxPrevious = &gdr_tcb_core1.xStateListItem,
         },
+        .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
     },
     [1] = {
+        .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .uxNumberOfItems = 1,
         .pxIndex = (ListItem_t *)&pxReadyTasksLists[1].xListEnd,
         .xListEnd = {
+            .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
             .xItemValue = portMAX_DELAY,
             .pxNext = &gdr_tcb_ready.xStateListItem,
             .pxPrevious = &gdr_tcb_ready.xStateListItem,
         },
+        .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
     },
     [2] = {
+        .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .uxNumberOfItems = 0,
         .pxIndex = (ListItem_t *)&pxReadyTasksLists[2].xListEnd,
         .xListEnd = {
+            .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
             .xItemValue = portMAX_DELAY,
             .pxNext = (ListItem_t *)&pxReadyTasksLists[2].xListEnd,
             .pxPrevious = (ListItem_t *)&pxReadyTasksLists[2].xListEnd,
         },
+        .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
     },
     [3] = {
+        .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .uxNumberOfItems = 0,
         .pxIndex = (ListItem_t *)&pxReadyTasksLists[3].xListEnd,
         .xListEnd = {
+            .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
             .xItemValue = portMAX_DELAY,
             .pxNext = (ListItem_t *)&pxReadyTasksLists[3].xListEnd,
             .pxPrevious = (ListItem_t *)&pxReadyTasksLists[3].xListEnd,
         },
+        .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
     },
     [4] = {
+        .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .uxNumberOfItems = 0,
         .pxIndex = (ListItem_t *)&pxReadyTasksLists[4].xListEnd,
         .xListEnd = {
+            .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
             .xItemValue = portMAX_DELAY,
             .pxNext = (ListItem_t *)&pxReadyTasksLists[4].xListEnd,
             .pxPrevious = (ListItem_t *)&pxReadyTasksLists[4].xListEnd,
         },
+        .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
     },
     [5] = {
+        .xListIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
         .uxNumberOfItems = 0,
         .pxIndex = (ListItem_t *)&pxReadyTasksLists[5].xListEnd,
         .xListEnd = {
+            .xListItemIntegrityValue1 = pdINTEGRITY_CHECK_VALUE,
             .xItemValue = portMAX_DELAY,
             .pxNext = (ListItem_t *)&pxReadyTasksLists[5].xListEnd,
             .pxPrevious = (ListItem_t *)&pxReadyTasksLists[5].xListEnd,
         },
+        .xListIntegrityValue2 = pdINTEGRITY_CHECK_VALUE,
     },
 };
 

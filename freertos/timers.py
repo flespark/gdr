@@ -83,7 +83,11 @@ class TimerCommand:
     ``seq`` is the FIFO ring index (0 = oldest pending); ``message_id`` is
     ``xMessageID`` (``None`` when the slot could not be read).  Timer-arm
     commands carry ``timer_address``/``message_value``; a pended callback
-    (``message_id < 0``) leaves them ``None`` and toggles ``callback_arm``.
+    (``message_id < 0``) leaves them ``None`` and carries the callback
+    ``xCallbackParameters`` instead (``callback_function``,
+    ``callback_parameter1``, ``callback_parameter2``) plus the
+    ``callback_arm`` flag (whether the union arm exists in DWARF at all --
+    when it does not, the kernel cannot have enqueued a pended callback).
     """
 
     seq: int
@@ -91,6 +95,9 @@ class TimerCommand:
     timer_address: int | None = None
     message_value: int | None = None
     callback_arm: bool = False
+    callback_function: int | None = None
+    callback_parameter1: int | None = None
+    callback_parameter2: int | None = None
 
 
 def command_name(message_id: int) -> str:
@@ -363,13 +370,34 @@ def iter_timer_commands(
             commands.append(TimerCommand(seq=seq, message_id=None))
             continue
         if message_id < 0:
-            commands.append(
-                TimerCommand(
-                    seq=seq,
-                    message_id=message_id,
-                    callback_arm=_callback_arm_present(msg_type),
-                )
+            arm = _callback_arm_present(msg_type)
+            callback = TimerCommand(
+                seq=seq,
+                message_id=message_id,
+                callback_arm=arm,
             )
+            # Reason: the acceptance for a genuinely pended callback is the
+            # real callback parameters (timers.c u.xCallbackParameters) -- a
+            # bare "pended callback" label would hide the values the daemon
+            # would invoke.  Only attempt the union read when the arm exists.
+            if arm:
+                params = read_path(message_value, ("u", "xCallbackParameters"))
+                if params is not None:
+                    callback = TimerCommand(
+                        seq=seq,
+                        message_id=message_id,
+                        callback_arm=True,
+                        callback_function=read_int(
+                            read_path(params, ("pxCallbackFunction",))
+                        ),
+                        callback_parameter1=read_int(
+                            read_path(params, ("pvParameter1",))
+                        ),
+                        callback_parameter2=read_int(
+                            read_path(params, ("ulParameter2",))
+                        ),
+                    )
+            commands.append(callback)
             continue
         timer = read_int(read_path(message_value, ("u", "xTimerParameters", "pxTimer")))
         message_value_field = read_int(
@@ -392,6 +420,31 @@ def iter_timer_commands(
             f"timer command queue slots unreadable ({waiting} message(s) waiting)"
         ], []
     return [], commands
+
+
+def _callback_value(cmd: TimerCommand) -> str:
+    """Render the Value cell of a pended-callback command row.
+
+    With the ``u.xCallbackParameters`` arm present the daemon would invoke
+    ``pxCallbackFunction(pvParameter1, ulParameter2)`` -- those three
+    values are the only honest cell.  Without the arm a negative
+    ``xMessageID`` cannot be a real pended callback (the kernel cannot
+    enqueue one, timers.c), so the reason is stated instead of guessing.
+    """
+    if not cmd.callback_arm:
+        return "pended-callback arm absent (INCLUDE_xTimerPendFunctionCall=0)"
+    fn = cmd.callback_function
+    p1 = cmd.callback_parameter1
+    p2 = cmd.callback_parameter2
+    if fn is None and p1 is None and p2 is None:
+        return "pended callback"
+    fn_cell = format_symbol_or_address(fn, lookup_symbol_at(fn)) if fn else "-"
+    parts = [fn_cell]
+    if p1 is not None:
+        parts.append(f"p1={p1:#x}")
+    if p2 is not None:
+        parts.append(f"p2={p2:#x}")
+    return " ".join(parts)
 
 
 def commands_cell(
@@ -417,12 +470,7 @@ def commands_cell(
                     str(cmd.seq),
                     command_name(cmd.message_id),
                     "-",
-                    (
-                        "pended callback"
-                        if cmd.callback_arm
-                        else "pended-callback arm absent "
-                        "(INCLUDE_xTimerPendFunctionCall=0)"
-                    ),
+                    _callback_value(cmd),
                 ]
             )
         else:

@@ -532,6 +532,56 @@ def test_heap5_linear_walk_uses_protector_bounds(monkeypatch):
     assert heap.cross_validate(free_list, walk, 16, geom) == "ok"
 
 
+def test_heap5_complete_walk_makes_extremes_a_total(monkeypatch):
+    """A complete single-region heap_5 walk (protector + one region) turns
+    the region extremes into a true total; an incomplete (multi-region)
+    walk must keep TotalSize unavailable -- the extremes span gaps."""
+    geom = _heap5_geom(
+        linear_low=0x1000,
+        heap_limit=0x1018,
+        free_end=0x1018,
+        canary_present=True,
+    )
+    free_walk = HeapWalk(
+        free_bytes=16,
+        free_blocks=2,
+        blocks=[
+            HeapBlock(address=0x1000, size=8, allocated=False),
+            HeapBlock(address=0x1010, size=8, allocated=False),
+        ],
+    )
+    complete = HeapWalk(
+        free_bytes=16,
+        free_blocks=2,
+        holes=2,
+        blocks=[
+            HeapBlock(address=0x1000, size=8, allocated=False),
+            HeapBlock(address=0x1008, size=8, allocated=True),
+            HeapBlock(address=0x1010, size=8, allocated=False),
+        ],
+        incomplete_reason=None,
+    )
+    partial = replace(
+        complete, incomplete_reason="heap_5: only the first region is walked"
+    )
+
+    monkeypatch.setattr(heap, "heap_geometry", lambda _layout: geom)
+    monkeypatch.setattr(heap, "_heap_initialised", lambda _geom: True)
+    monkeypatch.setattr(heap, "lookup_symbol", lambda _name: object())
+    monkeypatch.setattr(heap, "read_int", lambda _value: 16)
+
+    monkeypatch.setattr(heap, "walk_free_list", lambda _geom: free_walk)
+    monkeypatch.setattr(heap, "walk_linear", lambda *_a, **_k: complete)
+    snap = heap.heap_snapshot(build_layout(FreeRtosConfig(heap_kind=5), (10, 3, 1)))
+    assert snap.total == 0x1018 - 0x1000
+    assert snap.cross_check == "ok"
+
+    monkeypatch.setattr(heap, "walk_linear", lambda *_a, **_k: partial)
+    snap = heap.heap_snapshot(build_layout(FreeRtosConfig(heap_kind=5), (10, 3, 1)))
+    assert snap.total is None
+    assert "partial" in snap.cross_check
+
+
 # ---------------------------------------------------------------------------
 # cross-validate
 # ---------------------------------------------------------------------------
