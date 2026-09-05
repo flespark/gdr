@@ -10,7 +10,6 @@ from __future__ import annotations
 import atexit
 import contextlib
 import os
-import re
 import shutil
 import signal
 import socket
@@ -23,8 +22,7 @@ from pathlib import Path
 import pexpect
 import pytest
 
-_GDB_PROMPT = r"\(gdb\)\s*$"
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+from tests.support.gdb_process import GdbProcess
 
 
 @dataclass(frozen=True)
@@ -76,7 +74,15 @@ def find_free_tcp_port() -> int:
 
 
 def check_tools(profile: QemuProfile, gdb_binary: str) -> None:
-    """Skip a hardware-backed test when its executable or image is absent."""
+    """Skip a hardware-backed test when its executable or image is absent.
+
+    Unlike the gdb-binary presence check, the embedded-Python probe runs a
+    real ``python`` command in GDB: xPack's ``arm-none-eabi-gdb`` ships
+    without Python while its ``-py3`` sibling has it, and a later failure
+    would be an obscure pre-connection error instead of a clear skip.
+    """
+    from tests.support.gdb_process import has_embedded_python
+
     missing: list[str] = []
     if not shutil.which(profile.qemu_binary):
         missing.append(profile.qemu_binary)
@@ -88,6 +94,8 @@ def check_tools(profile: QemuProfile, gdb_binary: str) -> None:
         missing.append(str(profile.firmware_path))
     if missing:
         pytest.skip(f"missing tools/firmware: {', '.join(missing)}")
+    if not has_embedded_python(gdb_binary):
+        pytest.skip(f"GDB has no embedded Python: {gdb_binary}")
 
 
 class QemuSession:
@@ -185,8 +193,8 @@ class QemuSession:
             self._qemu = None
 
 
-class GdbSession:
-    """Persistent GDB process driven by pexpect."""
+class GdbSession(GdbProcess):
+    """Persistent GDB session connected to a QEMU target."""
 
     def __init__(
         self,
@@ -195,89 +203,23 @@ class GdbSession:
         gdb_port: int,
         gdr_root: Path,
     ) -> None:
-        self._gdb_binary = gdb_binary
+        super().__init__(gdb_binary, gdr_root)
         self.profile = profile
         self._gdb_port = gdb_port
-        self._gdr_root = gdr_root
-        self._proc: pexpect.spawn | None = None
-        self._script_dir = Path(tempfile.mkdtemp(prefix="gdr-gdbpy-"))
-        self._script_seq = 0
-        self.source_output = ""
+        self.extra_env = profile.extra_env
 
     def start(self) -> None:
         """Connect to QEMU, source GDR once, then initialise when requested."""
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(self._gdr_root)
-        env.update(self.profile.extra_env)
-        self._proc = pexpect.spawn(
-            self._gdb_binary,
-            ["-q"],
-            env=env,
-            encoding="utf-8",
-            timeout=30,
-            codec_errors="replace",
-        )
+        self._require_embedded_python()
+        self._spawn()
         try:
-            self._proc.expect(_GDB_PROMPT, timeout=10)
-            self.run("set pagination off")
-            self.run("set style enabled off")
-            # Reason: table rendering is based on GDB's width. A fixed
-            # baseline keeps existing assertions deterministic while dedicated
-            # width tests explicitly set 80/120 and restore this value.
-            self.run("set width 160")
             self.run(f"set architecture {self.profile.gdb_architecture}")
             self.run(f"file {self.profile.elf_path}")
             self.run(f"target remote :{self._gdb_port}")
-            self.source_output = self.run(f"source {self._gdr_root / 'gdr.py'}")
-            if "Traceback (most recent call last)" in self.source_output:
-                raise RuntimeError(f"GDR failed while sourcing:\n{self.source_output}")
+            self._source_gdr()
             if self.profile.init_command:
                 self.run(self.profile.init_command, timeout=20)
         except (pexpect.EOF, pexpect.TIMEOUT) as exc:
             raise RuntimeError(
                 f"GDB failed while connecting to {self.profile.target}: {exc}"
             ) from exc
-
-    def stop(self) -> None:
-        """Quit GDB and release its pseudo-terminal."""
-        if self._proc is not None:
-            with contextlib.suppress(pexpect.EOF, pexpect.TIMEOUT):
-                self._proc.sendline("quit")
-                self._proc.expect(pexpect.EOF, timeout=5)
-            self._proc.close()
-            self._proc = None
-        shutil.rmtree(self._script_dir, ignore_errors=True)
-
-    def run(self, command: str, timeout: int = 15) -> str:
-        """Run one GDB command and return its output excluding echo and prompt."""
-        if self._proc is None:
-            raise RuntimeError("GDB session not started")
-        self._proc.sendline(command)
-        self._proc.expect(_GDB_PROMPT, timeout=timeout)
-        raw = _ANSI_RE.sub("", self._proc.before or "").replace("\r", "")
-        lines = raw.split("\n", 1)
-        if len(lines) > 1 and command.strip() in lines[0]:
-            return lines[1]
-        return raw
-
-    def run_many(self, *commands: str) -> str:
-        """Run commands in the persistent session and join their output."""
-        return "\n".join(self.run(command) for command in commands)
-
-    def run_python(self, code: str, timeout: int = 15) -> str:
-        """Execute a multi-line Python block inside GDB.
-
-        The block is written to a temporary file and sourced instead of being
-        typed into GDB's ``python`` prompt.
-
-        Reason: feeding dozens of lines through the pseudo-terminal deadlocks
-        once the pty buffer fills, because nothing drains GDB's echo while we
-        are still writing (observed on macOS: ``os_write`` blocks forever).
-        Sourcing a file keeps the terminal traffic to a single short line.
-        """
-        if self._proc is None:
-            raise RuntimeError("GDB session not started")
-        self._script_seq += 1
-        script = self._script_dir / f"block-{self._script_seq}.py"
-        script.write_text(f"{code.strip()}\n", encoding="utf-8")
-        return self.run(f"source {script}", timeout=timeout)

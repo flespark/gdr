@@ -806,3 +806,205 @@ def test_read_cstring_array_reads_to_terminator(monkeypatch):
 
     assert bridge.read_cstring(value) == "main"
     assert value.string_calls == [{"length": None, "errors": None}]
+
+
+# ---------------------------------------------------------------------------
+# arch_or_default / read_uint_at / loadable_ranges
+# ---------------------------------------------------------------------------
+
+
+def test_arch_or_default_uses_probed_arch(monkeypatch):
+    monkeypatch.setattr(
+        bridge, "get_arch_info", lambda: bridge.ArchInfo(ptrsize=8, endian="big")
+    )
+    assert bridge.arch_or_default() == (8, "big")
+
+
+def test_arch_or_default_falls_back_safely(monkeypatch):
+    for info in (None, bridge.ArchInfo(ptrsize=2, endian="little")):
+        monkeypatch.setattr(bridge, "get_arch_info", lambda info=info: info)
+        assert bridge.arch_or_default() == (4, "little")
+
+
+def test_read_uint_at_decodes_with_target_endian(monkeypatch):
+    monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(bridge, "read_bytes", lambda _addr, _size: bytes([0xEF, 0xBE]))
+    assert bridge.read_uint_at(0x1000, 2) == 0xBEEF
+
+    monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "big"))
+    assert bridge.read_uint_at(0x1000, 2) == 0xEFBE
+
+
+def test_read_uint_at_returns_none_on_unreadable_memory(monkeypatch):
+    monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(bridge, "read_bytes", lambda _addr, _size: None)
+    assert bridge.read_uint_at(0x1000, 4) is None
+
+
+class _FilesGdb:
+    """GDB stand-in returning ``info files`` section output."""
+
+    class error(Exception):
+        pass
+
+    def __init__(self, output: str, error: bool = False):
+        self._output = output
+        self._error = error
+
+    def execute(self, _command: str, *, to_string: bool):
+        assert to_string is True
+        if self._error:
+            raise _FilesGdb.error("no target")
+        return self._output
+
+
+def _reset_ranges(monkeypatch):
+    monkeypatch.setattr(bridge, "_loadable_ranges_cache", None)
+
+
+def test_loadable_ranges_parses_info_files_sections(monkeypatch):
+    _reset_ranges(monkeypatch)
+    monkeypatch.setattr(bridge, "gdb", _FilesGdb(_INFO_FILES_OUTPUT))
+    monkeypatch.setattr(bridge, "_loadable_ranges_cache", None)
+    assert bridge.loadable_ranges() == (
+        (0x08000000, 0x08020000),
+        (0x20000000, 0x20010000),
+    )
+
+
+def test_loadable_ranges_is_cached_and_resettable(monkeypatch):
+    _reset_ranges(monkeypatch)
+    execute_calls: list[str] = []
+
+    class _CountingFilesGdb(_FilesGdb):
+        def execute(self, command: str, *, to_string: bool):
+            execute_calls.append(command)
+            # pi-lens-ignore: python-sql-injection
+            return super().execute(command, to_string=to_string)
+
+    monkeypatch.setattr(bridge, "gdb", _CountingFilesGdb(_INFO_FILES_OUTPUT))
+    monkeypatch.setattr(bridge, "_loadable_ranges_cache", None)
+
+    assert bridge.loadable_ranges() == bridge.loadable_ranges()
+    assert len(execute_calls) == 1  # second call served from the cache
+
+    bridge.reset_loadable_ranges()
+    bridge.loadable_ranges()
+    assert len(execute_calls) == 2
+
+
+def test_loadable_ranges_degrades_to_empty(monkeypatch):
+    _reset_ranges(monkeypatch)
+    monkeypatch.setattr(bridge, "gdb", _FilesGdb("", error=True))
+    assert bridge.loadable_ranges() == ()
+
+
+_INFO_FILES_OUTPUT = """\
+    Entry point: 0x8000000
+    .text   0x08000000 - 0x08020000 is .text
+    .data   0x20000000 - 0x20010000 is .data
+"""
+
+
+# ---------------------------------------------------------------------------
+# read_macro_int_in_source / array_item / format_code_address
+# ---------------------------------------------------------------------------
+
+
+def test_read_macro_int_in_source_uses_current_cu_first(monkeypatch):
+    monkeypatch.setattr(bridge, "read_macro_int", lambda _name: 42)
+    monkeypatch.setattr(bridge, "read_macro_text_in_source", lambda _n, _s: None)
+    assert bridge.read_macro_int_in_source("PORT_BYTE", "pvPortMalloc") == 42
+
+
+def test_read_macro_int_in_source_selects_the_source_cu(monkeypatch):
+    monkeypatch.setattr(bridge, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(
+        bridge, "read_macro_text_in_source", lambda _name, _source: "64"
+    )
+    assert bridge.read_macro_int_in_source("PORT_BYTE", "pvPortMalloc") == 64
+
+
+def test_read_macro_int_in_source_degrades_on_non_integer_text(monkeypatch):
+    monkeypatch.setattr(bridge, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(
+        bridge, "read_macro_text_in_source", lambda _n, _s: "not a number"
+    )
+    assert bridge.read_macro_int_in_source("PORT_BYTE", "pvPortMalloc") is None
+
+
+def test_array_item_returns_index_or_none():
+    value = [10, 20, 30]
+    assert bridge.array_item(value, 1) == 20
+    assert bridge.array_item(value, 9) is None
+
+
+def test_format_code_address_resolves_symbols(monkeypatch):
+    monkeypatch.setattr(
+        bridge, "lookup_symbol_at", lambda _addr: "worker+12" if _addr else None
+    )
+    assert bridge.format_code_address(0x1234) == "<worker+12>"
+    # Zero / unknown follow the shared formatter: N/A (see format_address).
+    assert bridge.format_code_address(0) == "N/A"
+    assert bridge.format_code_address(None) == "N/A"
+
+
+class _FakeDwarfType:
+    """Stand-in for ``gdb.Type`` exposing sizeof / range / fields."""
+
+    def __init__(self, *, sizeof=None, fields=(), range_=None):
+        self.sizeof = sizeof
+        self._fields = fields
+        self._range = range_
+
+    def strip_typedefs(self):
+        return self
+
+    def fields(self):
+        return [type("F", (), {"name": n})() for n in self._fields]
+
+    def range(self):
+        if self._range is None:
+            raise IndexError("not an array")
+        return self._range
+
+    @property
+    def type(self):
+        return self
+
+
+def test_type_size_reads_dwarf_sizeof_and_degrades():
+    assert bridge.type_size(_FakeDwarfType(sizeof=4)) == 4
+    assert bridge.type_size(_FakeDwarfType(sizeof=8)) == 8
+    # Missing DWARF / unreadable type -> None, never a crash.
+    assert bridge.type_size(None) is None
+    assert bridge.type_size(_FakeDwarfType(sizeof=None)) is None
+
+
+def test_type_size_accepts_a_type_name(monkeypatch):
+    monkeypatch.setattr(bridge, "lookup_type", lambda _name: _FakeDwarfType(sizeof=2))
+    assert bridge.type_size("uint16_t") == 2
+
+
+def test_array_bound_reads_the_dwarf_range():
+    assert bridge.array_bound(_FakeDwarfType(range_=(0, 7))) == 8
+    assert bridge.array_bound(_FakeDwarfType(range_=(0, 0))) == 1
+    # Unbounded extern declaration reports (0, -1) -> unknown, not 0.
+    assert bridge.array_bound(_FakeDwarfType(range_=(0, -1))) is None
+    # Non-array / unreadable type -> None.
+    assert bridge.array_bound(_FakeDwarfType()) is None
+    assert bridge.array_bound(None) is None
+
+
+def test_type_field_names_reads_member_names():
+    typ = _FakeDwarfType(fields=("a", "b", None, "c"))
+    assert bridge.type_field_names(typ) == frozenset({"a", "b", "c"})
+    assert bridge.type_field_names(None) == frozenset()
+    assert bridge.type_field_names(_FakeDwarfType()) == frozenset()
+
+
+def test_target_access_errors_excludes_keyerror():
+    """A layout dict miss (a real bug) must bubble to the guard, not degrade."""
+    assert KeyError not in bridge.TARGET_ACCESS_ERRORS
+    assert IndexError in bridge.TARGET_ACCESS_ERRORS
+    assert AttributeError in bridge.TARGET_ACCESS_ERRORS

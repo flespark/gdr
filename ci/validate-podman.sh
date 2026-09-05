@@ -20,24 +20,24 @@ fi
 # are picked below. The RTOS targets (Cortex-A9 / RV64) are cross-compiled, so
 # fixtures are identical regardless of the image architecture.
 case "${PODMAN_PLATFORM:-$(uname -m)}" in
-    linux/arm64|arm64|aarch64)
-        PLATFORM="linux/arm64"
-        IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack-arm64}"
-        XPACK_ARCH="linux-arm64"
-        build_args=(--build-arg XPACK_ARCH=linux-arm64
-                    --build-arg XPACK_ARM_SHA256=67980c7990eba7bb7ffdf39699102effd70889f5ac427be19a8c8a6c5fab2972
-                    --build-arg XPACK_RISCV_SHA256=4e60e2a54c16385e4e2476d08240f857495d5a61609d97e1ee49f72875a6ec1e)
-        ;;
-    linux/amd64|amd64|x86_64)
-        PLATFORM="linux/amd64"
-        IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack}"
-        XPACK_ARCH="linux-x64"
-        build_args=()
-        ;;
-    *)
-        echo "unknown platform: ${PODMAN_PLATFORM:-$(uname -m)}" >&2
-        exit 2
-        ;;
+linux/arm64 | arm64 | aarch64)
+    PLATFORM="linux/arm64"
+    IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack-arm64}"
+    XPACK_ARCH="linux-arm64"
+    build_args=(--build-arg XPACK_ARCH=linux-arm64
+        --build-arg XPACK_ARM_SHA256=67980c7990eba7bb7ffdf39699102effd70889f5ac427be19a8c8a6c5fab2972
+        --build-arg XPACK_RISCV_SHA256=4e60e2a54c16385e4e2476d08240f857495d5a61609d97e1ee49f72875a6ec1e)
+    ;;
+linux/amd64 | amd64 | x86_64)
+    PLATFORM="linux/amd64"
+    IMAGE_TAG="${GDR_CI_IMAGE:-gdr-ci:xpack}"
+    XPACK_ARCH="linux-x64"
+    build_args=()
+    ;;
+*)
+    echo "unknown platform: ${PODMAN_PLATFORM:-$(uname -m)}" >&2
+    exit 2
+    ;;
 esac
 
 podman_args=(
@@ -113,18 +113,43 @@ fi
 podman run "${podman_args[@]}" "$IMAGE_TAG" \
     bash -c '
         set -e
-        RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-        bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
-        RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
-        bash ci/rt-thread/run-qemu-matrix.sh rv64
-        # Reason: the FreeRTOS lane installs freshly built fixtures into its
-        # cache root, so it must target a container-writable directory -- the
-        # host FREERTOS_FIXTURE_CACHE is mounted read-only above and cannot
-        # receive a new build.  The readonly mount still supplies GDR_ELF_*
-        # style reuse when a test later overrides GDR_ELF_PATH explicitly.
-        export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
-        RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-        bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
-        RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-        bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp
+        # What to run inside the container.  Default: every CNB lane
+        # (RT-Thread both targets; the FreeRTOS snapshot lane plus one
+        # representative cell per live board), so the local reproducer can
+        # never drift from CI.  GDR_VALIDATE_LANES="rtthread:freertos" or
+        # a narrower list opts into a fast subset.
+        lanes="${GDR_VALIDATE_LANES:-all}"
+
+        if [[ "$lanes" == *all* || "$lanes" == *rtthread* ]]; then
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
+            bash ci/rt-thread/run-qemu-matrix.sh rv64
+        fi
+
+        if [[ "$lanes" == *all* || "$lanes" == *snapshot* ]]; then
+            # The static snapshot lane builds its own ELF (no cached
+            # fixture needed) and loads it with GDB "file" only.
+            UV_PROJECT_ENVIRONMENT=/tmp/gdr-venv uv run pytest \
+                tests/integration/freertos/test_snapshot.py -v --tb=short
+        fi
+
+        if [[ "$lanes" == *all* || "$lanes" == *freertos* ]]; then
+            # Reason: the FreeRTOS lane installs freshly built fixtures into
+            # its cache root, so it must target a container-writable
+            # directory -- the host FREERTOS_FIXTURE_CACHE is mounted.
+            export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
+            # config-scope: the CubeL4 board carries the 14-variant matrix.
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
+            # version-scope: one kernel-direct cell per board.
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
+            bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
+        fi
     '

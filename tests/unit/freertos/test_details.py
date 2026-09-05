@@ -191,7 +191,7 @@ def test_task_detail_renders_unfilled_high_water_as_unavailable(monkeypatch):
 
     pairs = dict(details_module.task_detail(task, _full_layout()))
 
-    assert pairs["HighWater"] == "unavailable"
+    assert pairs["HighWater"] == "N/A"
 
 
 def test_task_detail_reports_unreadable_optional_members_as_na(monkeypatch):

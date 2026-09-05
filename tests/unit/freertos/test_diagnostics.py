@@ -43,12 +43,8 @@ def _offsets(type_name: str, path: tuple[str | int, ...]) -> int | None:
 
 
 def _layout(monkeypatch, **config):
-    monkeypatch.setattr(
-        diagnostics,
-        "get_arch_info",
-        lambda: types.SimpleNamespace(ptrsize=4, endian="little"),
-    )
-    monkeypatch.setattr(diagnostics, "_mapped_ranges", lambda: ())
+    monkeypatch.setattr(diagnostics, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(diagnostics, "mapped_ranges", lambda: ())
     monkeypatch.setattr(diagnostics, "member_offset", _offsets)
     return build_layout(FreeRtosConfig(**config), (11, 1, 0))
 
@@ -63,6 +59,14 @@ def _patch_mem(monkeypatch, mem: dict[int, bytes]):
         return None
 
     monkeypatch.setattr(diagnostics, "read_bytes", fake_read_bytes)
+
+    def fake_read_uint_at(addr: int, size: int) -> int | None:
+        raw = fake_read_bytes(addr, size)
+        if raw is None:
+            return None
+        return int.from_bytes(raw, byteorder="little")
+
+    monkeypatch.setattr(diagnostics, "read_uint_at", fake_read_uint_at)
 
 
 def _list_mem(
@@ -201,7 +205,7 @@ def test_walk_list_raw_out_of_range_node_is_corrupt(monkeypatch):
     _patch_mem(monkeypatch, _list_mem(head, count=1, items=[bogus]))
     layout = _layout(monkeypatch)
     monkeypatch.setattr(
-        diagnostics, "_mapped_ranges", lambda: ((0x20000000, 0x20010000),)
+        diagnostics, "mapped_ranges", lambda: ((0x20000000, 0x20010000),)
     )
 
     walk = diagnostics.walk_list_raw(head, layout)
@@ -975,9 +979,9 @@ def test_system_heap_cross_check_unavailable_is_skipped(monkeypatch):
 
 def test_event_waiter_satisfied_ok_when_nobody_ready(monkeypatch):
     """Unsatisfied waiters are fine: the check reports ok."""
-    monkeypatch.setattr(diagnostics, "read_path", lambda _v, _p: 0x1)
+    monkeypatch.setattr(diagnostics, "read_field", lambda _v, _sl, _f: 0x1)
     waiter = types.SimpleNamespace(satisfied=False, task="gdr_evw")
-    monkeypatch.setattr(diagnostics, "_iter_waiters", lambda _v, _l, _b: [waiter])
+    monkeypatch.setattr(diagnostics, "iter_waiters", lambda _v, _l, _b: [waiter])
     layout = _layout(monkeypatch)
 
     results = dict(diagnostics.event_checks(object(), layout))
@@ -987,9 +991,9 @@ def test_event_waiter_satisfied_ok_when_nobody_ready(monkeypatch):
 
 def test_event_waiter_satisfied_fail_on_mid_unblock(monkeypatch):
     """A satisfied waiter still listed is the mid-unblock transient."""
-    monkeypatch.setattr(diagnostics, "read_path", lambda _v, _p: 0x3)
+    monkeypatch.setattr(diagnostics, "read_field", lambda _v, _sl, _f: 0x3)
     waiter = types.SimpleNamespace(satisfied=True, task="gdr_evw")
-    monkeypatch.setattr(diagnostics, "_iter_waiters", lambda _v, _l, _b: [waiter])
+    monkeypatch.setattr(diagnostics, "iter_waiters", lambda _v, _l, _b: [waiter])
     layout = _layout(monkeypatch)
 
     results = dict(diagnostics.event_checks(object(), layout))
@@ -1001,7 +1005,7 @@ def test_event_waiter_satisfied_fail_on_mid_unblock(monkeypatch):
 
 def test_event_waiter_satisfied_skips_on_unreadable_bits(monkeypatch):
     """An unreadable event group is skipped, not a failure."""
-    monkeypatch.setattr(diagnostics, "read_path", lambda _v, _p: None)
+    monkeypatch.setattr(diagnostics, "read_field", lambda _v, _sl, _f: None)
     layout = _layout(monkeypatch)
 
     results = dict(diagnostics.event_checks(object(), layout))

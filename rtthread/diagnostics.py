@@ -24,15 +24,22 @@ except ImportError:
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.formatting import format_optional_int, format_symbol_or_address
 from gdr.gdb_bridge import (
-    get_arch_info,
+    arch_or_default,
     lookup_symbol,
     lookup_symbol_at,
     lookup_type,
     read_bytes,
     read_int,
     read_macro_int,
+    type_size,
 )
-from gdr.layout import KernelLayout, StructLayout, member_offset, read_field
+from gdr.layout import (
+    KernelLayout,
+    StructLayout,
+    member_offset,
+    read_field,
+    read_field_at,
+)
 from rtthread.layout import ThreadState
 
 if TYPE_CHECKING:
@@ -106,15 +113,6 @@ def _walk_list(
             break
         node = int.from_bytes(raw, byteorder=endian)
     return nodes
-
-
-def _arch() -> tuple[int, Literal["little", "big"]]:
-    """Return (ptrsize, endian) for the active target, falling back safely."""
-    info = get_arch_info()
-    if info is None or info.ptrsize not in (4, 8):
-        return (4, "little")
-    endian: Literal["little", "big"] = "little" if info.endian == "little" else "big"
-    return (info.ptrsize, endian)
 
 
 def thread_detail(thread: Thread) -> list[tuple[str, str]]:
@@ -214,7 +212,7 @@ def _mailbox_slot_pairs(
     if msg_pool is None:
         pairs.append(("SlotCheck", "N/A"))
         return pairs
-    ptrsize, endian = _arch()
+    ptrsize, endian = arch_or_default()
     for i in range(mailbox.entry if mailbox.size > 0 else 0):
         slot = (mailbox.out_offset + i) % mailbox.size
         pairs.append(
@@ -246,7 +244,7 @@ def _messagequeue_node_pairs(
     pointer) links to the next node; the payload follows the one-pointer
     header. Active nodes form the head→tail chain, free nodes the free chain.
     """
-    ptrsize, endian = _arch()
+    ptrsize, endian = arch_or_default()
     head = _read_ptr(value, layout, "struct rt_messagequeue", "msg_queue_head")
     free = _read_ptr(value, layout, "struct rt_messagequeue", "msg_queue_free")
     pool = _read_ptr(value, layout, "struct rt_messagequeue", "msg_pool")
@@ -318,7 +316,7 @@ def _memorypool_block_pairs(
     pool: MemoryPool, value, layout: KernelLayout
 ) -> list[tuple[str, str]]:
     """Show the pool range and validate block alignment and free count."""
-    ptrsize, _endian = _arch()
+    ptrsize, _endian = arch_or_default()
     start = _read_ptr(value, layout, "struct rt_mempool", "start_address")
     pool_size = read_int(read_field(value, layout.structs["struct rt_mempool"], "size"))
     block_list = _read_ptr(value, layout, "struct rt_mempool", "block_list")
@@ -393,31 +391,6 @@ class HeapWalk:
     total_bytes: int | None = None
 
 
-def _read_field_at(
-    addr: int,
-    type_name: str,
-    layout: StructLayout,
-    field: str,
-    width: int,
-    endian: Literal["little", "big"],
-) -> int | None:
-    """Read one fixed-width layout field from a raw struct address.
-
-    Offsets come from the DWARF type via ``member_offset``, so a missing type
-    or config-conditional field degrades to ``None`` (Blocks/Holes N/A).
-    """
-    f = layout.fields.get(field)
-    if f is None:
-        return None
-    offset = member_offset(type_name, f.path)
-    if offset is None:
-        return None
-    raw = read_bytes(addr + offset, width)
-    if raw is None:
-        return None
-    return int.from_bytes(raw, byteorder=endian)
-
-
 def _read_name_at(
     addr: int,
     type_name: str,
@@ -459,10 +432,9 @@ def _header_size(type_name: str) -> int | None:
     if align is None or align <= 0:
         # Reason: ``-g`` without ``-g3`` omits macros. RT_ALIGN_SIZE matches
         # the ABI pointer width (4 on 32-bit, 8 on 64-bit), not a fixed 8.
-        align = _arch()[0]
-    try:
-        size = int(t.sizeof)
-    except (TypeError, ValueError, AttributeError):
+        align = arch_or_default()[0]
+    size = type_size(t)
+    if size is None:
         return None
     return (size + align - 1) & ~(align - 1)
 
@@ -527,17 +499,17 @@ def _walk_small_mem_chain(
         seen.add(addr)
         offset = addr - heap_ptr
         if used_from_pool_ptr:
-            pool_ptr = _read_field_at(
+            pool_ptr = read_field_at(
                 addr, item_type, item_layout, "pool_ptr", ptrsize, endian
             )
-            next_off = _read_field_at(
+            next_off = read_field_at(
                 addr, item_type, item_layout, "next", ptrsize, endian
             )
             is_used = pool_ptr is not None and bool(pool_ptr & 0x1)
         else:
-            magic = _read_field_at(addr, item_type, item_layout, "magic", 2, endian)
-            used_raw = _read_field_at(addr, item_type, item_layout, "used", 2, endian)
-            next_off = _read_field_at(
+            magic = read_field_at(addr, item_type, item_layout, "magic", 2, endian)
+            used_raw = read_field_at(addr, item_type, item_layout, "used", 2, endian)
+            next_off = read_field_at(
                 addr, item_type, item_layout, "next", ptrsize, endian
             )
             is_used = used_raw is not None and bool(used_raw)
@@ -591,7 +563,7 @@ def _walk_small_mem_chain(
 
 def _walk_small_mem(kl: KernelLayout) -> HeapWalk | None:
     """Resolve small_mem bounds and dispatch the block-chain walk."""
-    ptrsize, endian = _arch()
+    ptrsize, endian = arch_or_default()
     system_heap = lookup_symbol("system_heap")
     if system_heap is not None:
         obj_layout = kl.structs.get("struct rt_small_mem")
@@ -604,10 +576,10 @@ def _walk_small_mem(kl: KernelLayout) -> HeapWalk | None:
             base = int(system_heap)
         except (gdb.error, TypeError, ValueError):
             return None
-        heap_ptr = _read_field_at(
+        heap_ptr = read_field_at(
             base, "struct rt_small_mem", obj_layout, "heap_ptr", ptrsize, endian
         )
-        heap_end = _read_field_at(
+        heap_end = read_field_at(
             base, "struct rt_small_mem", obj_layout, "heap_end", ptrsize, endian
         )
         header_size = _header_size("struct rt_small_mem_item")
@@ -664,7 +636,7 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
     header_size = _header_size("struct rt_memheap_item")
     if header_size is None:
         return None
-    ptrsize, endian = _arch()
+    ptrsize, endian = arch_or_default()
     seen: set[int] = set()
     items = 0
     used = 0
@@ -684,10 +656,10 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
             truncated = True
             break
         seen.add(addr)
-        magic = _read_field_at(
+        magic = read_field_at(
             addr, "struct rt_memheap_item", item_layout, "magic", 4, endian
         )
-        next_addr = _read_field_at(
+        next_addr = read_field_at(
             addr, "struct rt_memheap_item", item_layout, "next", ptrsize, endian
         )
         if magic is None or next_addr is None:
@@ -759,7 +731,7 @@ def _walk_slab_pages(kl: KernelLayout) -> HeapWalk | None:
     Slab has no chunk-owner ABI, so occupancy is always ``[]``. Contiguous
     ``PAGE_TYPE_FREE`` pages form the free runs reported as holes.
     """
-    ptrsize, endian = _arch()
+    ptrsize, endian = arch_or_default()
     system_heap = lookup_symbol("system_heap")
     if system_heap is not None:
         slab_layout = kl.structs.get("struct rt_slab")
@@ -769,13 +741,13 @@ def _walk_slab_pages(kl: KernelLayout) -> HeapWalk | None:
             base = int(system_heap)
         except (gdb.error, TypeError, ValueError):
             return None
-        heap_start = _read_field_at(
+        heap_start = read_field_at(
             base, "struct rt_slab", slab_layout, "heap_start", ptrsize, endian
         )
-        heap_end = _read_field_at(
+        heap_end = read_field_at(
             base, "struct rt_slab", slab_layout, "heap_end", ptrsize, endian
         )
-        memusage = _read_field_at(
+        memusage = read_field_at(
             base, "struct rt_slab", slab_layout, "memusage", ptrsize, endian
         )
     else:

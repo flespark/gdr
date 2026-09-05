@@ -21,6 +21,7 @@ import traceback as _traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
 from io import StringIO
+from typing import Literal
 
 try:
     import gdb
@@ -53,6 +54,42 @@ def _ensure_gdb() -> None:
     """Raise RuntimeError if not running inside GDB."""
     if gdb is None:
         raise RuntimeError("not running inside GDB")
+
+
+def _gdb_execute(command: str) -> str:
+    """Run one GDB console command and return its captured output.
+
+    All ``gdb.execute`` calls in the project funnel through this single
+    name so command execution stays in the bridge (adapters never touch
+    ``gdb.execute`` directly) and error handling is uniform: a failed
+    command returns ``""`` and lets the caller decide, exactly like the
+    old per-site ``except gdb.error: return None`` shapes.
+    """
+    if gdb is None:
+        return ""
+    try:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
+        return gdb.execute(command, to_string=True)
+    except gdb.error:
+        return ""
+
+
+# Expected target/kernel-data access errors shared by every adapter.
+# Probing kernel structures degrades on these and returns a safe default
+# (None/0/[]); anything outside the set bubbles to a command guard for a
+# full diagnostic.  Kept in exactly one place (with the gdb-None fallback
+# spelled once) so adapters never re-declare near-identical tuples.
+if gdb is not None:
+    TARGET_ACCESS_ERRORS: tuple[type[BaseException], ...] = (
+        gdb.error,
+        gdb.MemoryError,
+        IndexError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    )
+else:
+    TARGET_ACCESS_ERRORS = (IndexError, TypeError, ValueError, AttributeError)
 
 
 def safe_int(value) -> int | None:
@@ -102,7 +139,7 @@ def get_arch_info() -> ArchInfo | None:
         return None
 
     try:
-        endian_output = gdb.execute("show endian", to_string=True).lower()
+        endian_output = _gdb_execute("show endian").lower()
     except gdb.error:
         return None
 
@@ -112,6 +149,33 @@ def get_arch_info() -> ArchInfo | None:
         return None
     endian = "little" if is_little_endian else "big"
     return ArchInfo(ptrsize=ptrsize, endian=endian)
+
+
+def arch_or_default() -> tuple[int, Literal["little", "big"]]:
+    """Return ``(pointer width in bytes, target byte order)`` for raw reads.
+
+    Degrades to ``(4, "little")`` when the architecture is unknown or the
+    pointer width is not 4/8, so raw-memory decoders outside a GDB session or
+    against an exotic target never crash on a ``None``.
+    """
+    info = get_arch_info()
+    if info is None or info.ptrsize not in (4, 8):
+        return (4, "little")
+    endian: Literal["little", "big"] = "little" if info.endian == "little" else "big"
+    return (info.ptrsize, endian)
+
+
+def read_uint_at(address: int, size: int) -> int | None:
+    """Read one raw unsigned integer at ``address + size``, or ``None``.
+
+    The target byte order is applied to the raw bytes read by
+    :func:`read_bytes`, so callers never re-implement endianness handling.
+    """
+    _ptrsize, endian = arch_or_default()
+    raw = read_bytes(address, size)
+    if raw is None:
+        return None
+    return int.from_bytes(raw, byteorder=endian)
 
 
 def is_debug() -> bool:
@@ -200,7 +264,7 @@ def lookup_symbol_at(addr: int) -> str | None:
     """
     _ensure_gdb()
     try:
-        symbol = gdb.execute(f"info symbol {addr:#x}", to_string=True).strip()
+        symbol = _gdb_execute(f"info symbol {addr:#x}").strip()
     except gdb.error:
         return None
     if symbol.startswith("No symbol matches"):
@@ -209,11 +273,24 @@ def lookup_symbol_at(addr: int) -> str | None:
     return symbol.replace(" + ", "+").replace(" - ", "-")
 
 
+def format_code_address(address: int | None) -> str:
+    """Render a target code address as ``<symbol+offset>`` or hex.
+
+    Combines :func:`lookup_symbol_at` with the pure address formatter, so
+    callers that touch GDB (symbol resolution) never inline the two-step
+    dance.  ``None`` / zero addresses render as plain hex.
+    """
+    symbol = lookup_symbol_at(address) if address else None
+    from gdr.formatting import format_symbol_or_address
+
+    return format_symbol_or_address(address, symbol)
+
+
 def macro_defined(name: str) -> bool:
     """Return whether GDB debug information defines a C/C++ macro."""
     _ensure_gdb()
     try:
-        output = gdb.execute(f"info macro {name}", to_string=True)
+        output = _gdb_execute(f"info macro {name}")
     except gdb.error:
         return False
     return "#define" in output
@@ -239,7 +316,7 @@ def read_macro_text(name: str) -> str | None:
     _ensure_gdb()
     command = f"info macro {name}"
     try:
-        output = gdb.execute(command, to_string=True)
+        output = _gdb_execute(command)
     except gdb.error:
         return None
     marker = f"#define {name}"
@@ -269,16 +346,16 @@ def read_macro_text_in_source(name: str, source: str) -> str | None:
     saved_source: str | None = None
     saved_listsize: str | None = None
     try:
-        source_info = gdb.execute("info source", to_string=True)
+        source_info = _gdb_execute("info source")
         # Reason: GDB prints ``Current source file is <path>.`` with a
         # trailing sentence period; the path itself usually contains dots
         # (``main.c``), so a non-greedy stop-at-dot capture would truncate it.
         match = re.search(r"Current source file is (.+)$", source_info, re.M)
         if match:
             saved_source = match.group(1).strip().removesuffix(".")
-        saved_listsize = gdb.execute("show listsize", to_string=True)
-        gdb.execute("set listsize 1", to_string=True)
-        gdb.execute(f"list {source}", to_string=True)
+        saved_listsize = _gdb_execute("show listsize")
+        _gdb_execute("set listsize 1")
+        _gdb_execute(f"list {source}")
         return read_macro_text(name)
     except (gdb.error, ValueError, AttributeError):
         return None
@@ -287,12 +364,12 @@ def read_macro_text_in_source(name: str, source: str) -> str | None:
             try:
                 match = re.search(r"(?:listsize is|default is) (.+?)\.", saved_listsize)
                 if match:
-                    gdb.execute(f"set listsize {match.group(1)}", to_string=True)
+                    _gdb_execute(f"set listsize {match.group(1)}")
             except gdb.error:
                 pass
         if saved_source:
             with contextlib.suppress(gdb.error):
-                gdb.execute(f"list {saved_source}:1", to_string=True)
+                _gdb_execute(f"list {saved_source}:1")
 
 
 def symbol_exists(name: str) -> bool:
@@ -314,6 +391,69 @@ def lookup_type(name: str) -> gdb.Type | None:
         return gdb.lookup_type(name)
     except gdb.error:
         return None
+
+
+def type_size(type_or_name) -> int | None:
+    """Return ``sizeof`` of a GDB type (or type name) in bytes, or ``None``.
+
+    The width is used for raw-memory reads and width-adaptive decode; an
+    unresolvable type (missing DWARF, ``gdb.Type`` without ``sizeof``)
+    degrades to ``None`` so callers render ``N/A`` instead of crashing.
+    ``int()`` around the size normalises GDB pointer sizes on some ports.
+    Duck-typed on ``sizeof`` so it also works on stand-in fake types in
+    unit tests (no ``gdb.Type`` in scope).
+    """
+    try:
+        if isinstance(type_or_name, str):
+            typ = lookup_type(type_or_name)
+            if typ is None:
+                return None
+            return int(typ.sizeof)
+        return int(type_or_name.sizeof)
+    except TARGET_ACCESS_ERRORS:
+        return None
+
+
+def array_bound(value_or_type) -> int | None:
+    """Return the element count of an array type/value, or ``None``.
+
+    ``gdb.Type`` reports the bound as a ``range``; a declaration without a
+    bound (``extern T sym[]``) reports ``(0, -1)`` i.e. count 0, which is
+    unknown, not a real zero-length array -- ``None`` says so.  Accepts a
+    ``gdb.Type``, a ``gdb.Value`` (via its ``.type``) or a type name.
+    """
+    try:
+        typ = (
+            lookup_type(value_or_type)
+            if isinstance(value_or_type, str)
+            else getattr(value_or_type, "type", value_or_type)
+        )
+        if typ is None:
+            return None
+        count = typ.strip_typedefs().range()[1] + 1
+        return count if count > 0 else None
+    except TARGET_ACCESS_ERRORS:
+        return None
+
+
+def type_field_names(type_or_name) -> frozenset[str]:
+    """Return the DWARF member names of a struct type, or an empty set.
+
+    ``strip_typedefs`` is applied so a typedef spelling of a struct exposes
+    the same members as the tagged spelling.  Unreadable or absent types
+    degrade to an empty set (``None`` would force every caller into a
+    ``or set()`` dance).
+    """
+    try:
+        if isinstance(type_or_name, str):
+            typ = lookup_type(type_or_name)
+            if typ is None:
+                return frozenset()
+        else:
+            typ = type_or_name
+        return frozenset(f.name for f in typ.strip_typedefs().fields() if f.name)
+    except TARGET_ACCESS_ERRORS:
+        return frozenset()
 
 
 def eval_identifier(name: str) -> gdb.Value | None:
@@ -341,6 +481,76 @@ def read_macro_int(name: str) -> int | None:
     return read_int(eval_identifier(name))
 
 
+def read_macro_int_in_source(name: str, source: str) -> int | None:
+    """Read an integer macro after selecting a known GDB source location.
+
+    GDB's macro table is scoped to the current source location, so a bare
+    :func:`read_macro_int` misses a macro unless the user happens to be
+    stopped in a CU that saw the defining header.  Selecting a function that
+    every candidate implementation defines (``pvPortMalloc`` for heap_*,
+    ``vTaskStartScheduler`` for the kernel version triplet) is the portable
+    way to evaluate it there; the caller's source view is restored.
+
+    Returns ``None`` when the macro is unreadable or not an integer literal.
+    """
+    value = read_macro_int(name)
+    if value is not None:
+        return value
+    text = read_macro_text_in_source(name, source)
+    if text is None:
+        return None
+    try:
+        return int(text, 0)
+    except ValueError:
+        return None
+
+
+_SECTION_RANGE_RE = re.compile(r"0x([0-9a-fA-F]+)\s*-\s*0x([0-9a-fA-F]+)")
+_loadable_ranges_cache: tuple[tuple[int, int], ...] | None = None
+
+
+def loadable_ranges() -> tuple[tuple[int, int], ...]:
+    """Return loadable ELF section ranges from ``info files``, or empty.
+
+    An empty result means the map is unknown (unit tests, or GDB not ready),
+    so callers skip the range check rather than inventing a RAM window.  The
+    section map is static once a target is loaded, so the result is cached
+    per session; :func:`reset_loadable_ranges` forces a fresh read (e.g.
+    after reconnecting GDB to a different image).
+    """
+    global _loadable_ranges_cache
+    if _loadable_ranges_cache is not None:
+        return _loadable_ranges_cache
+    if gdb is None:
+        return ()
+    try:
+        output = _gdb_execute("info files")
+    except (gdb.error, AttributeError):
+        return ()
+    ranges: list[tuple[int, int]] = []
+    for match in _SECTION_RANGE_RE.finditer(output or ""):
+        low = int(match.group(1), 16)
+        high = int(match.group(2), 16)
+        if high > low:
+            ranges.append((low, high))
+    _loadable_ranges_cache = tuple(ranges)
+    return _loadable_ranges_cache
+
+
+def reset_loadable_ranges() -> None:
+    """Clear the cached loadable-section map (reconnect / new image)."""
+    global _loadable_ranges_cache
+    _loadable_ranges_cache = None
+
+
+def array_item(value, index):
+    """Return ``value[index]`` safely, or ``None`` on any access error."""
+    try:
+        return value[index]
+    except (IndexError, TypeError, ValueError, AttributeError):
+        return None
+
+
 def read_int(value: gdb.Value | None) -> int | None:
     """Convert a target-decoded ``gdb.Value`` to ``int`` safely.
 
@@ -365,7 +575,9 @@ def read_cstring(
     For ``char[]`` arrays, GDB auto-detects the null terminator; for
     ``char*`` pointers the read is bounded to ``max_len`` because GDB cannot
     size the buffer.  A bounded pointer read may carry embedded NULs and
-    arbitrary following bytes, so the result is truncated at the first NUL.
+    arbitrary following bytes, so the result is truncated at the first NUL;
+    array reads are truncated the same way so the caller never sees NUL
+    filler from either path.
     """
     if value is None:
         return None
@@ -382,7 +594,7 @@ def read_cstring(
             # scalar ``char`` whose .string() raises instead of reading the
             # pointed-to string, so the pointer is passed to .string() as-is.
             return value.string(length=max_len, errors="replace").split("\x00", 1)[0]
-        return value.string()
+        return value.string().split("\x00", 1)[0]
     except (gdb.error, gdb.MemoryError, ValueError):
         return None
 
@@ -594,7 +806,7 @@ def show_last_exception() -> None:
     and the runtime environment (GDB and Python versions, platform).  Call
     only from inside an ``except`` block (it reads ``sys.exc_info()``).
 
-    Deliberately does not print GDB command history via ``gdb.execute("show
+    Deliberately does not print GDB command history via ``_gdb_execute("show
     commands")``: history is noisy over remote sessions (see
     :func:`format_exception`).
     """

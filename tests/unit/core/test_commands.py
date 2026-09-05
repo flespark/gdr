@@ -128,7 +128,7 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
             ("Suspended", "1"),
             ("task", "3"),
             ("timer", "2"),
-            ("Heap allocator", "unavailable"),
+            ("Heap allocator", "N/A"),
         ]
     ]
     assert adapter.count_calls == 0

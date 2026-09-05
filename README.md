@@ -98,43 +98,22 @@ warning: target RT-Thread version not exported; cannot verify version
 | `<rtos> <objects>` | List the kernel object type collective status, show supported command usage and aliases by `<rtos> help` |
 | `<rtos> <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
 
-FreeRTOS notes: kernel objects have no global registry, so `frt objects` and
-every list command print where each object was found (`registry`, `symbol`,
-`waiter`, …) plus the enumeration limit above the table — a count is never a
-complete inventory. Registering queues (`configQUEUE_REGISTRY_SIZE` plus
-`vQueueAddToRegistry()`) is what makes them appear by name. Builds without
-`configUSE_TRACE_FACILITY` cannot store the exact queue kind, so `frt queues`/
-`semaphores`/`mutexes` mark such rows with a trailing `?` in `Type`
-(`mutex?`), and the `Set` column exists only when `configUSE_QUEUE_SETS` is
-on. Software timers follow the same rule: only timers sitting in the daemon's
-active lists are reachable from the kernel, so stopped, expired one-shot and
-never-started timers appear in `frt timers` (as `dormant`, with `Expiry`/
-`ExpiresIn` printed as `N/A`) only when the build keeps a static timer buffer
-or a global handle for them.
+FreeRTOS specifics:
 
-Event groups and stream buffers differ in how far that reach goes. An event
-group with a task blocked on it is found even when no symbol names it (the
-blocked task's list item is reverse-derived), so `frt eventgroups` can list an
-anonymous group as `-` and `frt eventgroup <addr>` still decodes every waiter's
-`wants` / `mode` / `clearOnExit` / `missing` — the answer to "why is this task
-still blocked". Stream and message buffers store their waiters as single task
-handles rather than lists, so no such reverse channel exists: a dynamically
-created buffer whose handle is not in a global variable can never be
-enumerated. `frt streambuffer <name>` also marks `MsgLenBytes` as an assumed
-`size_t` (the `sbBYTES_TO_STORE_MESSAGE_LENGTH` macro leaves no debug info) and
-prints `NotificationIndex: N/A (kernel < 11.1.0)` on kernels without the field
-instead of dropping the key.
+- Kernel objects have no global registry, so `frt objects` and every list
+  command print where each object was found (`Src`) plus the enumeration
+  limit above the table — a count is never a complete inventory.
+- Builds without `configUSE_TRACE_FACILITY` cannot store the exact queue
+  kind, so such rows carry a `?` in `Type`; the `Set` column only exists
+  when `configUSE_QUEUE_SETS` is on.
+- Only timers on the daemon's active lists are reachable; stopped/expired
+  ones render `dormant` with `Expiry`/`ExpiresIn` `N/A` unless a static
+  buffer or global handle keeps them in the symbol table.
+- `frt heap` shows the allocator's counters and a free-list/linear-walk
+  `CrossCheck` verdict; FreeRTOS block headers carry no owner field, so
+  per-task heap usage is not attributable.
 
-`frt heap` prints the heap manager's state: `Algorithm` (heap_1..heap_5, with
-heap_1 marked as a bump pointer and no free list), `TotalSize`/`FreeSize`
-(from the kernel's own counters, never resynthesised from a walk), the
-heap_4/5 `MinEver`/`Allocs`/`Frees`, `Protector` (the `xHeapCanary` XOR
-decode), the free-list `Blocks` and linear-walk `Holes`, and `CrossCheck` - a
-three-way consistency verdict between the free-list walk, the linear walk and
-`xFreeBytesRemaining`, reporting the concrete figures on mismatch. FreeRTOS
-block headers carry no owner field, so there is no per-task heap attribution;
-heap_5 without the heap protector exports no region bases, so its linear walk
-is skipped (`CrossCheck` says so) while the free list still renders.
+See `docs/architecture.md` for the discovery and heap details.
 
 ## Convenience functions
 

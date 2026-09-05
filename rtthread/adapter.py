@@ -27,11 +27,13 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.adapter_api import (
+    HeapReport,
     ObjectDetail,
     ObjectTable,
     RtosAdapter,
     SystemSummary,
 )
+from gdr.derive import timer_expires_in as derive_timer_expires_in
 from gdr.formatting import (
     format_address,
     format_symbol_or_address,
@@ -199,16 +201,11 @@ class HeapDetail:
 
     pairs: list[tuple[str, str]]
     occupancy: list[list[str]] | None
-    status: str = "good"
+    status: str | None = "good"
 
 
 # Value → dataclass converters
 # ---------------------------------------------------------------------------
-
-
-def _get_addr(val: gdb.Value) -> int:
-    """Get the address of a gdb.Value as int, or 0 if not addressable."""
-    return value_address(val)
 
 
 def _infer_stack_grows_up(stack: bytes) -> bool | None:
@@ -248,8 +245,8 @@ def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
 
     return Thread(
         name=name,
-        address=_get_addr(val),
-        state=int(state),
+        address=value_address(val),
+        state=state.value,
         current_priority=read_int(read_field(val, sl, "current_priority")) or 0,
         init_priority=read_int(read_field(val, sl, "init_priority")) or 0,
         sp=read_int(read_field(val, sl, "sp")) or 0,
@@ -272,7 +269,7 @@ def value_to_semaphore(val: gdb.Value, layout: KernelLayout) -> Semaphore:
     sl = layout.structs["struct rt_semaphore"]
     return Semaphore(
         name=read_cstring(read_field(val, sl, "name")) or "",
-        address=_get_addr(val),
+        address=value_address(val),
         value=read_int(read_field(val, sl, "value")) or 0,
     )
 
@@ -282,7 +279,7 @@ def value_to_mutex(val: gdb.Value, layout: KernelLayout) -> Mutex:
     sl = layout.structs["struct rt_mutex"]
     owner_val = read_field(val, sl, "owner")
     owner_name = ""
-    if owner_val is not None and int(owner_val) != 0:
+    if owner_val is not None and read_int(owner_val):
         try:
             owner_name = read_cstring(owner_val.dereference()["name"]) or ""
         except (gdb.error, gdb.MemoryError):
@@ -290,7 +287,7 @@ def value_to_mutex(val: gdb.Value, layout: KernelLayout) -> Mutex:
 
     return Mutex(
         name=read_cstring(read_field(val, sl, "name")) or "",
-        address=_get_addr(val),
+        address=value_address(val),
         value=read_int(read_field(val, sl, "value")) or 0,
         hold=read_int(read_field(val, sl, "hold")) or 0,
         owner=owner_name,
@@ -305,7 +302,7 @@ def value_to_timer(val: gdb.Value, layout: KernelLayout) -> Timer:
 
     return Timer(
         name=read_cstring(read_field(val, sl, "name")) or "",
-        address=_get_addr(val),
+        address=value_address(val),
         active=bool(flag & RT_TIMER_FLAG_ACTIVATED),
         periodic=bool(flag & RT_TIMER_FLAG_PERIODIC),
         soft_timer=bool(flag & RT_TIMER_FLAG_SOFT_TIMER),
@@ -321,7 +318,7 @@ def value_to_event(val: gdb.Value, layout: KernelLayout) -> Event:
     sl = layout.structs["struct rt_event"]
     return Event(
         name=read_cstring(read_field(val, sl, "name")) or "",
-        address=_get_addr(val),
+        address=value_address(val),
         set=read_int(read_field(val, sl, "set")) or 0,
     )
 
@@ -331,7 +328,7 @@ def value_to_mailbox(val: gdb.Value, layout: KernelLayout) -> Mailbox:
     sl = layout.structs["struct rt_mailbox"]
     return Mailbox(
         name=read_cstring(read_field(val, sl, "name")) or "",
-        address=_get_addr(val),
+        address=value_address(val),
         size=read_int(read_field(val, sl, "size")) or 0,
         entry=read_int(read_field(val, sl, "entry")) or 0,
         in_offset=read_int(read_field(val, sl, "in_offset")) or 0,
@@ -345,7 +342,7 @@ def value_to_messagequeue(val: gdb.Value, layout: KernelLayout) -> MessageQueue:
 
     return MessageQueue(
         name=read_cstring(read_field(val, sl, "name")) or "",
-        address=_get_addr(val),
+        address=value_address(val),
         msg_size=read_int(read_field(val, sl, "msg_size")) or 0,
         max_msgs=read_int(read_field(val, sl, "max_msgs")) or 0,
         entry=read_int(read_field(val, sl, "entry")) or 0,
@@ -357,7 +354,7 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
     sl = layout.structs["struct rt_mempool"]
     return MemoryPool(
         name=read_cstring(read_field(val, sl, "name")) or "",
-        address=_get_addr(val),
+        address=value_address(val),
         block_size=read_int(read_field(val, sl, "block_size")) or 0,
         block_total_count=read_int(read_field(val, sl, "block_total_count")) or 0,
         block_free_count=read_int(read_field(val, sl, "block_free_count")) or 0,
@@ -469,13 +466,16 @@ def _timer_expires_in(timeout_tick: int, current_tick: int | None) -> str | None
 
     RT-Thread ticks are 32-bit unsigned; ``timeout_tick - current_tick`` is
     valid across wraparound, so no signed overflow handling is needed. ``None``
-    means the timer is inactive or the kernel tick is unavailable.
+    means the timer is inactive or the kernel tick is unavailable.  The
+    wrapped-unsigned arithmetic lives in :func:`gdr.derive.timer_expires_in`
+    (with ``overdue=False`` so an expired-but-linked timer keeps the wrapped
+    value, matching RT-Thread's semantics); this name normalises the shared
+    ``N/A`` back to the adapter's ``None`` contract.
     """
-    if current_tick is None:
-        return None
-    # Reason: ticks are unsigned 32-bit; the subtraction already wraps safely
-    # on the target, so re-apply the mask to keep the host value positive.
-    return str((timeout_tick - current_tick) & 0xFFFFFFFF)
+    value = derive_timer_expires_in(
+        timeout_tick, current_tick, 0xFFFFFFFF, overdue=False
+    )
+    return None if value == "N/A" else value
 
 
 def _waiter_summary(
@@ -643,6 +643,33 @@ class RtThreadAdapter(RtosAdapter):
             counts[kind] = sum(1 for _ in iter_objects(type_code, self.layout))
         return counts
 
+    def object_summary_table(self) -> ObjectTable | None:
+        """Per-kind counts with an explicit registry provenance column.
+
+        RT-Thread enumerates every kernel object from its object registry
+        (rt_object_get_information), so all counts share the ``registry``
+        source; that column keeps the table shape symmetric with FreeRTOS'
+        provenance summary (``frt objects``) through the neutral renderer.
+        """
+        rows: list[list[str]] = []
+        for type_code, info in self.layout.object_types.items():
+            if not info.enabled:
+                continue
+            kind = "task" if info.name == "thread" else info.name
+            count = sum(1 for _ in iter_objects(type_code, self.layout))
+            rows.append([kind, str(count), f"registry={count}"])
+        rows.sort(key=lambda row: row[0])
+        return ObjectTable(
+            headers=["Kind", "Count", "Sources"],
+            rows=rows,
+            messages=[
+                "object counts come from the kernel object registry "
+                "(rt_object_get_information); a count is a complete inventory "
+                "of registered kernel objects"
+            ],
+            elastic=("Sources",),
+        )
+
     def _registered_objects(
         self, kind: str, struct_name: str
     ) -> Iterator[gdb.Value] | None:
@@ -653,6 +680,7 @@ class RtThreadAdapter(RtosAdapter):
         return iter_objects(type_code, self.layout)
 
     def object_table(self, kind: str) -> ObjectTable | None:
+        # --- semaphore --------------------------------------------------
         if kind == "semaphore":
             values = self._registered_objects("semaphore", "struct rt_semaphore")
             if values is None:
@@ -681,6 +709,7 @@ class RtThreadAdapter(RtosAdapter):
                 rows,
                 elastic=("Waiters", "Name"),
             )
+        # --- mutex --------------------------------------------------
         if kind == "mutex":
             values = self._registered_objects("mutex", "struct rt_mutex")
             if values is None:
@@ -719,6 +748,7 @@ class RtThreadAdapter(RtosAdapter):
                 rows,
                 elastic=("Waiters", "Owner", "Name"),
             )
+        # --- event --------------------------------------------------
         if kind == "event":
             values = self._registered_objects("event", "struct rt_event")
             if values is None:
@@ -745,6 +775,7 @@ class RtThreadAdapter(RtosAdapter):
                 rows,
                 elastic=("Waiters", "Name"),
             )
+        # --- mailbox --------------------------------------------------
         if kind == "mailbox":
             values = self._registered_objects("mailbox", "struct rt_mailbox")
             if values is None:
@@ -792,6 +823,7 @@ class RtThreadAdapter(RtosAdapter):
                 rows,
                 elastic=("RecvWait", "SendWait", "Name"),
             )
+        # --- msgqueue --------------------------------------------------
         if kind == "msgqueue":
             values = self._registered_objects("msgqueue", "struct rt_messagequeue")
             if values is None:
@@ -849,6 +881,7 @@ class RtThreadAdapter(RtosAdapter):
                 rows,
                 elastic=("RecvWait", "SendWait", "Name"),
             )
+        # --- mempool --------------------------------------------------
         if kind == "mempool":
             values = self._registered_objects("mempool", "struct rt_mempool")
             if values is None:
@@ -876,6 +909,7 @@ class RtThreadAdapter(RtosAdapter):
                 rows,
                 elastic=("Waiters", "Name"),
             )
+        # --- timer --------------------------------------------------
         if kind == "timer":
             rows = []
             current_tick = get_tick()
@@ -1014,7 +1048,7 @@ class RtThreadAdapter(RtosAdapter):
 
     def _task_views(self):
         current = get_current_thread()
-        current_address = _get_addr(current) if current is not None else 0
+        current_address = value_address(current) if current is not None else 0
         for value in iter_threads(self.layout):
             yield self._task_view(value, current_address)
 
@@ -1081,7 +1115,7 @@ class RtThreadAdapter(RtosAdapter):
             current_task=current,
             task_count=len(tasks),
             tick_count=get_tick(),
-            scheduler_state="unavailable",
+            scheduler_state="N/A",
             state_counts=states,
             object_counts=self.object_counts(),
             heap_allocator=None if heap.algorithm == "none" else heap.algorithm,
@@ -1154,7 +1188,7 @@ class RtThreadAdapter(RtosAdapter):
             ("TotalSize", format_optional_int(heap.total)),
             ("UsedSize", format_optional_int(heap.used)),
             ("MaxUsed", format_optional_int(heap.max_used)),
-            ("MemTrace", "enabled" if self._memtrace_enabled() else "unavailable"),
+            ("MemTrace", "enabled" if self._memtrace_enabled() else "N/A"),
         ]
         if heap.from_walk:
             pairs.append(("Source", "walk"))
@@ -1171,7 +1205,31 @@ class RtThreadAdapter(RtosAdapter):
         heap = info if info is not None else self.heap_info()
         return _heap_detail_from_walk(heap.walk, heap.used, heap.total)
 
-    def heap_report(self) -> tuple[list[tuple[str, str]], HeapDetail | None]:
-        """One snapshot+walk collection formatted for ``rtt heap``."""
-        info = self.heap_info()
-        return self.heap_basic_pairs(info), self.heap_detail(info)
+    def heap_report(self) -> HeapReport:
+        """One snapshot+walk collection formatted for ``rtt heap``.
+
+        The vertical basics plus the optional thread-occupancy table (as an
+        :class:`ObjectTable`) are returned so the neutral renderer prints
+        both; ``rtt heap`` never walks the heap twice.
+        """
+        info_ = self.heap_info()
+        pairs = self.heap_basic_pairs(info_)
+        detail = self.heap_detail(info_)
+        if detail is not None:
+            pairs += detail.pairs
+            occupancy = detail.occupancy
+            if occupancy:
+                pairs.append(("Thread occupancy", f"{len(occupancy)} threads"))
+                table = ObjectTable(
+                    headers=["Thread", "Blocks", "Bytes"],
+                    rows=occupancy,
+                    elastic=("Thread",),
+                )
+            else:
+                pairs.append(("Thread occupancy", "N/A"))
+                table = None
+        else:
+            pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
+            pairs.append(("Thread occupancy", "N/A"))
+            table = None
+        return HeapReport(pairs=pairs, table=table)

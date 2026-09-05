@@ -168,6 +168,7 @@ fixture_sources_newer_than() {
         "$SCRIPT_DIR/fixture/config/gdr_fixture_common.h"
         "$SCRIPT_DIR/fixture/config/$variant"
         "$SCRIPT_DIR/fixture/board/$target"
+        "$SCRIPT_DIR/fixture/common"
         "$SCRIPT_DIR/build-fixture-cubel4.sh"
         "$SCRIPT_DIR/build-fixture-kernel.sh"
     )

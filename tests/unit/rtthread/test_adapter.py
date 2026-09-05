@@ -52,7 +52,7 @@ def test_task_table_reads_current_task_once(monkeypatch):
         )
 
     monkeypatch.setattr(adapter_module, "get_current_thread", current_task)
-    monkeypatch.setattr(adapter_module, "_get_addr", lambda _value: 0x1234)
+    monkeypatch.setattr(adapter_module, "value_address", lambda _value: 0x1234)
     monkeypatch.setattr(adapter_module, "iter_threads", lambda _layout: iter(values))
     monkeypatch.setattr(adapter, "_task_view", summarize)
 
@@ -901,7 +901,7 @@ def test_heap_basic_pairs_report_na_missing_values(monkeypatch):
         "TotalSize": "N/A",
         "UsedSize": "N/A",
         "MaxUsed": "N/A",
-        "MemTrace": "unavailable",
+        "MemTrace": "N/A",
     }
 
 
@@ -1029,16 +1029,17 @@ def test_heap_report_walks_the_heap_once(monkeypatch):
         adapter_module.RtThreadAdapter, "_memtrace_enabled", lambda _s: False
     )
 
-    pairs, detail = adapter.heap_report()
-    by_label = dict(pairs)
+    report = adapter.heap_report()
+    by_label = dict(report.pairs)
 
     assert walks["count"] == 1
     assert by_label["TotalSize"] == "256"
     assert by_label["UsedSize"] == "160"
     assert by_label["Source"] == "walk"
-    assert detail is not None
-    assert detail.pairs[0] == ("Blocks", "2 used, 1 free, 3 total")
-    assert detail.occupancy == [["main", "2", "160"]]
+    assert by_label["Blocks"] == "2 used, 1 free, 3 total"
+    assert by_label["Thread occupancy"] == "1 threads"
+    assert report.table is not None
+    assert report.table.rows == [["main", "2", "160"]]
 
 
 def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):

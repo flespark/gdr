@@ -1,4 +1,10 @@
-/* Minimal syscalls so heap_3 (newlib malloc) has a sbrk arena. */
+/* Minimal newlib syscalls shared by the kernel-direct boards.
+ *
+ * Provides a sbrk arena (bounded by the gdr_heap_limit symbol each board's
+ * test codes defines) so heap_3 wraps a real malloc instead of failing at
+ * link time.  The RISC-V board needs the same arena as the ARM boards; the
+ * per-board comment header (which previously only differed cosmetically) is
+ * not duplicated. */
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>

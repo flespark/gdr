@@ -20,7 +20,7 @@ class SystemSummary:
     current_task: str | None = None
     task_count: int | None = None
     tick_count: int | None = None
-    scheduler_state: str = "unavailable"
+    scheduler_state: str = "N/A"
     state_counts: dict[str, int] = field(default_factory=dict)
     object_counts: dict[str, int] = field(default_factory=dict)
     heap_allocator: str | None = None
@@ -65,6 +65,22 @@ class ObjectDetail:
     message: str | None = None
 
 
+@dataclass
+class HeapReport:
+    """One heap snapshot formatted for a neutral ``render_heap``.
+
+    ``pairs`` are the vertical basics (Algorithm/sizes/counters), ``table``
+    the optional block/occupancy table, and ``messages`` capability notes
+    (heap_3 wraps malloc, no allocator, ...) printed above the table.  Both
+    adapters return this shape so the core owns a single ``render_heap``
+    for the RTOS heap command.
+    """
+
+    pairs: list[tuple[str, str]] = field(default_factory=list)
+    table: ObjectTable | None = None
+    messages: list[str] = field(default_factory=list)
+
+
 _active: RtosAdapter | None = None
 
 
@@ -103,3 +119,21 @@ class RtosAdapter(Protocol):
     def task_table(self) -> ObjectTable: ...
 
     def system_summary(self) -> SystemSummary: ...
+
+    def object_summary_table(self) -> ObjectTable | None:
+        """Per-kind provenance summary for the objects command, or ``None``.
+
+        ``None`` (the default) makes the neutral renderer fall back to the
+        plain Kind/Count table from :meth:`object_counts`; an adapter that
+        can show where each object came from (provenance channels) returns
+        its own table.
+        """
+        return None
+
+    def heap_report(self) -> HeapReport | None:
+        """One heap snapshot formatted for the neutral ``render_heap``.
+
+        ``None`` means the RTOS has no heap to report; adapters without a
+        heap command return it so the neutral renderer prints nothing.
+        """
+        return None

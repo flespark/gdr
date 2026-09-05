@@ -82,7 +82,7 @@ def test_mailbox_detail_validates_offsets_and_walks_slots(monkeypatch):
     monkeypatch.setattr(detail, "read_field", fake_read_field)
     monkeypatch.setattr(detail, "read_int", fake_read_int)
     monkeypatch.setattr(detail, "read_bytes", fake_read_bytes)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     pairs = dict(detail.mailbox_detail(mailbox, value, layout))
 
@@ -104,7 +104,7 @@ def test_mailbox_detail_reports_out_of_range_offsets(monkeypatch):
     monkeypatch.setattr(detail, "read_field", lambda _v, _sl, _f: 0x8000)
     monkeypatch.setattr(detail, "read_int", lambda field: field)
     monkeypatch.setattr(detail, "read_bytes", lambda _addr, _size: b"\x00\x00\x00\x00")
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     pairs = dict(detail.mailbox_detail(mailbox, object(), layout))
 
@@ -172,7 +172,7 @@ def test_messagequeue_detail_validates_node_counts(monkeypatch):
     monkeypatch.setattr(detail, "read_field", fake_read_field)
     monkeypatch.setattr(detail, "read_int", fake_read_int)
     monkeypatch.setattr(detail, "read_bytes", fake_read_bytes)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     pairs = dict(detail.messagequeue_detail(msgqueue, object(), layout))
 
@@ -205,7 +205,7 @@ def test_messagequeue_detail_flags_entry_mismatch(monkeypatch):
     monkeypatch.setattr(detail, "read_field", fake_read_field)
     monkeypatch.setattr(detail, "read_int", fake_read_int)
     monkeypatch.setattr(detail, "read_bytes", fake_read_bytes)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     pairs = dict(detail.messagequeue_detail(msgqueue, object(), layout))
 
@@ -221,7 +221,7 @@ def test_messagequeue_detail_reports_unavailable_list_pointers(monkeypatch):
     )
     monkeypatch.setattr(detail, "read_field", lambda _v, _sl, _f: None)
     monkeypatch.setattr(detail, "read_int", lambda field: field)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     pairs = dict(detail.messagequeue_detail(msgqueue, object(), layout))
 
@@ -276,7 +276,7 @@ def test_memorypool_detail_validates_alignment_and_free_count(monkeypatch):
     monkeypatch.setattr(detail, "read_field", fake_read_field)
     monkeypatch.setattr(detail, "read_int", fake_read_int)
     monkeypatch.setattr(detail, "read_bytes", fake_read_bytes)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     pairs = dict(detail.memorypool_detail(pool, object(), layout))
 
@@ -302,41 +302,12 @@ def test_memorypool_detail_flags_alignment_and_count(monkeypatch):
     monkeypatch.setattr(detail, "read_field", lambda _v, _sl, _f: 0xA000)
     monkeypatch.setattr(detail, "read_int", lambda field: field)
     monkeypatch.setattr(detail, "read_bytes", lambda _addr, _size: b"\x00" * 4)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     pairs = dict(detail.memorypool_detail(pool, object(), layout))
 
     assert "not 4-aligned" in pairs["AlignmentCheck"]
     assert pairs["FreeCountCheck"].startswith("listed 1 != cached 5")
-
-
-def test_read_field_at_uses_dwarf_offsets(monkeypatch):
-    """Block-header reads derive offsets from the DWARF type via member_offset."""
-    layout = StructLayout(
-        "struct heap_mem",
-        fields={"magic": StructField("magic", ("magic",))},
-    )
-    monkeypatch.setattr(detail, "member_offset", lambda _t, _p: 0)
-    monkeypatch.setattr(detail, "read_bytes", lambda _addr, _size: b"\xa0\x1e")
-
-    assert (
-        detail._read_field_at(0x1000, "struct heap_mem", layout, "magic", 2, "little")
-        == 0x1EA0
-    )
-
-
-def test_read_field_at_degrades_when_offset_unavailable(monkeypatch):
-    """A missing DWARF type makes Blocks/Holes unavailable instead of crashing."""
-    layout = StructLayout(
-        "struct heap_mem",
-        fields={"magic": StructField("magic", ("magic",))},
-    )
-    monkeypatch.setattr(detail, "member_offset", lambda _t, _p: None)
-
-    assert (
-        detail._read_field_at(0x1000, "struct heap_mem", layout, "magic", 2, "little")
-        is None
-    )
 
 
 def test_small_mem_chain_walk_counts_blocks_and_holes(monkeypatch):
@@ -351,7 +322,7 @@ def test_small_mem_chain_walk_counts_blocks_and_holes(monkeypatch):
     def fake_read_field_at(addr, _type_name, _layout, field, _width, _endian):
         return items.get(addr, {}).get(field)
 
-    monkeypatch.setattr(detail, "_read_field_at", fake_read_field_at)
+    monkeypatch.setattr(detail, "read_field_at", fake_read_field_at)
 
     walk = detail._walk_small_mem_chain(
         0x1000,
@@ -386,7 +357,7 @@ def test_small_mem_chain_walk_uses_pool_ptr_lsb_for_41(monkeypatch):
     def fake_read_field_at(addr, _type_name, _layout, field, _width, _endian):
         return items.get(addr, {}).get(field)
 
-    monkeypatch.setattr(detail, "_read_field_at", fake_read_field_at)
+    monkeypatch.setattr(detail, "read_field_at", fake_read_field_at)
 
     walk = detail._walk_small_mem_chain(
         0x2000,
@@ -422,7 +393,7 @@ def test_small_mem_chain_walk_aggregates_memtrace_occupancy(monkeypatch):
     def fake_read_name_at(addr, _type_name, _layout, _field, _width, _endian):
         return {0x1000: "main", 0x1040: "main", 0x1080: "worker1"}.get(addr)
 
-    monkeypatch.setattr(detail, "_read_field_at", fake_read_field_at)
+    monkeypatch.setattr(detail, "read_field_at", fake_read_field_at)
     monkeypatch.setattr(detail, "_read_name_at", fake_read_name_at)
 
     walk = detail._walk_small_mem_chain(
@@ -452,7 +423,7 @@ def test_small_mem_chain_walk_reads_memtrace_name_as_four_bytes(monkeypatch):
     widths: list[int] = []
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x1000: {"magic": 0x1EA0, "used": 1, "next": 0x100},
         }.get(addr, {}).get(field),
@@ -485,7 +456,7 @@ def test_small_mem_chain_walk_omits_occupancy_without_memtrace(monkeypatch):
     item_layout = StructLayout("struct heap_mem")
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x1000: {"magic": 0x1EA0, "used": 1, "next": 0x100},
         }[addr][field],
@@ -516,7 +487,7 @@ def test_small_mem_chain_walk_reports_corrupt_magic(monkeypatch):
             0x1040: {"magic": 0xDEAD, "used": 1, "next": 0x80},
         }.get(addr, {}).get(field)
 
-    monkeypatch.setattr(detail, "_read_field_at", fake_read_field_at)
+    monkeypatch.setattr(detail, "read_field_at", fake_read_field_at)
 
     walk = detail._walk_small_mem_chain(
         0x1000,
@@ -548,7 +519,7 @@ def test_small_mem_chain_walk_reports_truncated_beyond_bound(monkeypatch):
         }.get(addr, {}).get(field)
 
     monkeypatch.setattr(detail, "GDR_MAX_TRAVERSAL_COUNT", 2)
-    monkeypatch.setattr(detail, "_read_field_at", fake_read_field_at)
+    monkeypatch.setattr(detail, "read_field_at", fake_read_field_at)
 
     walk = detail._walk_small_mem_chain(
         0x1000,
@@ -601,11 +572,11 @@ def test_memheap_walk_counts_circular_block_list(monkeypatch):
     monkeypatch.setattr(detail, "read_int", lambda _value: head_addr)
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: blocks.get(addr, {}).get(field),
     )
     monkeypatch.setattr(detail, "_header_size", lambda _type_name: 24)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     walk = detail._walk_memheap(layout)
 
@@ -660,7 +631,7 @@ def test_memheap_walk_aggregates_owner_thread_names(monkeypatch):
     monkeypatch.setattr(detail, "read_int", lambda _value: head_addr)
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: blocks.get(addr, {}).get(field),
     )
     monkeypatch.setattr(
@@ -669,7 +640,7 @@ def test_memheap_walk_aggregates_owner_thread_names(monkeypatch):
         lambda addr, _t, _l, _f, _w, _e: owners.get(addr),
     )
     monkeypatch.setattr(detail, "_header_size", lambda _type_name: 24)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     walk = detail._walk_memheap(layout)
 
@@ -701,10 +672,10 @@ def test_memheap_walk_skips_the_circular_tailer(monkeypatch):
     )
     monkeypatch.setattr(detail, "read_int", lambda _value: 0x8000)
     monkeypatch.setattr(detail, "_header_size", lambda _type_name: 24)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x8000: {"magic": 0x1EA01EA1, "next": 0x8000},
         }.get(addr, {}).get(field),
@@ -745,7 +716,7 @@ def test_slab_walk_counts_free_and_used_pages(monkeypatch):
         "read_bytes",
         lambda addr, _size: pages[(addr - 0x6000) // 4],
     )
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     walk = detail._walk_slab_pages(layout)
 
@@ -767,25 +738,6 @@ def test_walk_system_heap_dispatches_by_algorithm(monkeypatch):
     assert detail.walk_system_heap("memheap", layout) == "mem"
     assert detail.walk_system_heap("slab", layout) == "slab"
     assert detail.walk_system_heap("none", layout) is None
-
-
-def test_read_field_at_returns_none_for_missing_field_or_memory(monkeypatch):
-    """Field absence, missing DWARF offset, and unreadable memory degrade."""
-    layout = StructLayout(
-        "struct heap_mem",
-        fields={"magic": StructField("magic", ("magic",))},
-    )
-    monkeypatch.setattr(detail, "member_offset", lambda _t, _p: 4)
-    monkeypatch.setattr(detail, "read_bytes", lambda _addr, _size: None)
-
-    assert (
-        detail._read_field_at(0x1000, "struct heap_mem", layout, "absent", 2, "little")
-        is None
-    )
-    assert (
-        detail._read_field_at(0x1000, "struct heap_mem", layout, "magic", 2, "little")
-        is None
-    )
 
 
 def test_read_name_at_decodes_strips_and_degrades(monkeypatch):
@@ -834,9 +786,9 @@ def test_header_size_computes_aligned_size(monkeypatch):
     monkeypatch.setattr(detail, "read_macro_int", lambda _name: 8)
     assert detail._header_size("struct heap_mem") == 16
     monkeypatch.setattr(detail, "read_macro_int", lambda _name: None)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
     assert detail._header_size("struct heap_mem") == 12
-    monkeypatch.setattr(detail, "_arch", lambda: (8, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (8, "little"))
     assert detail._header_size("struct heap_mem") == 16
     monkeypatch.setattr(
         detail, "lookup_type", lambda _name: type("_T", (), {"sizeof": "bad"})()
@@ -851,7 +803,7 @@ def test_small_mem_chain_walk_reports_range_corruption(monkeypatch):
     item_layout = StructLayout("struct heap_mem")
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x1000: {"magic": 0x1EA0, "used": 1, "next": 0x40},
             0x1040: {"magic": 0x1EA0, "used": 1, "next": 0x20},
@@ -879,7 +831,7 @@ def test_small_mem_chain_walk_reports_next_past_heap_end(monkeypatch):
     item_layout = StructLayout("struct heap_mem")
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x1000: {"magic": 0x1EA0, "used": 1, "next": 0x40},
             0x1040: {"magic": 0x1EA0, "used": 1, "next": 0x200},
@@ -926,7 +878,7 @@ def test_small_mem_chain_walk_skips_blank_owners(monkeypatch):
     )
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x1000: {"magic": 0x1EA0, "used": 1, "next": 0x100},
         }.get(addr, {}).get(field),
@@ -971,10 +923,10 @@ def test_walk_small_mem_41_reads_system_heap_bounds(monkeypatch):
         "lookup_symbol",
         lambda name: _AddrHandle(0x2000) if name == "system_heap" else None,
     )
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda _addr, _t, _l, field, _w, _e: {
             "heap_ptr": 0x1000,
             "heap_end": 0x2000,
@@ -1008,7 +960,7 @@ def test_walk_small_mem_40_reads_globals(monkeypatch):
         ),
     )
     monkeypatch.setattr(detail, "read_int", lambda value: value)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
     monkeypatch.setattr(detail, "_header_size", lambda _t: 16)
     monkeypatch.setattr(
         detail,
@@ -1027,7 +979,7 @@ def test_walk_small_mem_40_reads_globals(monkeypatch):
 def test_walk_small_mem_degrades_when_unresolvable(monkeypatch):
     """Missing layouts or bounds make the small_mem walk unavailable."""
     monkeypatch.setattr(detail, "lookup_symbol", lambda _name: None)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
     assert detail._walk_small_mem(KernelLayout()) is None
     layout = KernelLayout(structs={"struct heap_mem": StructLayout("struct heap_mem")})
     monkeypatch.setattr(detail, "read_int", lambda _value: None)
@@ -1082,7 +1034,7 @@ def test_walk_memheap_reports_truncated_and_corrupt(monkeypatch):
     )
     monkeypatch.setattr(detail, "read_int", lambda _value: 0x8000)
     monkeypatch.setattr(detail, "_header_size", lambda _t: 24)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     # A self-looping next pointer reports truncation via the seen-set.
     monkeypatch.setattr(
@@ -1092,7 +1044,7 @@ def test_walk_memheap_reports_truncated_and_corrupt(monkeypatch):
     )
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x8000: {"magic": 0x1EA01EA0, "next": 0x8040},
             0x8040: {"magic": 0x1EA01EA0, "next": 0x8040},
@@ -1106,7 +1058,7 @@ def test_walk_memheap_reports_truncated_and_corrupt(monkeypatch):
     monkeypatch.setattr(detail, "GDR_MAX_TRAVERSAL_COUNT", 4096)
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda addr, _t, _l, field, _w, _e: {
             0x8000: {"magic": 0x1EA01EA0, "next": 0x8028},
             0x8028: {"magic": 0xBAD, "next": 0x8050},
@@ -1120,7 +1072,7 @@ def test_walk_memheap_reports_truncated_and_corrupt(monkeypatch):
     # A chain with no readable items returns no walk at all.
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda _addr, _t, _l, _field, _w, _e: None,
     )
     assert detail._walk_memheap(layout) is None
@@ -1136,7 +1088,7 @@ def test_walk_slab_pages_41_reads_system_heap(monkeypatch):
     )
     monkeypatch.setattr(
         detail,
-        "_read_field_at",
+        "read_field_at",
         lambda _addr, _t, _l, field, _w, _e: {
             "heap_start": 0x1000,
             "heap_end": 0x3000,
@@ -1151,7 +1103,7 @@ def test_walk_slab_pages_41_reads_system_heap(monkeypatch):
             b"\x00\x00\x00\x00" if addr < 0x7004 else b"\x01\x00\x00\x00"
         ),
     )
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     walk = detail._walk_slab_pages(layout)
 
@@ -1167,7 +1119,7 @@ def test_walk_slab_pages_degrades_when_unresolvable(monkeypatch):
     monkeypatch.setattr(detail, "lookup_symbol", lambda _name: None)
     monkeypatch.setattr(detail, "read_int", lambda _value: None)
     monkeypatch.setattr(detail, "read_macro_int", lambda _name: None)
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
     assert detail._walk_slab_pages(layout) is None
 
     monkeypatch.setattr(
@@ -1202,7 +1154,7 @@ def test_walk_slab_pages_reports_corrupt_on_unreadable_pages(monkeypatch):
         "read_bytes",
         lambda addr, _size: b"\x00\x00\x00\x00" if addr < 0x6004 else None,
     )
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
 
     walk = detail._walk_slab_pages(layout)
 
@@ -1227,7 +1179,7 @@ def test_walk_slab_pages_truncates_beyond_bound(monkeypatch):
     monkeypatch.setattr(detail, "read_int", lambda value: value)
     monkeypatch.setattr(detail, "read_macro_int", lambda _name: 4096)
     monkeypatch.setattr(detail, "read_bytes", lambda _addr, _size: b"\x01\x00\x00\x00")
-    monkeypatch.setattr(detail, "_arch", lambda: (4, "little"))
+    monkeypatch.setattr(detail, "arch_or_default", lambda: (4, "little"))
     monkeypatch.setattr(detail, "GDR_MAX_TRAVERSAL_COUNT", 2)
 
     walk = detail._walk_slab_pages(layout)

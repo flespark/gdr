@@ -9,6 +9,9 @@ except ImportError:
 
 from gdr.adapter_api import active
 from gdr.commands import (
+    CommandTreeSpec,
+    complete_command_tree,
+    render_heap,
     render_object_detail,
     render_objects,
     render_system,
@@ -17,8 +20,6 @@ from gdr.commands import (
 from gdr.gdb_bridge import (
     gdb_command_guard,
     info,
-    print_detail,
-    print_table,
     warn,
 )
 from rtthread.adapter import RtThreadAdapter
@@ -67,6 +68,7 @@ _COMMAND_DESCRIPTIONS = {
     "messagequeues": "List message queues",
     "mempools": "List memory pools",
     "timers": "List timers",
+    "objects": "Show object counts",
     "system": "Show the system summary",
     "heap": "Show system heap status and diagnostics",
 }
@@ -100,32 +102,6 @@ _HELP = (
 
 
 @gdb_command_guard
-def render_heap() -> None:
-    """Render the system-heap snapshot, block walk, and per-thread occupancy."""
-    adapter = active()
-    if not isinstance(adapter, RtThreadAdapter):
-        warn("run `gdr init rtthread <version>` first")
-        return
-    pairs, diagnostics_data = adapter.heap_report()
-    if diagnostics_data is None:
-        pairs += [("Blocks", "N/A"), ("Holes", "N/A"), ("Thread occupancy", "N/A")]
-        print_detail(pairs)
-        return
-    pairs += diagnostics_data.pairs
-    if diagnostics_data.occupancy is None:
-        pairs.append(("Thread occupancy", "N/A"))
-        print_detail(pairs)
-        return
-    pairs.append(("Thread occupancy", f"{len(diagnostics_data.occupancy)} threads"))
-    print_detail(pairs)
-    print_table(
-        diagnostics_data.occupancy,
-        ["Thread", "Blocks", "Bytes"],
-        elastic=("Thread",),
-    )
-
-
-@gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one RT-Thread command without depending on GDB."""
     args = argument.split()
@@ -139,6 +115,8 @@ def _invoke_command(argument: str) -> None:
         warn(_USAGE)
     elif command == "threads":
         render_tasks()
+    elif command == "objects":
+        render_objects("")
     elif command == "system":
         render_system()
     elif command == "heap":
@@ -152,17 +130,6 @@ def _invoke_command(argument: str) -> None:
 def _command_vocabulary() -> list[str]:
     """Return every word the first argument may complete against."""
     return list(_COMMAND_DESCRIPTIONS) + list(_SINGULAR_COMMANDS)
-
-
-def _prefixes(word: str | None, candidates: list[str]) -> list[str]:
-    """Return candidates that start with ``word``, preserving order.
-
-    ``None`` or an empty word (GDB probes completion with ``word=None`` first)
-    yields every candidate.
-    """
-    if not word:
-        return list(candidates)
-    return [candidate for candidate in candidates if candidate.startswith(word)]
 
 
 def _object_names(kind: str) -> list[str]:
@@ -192,16 +159,19 @@ def _complete(text: str, word: str | None) -> list[str]:
 
     The first argument completes against the command vocabulary; the second
     argument of a singular detail command completes against live kernel
-    object names. This is RT-Thread command-tree policy; the prefix filter is
-    a private helper because nothing outside the adapter needs it.
+    object names.  Mechanics are shared with the FreeRTOS tree through
+    :func:`gdr.commands.complete_command_tree`.
     """
-    parts = text.split()
-    if not parts:
-        return _prefixes(word, _command_vocabulary())
-    command = _COMMAND_ALIASES.get(parts[0].lower(), parts[0].lower())
-    if command in _SINGULAR_COMMANDS and " " in text:
-        return _prefixes(word, _object_names(_SINGULAR_COMMANDS[command]))
-    return _prefixes(word, _command_vocabulary())
+    return complete_command_tree(
+        CommandTreeSpec(
+            _command_vocabulary(),
+            _COMMAND_ALIASES,
+            _SINGULAR_COMMANDS,
+            _object_names,
+        ),
+        text,
+        word,
+    )
 
 
 if gdb is not None:

@@ -19,6 +19,21 @@ from freertos.navigation import DiscoveredObject
 from freertos.streams import FreeRtosStreamBufferObject
 
 
+def _patch_stream_reads(monkeypatch, paths: dict):
+    """Wire ``streams.read_field`` against a path -> value dict.
+
+    ``paths`` keys are raw member-path tuples; the mock resolves logical
+    names through the layout's field paths so value_to_stream_buffer_object
+    and bounds_check read the same data.
+    """
+
+    def fake_read_field(_value, struct_layout, field):
+        f = struct_layout.fields.get(field)
+        return paths.get(f.path) if f is not None else None
+
+    monkeypatch.setattr(streams, "read_field", fake_read_field)
+
+
 def test_bytes_in_buffer_handles_wrap():
     """xHead < xTail wraps without modulo pitfalls (stream_buffer.c)."""
     assert streams.bytes_in_buffer(2, 30, 33) == 5
@@ -71,11 +86,7 @@ def test_deleted_buffer_short_circuits(monkeypatch):
         kind="streambuffer", address=0x2000, name="gdr_sb", source="symbol"
     )
     layout = build_layout(FreeRtosConfig(), (10, 3, 1))
-    monkeypatch.setattr(
-        streams,
-        "read_path",
-        lambda _value, path: {("xLength",): 0, ("pucBuffer",): 0}.get(path),
-    )
+    _patch_stream_reads(monkeypatch, {("xLength",): 0, ("pucBuffer",): 0})
     obj = streams.value_to_stream_buffer_object(object(), found, layout)
 
     assert obj.deleted is True
@@ -91,11 +102,7 @@ def test_deleted_buffer_detail_short_circuits(monkeypatch):
         kind="streambuffer", address=0x2000, name="gdr_sb", source="symbol"
     )
     layout = build_layout(FreeRtosConfig(), (10, 3, 1))
-    monkeypatch.setattr(
-        streams,
-        "read_path",
-        lambda _value, path: {("xLength",): 0, ("pucBuffer",): 0}.get(path),
-    )
+    _patch_stream_reads(monkeypatch, {("xLength",): 0, ("pucBuffer",): 0})
     obj = streams.value_to_stream_buffer_object(object(), found, layout)
     pairs = stream_buffer_detail(obj, object(), layout)
 
@@ -126,11 +133,11 @@ def _message_buffer_object():
 def test_next_message_only_for_message_buffer(monkeypatch):
     """A stream buffer renders NextMsg N/A; a message buffer only when a
     length prefix is stored (bytes > sbBYTES_TO_STORE_MESSAGE_LENGTH)."""
-    monkeypatch.setattr(streams, "lookup_type", lambda _name: None)
+    monkeypatch.setattr(streams, "type_size", lambda _name: None)
 
     # Message buffer with an empty ring: no length prefix stored -> None.
     found, paths = _message_buffer_object()
-    monkeypatch.setattr(streams, "read_path", lambda _v, path: paths.get(path))
+    _patch_stream_reads(monkeypatch, paths)
     obj = streams.value_to_stream_buffer_object(
         object(), found, build_layout(FreeRtosConfig(), (10, 3, 1))
     )
@@ -140,7 +147,7 @@ def test_next_message_only_for_message_buffer(monkeypatch):
     # A plain stream buffer never computes NextMsg (N/A, not 0).
     stream_paths = dict(paths)
     stream_paths[("ucFlags",)] = 0
-    monkeypatch.setattr(streams, "read_path", lambda _v, path: stream_paths.get(path))
+    _patch_stream_reads(monkeypatch, stream_paths)
     obj = streams.value_to_stream_buffer_object(
         object(), found, build_layout(FreeRtosConfig(), (10, 3, 1))
     )
@@ -150,25 +157,24 @@ def test_next_message_only_for_message_buffer(monkeypatch):
 
 def test_message_length_size_falls_back_to_size_t(monkeypatch):
     """Without the macro typedef, sizeof(size_t) is used and marked assumed."""
-    size_t = type("T", (), {"sizeof": 8})()
 
     def lookup(name):
         if name == "configMESSAGE_BUFFER_LENGTH_TYPE":
             return None
         if name == "size_t":
-            return size_t
+            return 8
         return None
 
-    monkeypatch.setattr(streams, "lookup_type", lookup)
+    monkeypatch.setattr(streams, "type_size", lookup)
     size, assumed = streams.message_length_size()
     assert (size, assumed) == (8, True)
 
     def lookup_precise(name):
         if name == "configMESSAGE_BUFFER_LENGTH_TYPE":
-            return type("T", (), {"sizeof": 2})()
+            return 2
         return None
 
-    monkeypatch.setattr(streams, "lookup_type", lookup_precise)
+    monkeypatch.setattr(streams, "type_size", lookup_precise)
     size, assumed = streams.message_length_size()
     assert (size, assumed) == (2, False)
 
@@ -203,8 +209,8 @@ def test_notification_index_renders_when_gated(monkeypatch):
         ("xTaskWaitingToSend",): 0,
         ("uxNotificationIndex",): 7,
     }
-    monkeypatch.setattr(streams, "lookup_type", lambda _name: None)
-    monkeypatch.setattr(streams, "read_path", lambda _v, path: paths.get(path))
+    monkeypatch.setattr(streams, "type_size", lambda _name: None)
+    _patch_stream_reads(monkeypatch, paths)
     obj = streams.value_to_stream_buffer_object(object(), found, layout)
 
     assert obj.notification_index == 7
@@ -237,8 +243,8 @@ def test_stream_buffer_table_contract(monkeypatch, flags, kind, capacity, bytes,
         ("xTaskWaitingToReceive",): 0,
         ("xTaskWaitingToSend",): 0,
     }
-    monkeypatch.setattr(streams, "lookup_type", lambda _name: None)
-    monkeypatch.setattr(streams, "read_path", lambda _v, path: paths.get(path))
+    monkeypatch.setattr(streams, "type_size", lambda _name: None)
+    _patch_stream_reads(monkeypatch, paths)
     obj = streams.value_to_stream_buffer_object(object(), found, layout)
     table = streams.stream_buffer_table([obj], layout)
 
@@ -287,8 +293,8 @@ def test_next_message_reads_prefix_at_buffer_plus_tail(monkeypatch):
         reads.append((addr, size))
         return bytes([0x21, 0, 0, 0])
 
-    monkeypatch.setattr(streams, "lookup_type", lambda _name: None)
-    monkeypatch.setattr(streams, "read_path", lambda _v, path: paths.get(path))
+    monkeypatch.setattr(streams, "type_size", lambda _name: None)
+    _patch_stream_reads(monkeypatch, paths)
     monkeypatch.setattr(streams, "read_bytes", fake_read_bytes)
     monkeypatch.setattr(streams, "get_arch_info", lambda: None)
     obj = streams.value_to_stream_buffer_object(
@@ -323,8 +329,8 @@ def test_next_message_prefix_wraps_ring_end(monkeypatch):
         reads.append((addr, size))
         return bytes([addr & 0xFF]) * size
 
-    monkeypatch.setattr(streams, "lookup_type", lambda _name: None)
-    monkeypatch.setattr(streams, "read_path", lambda _v, path: paths.get(path))
+    monkeypatch.setattr(streams, "type_size", lambda _name: None)
+    _patch_stream_reads(monkeypatch, paths)
     monkeypatch.setattr(streams, "read_bytes", fake_read_bytes)
     monkeypatch.setattr(streams, "get_arch_info", lambda: None)
     obj = streams.value_to_stream_buffer_object(

@@ -20,6 +20,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/fixture-common.sh
+source "$SCRIPT_DIR/lib/fixture-common.sh"
 DEFAULT_CUBE_REPO="https://github.com/STMicroelectronics/STM32CubeL4.git"
 DEFAULT_CUBE_REF="v1.18.2"
 DEFAULT_CUBE_DIR="/tmp/stm32cubel4-v1.18.2"
@@ -33,28 +35,7 @@ LANE_TARGET="b-l475e-iot01a"
 LANE_VERSION="10.3.1"
 TOOLCHAIN_PREFIX="arm-none-eabi-"
 
-die() {
-    echo "[gdr-ci] FAILED: $*" >&2
-    exit 1
-}
-
-usage() {
-    sed -n '3,22p' "$0" | sed 's/^# \?//'
-}
-
 # Resolve TOOLCHAIN_PATH and verify arm-none-eabi-{gcc,objcopy}.
-setup_toolchain() {
-    local gcc tool
-    if [[ -z "$TOOLCHAIN_PATH" ]]; then
-        gcc="$(command -v "${TOOLCHAIN_PREFIX}gcc" || true)"
-        [[ -n "$gcc" ]] || die "${TOOLCHAIN_PREFIX}gcc is not on PATH"
-        TOOLCHAIN_PATH="$(dirname "$gcc")"
-    fi
-    for tool in gcc objcopy; do
-        [[ -x "$TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}$tool" ]] ||
-            die "required tool not found: $TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}$tool"
-    done
-}
 
 prepare_cube() {
     if [[ ! -d "$CUBE_DIR/.git" ]]; then
@@ -68,18 +49,6 @@ prepare_cube() {
         Projects/B-L475E-IOT01A/Applications/FreeRTOS/FreeRTOS_LowPower_LPTIM
     git -C "$CUBE_DIR" submodule update --init --depth=1 \
         Drivers/CMSIS/Device/ST/STM32L4xx Middlewares/Third_Party/FreeRTOS
-}
-
-heap_source() {
-    local kernel="$1"
-    case "$VARIANT" in
-    static-only) return 0 ;;
-    heap-1) echo "$kernel/portable/MemMang/heap_1.c" ;;
-    heap-2) echo "$kernel/portable/MemMang/heap_2.c" ;;
-    heap-3) echo "$kernel/portable/MemMang/heap_3.c" ;;
-    heap-5) echo "$kernel/portable/MemMang/heap_5.c" ;;
-    *) echo "$kernel/portable/MemMang/heap_4.c" ;;
-    esac
 }
 
 compile_fixture() {
@@ -110,6 +79,7 @@ compile_fixture() {
         -I"$config_dir"
         -I"$SCRIPT_DIR/fixture/config"
         -I"$board_dir"
+        -I"$SCRIPT_DIR/fixture/common"
         -I"$CUBE_DIR/Drivers/CMSIS/Core/Include"
         -I"$device/Include"
         -I"$kernel/include"
@@ -117,7 +87,7 @@ compile_fixture() {
     )
     sources=(
         "$SCRIPT_DIR/fixture/main.c"
-        "$board_dir/runtime_timer.c"
+        "$SCRIPT_DIR/fixture/common/runtime_timer.c"
         "$project/Src/system_stm32l4xx.c"
         "$project/STM32CubeIDE/Applications/Startup/startup_stm32l475vgtx.s"
         "$kernel/tasks.c" "$kernel/queue.c" "$kernel/list.c" "$kernel/timers.c"
@@ -146,18 +116,6 @@ compile_fixture() {
 # Copy the freshly linked artifacts into the shared fixture cache so every
 # consumer (pytest, run-qemu-matrix.sh, other machines' rsync) reads one
 # canonical layout: <cache>/<target>/<version>/<variant>/freertos.{elf,bin}.
-install_to_cache() {
-    [[ "$CACHE_INSTALL" == 1 ]] || return 0
-    local elf="$CACHE_DIR/freertos.elf"
-    local bin="$CACHE_DIR/freertos.bin"
-    mkdir -p "$CACHE_DIR"
-    [[ "$OUT_ELF" == "$elf" ]] || cp -f "$OUT_ELF" "$elf"
-    [[ "$OUT_BIN" == "$bin" ]] || cp -f "$OUT_BIN" "$bin"
-    if [[ -f "$BUILD_DIR/freertos.map" ]]; then
-        cp -f "$BUILD_DIR/freertos.map" "$CACHE_DIR/freertos.map"
-    fi
-    echo "[gdr-ci] cached fixture: $CACHE_DIR"
-}
 
 parse_args() {
     local -a leftover=()
@@ -204,7 +162,7 @@ parse_args() {
             shift 2
             ;;
         -h | --help)
-            usage
+            usage_from_header 20
             exit 0
             ;;
         *)
@@ -226,6 +184,7 @@ main() {
     OUT_ELF=""
     OUT_BIN=""
     CACHE_DIR=""
+    # shellcheck disable=SC2034 # read by the sourced install_to_cache()
     CACHE_INSTALL=1
     TOOLCHAIN_PATH=""
     VARIANT="$DEFAULT_VARIANT"
@@ -233,9 +192,9 @@ main() {
     parse_args "$@"
     OUT_ELF="${OUT_ELF:-$BUILD_DIR/$DEFAULT_ELF_NAME}"
     OUT_BIN="${OUT_BIN:-$BUILD_DIR/$DEFAULT_BIN_NAME}"
-    CACHE_ROOT="${FREERTOS_FIXTURE_CACHE:-$HOME/Project/gdr-fixture/freertos}"
+    CACHE_ROOT="$(fixture_cache_root)"
     CACHE_DIR="${CACHE_DIR:-$CACHE_ROOT/$LANE_TARGET/$LANE_VERSION/$VARIANT}"
-    setup_toolchain
+    setup_toolchain "$TOOLCHAIN_PREFIX"
     prepare_cube
     compile_fixture
     install_to_cache

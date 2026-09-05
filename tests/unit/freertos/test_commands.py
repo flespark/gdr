@@ -22,7 +22,7 @@ class _FakeAdapter:
 _PUBLIC_ROUTES = {
     "tasks": ("tasks", None),
     "system": ("system", None),
-    "objects": ("objects", None),
+    "objects": ("objects", ""),
     "heap": ("heap", None),
     "queues": ("objects", "queue"),
     "semaphores": ("objects", "semaphore"),
@@ -43,17 +43,13 @@ def test_public_commands_reach_their_semantic_renderer(command, expected, monkey
     )
 
     def render_objects(kind: str = ""):
-        # Reason: the bare ``objects`` route owns its provenance summary; a
-        # call with no kind would silently lose the Sources column.
-        if not kind:
-            raise AssertionError("'objects' must route to render_object_summary")
+        # The bare ``objects`` route reaches the neutral renderer with no
+        # kind; that renderer asks the adapter for its provenance summary.
         calls.append(("objects", kind))
 
     monkeypatch.setattr(commands, "render_objects", render_objects)
     monkeypatch.setattr(
-        commands,
-        "render_object_summary",
-        lambda: calls.append(("objects", None)),
+        commands, "render_system", lambda: calls.append(("system", None))
     )
     monkeypatch.setattr(commands, "render_heap", lambda: calls.append(("heap", None)))
 
@@ -326,6 +322,7 @@ def test_objects_summary_headers_and_sources(monkeypatch):
     The core renderer only knows Kind/Count; the FreeRTOS summary owns the
     provenance model, so the table must carry the per-channel source counts.
     """
+    from gdr import commands as gdr_commands
     from gdr.adapter_api import ObjectTable
 
     class _SummaryAdapter:
@@ -343,17 +340,20 @@ def test_objects_summary_headers_and_sources(monkeypatch):
     messages: list[str] = []
     captured: dict[str, object] = {"messages": messages}
     monkeypatch.setattr(commands, "FreeRtosAdapter", _SummaryAdapter)
-    monkeypatch.setattr(commands, "active", lambda: _SummaryAdapter())
-    monkeypatch.setattr(commands, "info", messages.append)
+    # The neutral renderer reads the active adapter itself.
+    monkeypatch.setattr(gdr_commands, "active", lambda: _SummaryAdapter())
+    # The provenance summary renders through the neutral renderer (C1), so
+    # info/print_table live in gdr.commands.
+    monkeypatch.setattr(gdr_commands, "info", messages.append)
     monkeypatch.setattr(
-        commands,
+        gdr_commands,
         "print_table",
         lambda rows, headers, elastic=(): captured.update(
             rows=rows, headers=headers, elastic=elastic
         ),
     )
 
-    commands.render_object_summary()
+    gdr_commands.render_objects("")
 
     assert captured["headers"] == ["Kind", "Count", "Sources"]
     assert captured["rows"] == [

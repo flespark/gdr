@@ -16,6 +16,7 @@ import pytest
 import freertos.adapter as adapter_module
 import freertos.details as details_module
 import freertos.diagnostics as diagnostics
+import freertos.navigation as navigation_module
 import freertos.timers as timers
 from freertos.adapter import FreeRtosTimerObject
 from freertos.layout import FreeRtosConfig, build_layout
@@ -40,16 +41,43 @@ _COMMAND_NAMES = [
 
 
 def _patch_reads(monkeypatch, module, paths: dict):
-    """Wire *module*'s read_path/read_int against a path -> value dict."""
-    monkeypatch.setattr(module, "read_path", lambda _value, path: paths.get(path))
+    """Wire *module*'s read_path/read_field against a path -> value dict.
+
+    ``paths`` keys are raw member-path tuples; the ``read_field`` mock
+    resolves logical names through the layout's field paths.
+    """
+    if hasattr(module, "read_path"):
+        monkeypatch.setattr(module, "read_path", lambda _value, path: paths.get(path))
+
+    def fake_read_field(_value, struct_layout, field):
+        f = struct_layout.fields.get(field)
+        return paths.get(f.path) if f is not None else None
+
+    if hasattr(module, "read_field"):
+        monkeypatch.setattr(module, "read_field", fake_read_field)
     monkeypatch.setattr(module, "read_int", lambda value: value)
 
 
 def _patch_value_reads(monkeypatch, module, by_value: dict):
-    """Wire read_path per ``id(value)`` so two timers can differ."""
-    monkeypatch.setattr(
-        module, "read_path", lambda value, path: by_value.get(id(value), {}).get(path)
-    )
+    """Wire read_field per ``id(value)`` so two timers can differ.
+
+    ``by_value`` keys are raw member-path tuples; the ``read_field`` mock
+    resolves the logical name through the layout's field path so both the
+    plain and the nested (list-item) reads hit the same data.
+    """
+    if hasattr(module, "read_path"):
+        monkeypatch.setattr(
+            module,
+            "read_path",
+            lambda value, path: by_value.get(id(value), {}).get(path),
+        )
+
+    def fake_read_field(value, struct_layout, field):
+        f = struct_layout.fields.get(field)
+        return by_value.get(id(value), {}).get(f.path) if f is not None else None
+
+    if hasattr(module, "read_field"):
+        monkeypatch.setattr(module, "read_field", fake_read_field)
     monkeypatch.setattr(module, "read_int", lambda value: value)
 
 
@@ -222,7 +250,7 @@ def _table_cells(monkeypatch, found, by_address, tick=1000, daemon=False):
     monkeypatch.setattr(adapter_module, "_cast_object", fake_cast)
     monkeypatch.setattr(adapter_module, "discover", lambda _kind, _l: found)
     monkeypatch.setattr(adapter_module, "timer_subsystem_ready", lambda: True)
-    monkeypatch.setattr(adapter_module, "system_value", lambda _name: tick)
+    monkeypatch.setattr(adapter_module, "system_value", lambda _key, _layout: tick)
     monkeypatch.setattr(adapter_module, "daemon_is_current", lambda _l: daemon)
     monkeypatch.setattr(timers, "lookup_symbol_at", lambda _addr: "gdr_timer_callback")
     _wire_timer_lists(monkeypatch, 0x3000, 0x3100, list1_addr=0x3000, list2_addr=0x3100)
@@ -406,9 +434,11 @@ def _wire_command_queue(monkeypatch, paths: dict, msg_size: int = 12):
         lambda name: msg_type if name == "struct tmrTimerQueueMessage" else None,
     )
     _patch_reads(monkeypatch, timers, paths)
-    _patch_reads(monkeypatch, details_module, paths)
+    # iter_queue_items now lives in navigation (C4), so its layout reads and
+    # payload bytes are mocked there.
+    _patch_reads(monkeypatch, navigation_module, paths)
     monkeypatch.setattr(
-        details_module, "read_bytes", lambda _address, size: b"\x00" * size
+        navigation_module, "read_bytes", lambda _address, size: b"\x00" * size
     )
     monkeypatch.setattr(timers, "_callback_arm_present", lambda _t: False)
     return queue_ref, msg_type
@@ -565,12 +595,6 @@ def test_negative_id_decodes_callback_parameters(monkeypatch):
     """With the union arm present the negative-ID slot carries the real
     u.xCallbackParameters (function + both arguments), not a label."""
     layout = build_layout(FreeRtosConfig(timers=True), (10, 3, 1))
-    params = object()
-    param_paths = {
-        ("pxCallbackFunction",): 0x80001000,
-        ("pvParameter1",): 0xCAFEF00D,
-        ("ulParameter2",): 0x5A5A5A5A,
-    }
     paths: dict[tuple[str, ...], object] = {
         ("pcHead",): 0x2000,
         ("u", "xQueue", "pcTail"): 0x200C,
@@ -579,16 +603,13 @@ def test_negative_id_decodes_callback_parameters(monkeypatch):
         ("uxMessagesWaiting",): 1,
         ("uxItemSize",): 12,
         ("xMessageID",): -1,  # tmrCOMMAND_EXECUTE_CALLBACK
-        ("u", "xCallbackParameters"): params,
+        # The callback union arm, reached through the daemon-message layout.
+        ("u", "xCallbackParameters", "pxCallbackFunction"): 0x80001000,
+        ("u", "xCallbackParameters", "pvParameter1"): 0xCAFEF00D,
+        ("u", "xCallbackParameters", "ulParameter2"): 0x5A5A5A5A,
     }
 
-    def _read_path(value, path):
-        if value is params:
-            return param_paths[path]
-        return paths[path]
-
     _wire_command_queue(monkeypatch, paths)
-    monkeypatch.setattr(timers, "read_path", _read_path)
     monkeypatch.setattr(timers, "_message_value", lambda _a, _t: object())
     monkeypatch.setattr(timers, "_callback_arm_present", lambda _t: True)
 
@@ -647,7 +668,7 @@ def test_timer_detail_key_contract_and_commands_section(monkeypatch):
         container=0x3000,
     )
     _wire_timer_lists(monkeypatch, 0x3000, 0x3100, list1_addr=0x3000, list2_addr=0x3100)
-    monkeypatch.setattr(details_module, "system_value", lambda _name: 1000)
+    monkeypatch.setattr(details_module, "system_value", lambda _key, _layout: 1000)
     monkeypatch.setattr(
         details_module,
         "iter_timer_commands",

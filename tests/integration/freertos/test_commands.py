@@ -1031,12 +1031,12 @@ def test_freertos_heap_contract_matches_variant(gdb_session):
     if kind == 1:
         assert pairs["Algorithm"] == "heap_1 (bump pointer)"
         assert pairs["CrossCheck"].startswith("unavailable")
-        assert pairs["Blocks"] == "unavailable" and pairs["Holes"] == "unavailable"
+        assert pairs["Blocks"] == "N/A" and pairs["Holes"] == "N/A"
     elif kind == 2:
         assert pairs["Algorithm"] == "heap_2"
-        assert pairs["MinEver"] == "unavailable"
-        assert pairs["Allocs"] == "unavailable"
-        assert pairs["Frees"] == "unavailable"
+        assert pairs["MinEver"] == "N/A"
+        assert pairs["Allocs"] == "N/A"
+        assert pairs["Frees"] == "N/A"
         assert pairs["CrossCheck"] == "ok"
         assert pairs["Blocks"].split()[0].isdigit()
     elif kind == 4:
@@ -1098,6 +1098,6 @@ def test_freertos_system_reports_heap_fields(gdb_session):
     elif _PROFILE.variant == "heap-3":
         assert pairs["Heap allocator"] == "heap_3"
     elif _PROFILE.variant == "static-only":
-        assert pairs["Heap allocator"] == "unavailable"
+        assert pairs["Heap allocator"] == "N/A"
     else:
         pytest.skip(f"no heap system expectation for {_PROFILE.variant}")

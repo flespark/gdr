@@ -18,12 +18,23 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from freertos.layout import FreeRtosLayout
-from gdr.constants import GDR_MAX_CSTRING_LENGTH, GDR_MAX_TRAVERSAL_COUNT
+from freertos.layout import (
+    KIND_BY_HANDLE_TYPE,
+    KIND_BY_STATIC_TYPE,
+    MPU_KIND_BY_TYPE,
+    STRUCT_BY_KIND,
+    FreeRtosLayout,
+)
+from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.gdb_bridge import (
+    _gdb_execute,
+    array_bound,
+    array_item,
     get_arch_info,
     is_plain_identifier,
+    loadable_ranges,
     lookup_symbol,
+    read_bytes,
     read_cstring,
     read_int,
     safe_dereference,
@@ -31,9 +42,8 @@ from gdr.gdb_bridge import (
     value_address,
     warn,
 )
-from gdr.layout import member_offset, read_field, read_path
+from gdr.layout import member_offset, read_field, value_at
 
-# TODO: replace by exception guard
 # Exception types we degrade from during scheduler-list traversal.  Stored at
 # module scope so the tuple stays computable when imported outside GDB (where
 # ``gdb`` is ``None``, which would otherwise turn a handler into an
@@ -68,34 +78,17 @@ def _owner_task(pointer, layout: FreeRtosLayout):
 
 
 def _array_item(value, index):
-    try:
-        return value[index]
-    except _TRAVERSAL_ERRORS:
-        return None
+    return array_item(value, index)
 
 
-_SECTION_RANGE_RE = re.compile(r"0x([0-9a-fA-F]+)\s*-\s*0x([0-9a-fA-F]+)")
+def mapped_ranges() -> tuple[tuple[int, int], ...]:
+    """Return loadable ELF section ranges (test-injection wrapper).
 
-
-def _mapped_ranges() -> tuple[tuple[int, int], ...]:
-    """Return loadable ELF section ranges from ``info files``, or empty.
-
-    An empty result means the map is unknown (unit tests, or GDB not ready),
-    so callers skip the range check rather than inventing a RAM window.
+    Kept as a module-level name so list walks stay unit-testable without a
+    target; the ``info files`` parsing itself lives in the bridge
+    (:func:`gdr.gdb_bridge.loadable_ranges`), which also caches per session.
     """
-    if gdb is None:
-        return ()
-    try:
-        output = gdb.execute("info files", to_string=True)
-    except _COMMAND_ERRORS:
-        return ()
-    ranges: list[tuple[int, int]] = []
-    for match in _SECTION_RANGE_RE.finditer(output or ""):
-        low = int(match.group(1), 16)
-        high = int(match.group(2), 16)
-        if high > low:
-            ranges.append((low, high))
-    return tuple(ranges)
+    return loadable_ranges()
 
 
 def _iter_list(
@@ -119,7 +112,7 @@ def _iter_list(
         mini_layout = layout.structs["struct xMINI_LIST_ITEM"]
         node = read_field(end, mini_layout, "next")
         seen: set[int] = set()
-        ranges = _mapped_ranges()
+        ranges = mapped_ranges()
         for _ in range(max_count):
             node_addr = safe_int(node)
             if not node_addr or node_addr == end_addr:
@@ -248,7 +241,7 @@ def task_state(tcb, layout: FreeRtosLayout) -> tuple[str, int | None]:
 
     # Step 1: running task.
     if not layout.config.smp:
-        current = safe_dereference(lookup_symbol("pxCurrentTCB"))
+        current = safe_dereference(lookup_symbol(layout.symbols["current_tcb"]))
         if current is not None and value_address(current) == value_address(tcb):
             return "Running", 0
     else:
@@ -346,7 +339,7 @@ def core_of(tcb, layout: FreeRtosLayout) -> int | None:
         return run_state
     if run_state == _TASK_SCHEDULED_TO_YIELD:
         tcb_addr = value_address(tcb)
-        value = lookup_symbol("pxCurrentTCBs")
+        value = lookup_symbol(layout.symbols["current_tcbs"])
         for core in range(layout.config.number_of_cores):
             pointer = _array_item(value, core)
             task = safe_dereference(pointer)
@@ -367,12 +360,12 @@ def is_idle_task(tcb, layout: FreeRtosLayout) -> bool:
     if attributes is not None and (attributes & 1):  # taskATTRIBUTE_IS_IDLE
         return True
     tcb_addr = value_address(tcb)
-    if lookup_symbol("xIdleTaskHandles") is not None:
-        handle = _array_item(lookup_symbol("xIdleTaskHandles"), 0)
+    if lookup_symbol(layout.symbols["idle_handles"]) is not None:
+        handle = _array_item(lookup_symbol(layout.symbols["idle_handles"]), 0)
         task = safe_dereference(handle)
         return task is not None and value_address(task) == tcb_addr
-    if lookup_symbol("xIdleTaskHandle") is not None:
-        task = safe_dereference(lookup_symbol("xIdleTaskHandle"))
+    if lookup_symbol(layout.symbols["idle_handle"]) is not None:
+        task = safe_dereference(lookup_symbol(layout.symbols["idle_handle"]))
         return task is not None and value_address(task) == tcb_addr
     return False
 
@@ -380,7 +373,7 @@ def is_idle_task(tcb, layout: FreeRtosLayout) -> bool:
 def current_tasks(layout: FreeRtosLayout) -> list[tuple[int, int]]:
     """Return ``[(core, TCB address)]`` for the currently running tasks."""
     if layout.config.smp:
-        value = lookup_symbol("pxCurrentTCBs")
+        value = lookup_symbol(layout.symbols["current_tcbs"])
         result = []
         for core in range(layout.config.number_of_cores):
             pointer = _array_item(value, core)
@@ -388,19 +381,27 @@ def current_tasks(layout: FreeRtosLayout) -> list[tuple[int, int]]:
             if task is not None:
                 result.append((core, value_address(task)))
         return result
-    task = safe_dereference(lookup_symbol("pxCurrentTCB"))
+    task = safe_dereference(lookup_symbol(layout.symbols["current_tcb"]))
     return [(0, value_address(task))] if task is not None else []
 
 
-def system_value(name: str) -> int | None:
+def system_value(key: str, layout: FreeRtosLayout) -> int | None:
+    """Read a kernel global scalar by its logical name.
+
+    The target symbol is resolved through ``layout.symbols`` (never a raw
+    spelling), so a kernel rename only touches :mod:`freertos.layout`.
+    """
+    name = layout.symbols.get(key)
+    if name is None:
+        return None
     return read_int(lookup_symbol(name))
 
 
 def _list_count_of(head, layout: FreeRtosLayout) -> int | None:
-    try:
-        return read_int(read_field(head, layout.structs["struct xLIST"], "count"))
-    except _TRAVERSAL_ERRORS:
+    sl = layout.structs.get("struct xLIST")
+    if sl is None:
         return None
+    return read_int(read_field(head, sl, "count"))
 
 
 def list_count(name: str, layout: FreeRtosLayout) -> int | None:
@@ -433,8 +434,14 @@ def list_count(name: str, layout: FreeRtosLayout) -> int | None:
 # address really is needs the Queue_t discriminator (ucQueueType under
 # configUSE_TRACE_FACILITY, else the pcHead/itemSize pointer chain), so any
 # channel that only proves "some Queue_t" (registry, waiter, MPU pool) hands
-# candidates to the queue classifier before the per-kind filter.
-_QUEUE_FAMILY_KINDS = ("queue", "semaphore", "mutex")
+# candidates to the queue classifier before the per-kind filter.  Derived from
+# the layout's kind->struct map so the family stays in sync with
+# ``STRUCT_BY_KIND`` (the kinds that share ``struct QueueDefinition``).
+_QUEUE_FAMILY_KINDS: tuple[str, ...] = tuple(
+    kind
+    for kind, struct_key in STRUCT_BY_KIND.items()
+    if struct_key == "struct QueueDefinition"
+)
 
 
 @dataclass(frozen=True)
@@ -469,15 +476,10 @@ def _queue_value(address: int, layout: FreeRtosLayout):
     """Cast a discovered address to the Queue_t (QueueDefinition) struct."""
     if gdb is None:
         return None
-    try:
-        struct_name = layout.structs["struct QueueDefinition"].struct_name
-    except KeyError:
+    struct_layout = layout.structs.get("struct QueueDefinition")
+    if struct_layout is None:
         return None
-    try:
-        typ = gdb.lookup_type(struct_name).pointer()
-        return gdb.Value(address).cast(typ).dereference()
-    except _TRAVERSAL_ERRORS:
-        return None
+    return value_at(address, struct_layout)
 
 
 def classify_queue(value, layout: FreeRtosLayout) -> QueueClassification | None:
@@ -502,7 +504,9 @@ def classify_queue(value, layout: FreeRtosLayout) -> QueueClassification | None:
     if value is None:
         return None
     if layout.config.trace_facility:
-        code = read_int(read_path(value, ("ucQueueType",)))
+        code = read_int(
+            read_field(value, layout.structs["struct QueueDefinition"], "type")
+        )
         if code is not None:
             if code in (1, 4):
                 kind: str = "mutex"
@@ -517,7 +521,7 @@ def classify_queue(value, layout: FreeRtosLayout) -> QueueClassification | None:
                 recursive=(code == 4),
                 is_set=(code == 5),
             )
-    head = read_int(read_path(value, ("pcHead",)))
+    head = read_int(read_field(value, layout.structs["struct QueueDefinition"], "head"))
     # Reason: NULL is the mutex marker itself (queue.h), and an unreadable
     # pcHead cannot prove otherwise, so both read as mutex and the chain
     # still terminates on an unreadable object.
@@ -525,7 +529,9 @@ def classify_queue(value, layout: FreeRtosLayout) -> QueueClassification | None:
         return QueueClassification(
             kind="mutex", type_code=None, inferred=True, recursive=None, is_set=None
         )
-    item_size = read_int(read_path(value, ("uxItemSize",)))
+    item_size = read_int(
+        read_field(value, layout.structs["struct QueueDefinition"], "item_size")
+    )
     if item_size is not None and item_size == 0:
         return QueueClassification(
             kind="semaphore",
@@ -607,50 +613,6 @@ def source_label(source: str, extra_sources: Sequence[str] = ()) -> str:
     return "+".join((source, *extra_sources))
 
 
-# Static-buffer typedef names (include/FreeRTOS.h) -> semantic kind.  GDB
-# keeps the declared typedef spelling in the symbol's type name, so a
-# ``static StaticSemaphore_t`` variable stays distinguishable from
-# ``StaticQueue_t`` even though both strip to the same struct.
-_KIND_BY_STATIC_TYPE: dict[str, str] = {
-    "StaticTask_t": "task",
-    "StaticQueue_t": "queue",
-    "StaticSemaphore_t": "semaphore",
-    "StaticEventGroup_t": "eventgroup",
-    "StaticTimer_t": "timer",
-    "StaticStreamBuffer_t": "streambuffer",
-    "StaticMessageBuffer_t": "streambuffer",
-}
-
-# Handle typedef names (task.h/queue.h/semphr.h/timers.h/event_groups.h/
-# stream_buffer.h/message_buffer.h) -> semantic kind.  Queue-set handles are
-# queues themselves and count as ``queue``.
-_KIND_BY_HANDLE_TYPE: dict[str, str] = {
-    "TaskHandle_t": "task",
-    "QueueHandle_t": "queue",
-    "QueueSetHandle_t": "queue",
-    "QueueSetMemberHandle_t": "queue",
-    "SemaphoreHandle_t": "semaphore",
-    "TimerHandle_t": "timer",
-    "EventGroupHandle_t": "eventgroup",
-    "StreamBufferHandle_t": "streambuffer",
-    "MessageBufferHandle_t": "streambuffer",
-}
-
-
-def _cstring(value, max_len: int = GDR_MAX_CSTRING_LENGTH) -> str | None:
-    """Read a ``char*`` name and stop at the first NUL.
-
-    A bounded ``Value.string(length=N)`` read carries embedded NULs plus
-    whatever follows the string (GDB manual); names are C strings, so
-    anything after the first NUL is filler that would poison name matching
-    and table width.
-    """
-    raw = read_cstring(value, max_len)
-    if raw is None:
-        return None
-    return raw.split("\x00", 1)[0]
-
-
 def iter_registry_entries(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
     """Yield registered queue-family objects from ``xQueueRegistry``.
 
@@ -660,7 +622,7 @@ def iter_registry_entries(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
     """
     if not layout.config.queue_registry:
         return
-    table = lookup_symbol("xQueueRegistry")
+    table = lookup_symbol(layout.symbols["queue_registry"])
     if table is None:
         return
     size = layout.config.queue_registry_size
@@ -670,13 +632,16 @@ def iter_registry_entries(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
         item = _array_item(table, index)
         if item is None:
             continue
-        name_value = read_path(item, ("pcQueueName",))
-        handle = read_int(read_path(item, ("xHandle",)))
+        item_layout = layout.internal_structs.get("struct QUEUE_REGISTRY_ITEM")
+        if item_layout is None:
+            return
+        name_value = read_field(item, item_layout, "name")
+        handle = read_int(read_field(item, item_layout, "handle"))
         # Reason: an empty slot is officially pcQueueName == NULL; requiring
         # a non-null handle too keeps a half-cleared slot from resurrecting.
         if name_value is None or not handle:
             continue
-        name = _cstring(name_value)
+        name = read_cstring(name_value)
         if not name:
             continue
         # Reason: the registry stores QueueHandle_t, which also covers
@@ -696,11 +661,10 @@ def _info_variables_text() -> str:
     """Return ``info variables`` output, or ``""`` when unavailable."""
     if gdb is None:
         return ""
-    try:
-        return gdb.execute("info variables", to_string=True) or ""
-    except _COMMAND_ERRORS:
+    output = _gdb_execute("info variables")
+    if not output:
         warn("symbol object scan failed: 'info variables' is unavailable")
-        return ""
+    return output
 
 
 # GDB's ``info variables`` prints one declaration per line as
@@ -731,21 +695,21 @@ def _timer_name_at(address: int, layout: FreeRtosLayout) -> str | None:
     """Read a timer object's ``pcTimerName`` cast from a bare address."""
     if gdb is None or not address:
         return None
-    try:
-        sl = layout.structs["struct tmrTimerControl"]
-        typ = gdb.lookup_type(sl.struct_name).pointer()
-        value = gdb.Value(address).cast(typ).dereference()
-        return _cstring(read_field(value, sl, "name"))
-    except _TRAVERSAL_ERRORS:
+    sl = layout.structs.get("struct tmrTimerControl")
+    if sl is None:
         return None
+    value = value_at(address, sl)
+    if value is None:
+        return None
+    return read_cstring(read_field(value, sl, "name"))
 
 
 def _scan_symbol_objects(layout: FreeRtosLayout):
     """One pass of the symbol channel; the caller caches its result."""
     for type_name, symbol_name in _iter_declared_variables(_info_variables_text()):
-        kind = _KIND_BY_STATIC_TYPE.get(type_name)
+        kind = KIND_BY_STATIC_TYPE.get(type_name)
         if kind is None:
-            kind = _KIND_BY_HANDLE_TYPE.get(type_name)
+            kind = KIND_BY_HANDLE_TYPE.get(type_name)
         if kind is None:
             continue
         value = lookup_symbol(symbol_name)
@@ -758,7 +722,7 @@ def _scan_symbol_objects(layout: FreeRtosLayout):
         # .bss that still cast and read plausibly.  On an MPU build the
         # *Handle_t value is additionally an opaque pool index (see
         # _opaque_mpu_symbol_address), never a pointer.
-        if type_name in _KIND_BY_STATIC_TYPE:
+        if type_name in KIND_BY_STATIC_TYPE:
             address = value_address(value)
         else:
             address = safe_int(value)
@@ -828,7 +792,7 @@ def _mpu_pool_count(layout: FreeRtosLayout) -> int | None:
     """
     if not layout.config.mpu_object_pool:
         return None
-    pool = lookup_symbol("xKernelObjectPool")
+    pool = lookup_symbol(layout.symbols["mpu_pool"])
     if pool is None:
         return None
     count = _value_array_bound(pool)
@@ -853,11 +817,14 @@ def _opaque_mpu_symbol_address(handle: int, layout: FreeRtosLayout) -> int | Non
         return None
     pool_count = _mpu_pool_count(layout)
     if pool_count is not None and 0 < handle <= pool_count:
-        pool = lookup_symbol("xKernelObjectPool")
+        pool = lookup_symbol(layout.symbols["mpu_pool"])
         item = _array_item(pool, handle - 1) if pool is not None else None
         if item is None:
             return None
-        internal = read_int(read_path(item, ("xInternalObjectHandle",)))
+        pool_layout = layout.internal_structs.get("struct KernelObject")
+        if pool_layout is None:
+            return None
+        internal = read_int(read_field(item, pool_layout, "internal_handle"))
         mask = (1 << (8 * _pointer_size())) - 1
         # Reason: an empty slot is 0 and a slot reserved mid-create is ~0;
         # neither translates to an object, so the symbol is skipped instead
@@ -865,7 +832,7 @@ def _opaque_mpu_symbol_address(handle: int, layout: FreeRtosLayout) -> int | Non
         if not internal or internal == mask:
             return None
         return internal
-    ranges = _mapped_ranges()
+    ranges = mapped_ranges()
     if ranges and not any(low <= handle < high for low, high in ranges):
         # Reason: on a live MPU build the only values below the pool size
         # are indices; anything outside every loadable section is not an
@@ -876,21 +843,7 @@ def _opaque_mpu_symbol_address(handle: int, layout: FreeRtosLayout) -> int | Non
 
 def _value_array_bound(value) -> int | None:
     """Return the element count of an array value, or ``None``."""
-    try:
-        count = value.type.strip_typedefs().range()[1] + 1
-    except _TRAVERSAL_ERRORS:
-        return None
-    return count if count > 0 else None
-
-
-# ulKernelObjectType values (portable/Common/mpu_wrappers_v2.c).
-_MPU_KIND_BY_TYPE: dict[int, str] = {
-    1: "queue",  # also covers semaphore/mutex/queue-set/set-member
-    2: "task",
-    3: "streambuffer",
-    4: "eventgroup",
-    5: "timer",
-}
+    return array_bound(value)
 
 
 def iter_mpu_pool_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
@@ -903,7 +856,7 @@ def iter_mpu_pool_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
     """
     if not layout.config.mpu_object_pool:
         return
-    pool = lookup_symbol("xKernelObjectPool")
+    pool = lookup_symbol(layout.symbols["mpu_pool"])
     if pool is None:
         return
     count = _value_array_bound(pool)
@@ -915,13 +868,16 @@ def iter_mpu_pool_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
         item = _array_item(pool, index)
         if item is None:
             continue
-        handle = read_int(read_path(item, ("xInternalObjectHandle",)))
+        pool_layout = layout.internal_structs.get("struct KernelObject")
+        if pool_layout is None:
+            return
+        handle = read_int(read_field(item, pool_layout, "internal_handle"))
         if not handle or handle == mask:
             continue
-        type_code = read_int(read_path(item, ("ulKernelObjectType",)))
+        type_code = read_int(read_field(item, pool_layout, "type"))
         if type_code is None:
             continue
-        kind = _MPU_KIND_BY_TYPE.get(type_code)
+        kind = MPU_KIND_BY_TYPE.get(type_code)
         if kind is None:
             continue
         # Reason: KERNEL_OBJECT_TYPE_QUEUE also covers queue sets and set
@@ -939,11 +895,12 @@ def iter_mpu_pool_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
 def _cast_owner(pointer, layout: FreeRtosLayout, struct_key: str):
     """Cast a ListItem owner pointer to a layout-described struct value."""
     try:
-        if pointer is None or not int(pointer) or gdb is None:
+        if pointer is None or gdb is None or not int(pointer):
             return None
-        struct_name = layout.structs[struct_key].struct_name
-        typ = gdb.lookup_type(struct_name).pointer()
-        return pointer.cast(typ).dereference()
+        struct_layout = layout.structs.get(struct_key)
+        if struct_layout is None:
+            return None
+        return value_at(int(pointer), struct_layout)
     except _TRAVERSAL_ERRORS:
         return None
 
@@ -969,7 +926,7 @@ def iter_active_timer_hosts(layout: FreeRtosLayout) -> Iterator[DiscoveredObject
         if head is None:
             continue
         for timer in _iter_list(head, layout, owner_converter=_owner_timer):
-            name = _cstring(
+            name = read_cstring(
                 read_field(timer, layout.structs["struct tmrTimerControl"], "name")
             )
             yield DiscoveredObject(
@@ -1002,27 +959,26 @@ def _host_from_container(
     address is ``container - offsetof(member)``.  Returns the host
     ``gdb.Value`` or ``None`` when the offset or cast fails.
     """
-    offset = member_offset(struct_name, (member,))
+    struct_layout = layout.structs.get(struct_name)
+    f = struct_layout.fields.get(member) if struct_layout is not None else None
+    if f is None:
+        return None
+    offset = member_offset(struct_name, f.path)
     if offset is None:
         return None
     host_address = container - offset
     if host_address <= 0 or gdb is None:
         return None
-    ranges = _mapped_ranges()
+    ranges = mapped_ranges()
     # Reason: a container pointing outside every loadable section cannot
     # belong to a live object; reject before casting.  The check is skipped
     # when no map is available so unit tests with synthetic addresses work.
     if ranges and not any(low <= host_address < high for low, high in ranges):
         return None
-    try:
-        # Reason: the cast type comes from the layout struct description (as
-        # _owner_task does), never a hard-coded literal, so a renamed struct
-        # stays correct.
-        struct_layout = layout.structs[struct_name]
-        typ = gdb.lookup_type(struct_layout.struct_name).pointer()
-        return gdb.Value(host_address).cast(typ).dereference()
-    except _TRAVERSAL_ERRORS:
+    struct_layout = layout.structs.get(struct_name)
+    if struct_layout is None:
         return None
+    return value_at(host_address, struct_layout)
 
 
 def tcb_field_at(address: int, layout: FreeRtosLayout, field: str):
@@ -1040,8 +996,9 @@ def tcb_field_at(address: int, layout: FreeRtosLayout, field: str):
         # Reason: the cast type name comes from the layout description, never
         # a literal, so a renamed kernel struct stays correct.
         sl = layout.structs["struct tskTaskControlBlock"]
-        typ = gdb.lookup_type(sl.struct_name).pointer()
-        task = gdb.Value(address).cast(typ).dereference()
+        task = value_at(address, sl)
+        if task is None:
+            return None
         return read_field(task, sl, field)
     except (*_TRAVERSAL_ERRORS, KeyError, AttributeError):
         return None
@@ -1082,10 +1039,25 @@ def _list_contains_item(
         return False
 
 
+@dataclass(frozen=True)
+class _WaiterSpec:
+    """One object-owned waiter list candidate for reverse discovery.
+
+    The three facts travel together (which host struct owns the list, which
+    logical list member it is, and what kind of object the host is), so
+    ``iter_waiter_hosts`` hands the tuple around as one object instead of
+    threading three parallel values through container_of and the plausibility
+    check.
+    """
+
+    struct_name: str
+    member: str
+    kind: str
+
+
 def _plausible_waiter_host(
     host,
-    struct_name: str,
-    member: str,
+    spec: _WaiterSpec,
     container: int,
     item_address: int,
     layout: FreeRtosLayout,
@@ -1100,15 +1072,18 @@ def _plausible_waiter_host(
     neighbours), which is why this channel stays heuristic and why dedup in
     :func:`discover` prefers every earlier channel.
     """
-    member_list = read_path(host, (member,))
+    host_layout = layout.structs.get(spec.struct_name)
+    if host_layout is None or spec.member not in host_layout.fields:
+        return False
+    member_list = read_field(host, host_layout, spec.member)
     if member_list is None:
         return False
     if value_address(member_list) != container:
         return False
     if not _list_contains_item(member_list, item_address, layout):
         return False
-    if struct_name == "struct EventGroupDef_t":
-        bits = read_int(read_path(host, ("uxEventBits",)))
+    if spec.struct_name == "struct EventGroupDef_t":
+        bits = read_int(read_field(host, host_layout, "value"))
         if bits is None:
             return False
         # Reason: the top byte of EventBits_t is reserved for control bits
@@ -1126,16 +1101,16 @@ def _plausible_waiter_host(
         # be rejected.
         if bits >= (1 << (layout.config.tick_bits - 8)):
             return False
-        ranges = _mapped_ranges()
+        ranges = mapped_ranges()
         return not (
             ranges
             and bits >= (1 << 24)
             and any(low <= bits < high for low, high in ranges)
         )
-    length = read_int(read_path(host, ("uxLength",)))
-    waiting = read_int(read_path(host, ("uxMessagesWaiting",)))
-    item_size = read_int(read_path(host, ("uxItemSize",)))
-    pc_head = read_int(read_path(host, ("pcHead",)))
+    length = read_int(read_field(host, host_layout, "length"))
+    waiting = read_int(read_field(host, host_layout, "count"))
+    item_size = read_int(read_field(host, host_layout, "item_size"))
+    pc_head = read_int(read_field(host, host_layout, "head"))
     if length is None or waiting is None or item_size is None:
         return False
     # Reason: a real queue holds 1..65536 items of at most 1 MiB each
@@ -1156,8 +1131,21 @@ def _plausible_waiter_host(
     # neighbour object (this separates every sibling candidate from the
     # true host).
     end_mask = (1 << layout.config.tick_bits) - 1
-    for sibling in ("xTasksWaitingToSend", "xTasksWaitingToReceive"):
-        end_value = read_int(read_path(host, (sibling, "xListEnd", "xItemValue")))
+    # The two waiting lists share the List_t/LIST_ITEM layouts: read the
+    # list's xListEnd and then the mini item's xItemValue (vListInitialise
+    # stamps portMAX_DELAY into it, tasks.c).
+    list_layout = layout.structs["struct xLIST"]
+    mini_layout = layout.structs["struct xMINI_LIST_ITEM"]
+    for sibling in ("send_waiters", "recv_waiters"):
+        if sibling not in host_layout.fields:
+            continue
+        waiting_list = read_field(host, host_layout, sibling)
+        if waiting_list is None:
+            return False
+        end_item = read_field(waiting_list, list_layout, "end")
+        if end_item is None:
+            return False
+        end_value = read_int(read_field(end_item, mini_layout, "value"))
         if end_value != end_mask:
             return False
     return True
@@ -1165,10 +1153,10 @@ def _plausible_waiter_host(
 
 # Waiter-channel candidates: the only object-owned lists a TCB's
 # xEventListItem can sit on (queue.c / event_groups.c).
-_WAITER_MEMBERS: tuple[tuple[str, str, str], ...] = (
-    ("struct QueueDefinition", "xTasksWaitingToSend", "queue"),
-    ("struct QueueDefinition", "xTasksWaitingToReceive", "queue"),
-    ("struct EventGroupDef_t", "xTasksWaitingForBits", "eventgroup"),
+_WAITER_MEMBERS: tuple[_WaiterSpec, ...] = (
+    _WaiterSpec("struct QueueDefinition", "send_waiters", "queue"),
+    _WaiterSpec("struct QueueDefinition", "recv_waiters", "queue"),
+    _WaiterSpec("struct EventGroupDef_t", "waiting", "eventgroup"),
 )
 
 
@@ -1195,20 +1183,20 @@ def iter_waiter_hosts(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
         if not container or container in scheduler_lists:
             continue
         item_address = value_address(event_item)
-        for struct_name, member, kind in _WAITER_MEMBERS:
-            host = _host_from_container(container, struct_name, member, layout)
+        for spec in _WAITER_MEMBERS:
+            host = _host_from_container(
+                container, spec.struct_name, spec.member, layout
+            )
             if host is None:
                 continue
-            if not _plausible_waiter_host(
-                host, struct_name, member, container, item_address, layout
-            ):
+            if not _plausible_waiter_host(host, spec, container, item_address, layout):
                 continue
             yield DiscoveredObject(
-                kind=kind,
+                kind=spec.kind,
                 address=value_address(host),
                 name=None,
                 source="waiter",
-                inferred_kind=kind == "queue",
+                inferred_kind=spec.kind == "queue",
             )
 
 
@@ -1349,9 +1337,9 @@ def _address_from_symbol(value, layout: FreeRtosLayout | None = None) -> int | N
     handle to its real address too.
     """
     type_name = getattr(value.type, "name", None)
-    if type_name in _KIND_BY_STATIC_TYPE:
+    if type_name in KIND_BY_STATIC_TYPE:
         return value_address(value)
-    if type_name in _KIND_BY_HANDLE_TYPE:
+    if type_name in KIND_BY_HANDLE_TYPE:
         address = safe_int(value)
         if address and layout is not None and layout.config.mpu_object_pool:
             return _opaque_mpu_symbol_address(address, layout)
@@ -1399,3 +1387,51 @@ def resolve_object(
             return None
         return DiscoveredObject(kind=kind, address=address, source="user")
     return None
+
+
+def iter_queue_items(
+    value,
+    layout: FreeRtosLayout,
+    max_payload: int = 64,
+) -> Iterator[tuple[int, int, bytes | None]]:
+    """Yield queued items ``(index, address, payload)`` in FIFO order.
+
+    The dump starts one slot past ``pcReadFrom`` -- that pointer marks the
+    most recent item *consumed*, so the next unread item is ``pcReadFrom +
+    uxItemSize`` -- and wraps at ``pcTail`` with the kernel's own ``>="``
+    comparison (queue.c prvCopyDataFromQueue).  ``pcTail`` itself is the end
+    marker and never holds an item.  Payloads are capped at *max_payload*
+    bytes; the caller renders any truncation.
+
+    Lives here (not in details.py) so the timer daemon's command-queue
+    reader can use it without a details -> timers import cycle: this module
+    has no dependency on either renderer.
+    """
+    ql = layout.structs["struct QueueDefinition"]
+    pc_head = read_int(read_field(value, ql, "head"))
+    pc_tail = read_int(read_field(value, ql, "tail"))
+    pc_read = read_int(read_field(value, ql, "read_from"))
+    length = read_int(read_field(value, ql, "length"))
+    count = read_int(read_field(value, ql, "count"))
+    item_size = read_int(read_field(value, ql, "item_size"))
+    if (
+        pc_head is None
+        or pc_tail is None
+        or pc_read is None
+        or length is None
+        or count is None
+        or item_size is None
+    ):
+        return
+    if item_size <= 0 or count <= 0 or length <= 0:
+        return
+    span = pc_tail - pc_head
+    if span <= 0:
+        return
+    for index in range(min(count, length, GDR_MAX_TRAVERSAL_COUNT)):
+        # Reason: wording the wrap as modulo keeps it exact at pcTail (the
+        # kernel wraps with >=), so the slot right before pcTail is the
+        # last usable one and pcTail is never read as item storage.
+        pos = pc_head + ((pc_read + (index + 1) * item_size - pc_head) % span)
+        payload = read_bytes(pos, min(item_size, max_payload))
+        yield index, pos, payload

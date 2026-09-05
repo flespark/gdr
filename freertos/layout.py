@@ -10,14 +10,17 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.gdb_bridge import (
+    array_bound,
+    get_arch_info,
     lookup_symbol,
     lookup_type,
     read_macro_int,
     symbol_exists,
+    type_field_names,
+    type_size,
 )
 from gdr.layout import StructField, StructLayout
 
-# TODO: replace by exception guard
 # DWARF probe failures we degrade from during config detection.  Module scope
 # keeps the tuple computable outside GDB (where ``gdb`` is ``None``); anything
 # outside this set bubbles to the ``gdr init`` command guard for a diagnostic.
@@ -52,6 +55,8 @@ class FreeRtosConfig:
     stream_buffers: bool = False
     stream_buffer_notification_index: bool = False
     queue_sets: bool = False
+    queue_support: bool = False
+    stack_word_bytes: int = 4
     task_attributes: bool = False
     preemption_disable: bool = False
     critical_nesting_in_tcb: bool = False
@@ -64,13 +69,7 @@ class FreeRtosConfig:
 
 
 def _fields(type_name: str) -> set[str]:
-    typ = lookup_type(type_name)
-    if typ is None:
-        return set()
-    try:
-        return {field.name for field in typ.strip_typedefs().fields() if field.name}
-    except _PROBE_ERRORS:
-        return set()
+    return set(type_field_names(type_name))
 
 
 def _macro_int(name: str) -> int | None:
@@ -81,21 +80,17 @@ def _array_bound(name: str) -> int | None:
     """Return the element count of an array symbol, or ``None``.
 
     GDB's ``Type.range()`` yields an inclusive upper bound, so the array
-    length is ``range()[1] + 1``.  ``None`` when the symbol is missing or its
-    type is not a decodable array.
+    length is ``range()[1] + 1``; ``None`` when the symbol is missing or its
+    type is not a decodable array (including an unbounded ``extern T
+    sym[]`` declaration, whose ``(0, -1)`` range means unknown, not a real
+    zero-length array).  The bounds decode lives in the bridge
+    (:func:`gdr.gdb_bridge.array_bound`); this thin name is kept because
+    config probing reads symbols by name.
     """
     value = lookup_symbol(name)
     if value is None:
         return None
-    try:
-        count = value.type.strip_typedefs().range()[1] + 1
-    except _PROBE_ERRORS:
-        return None
-    # Reason: an unbounded declaration (``extern T sym[]``) reports range()
-    # as (0, -1), i.e. count 0. Report that as unknown rather than as a real
-    # length: callers treat 0 as a hard fact (core loops would iterate zero
-    # times and silently report no running task).
-    return count if count > 0 else None
+    return array_bound(value)
 
 
 def _mini_list_detected() -> bool | None:
@@ -114,9 +109,7 @@ def _mini_list_detected() -> bool | None:
         for member in typ.fields():
             if member.name != "xListEnd":
                 continue
-            end_fields = {
-                f.name for f in member.type.strip_typedefs().fields() if f.name
-            }
+            end_fields = type_field_names(member.type)
             return "pvOwner" not in end_fields
     except _PROBE_ERRORS:
         pass
@@ -207,15 +200,19 @@ def detect_config() -> FreeRtosConfig:
             )
             if notification is not None and notification.code == gdb.TYPE_CODE_ARRAY:
                 cfg.notification_array = True
-                cfg.notification_count = notification.range()[1] + 1
+                count = array_bound(notification)
+                if count is not None:
+                    cfg.notification_count = count
         except _PROBE_ERRORS:
             pass
     tick = lookup_type("TickType_t")
     runtime = lookup_type("configRUN_TIME_COUNTER_TYPE")
-    if tick is not None:
-        cfg.tick_bits = tick.sizeof * 8
-    if runtime is not None:
-        cfg.runtime_counter_bits = runtime.sizeof * 8
+    tick_size = type_size(tick) if tick is not None else None
+    runtime_size = type_size(runtime) if runtime is not None else None
+    if tick_size is not None:
+        cfg.tick_bits = tick_size * 8
+    if runtime_size is not None:
+        cfg.runtime_counter_bits = runtime_size * 8
 
     cfg.mini_list = _mini_list_detected()
     cfg.tls_field = next(
@@ -241,6 +238,7 @@ def detect_config() -> FreeRtosConfig:
         None,
     )
 
+    # --- queue family (type / sets / support) -----------------------
     # Reason: trace facility (queue type classification) is proven by the
     # ucQueueType member. Some GDB/DWARF spellings expose the struct tag
     # (``struct QueueDefinition``) while others only expose the typedef
@@ -248,6 +246,30 @@ def detect_config() -> FreeRtosConfig:
     queue_fields = _fields("struct QueueDefinition") or _fields("xQUEUE")
     cfg.trace_facility = "ucQueueType" in queue_fields
     cfg.queue_sets = "pxQueueSetContainer" in queue_fields
+    # Reason: the queue family is only offered when the kernel actually
+    # compiles Queue_t (queue.c); some GDB/DWARF spellings expose the struct
+    # tagged ``QueueDefinition`` while others only the typedef ``xQUEUE``,
+    # and ``_fields`` already strip_typedefs so either spelling counts.
+    cfg.queue_support = (
+        lookup_type("struct QueueDefinition") is not None
+        or lookup_type("xQUEUE") is not None
+    )
+    # --- stack width -------------------------------------------------
+    # Reason: StackType_t is a port typedef (uint32_t on ARMv7-M, uint64_t on
+    # RV64); the watermark scan needs the stack word width, which comes from
+    # DWARF or falls back to the target pointer width.
+    stack_type = lookup_type("StackType_t")
+    if stack_type is not None:
+        stack_bytes = type_size(stack_type)
+        cfg.stack_word_bytes = stack_bytes if stack_bytes is not None else 4
+    else:
+        # Reason: get_arch_info raises outside GDB (unit tests mock it); on
+        # a live target an unreadable probe bubbles to the guard.  The
+        # fallback keeps the previously probed width (default 4).
+        stack_arch = get_arch_info()
+        if stack_arch is not None and stack_arch.ptrsize in (4, 8):
+            cfg.stack_word_bytes = stack_arch.ptrsize
+    # --- registry / timers / allocation -----------------------------
     cfg.queue_registry = lookup_symbol("xQueueRegistry") is not None
     cfg.queue_registry_size = _array_bound("xQueueRegistry") or 0
     cfg.timers = (
@@ -262,6 +284,7 @@ def detect_config() -> FreeRtosConfig:
     cfg.static_allocation = symbol_exists("xTaskCreateStatic")
     cfg.static_and_dynamic = "ucStaticallyAllocated" in fields
 
+    # --- heap & object kinds ----------------------------------------
     cfg.mpu_object_pool = symbol_exists("xKernelObjectPool")
     cfg.heap_kind = _detect_heap_kind()
     cfg.heap_protector = symbol_exists("xHeapCanary")
@@ -271,6 +294,7 @@ def detect_config() -> FreeRtosConfig:
     cfg.stream_buffers = lookup_type("struct StreamBufferDef_t") is not None
     cfg.stream_buffer_notification_index = "uxNotificationIndex" in stream_fields
 
+    # --- list integrity / task attributes ---------------------------
     cfg.list_integrity_check = "xListItemIntegrityValue1" in _fields(
         "struct xLIST_ITEM"
     )
@@ -287,7 +311,18 @@ def detect_config() -> FreeRtosConfig:
 @dataclass
 class FreeRtosLayout:
     structs: dict[str, StructLayout] = field(default_factory=dict)
+    # Internal kernel structs used only for field reads (daemon-queue
+    # message, queue-registry item, MPU pool slot).  Kept out of ``structs``
+    # so the pretty-printer map (``SupportsStructs.structs``) stays exactly
+    # the user-visible surface: these types never carry summary fields and
+    # are never part of a folded display.
+    internal_structs: dict[str, StructLayout] = field(default_factory=dict)
     lists: dict[str, str] = field(default_factory=dict)
+    # Kernel global scalars/handles referenced across the adapter, keyed by
+    # logical name (``layout.symbols["tick"]`` -> "xTickCount").  One place
+    # to review when the kernel renames a global; consumers never spell raw
+    # target symbols.
+    symbols: dict[str, str] = field(default_factory=dict)
     config: FreeRtosConfig = field(default_factory=FreeRtosConfig)
     version: tuple[int, int, int] | None = None
 
@@ -324,9 +359,77 @@ def queue_type_label(kind: str, type_code: int | None, inferred: bool) -> str:
     return f"{base}?" if inferred else base
 
 
+# Semantic kind -> layout struct key used to cast a discovered address back
+# to a native gdb.Value.  Semaphores and mutexes are QueueDefinition structs;
+# owned by layout.py because it maps semantic kind to the ABI struct.
+STRUCT_BY_KIND: dict[str, str] = {
+    "task": "struct tskTaskControlBlock",
+    "queue": "struct QueueDefinition",
+    "semaphore": "struct QueueDefinition",
+    "mutex": "struct QueueDefinition",
+    "timer": "struct tmrTimerControl",
+    "eventgroup": "struct EventGroupDef_t",
+    "streambuffer": "struct StreamBufferDef_t",
+}
+
+
+# Kinds in display order for the object summary.
+OBJECT_KIND_ORDER: tuple[str, ...] = (
+    "task",
+    "queue",
+    "semaphore",
+    "mutex",
+    "timer",
+    "eventgroup",
+    "streambuffer",
+)
+
+
+# Static-buffer typedef names (include/FreeRTOS.h) -> semantic kind.  GDB
+# keeps the declared typedef spelling in the symbol's type name, so a
+# ``static StaticSemaphore_t`` variable stays distinguishable from
+# ``StaticQueue_t`` even though both strip to the same struct.
+KIND_BY_STATIC_TYPE: dict[str, str] = {
+    "StaticTask_t": "task",
+    "StaticQueue_t": "queue",
+    "StaticSemaphore_t": "semaphore",
+    "StaticEventGroup_t": "eventgroup",
+    "StaticTimer_t": "timer",
+    "StaticStreamBuffer_t": "streambuffer",
+    "StaticMessageBuffer_t": "streambuffer",
+}
+
+
+# Handle typedef names (task.h/queue.h/semphr.h/timers.h/event_groups.h/
+# stream_buffer.h/message_buffer.h) -> semantic kind.  Queue-set handles are
+# queues themselves and count as ``queue``.
+KIND_BY_HANDLE_TYPE: dict[str, str] = {
+    "TaskHandle_t": "task",
+    "QueueHandle_t": "queue",
+    "QueueSetHandle_t": "queue",
+    "QueueSetMemberHandle_t": "queue",
+    "SemaphoreHandle_t": "semaphore",
+    "TimerHandle_t": "timer",
+    "EventGroupHandle_t": "eventgroup",
+    "StreamBufferHandle_t": "streambuffer",
+    "MessageBufferHandle_t": "streambuffer",
+}
+
+
+# ulKernelObjectType values (portable/Common/mpu_wrappers_v2.c).
+MPU_KIND_BY_TYPE: dict[int, str] = {
+    1: "queue",  # also covers semaphore/mutex/queue-set/set-member
+    2: "task",
+    3: "streambuffer",
+    4: "eventgroup",
+    5: "timer",
+}
+
+
 def build_layout(
     cfg: FreeRtosConfig, version: tuple[int, int, int] | None = None
 ) -> FreeRtosLayout:
+    # --- TCB fields (config-gated) ---------------------------------
     tcb_fields: dict[str, StructField] = {
         "top_of_stack": StructField("top_of_stack", ("pxTopOfStack",)),
         "state_list_item": StructField("state_list_item", ("xStateListItem",)),
@@ -385,10 +488,41 @@ def build_layout(
         tcb_fields["task_attributes"] = StructField(
             "task_attributes", ("uxTaskAttributes",)
         )
+    # --- Queue fields (config-gated) -------------------------------
     queue_fields: dict[str, StructField] = {
         "length": StructField("length", ("uxLength",), summary=True),
         "count": StructField("count", ("uxMessagesWaiting",), summary=True),
+        # Detail-only fields for the queue family.  The storage-window and
+        # lock fields feed ``frt queue/semaphore/mutex <name>`` and the
+        # consistency checks; the ``u`` union arms are read through DWARF so
+        # a semaphore's QueuePointers_t ``u`` is never misread as
+        # SemaphoreData_t (queue.c) -- the adapter still gates the mutex
+        # arms on the discriminated kind.
+        "item_size": StructField("item_size", ("uxItemSize",)),
+        "head": StructField("head", ("pcHead",), kind="ptr"),
+        "write_to": StructField("write_to", ("pcWriteTo",), kind="ptr"),
+        "tail": StructField("tail", ("u", "xQueue", "pcTail"), kind="ptr"),
+        "read_from": StructField(
+            "read_from", ("u", "xQueue", "pcReadFrom"), kind="ptr"
+        ),
+        "rx_lock": StructField("rx_lock", ("cRxLock",)),
+        "tx_lock": StructField("tx_lock", ("cTxLock",)),
+        "send_waiters": StructField("send_waiters", ("xTasksWaitingToSend",)),
+        "recv_waiters": StructField("recv_waiters", ("xTasksWaitingToReceive",)),
+        "mutex_holder": StructField(
+            "mutex_holder", ("u", "xSemaphore", "xMutexHolder"), kind="ptr"
+        ),
+        "recursive_count": StructField(
+            "recursive_count", ("u", "xSemaphore", "uxRecursiveCallCount")
+        ),
     }
+    if cfg.queue_sets:
+        # Reason: pxQueueSetContainer only exists under
+        # configUSE_QUEUE_SETS (queue.h); describing it unconditionally
+        # would fabricate a Set column on builds without queue sets.
+        queue_fields["set_container"] = StructField(
+            "set_container", ("pxQueueSetContainer",), kind="ptr"
+        )
     if cfg.trace_facility:
         # Reason: ucQueueType only exists under configUSE_TRACE_FACILITY == 1
         # (queue.c). configUSE_TRACE_FACILITY defaults to 0, so describing the
@@ -400,6 +534,7 @@ def build_layout(
             summary=True,
             enum_map=_QUEUE_TYPE_NAMES,
         )
+    # --- struct map (pretty-printer surface) -----------------------
     structs = {
         "struct tskTaskControlBlock": StructLayout(
             "struct tskTaskControlBlock", fields=tcb_fields, display_name="Task"
@@ -458,6 +593,21 @@ def build_layout(
                 ),
                 "status": StructField("status", ("ucStatus",)),
                 "list_item": StructField("list_item", ("xTimerListItem",)),
+                # The list-item membership fields are declared as nested
+                # paths here (composing through the ListItem layout): the
+                # container member name follows the probed spelling
+                # (pvContainer under the default backward-compat build,
+                # pxContainer otherwise), so the probe lives only here.
+                "expiry": StructField("expiry", ("xTimerListItem", "xItemValue")),
+                "owner": StructField(
+                    "owner",
+                    ("xTimerListItem", "pvOwner"),
+                    kind="ptr",
+                ),
+                "container": StructField(
+                    "container",
+                    ("xTimerListItem", cfg.list_item_container_field or "pxContainer"),
+                ),
             },
             display_name="Timer",
         ),
@@ -504,6 +654,92 @@ def build_layout(
         "suspended": "xSuspendedTaskList",
         "termination": "xTasksWaitingTermination",
     }
+    # Kernel global scalars/handles (the scheduler lists live in ``lists``).
+    symbols = {
+        "tick": "xTickCount",
+        "scheduler_running": "xSchedulerRunning",
+        "task_count": "uxCurrentNumberOfTasks",
+        "scheduler_suspended": "uxSchedulerSuspended",
+        "next_unblock_time": "xNextTaskUnblockTime",
+        "current_tcb": "pxCurrentTCB",
+        "current_tcbs": "pxCurrentTCBs",
+        "idle_handle": "xIdleTaskHandle",
+        "idle_handles": "xIdleTaskHandles",
+        "total_runtime": "ulTotalRunTime",
+        "timer_list_current": "pxCurrentTimerList",
+        "timer_list_overflow": "pxOverflowTimerList",
+        "timer_list_1": "xActiveTimerList1",
+        "timer_list_2": "xActiveTimerList2",
+        "timer_queue": "xTimerQueue",
+        "timer_task": "xTimerTaskHandle",
+        "queue_registry": "xQueueRegistry",
+        "mpu_pool": "xKernelObjectPool",
+    }
+    # Internal kernel structs consumed for field reads only (never folded by
+    # the pretty-printer).  The daemon-message union arms are read through
+    # DWARF, so a build without INCLUDE_xTimerPendFunctionCall degrades a
+    # callback-arm read to None (same as the current DWARF probe).
+    internal_structs: dict[str, StructLayout] = {
+        "struct tmrTimerQueueMessage": StructLayout(
+            "struct tmrTimerQueueMessage",
+            fields={
+                "message_id": StructField("message_id", ("xMessageID",)),
+                "timer": StructField(
+                    "timer", ("u", "xTimerParameters", "pxTimer"), kind="ptr"
+                ),
+                "message_value": StructField(
+                    "message_value", ("u", "xTimerParameters", "xMessageValue")
+                ),
+                "callback_fn": StructField(
+                    "callback_fn",
+                    ("u", "xCallbackParameters", "pxCallbackFunction"),
+                    kind="ptr",
+                ),
+                "callback_p1": StructField(
+                    "callback_p1",
+                    ("u", "xCallbackParameters", "pvParameter1"),
+                    kind="ptr",
+                ),
+                "callback_p2": StructField(
+                    "callback_p2", ("u", "xCallbackParameters", "ulParameter2")
+                ),
+            },
+        ),
+    }
+    # heap_2/4/5 free-list node (typedef BlockLink_t struct A_BLOCK_LINK);
+    # part of the heap manager's ABI, described here (not in heap.py) so the
+    # heap walks resolve offsets through DWARF like every other kernel struct.
+    internal_structs["struct A_BLOCK_LINK"] = StructLayout(
+        "struct A_BLOCK_LINK",
+        fields={
+            "next_free": StructField("next_free", ("pxNextFreeBlock",), kind="ptr"),
+            "block_size": StructField("block_size", ("xBlockSize",)),
+        },
+    )
+    if cfg.queue_registry:
+        # queue.c: typedef struct QUEUE_REGISTRY_ITEM { const char *
+        # pcQueueName; QueueHandle_t xHandle; } xQueueRegistryItem;
+        internal_structs["struct QUEUE_REGISTRY_ITEM"] = StructLayout(
+            "struct QUEUE_REGISTRY_ITEM",
+            fields={
+                "name": StructField("name", ("pcQueueName",), kind="string"),
+                "handle": StructField("handle", ("xHandle",), kind="ptr"),
+            },
+        )
+    if cfg.mpu_object_pool:
+        # mpu_wrappers_v2.c: typedef struct KernelObject { OpaqueObjectHandle_t
+        # xInternalObjectHandle; uint32_t ulKernelObjectType; void *
+        # pvKernelObjectData; } KernelObject_t;
+        internal_structs["struct KernelObject"] = StructLayout(
+            "struct KernelObject",
+            fields={
+                "internal_handle": StructField(
+                    "internal_handle", ("xInternalObjectHandle",)
+                ),
+                "type": StructField("type", ("ulKernelObjectType",)),
+                "data": StructField("data", ("pvKernelObjectData",), kind="ptr"),
+            },
+        )
     if cfg.trace_facility:
         # Reason: uxTimerNumber only exists under configUSE_TRACE_FACILITY
         # (timers.c) and prvInitialiseNewTimer never writes it, so it is not
@@ -539,4 +775,11 @@ def build_layout(
         structs["struct StreamBufferDef_t"].fields["notification_index"] = StructField(
             "notification_index", ("uxNotificationIndex",)
         )
-    return FreeRtosLayout(structs=structs, lists=lists, config=cfg, version=version)
+    return FreeRtosLayout(
+        structs=structs,
+        internal_structs=internal_structs,
+        lists=lists,
+        symbols=symbols,
+        config=cfg,
+        version=version,
+    )

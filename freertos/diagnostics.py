@@ -35,22 +35,25 @@ fabricated comparison number is ever derived from a partial walk.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
-from freertos.events import _iter_waiters
+from freertos.events import iter_waiters
 from freertos.heap import heap_snapshot
-from freertos.navigation import _mapped_ranges, iter_tasks
+from freertos.navigation import iter_tasks, mapped_ranges
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.gdb_bridge import (
-    get_arch_info,
+    TARGET_ACCESS_ERRORS,
+    arch_or_default,
     lookup_symbol,
     lookup_type,
     read_bytes,
     read_int,
+    read_uint_at,
     safe_dereference,
+    type_size,
     value_address,
 )
-from gdr.layout import member_offset, read_field, read_path
+from gdr.layout import member_offset, read_field
 
 if TYPE_CHECKING:
     from freertos.layout import FreeRtosLayout
@@ -59,7 +62,7 @@ if TYPE_CHECKING:
 def queue_checks(
     value,
     kind: str,
-    layout: FreeRtosLayout,  # noqa: ARG001 (uniform signature)
+    layout: FreeRtosLayout,
 ) -> list[tuple[str, str]]:
     """Run the consistency checks for one queue-family object.
 
@@ -75,16 +78,18 @@ def queue_checks(
         or ``skipped: <reason>``.  An inapplicable check is stated
         explicitly so a reader never mistakes "not checked" for "verified".
     """
-    pc_head = read_int(read_path(value, ("pcHead",)))
-    item_size = read_int(read_path(value, ("uxItemSize",)))
-    length = read_int(read_path(value, ("uxLength",)))
-    count = read_int(read_path(value, ("uxMessagesWaiting",)))
+    ql = layout.structs["struct QueueDefinition"]
+    pc_head = read_int(read_field(value, ql, "head"))
+    item_size = read_int(read_field(value, ql, "item_size"))
+    length = read_int(read_field(value, ql, "length"))
+    count = read_int(read_field(value, ql, "count"))
     # Reason: the pointer/span invariants only exist for real data queues;
     # a semaphore's pcReadFrom equals pcTail and a mutex's pcWriteTo is the
     # leftover reset value behind a NULL pcHead (queue.c prvInitialiseMutex).
     data_queue = pc_head not in (None, 0) and item_size not in (None, 0)
     results: list[tuple[str, str]] = []
 
+    # --- Count ------------------------------------------------------------
     if count is not None and length is not None:
         results.append(
             (
@@ -95,15 +100,16 @@ def queue_checks(
     else:
         results.append(("Count", "skipped: unreadable"))
 
+    # --- Storage / WritePtr / ReadPtr --------------------------------
     if not data_queue:
         results.extend(
             (name, "skipped: not a data queue")
             for name in ("Storage", "WritePtr", "ReadPtr")
         )
     else:
-        pc_tail = read_int(read_path(value, ("u", "xQueue", "pcTail")))
-        pc_write = read_int(read_path(value, ("pcWriteTo",)))
-        pc_read = read_int(read_path(value, ("u", "xQueue", "pcReadFrom")))
+        pc_tail = read_int(read_field(value, ql, "tail"))
+        pc_write = read_int(read_field(value, ql, "write_to"))
+        pc_read = read_int(read_field(value, ql, "read_from"))
         if (
             pc_head is None
             or pc_tail is None
@@ -144,8 +150,9 @@ def queue_checks(
                 )
             )
 
+    # --- MutexAccounting ---------------------------------------------
     if kind == "mutex":
-        holder = read_int(read_path(value, ("u", "xSemaphore", "xMutexHolder")))
+        holder = read_int(read_field(value, ql, "mutex_holder"))
         if (
             holder is not None
             and count is not None
@@ -170,6 +177,7 @@ def queue_checks(
     else:
         results.append(("MutexAccounting", "skipped: not a mutex"))
 
+    # --- SemaphoreSelfHead -------------------------------------------
     if kind == "semaphore":
         obj_address = value_address(value)
         if pc_head is not None and item_size is not None and obj_address:
@@ -190,8 +198,9 @@ def queue_checks(
     # region of xQueueGenericSend/Receive and prvUnlockQueue runs before the
     # suspend count drops), so a non-queueUNLOCKED value with the scheduler
     # running is a stale lock left behind by an interrupted resume.
-    rx_lock = read_int(read_path(value, ("cRxLock",)))
-    tx_lock = read_int(read_path(value, ("cTxLock",)))
+    # --- QueueLock ---------------------------------------------------
+    rx_lock = read_int(read_field(value, ql, "rx_lock"))
+    tx_lock = read_int(read_field(value, ql, "tx_lock"))
     if rx_lock is None or tx_lock is None:
         results.append(("QueueLock", "skipped: unreadable"))
     else:
@@ -199,13 +208,12 @@ def queue_checks(
         # unsigned-typed probe; normalize so both spellings compare equal.
         rx = rx_lock if rx_lock < 128 else rx_lock - 256
         tx = tx_lock if tx_lock < 128 else tx_lock - 256
-        try:
-            suspended = read_int(lookup_symbol("uxSchedulerSuspended"))
-        except RuntimeError:
-            # Reason: outside GDB (unit tests) the suspend state is unknown;
-            # the verdict then follows the dossier contract (stale locks with
-            # the scheduler not proven suspended are failures).
-            suspended = None
+        # Reason: outside GDB (unit tests) the suspend state is unknown and
+        # lookup_symbol raises; the tests mock it, and a live target read
+        # failure bubbles to the command guard while the scheduler's
+        # suspend counter stays a documented unknown -> stale locks are
+        # then reported as failures (the dossier contract).
+        suspended = read_int(lookup_symbol(layout.symbols["scheduler_suspended"]))
         if (rx == -1 and tx == -1) or suspended not in (None, 0):
             results.append(("QueueLock", "ok"))
         else:
@@ -248,24 +256,6 @@ class ListWalk:
     incomplete_reason: str | None = None
 
 
-def _arch() -> tuple[int, Literal["little", "big"]]:
-    """Return (pointer width in bytes, target byte order) for raw reads."""
-    info = get_arch_info()
-    if info is None or info.ptrsize not in (4, 8):
-        return (4, "little")
-    endian: Literal["little", "big"] = "little" if info.endian == "little" else "big"
-    return (info.ptrsize, endian)
-
-
-def _read_field_at(address: int, offset: int, size: int) -> int | None:
-    """Read one raw integer field at ``address + offset``, or None."""
-    _ptrsize, endian = _arch()
-    raw = read_bytes(address + offset, size)
-    if raw is None:
-        return None
-    return int.from_bytes(raw, byteorder=endian)
-
-
 @dataclass(frozen=True)
 class _ListOffsets:
     """Raw member offsets of List_t / ListItem_t resolved from DWARF.
@@ -288,19 +278,17 @@ class _ListOffsets:
 
 def _list_offsets(layout: FreeRtosLayout) -> _ListOffsets | None:
     """Resolve List_t / ListItem_t raw member offsets, or None."""
-    try:
-        count = member_offset("struct xLIST", ("uxNumberOfItems",))
-        index = member_offset("struct xLIST", ("pxIndex",))
-        end = member_offset("struct xLIST", ("xListEnd",))
-        end_value = member_offset("struct xMINI_LIST_ITEM", ("xItemValue",))
-        end_next = member_offset("struct xMINI_LIST_ITEM", ("pxNext",))
-        item_value = member_offset("struct xLIST_ITEM", ("xItemValue",))
-        item_next = member_offset("struct xLIST_ITEM", ("pxNext",))
-        item_owner = member_offset("struct xLIST_ITEM", ("pvOwner",))
-    except RuntimeError:
-        # Reason: member_offset refuses to run outside GDB; unit tests drive
-        # the walk by monkeypatching the module-level helper instead.
-        return None
+    # Reason: member_offset refuses to run outside GDB; unit tests drive
+    # the walk by monkeypatching the module-level helper, so one unreadable
+    # offset is handled by the None checks below, not a RuntimeError catch.
+    count = member_offset("struct xLIST", ("uxNumberOfItems",))
+    index = member_offset("struct xLIST", ("pxIndex",))
+    end = member_offset("struct xLIST", ("xListEnd",))
+    end_value = member_offset("struct xMINI_LIST_ITEM", ("xItemValue",))
+    end_next = member_offset("struct xMINI_LIST_ITEM", ("pxNext",))
+    item_value = member_offset("struct xLIST_ITEM", ("xItemValue",))
+    item_next = member_offset("struct xLIST_ITEM", ("pxNext",))
+    item_owner = member_offset("struct xLIST_ITEM", ("pvOwner",))
     if count is None or index is None or end is None:
         return None
     if end_value is None or end_next is None:
@@ -348,10 +336,10 @@ def walk_list_raw(
     if offsets is None:
         walk.incomplete_reason = "list member offsets unavailable"
         return walk
-    ptrsize, _endian = _arch()
+    ptrsize, _endian = arch_or_default()
     end_addr = head_address + offsets.end
-    ranges = _mapped_ranges()
-    node = _read_field_at(end_addr, offsets.end_next, ptrsize)
+    ranges = mapped_ranges()
+    node = read_uint_at(end_addr + offsets.end_next, ptrsize)
     if node is None:
         walk.corrupt = True
         walk.corrupt_reason = f"unreadable list head at {head_address:#x}"
@@ -385,8 +373,8 @@ def walk_list_raw(
             return walk
         seen.add(node)
         walk.items.append(node)
-        walk.owners.append(_read_field_at(node, offsets.item_owner, ptrsize))
-        next_node = _read_field_at(node, offsets.item_next, ptrsize)
+        walk.owners.append(read_uint_at(node + offsets.item_owner, ptrsize))
+        next_node = read_uint_at(node + offsets.item_next, ptrsize)
         if next_node is None:
             walk.corrupt = True
             walk.corrupt_reason = f"unreadable list item at {node:#x}"
@@ -437,7 +425,7 @@ def list_checks(
         return [
             (name, "skipped: list offsets unavailable") for name in _LIST_CHECK_NAMES
         ]
-    ptrsize, _endian = _arch()
+    ptrsize, _endian = arch_or_default()
     # Reason: xItemValue is a TickType_t, whose width follows the tick
     # configuration (configTICK_TYPE_WIDTH_IN_BITS): 2 bytes on a 16-bit
     # build.  Reading it at pointer width pulls the two padding bytes after
@@ -445,9 +433,9 @@ def list_checks(
     # whenever those (kernel-ignored) bytes are non-zero.
     tick_bytes = layout.config.tick_bits // 8
     end_addr = head_address + offsets.end
-    count = _read_field_at(head_address, offsets.count, ptrsize)
-    index = _read_field_at(head_address, offsets.index, ptrsize)
-    end_value = _read_field_at(end_addr, offsets.end_value, tick_bytes)
+    count = read_uint_at(head_address + offsets.count, ptrsize)
+    index = read_uint_at(head_address + offsets.index, ptrsize)
+    end_value = read_uint_at(end_addr + offsets.end_value, tick_bytes)
     walk = walk_list_raw(head_address, layout, max_count)
     results: list[tuple[str, str]] = []
     tick_mask = (1 << layout.config.tick_bits) - 1
@@ -519,8 +507,8 @@ def list_checks(
     else:
         expected = _integrity_magic(layout.config.tick_bits)
         tick_bytes = layout.config.tick_bits // 8
-        v1 = _read_field_at(head_address, offsets.list_integrity_1, tick_bytes)
-        v2 = _read_field_at(head_address, offsets.list_integrity_2, tick_bytes)
+        v1 = read_uint_at(head_address + offsets.list_integrity_1, tick_bytes)
+        v2 = read_uint_at(head_address + offsets.list_integrity_2, tick_bytes)
         if v1 is None or v2 is None:
             results.append(("ListIntegrityBytes", "skipped: unreadable"))
         elif v1 != expected or v2 != expected:
@@ -552,8 +540,11 @@ def _build_prefills_stacks(layout: FreeRtosLayout) -> bool:
     """
     sl = layout.structs["struct tskTaskControlBlock"]
     try:
-        tasks = iter_tasks(layout)
-    except Exception:
+        tasks = list(iter_tasks(layout))
+    except TARGET_ACCESS_ERRORS:
+        # Reason: an unreadable scheduler list must not prove the prefill
+        # off (that would turn a fill-less population into a corruption);
+        # unknown degrades to the conservative false.
         return False
     for value, _state, _core in tasks:
         base = read_int(read_field(value, sl, "stack_base"))
@@ -698,7 +689,7 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
     the active delayed list, or ``portMAX_DELAY`` when it is empty (tasks.c
     xTaskIncrementTick); a disagreement means the counter was not refreshed.
     """
-    expected = read_int(lookup_symbol("xNextTaskUnblockTime"))
+    expected = read_int(lookup_symbol(layout.symbols["next_unblock_time"]))
     delayed = safe_dereference(lookup_symbol(layout.lists["delayed_current"]))
     if delayed is None:
         return ("NextUnblockTime", "skipped: active delayed list unavailable")
@@ -720,7 +711,7 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
     if walk.items:
         values = []
         for item in walk.items:
-            value = _read_field_at(item, offsets.item_value, tick_bytes)
+            value = read_uint_at(item + offsets.item_value, tick_bytes)
             if value is None:
                 return ("NextUnblockTime", "skipped: unreadable")
             values.append(value)
@@ -746,7 +737,7 @@ def _heap_cross_check(layout: FreeRtosLayout) -> tuple[str, str]:
     """
     try:
         verdict = heap_snapshot(layout).cross_check
-    except Exception:
+    except TARGET_ACCESS_ERRORS:
         return ("HeapCrossCheck", "skipped: unreadable")
     if verdict == "ok":
         return ("HeapCrossCheck", "ok")
@@ -766,10 +757,10 @@ def system_checks(layout: FreeRtosLayout) -> list[tuple[str, str]]:
     may be transient); ``NextUnblockTime`` and ``HeapCrossCheck`` reuse the
     delayed-list walk and the heap cross-validation.
     """
-    total = read_int(lookup_symbol("uxCurrentNumberOfTasks"))
+    total = read_int(lookup_symbol(layout.symbols["task_count"]))
     try:
         discovered = len(list(iter_tasks(layout)))
-    except Exception:
+    except TARGET_ACCESS_ERRORS:
         discovered = None
     if total is None:
         results: list[tuple[str, str]] = [("TaskCount", "skipped: unreadable")]
@@ -785,7 +776,7 @@ def system_checks(layout: FreeRtosLayout) -> list[tuple[str, str]]:
             )
         ]
 
-    suspended = read_int(lookup_symbol("uxSchedulerSuspended"))
+    suspended = read_int(lookup_symbol(layout.symbols["scheduler_suspended"]))
     if suspended is None:
         results.append(("SchedulerSuspended", "skipped: unreadable"))
     elif suspended == 0:
@@ -817,11 +808,12 @@ def event_checks(value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
     the mid-unblock transient the detail renders as ``(satisfied —
     mid-unblock)`` -- surfaced here rather than silently absorbed.
     """
-    bits = read_int(read_path(value, ("uxEventBits",)))
+    eg = layout.structs["struct EventGroupDef_t"]
+    bits = read_int(read_field(value, eg, "value"))
     if bits is None:
         return [("EventWaiterSatisfied", "skipped: unreadable")]
     satisfied = [
-        waiter for waiter in _iter_waiters(value, layout, bits) if waiter.satisfied
+        waiter for waiter in iter_waiters(value, layout, bits) if waiter.satisfied
     ]
     if not satisfied:
         return [("EventWaiterSatisfied", "ok")]
@@ -853,11 +845,11 @@ def timer_checks(
         list membership is reported -- the daemon updates both together, so
         it normally means a queued start/stop command -- rather than hidden.
     """
-    status = read_int(read_path(value, ("ucStatus",)))
-    period = read_int(read_path(value, ("xTimerPeriodInTicks",)))
-    callback = read_int(read_path(value, ("pxCallbackFunction",)))
-    container_field = layout.config.list_item_container_field or "pxContainer"
-    container = read_int(read_path(value, ("xTimerListItem", container_field)))
+    tl = layout.structs["struct tmrTimerControl"]
+    status = read_int(read_field(value, tl, "status"))
+    period = read_int(read_field(value, tl, "period"))
+    callback = read_int(read_field(value, tl, "callback"))
+    container = read_int(read_field(value, tl, "container"))
     results: list[tuple[str, str]] = []
 
     if status is not None and container is not None:
@@ -890,15 +882,17 @@ def timer_checks(
     else:
         results.append(("Callback", "skipped: unreadable"))
 
-    queue = safe_dereference(lookup_symbol("xTimerQueue"))
-    msg_type = lookup_type("struct tmrTimerQueueMessage")
+    queue = safe_dereference(lookup_symbol(layout.symbols["timer_queue"]))
+    msg_layout = layout.internal_structs.get("struct tmrTimerQueueMessage")
+    msg_type = lookup_type(msg_layout.struct_name) if msg_layout is not None else None
     if queue is None or msg_type is None:
         results.append(("TimerQueueItemSize", "skipped: unreadable"))
     else:
-        item_size = read_int(read_path(queue, ("uxItemSize",)))
-        try:
-            expected = int(msg_type.sizeof)
-        except (TypeError, ValueError, AttributeError):
+        item_size = read_int(
+            read_field(queue, layout.structs["struct QueueDefinition"], "item_size")
+        )
+        expected = type_size(msg_type)
+        if expected is None:
             results.append(("TimerQueueItemSize", "skipped: unreadable"))
             return results
         if item_size is None:

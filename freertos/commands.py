@@ -11,12 +11,15 @@ from freertos.adapter import FreeRtosAdapter, iter_task_names
 from freertos.navigation import discover
 from gdr.adapter_api import active
 from gdr.commands import (
+    CommandTreeSpec,
+    complete_command_tree,
+    render_heap,
     render_object_detail,
     render_objects,
     render_system,
     render_tasks,
 )
-from gdr.gdb_bridge import gdb_command_guard, info, print_detail, print_table, warn
+from gdr.gdb_bridge import gdb_command_guard, info, warn
 
 _command_registered = False
 _alias_registered = False
@@ -108,47 +111,6 @@ _HELP = (
 
 
 @gdb_command_guard
-def render_heap() -> None:
-    """Render the system-heap snapshot, block walk and cross-check."""
-    adapter = active()
-    if not isinstance(adapter, FreeRtosAdapter):
-        warn("run `gdr init freertos <version>` first")
-        return
-    pairs, table = adapter.heap_report()
-    print_detail(pairs)
-    algorithm = dict(pairs).get("Algorithm", "")
-    if algorithm == "heap_3":
-        info("heap_3 wraps the C library malloc; the libc heap is not inspectable")
-    elif algorithm == "none":
-        info("no FreeRTOS heap allocator is linked (no pvPortMalloc)")
-    if table is not None:
-        for message in table.messages:
-            info(message)
-        print_table(table.rows, table.headers, elastic=table.elastic)
-
-
-@gdb_command_guard
-def render_object_summary() -> None:
-    """Render the per-kind object summary with provenance (``frt objects``).
-
-    The core's neutral ``render_objects`` only has Kind/Count and cannot
-    express the channel breakdown, so the summary is rendered here with the
-    adapter-owned provenance table and its limitation messages.
-    """
-    adapter = active()
-    if adapter is None:
-        warn("run `gdr init <rtos> <version>` first")
-        return
-    if not isinstance(adapter, FreeRtosAdapter):
-        warn("frt objects requires the FreeRTOS adapter")
-        return
-    table = adapter.object_summary_table()
-    for message in table.messages:
-        info(message)
-    print_table(table.rows, table.headers, elastic=table.elastic)
-
-
-@gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one FreeRTOS command without depending on GDB."""
     args = argument.split()
@@ -172,7 +134,7 @@ def _invoke_command(argument: str) -> None:
     elif command == "system":
         render_system()
     elif command == "objects":
-        render_object_summary()
+        render_objects("")
     elif command == "heap":
         render_heap()
     elif command in _OBJECT_COMMANDS:
@@ -184,17 +146,6 @@ def _invoke_command(argument: str) -> None:
 def _command_vocabulary() -> list[str]:
     """Return every word the first argument may complete against."""
     return list(_COMMAND_DESCRIPTIONS) + list(_SINGULAR_COMMANDS)
-
-
-def _prefixes(word: str | None, candidates: list[str]) -> list[str]:
-    """Return candidates that start with ``word``, preserving order.
-
-    ``None`` or an empty word (GDB probes completion with ``word=None`` first)
-    yields every candidate.
-    """
-    if not word:
-        return list(candidates)
-    return [candidate for candidate in candidates if candidate.startswith(word)]
 
 
 def _object_names(kind: str) -> list[str]:
@@ -224,15 +175,23 @@ def _complete(text: str, word: str | None) -> list[str]:
     """Return tab-completion candidates for a partial ``frt`` command line.
 
     The first argument completes against the command vocabulary; the second
-    argument of a singular detail command completes against live task names.
+    argument of a singular detail command completes against live object
+    names.  Mechanics are shared with the RT-Thread tree through
+    :func:`gdr.commands.complete_command_tree`; FreeRTOS object names may
+    contain spaces (the timer daemon task is literally ``"Tmr Svc"``), so
+    the name is preserved verbatim.
     """
-    parts = text.split()
-    if not parts:
-        return _prefixes(word, _command_vocabulary())
-    command = _COMMAND_ALIASES.get(parts[0].lower(), parts[0].lower())
-    if command in _SINGULAR_COMMANDS and " " in text:
-        return _prefixes(word, _object_names(_SINGULAR_COMMANDS[command]))
-    return _prefixes(word, _command_vocabulary())
+    return complete_command_tree(
+        CommandTreeSpec(
+            _command_vocabulary(),
+            _COMMAND_ALIASES,
+            _SINGULAR_COMMANDS,
+            _object_names,
+            preserve_spaces=True,
+        ),
+        text,
+        word,
+    )
 
 
 if gdb is not None:

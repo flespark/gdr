@@ -24,35 +24,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from freertos.layout import FreeRtosLayout
-from freertos.navigation import _mapped_ranges, source_label, task_name_at
+from freertos.navigation import mapped_ranges, source_label, task_name_at
 from gdr.adapter_api import ObjectTable
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.formatting import format_address
 from gdr.gdb_bridge import (
+    TARGET_ACCESS_ERRORS,
     read_int,
     safe_dereference,
     safe_int,
     value_address,
     warn,
 )
-from gdr.layout import read_field, read_path
+from gdr.layout import read_field
 
 try:
     import gdb
 except ImportError:
     gdb = None  # type: ignore[assignment]
-
-if gdb is not None:
-    _EVENT_ERRORS: tuple[type[BaseException], ...] = (
-        gdb.error,
-        gdb.MemoryError,
-        IndexError,
-        TypeError,
-        ValueError,
-        AttributeError,
-    )
-else:
-    _EVENT_ERRORS = (IndexError, TypeError, ValueError, AttributeError)
 
 
 def event_bit_masks(tick_bits: int) -> tuple[int, int, int, int]:
@@ -191,7 +180,7 @@ class FreeRtosEventGroupObject:
             self.waiters = []
 
 
-def _iter_waiters(
+def iter_waiters(
     value,
     layout: FreeRtosLayout,
     current_bits: int | None,
@@ -203,7 +192,7 @@ def _iter_waiters(
     item's* ``xItemValue`` (event_groups.c), so decoding must read the item,
     never recompute from the TCB.
     """
-    head = read_path(value, ("xTasksWaitingForBits",))
+    head = read_field(value, layout.structs["struct EventGroupDef_t"], "waiting")
     if head is None:
         return
     masks = event_bit_masks(layout.config.tick_bits)
@@ -215,7 +204,7 @@ def _iter_waiters(
         node = read_field(end, mini_layout, "next")
         item_layout = layout.structs["struct xLIST_ITEM"]
         seen: set[int] = set()
-        ranges = _mapped_ranges()
+        ranges = mapped_ranges()
         for _ in range(GDR_MAX_TRAVERSAL_COUNT):
             node_addr = safe_int(node)
             if not node_addr or node_addr == end_addr:
@@ -248,7 +237,7 @@ def _iter_waiters(
                 waiter.task = name or "-"
                 yield waiter
             node = read_field(item, item_layout, "next")
-    except _EVENT_ERRORS:
+    except TARGET_ACCESS_ERRORS:
         return
 
 
@@ -266,11 +255,15 @@ def value_to_event_group_object(
     )
     if value is None:
         return obj
-    bits = read_int(read_path(value, ("uxEventBits",)))
+    bits = read_int(
+        read_field(value, layout.structs["struct EventGroupDef_t"], "value")
+    )
     obj.bits = bits
-    obj.waiters = list(_iter_waiters(value, layout, bits))
+    obj.waiters = list(iter_waiters(value, layout, bits))
     if layout.config.static_and_dynamic:
-        static = read_int(read_path(value, ("ucStaticallyAllocated",)))
+        static = read_int(
+            read_field(value, layout.structs["struct EventGroupDef_t"], "static_alloc")
+        )
         obj.statically_allocated = bool(static) if static is not None else None
     return obj
 

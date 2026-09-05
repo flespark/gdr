@@ -115,7 +115,7 @@ def test_event_group_static_flag_only_when_gated(monkeypatch):
         kind="eventgroup", address=0x2000, name="gdr_eg", source="symbol"
     )
     off = build_layout(FreeRtosConfig(), (10, 3, 1))
-    monkeypatch.setattr(events, "read_path", lambda _value, _path: None)
+    monkeypatch.setattr(events, "read_field", lambda _value, _sl, _field: None)
     assert (
         events.value_to_event_group_object(object(), found, off).statically_allocated
         is None
@@ -123,12 +123,10 @@ def test_event_group_static_flag_only_when_gated(monkeypatch):
 
     on = build_layout(FreeRtosConfig(static_and_dynamic=True), (10, 3, 1))
 
-    def gated_read(_value, path):
-        if path == ("ucStaticallyAllocated",):
-            return 1
-        return None
+    def gated_read(_value, _sl, field):
+        return 1 if field == "static_alloc" else None
 
-    monkeypatch.setattr(events, "read_path", gated_read)
+    monkeypatch.setattr(events, "read_field", gated_read)
     gated = events.value_to_event_group_object(object(), found, on)
     assert gated.statically_allocated is True
 
@@ -146,7 +144,7 @@ def test_event_group_table_contract():
 def test_event_group_table_absence_is_a_note_not_empty_row(monkeypatch):
     """A build without event groups says so instead of printing an empty table."""
     layout = build_layout(FreeRtosConfig(), (10, 3, 1))
-    monkeypatch.setattr(events, "read_path", lambda _value, _path: None)
+    monkeypatch.setattr(events, "read_field", lambda _value, _sl, _field: None)
     table = events.event_group_table([], layout)
     assert table.rows == []
     assert any("no event groups" in message for message in table.messages)
@@ -166,3 +164,58 @@ def test_decoder_is_width_agnostic(tick_bits):
     assert waiter.satisfied is False
     assert waiter.missing == 0x3
     assert details_module
+
+
+def test_iter_waiters_walks_the_item_chain(monkeypatch):
+    """iter_waiters decodes each list item's request bits and owner name."""
+    layout = build_layout(FreeRtosConfig(tick_bits=32), (10, 3, 1))
+    head, end, n1, n2 = object(), object(), object(), object()
+    # Identity-based chain: waiting.head -> xListEnd -> n1 -> n2 -> end.
+    chain = {head: n1, end: n1, n1: n2, n2: end}
+    item_value = {n1: 0x80000003, n2: 0x80000005}  # wants 0x3 / 0x5, IN_USE
+    owner_of = {n1: 0x2000, n2: 0x2000}
+    step = {"n": 0}
+
+    def fake_read_field(value, _sl, field):
+        # Field-by-field: waiting/end/next walk the chain, value/owner read
+        # the item's own request/owner (never the chain node).
+        if field == "waiting":
+            return head
+        if field == "end":
+            return end
+        if field == "next":
+            return chain[value]
+        if field == "value":
+            return item_value.get(value)
+        if field == "owner":
+            return owner_of.get(value)
+        return None
+
+    def fake_safe_dereference(node):
+        return node  # nodes are already struct values in this fake
+
+    addrs = {id(n1): 0x2000, id(n2): 0x2008, id(end): 0x1000}
+
+    def fake_value_address(value):
+        step["n"] += 1
+        return addrs[id(value)]
+
+    def fake_safe_int(value):
+        return fake_value_address(value)
+
+    def fake_task_name_at(_owner, _layout):
+        return "gdr_blocked"
+
+    monkeypatch.setattr(events, "read_field", fake_read_field)
+    monkeypatch.setattr(events, "safe_dereference", fake_safe_dereference)
+    monkeypatch.setattr(events, "value_address", fake_value_address)
+    monkeypatch.setattr(events, "safe_int", fake_safe_int)
+    monkeypatch.setattr(events, "mapped_ranges", lambda: ())
+    monkeypatch.setattr(events, "task_name_at", fake_task_name_at)
+
+    waiters = list(events.iter_waiters(object(), layout, 0x3))
+    assert step["n"] >= 2  # n1 and n2 both walked
+    assert len(waiters) == 2
+    assert all(w.task == "gdr_blocked" for w in waiters)
+    assert waiters[0].wants == 0x3
+    assert waiters[1].wants == 0x5

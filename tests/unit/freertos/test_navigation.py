@@ -95,7 +95,7 @@ def test_iter_list_stops_on_out_of_range_node(monkeypatch):
     warnings: list[str] = []
     monkeypatch.setattr(navigation, "warn", warnings.append)
     monkeypatch.setattr(
-        navigation, "_mapped_ranges", lambda: ((0x20000000, 0x20010000),)
+        navigation, "mapped_ranges", lambda: ((0x20000000, 0x20010000),)
     )
 
     assert list(navigation._iter_list(head, layout)) == []
@@ -211,6 +211,8 @@ def test_tcb_field_at_contains_expected_probe_errors(monkeypatch):
 
 def test_tcb_field_at_propagates_unexpected_errors(monkeypatch):
     """Anything outside the expected set bubbles to a command guard."""
+    import gdr.layout as gdr_layout
+
     layout = build_layout(FreeRtosConfig())
 
     class _Gdb:
@@ -221,6 +223,11 @@ def test_tcb_field_at_propagates_unexpected_errors(monkeypatch):
         def lookup_type(_name):
             raise ZeroDivisionError("unexpected probe failure")
 
+    # tcb_field_at guards on its own module's gdb first (early return), then
+    # delegates the cast to gdr.layout.value_at -- so the fake must live in
+    # both namespaces; a ZeroDivisionError from the type lookup is outside
+    # every expected-error set and must propagate to the guard.
     monkeypatch.setattr(navigation, "gdb", _Gdb)
+    monkeypatch.setattr(gdr_layout, "gdb", _Gdb)
     with pytest.raises(ZeroDivisionError, match="unexpected probe failure"):
         navigation.tcb_field_at(0x2000, layout, "name")

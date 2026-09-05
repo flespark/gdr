@@ -89,7 +89,7 @@ def test_value_to_task_computes_high_water_from_the_stack_bytes(monkeypatch):
     monkeypatch.setattr(
         adapter_module, "read_bytes", lambda _addr, _size: b"\xa5" * 128 + b"\x00"
     )
-    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda: 4)
+    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda _layout: 4)
     monkeypatch.setattr(adapter_module, "is_idle_task", lambda _value, _layout: False)
 
     task = adapter_module.value_to_task(raw, "Ready", None, layout)
@@ -128,7 +128,7 @@ def test_high_water_uses_px_top_of_stack_window_when_stack_end_absent(monkeypatc
         return b"\xa5" * size  # whole window is untouched fill
 
     monkeypatch.setattr(adapter_module, "read_bytes", spy_read_bytes)
-    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda: 4)
+    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda _layout: 4)
     monkeypatch.setattr(adapter_module, "is_idle_task", lambda _value, _layout: False)
 
     task = adapter_module.value_to_task(object(), "Ready", None, layout)
@@ -147,18 +147,18 @@ def test_high_water_uses_px_top_of_stack_window_when_stack_end_absent(monkeypatc
 
 def test_high_water_unavailable_when_stack_not_filled(monkeypatch):
     """A stack whose first byte is not 0xa5 was never watermark-filled."""
-    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda: 4)
+    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda _layout: 4)
 
-    assert adapter_module._high_water_mark(b"\x00" * 128) is None
-    assert adapter_module._high_water_mark(None) is None
+    assert adapter_module._high_water_mark(b"\x00" * 128, 4) is None
+    assert adapter_module._high_water_mark(None, 4) is None
 
 
 def test_high_water_counts_words_when_partially_filled(monkeypatch):
     """Untouched fill bytes are counted and divided by StackType_t size."""
-    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda: 4)
+    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda _layout: 4)
     stack = b"\xa5" * 32 + b"\x00" * 96
 
-    assert adapter_module._high_water_mark(stack) == 8
+    assert adapter_module._high_water_mark(stack, 4) == 8
 
 
 # --- task table column gating ------------------------------------------------
@@ -186,14 +186,25 @@ def test_system_summary_uses_one_scheduler_snapshot(monkeypatch):
         )
 
     values = {
-        "uxCurrentNumberOfTasks": 2,
-        "xTickCount": 123,
-        "xSchedulerRunning": 1,
+        "task_count": 2,
+        "tick": 123,
+        "scheduler_running": 1,
     }
     monkeypatch.setattr(adapter_module, "iter_tasks", iter_scheduler_tasks)
     monkeypatch.setattr(adapter_module, "value_to_task", convert)
     monkeypatch.setattr(adapter_module, "list_count", lambda _key, _layout: 0)
-    monkeypatch.setattr(adapter_module, "system_value", values.get)
+    monkeypatch.setattr(
+        adapter_module, "system_value", lambda key, _layout: values.get(key)
+    )
+    # Heap snapshot and system checks read scheduler globals / dwarf types
+    # that cannot run outside GDB; they are exercised by test_diagnostics
+    # and test_heap, so this scheduler-focus test stubs them.
+    monkeypatch.setattr(
+        adapter_module.heap_module,
+        "heap_snapshot",
+        lambda _layout: (_ for _ in ()).throw(ValueError("no gdb")),
+    )
+    monkeypatch.setattr(adapter_module, "system_checks", lambda _layout: [])
     adapter = adapter_module.FreeRtosAdapter(FreeRtosLayout(version=(10, 3, 1)))
 
     summary = adapter.system_summary()
@@ -421,7 +432,7 @@ def test_task_table_reports_unavailable_high_water_cell(monkeypatch):
         "N/A",
         "256",
         "32",
-        "unavailable",
+        "N/A",
         "0x10",
     ]
     assert table.rows[1][6] == "8"

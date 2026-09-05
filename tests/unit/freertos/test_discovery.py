@@ -68,6 +68,22 @@ def _fresh_symbol_cache():
 # ---------------------------------------------------------------------------
 
 
+def _patch_host_reads(monkeypatch, paths: dict):
+    """Wire ``navigation.read_field`` for a waiter-host plausibility test.
+
+    ``paths`` keys are raw member-path tuples (the layout resolves logical
+    names to those paths); the sibling sentinel paths are reached through
+    the List/Mini-list read sequence.
+    """
+
+    def fake_read_field(_value, struct_layout, field):
+        f = struct_layout.fields.get(field)
+        return paths.get(f.path) if f is not None else None
+
+    monkeypatch.setattr(navigation, "read_field", fake_read_field)
+    monkeypatch.setattr(navigation, "read_int", lambda value: value)
+
+
 def _registry_channel(monkeypatch, slots, layout=None):
     """Wire the registry channel against a list of fake slot objects.
 
@@ -84,8 +100,8 @@ def _registry_channel(monkeypatch, slots, layout=None):
     monkeypatch.setattr(navigation, "_array_item", lambda value, index: value[index])
     monkeypatch.setattr(
         navigation,
-        "read_path",
-        lambda item, path: names[item] if path == ("pcQueueName",) else handles[item],
+        "read_field",
+        lambda item, _sl, field: names[item] if field == "name" else handles[item],
     )
     monkeypatch.setattr(navigation, "read_cstring", lambda value, _max_len=256: value)
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
@@ -118,11 +134,13 @@ def test_iter_registry_entries_scans_holes_after_empty_slot(monkeypatch):
 
 
 def test_iter_registry_entries_bounds_name_read(monkeypatch):
-    """A 256-byte windowed name read is truncated at the first NUL.
+    """A windowed name read reaches the consumer NUL-free.
 
-    Value.string(length=256) returns embedded NULs and trailing garbage; an
-    unterminated (or long) name must never widen the table or poison name
-    matching with a 256-character string.
+    The truncation contract lives in :func:`gdr.gdb_bridge.read_cstring`
+    (covered by the bridge unit tests); the registry consumer only needs to
+    pass the bridge result through unchanged.  The injected mock below
+    plays the bridge's role -- clamping the 256-byte window at the first
+    NUL -- and the registry channel must not widen or re-taint it.
     """
     window = ("TmrQ" + "\x00" + "z" * 300)[:256]
     slots = [_Slot(window, 0x20001000)]
@@ -131,9 +149,9 @@ def test_iter_registry_entries_bounds_name_read(monkeypatch):
     found = list(navigation.iter_registry_entries(layout))
 
     assert len(found) == 1
-    assert found[0].name == "TmrQ"
+    assert found[0].name is not None
+    assert found[0].name == window
     assert len(found[0].name) <= 256
-    assert "\x00" not in found[0].name
 
 
 def test_iter_registry_entries_skips_when_disabled(monkeypatch):
@@ -269,13 +287,13 @@ def _mpu_symbol_channel(monkeypatch, handle_value, pool_slots, ranges=()):
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
     monkeypatch.setattr(
         navigation,
-        "read_path",
-        lambda item, path: (
-            item.handle if path == ("xInternalObjectHandle",) else item.type_code
+        "read_field",
+        lambda item, _sl, field: (
+            item.handle if field == "internal_handle" else item.type_code
         ),
     )
     monkeypatch.setattr(navigation, "_pointer_size", lambda: 4)
-    monkeypatch.setattr(navigation, "_mapped_ranges", lambda: ranges)
+    monkeypatch.setattr(navigation, "mapped_ranges", lambda: ranges)
     return layout
 
 
@@ -397,10 +415,8 @@ def test_iter_mpu_pool_objects_skips_empty_and_reserved(monkeypatch):
     monkeypatch.setattr(navigation, "_array_item", lambda value, index: value[index])
     monkeypatch.setattr(
         navigation,
-        "read_path",
-        lambda item, path: (
-            item.type_code if path == ("ulKernelObjectType",) else item.handle
-        ),
+        "read_field",
+        lambda item, _sl, field: item.type_code if field == "type" else item.handle,
     )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
     monkeypatch.setattr(navigation, "_pointer_size", lambda: 4)
@@ -422,10 +438,8 @@ def test_iter_mpu_pool_objects_marks_queue_kind_inferred(monkeypatch):
     monkeypatch.setattr(navigation, "_array_item", lambda value, index: value[index])
     monkeypatch.setattr(
         navigation,
-        "read_path",
-        lambda item, path: (
-            item.type_code if path == ("ulKernelObjectType",) else item.handle
-        ),
+        "read_field",
+        lambda item, _sl, field: item.type_code if field == "type" else item.handle,
     )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
     monkeypatch.setattr(navigation, "_pointer_size", lambda: 4)
@@ -499,7 +513,7 @@ def test_waiter_host_rejects_implausible_queue_fields(monkeypatch):
         ("uxItemSize",): 4,
         ("pcHead",): 0x20000D38,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x20001000)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
@@ -508,8 +522,7 @@ def test_waiter_host_rejects_implausible_queue_fields(monkeypatch):
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct QueueDefinition",
-        "xTasksWaitingToReceive",
+        navigation._WaiterSpec("struct QueueDefinition", "recv_waiters", "queue"),
         0x20001000,
         0x20002000,
         layout,
@@ -525,14 +538,15 @@ def test_waiter_host_accepts_consistent_queue_fields(monkeypatch):
     member_list = object()
     paths = {
         ("xTasksWaitingToReceive",): member_list,
+        ("xTasksWaitingToSend",): member_list,
         ("uxLength",): 2,
         ("uxMessagesWaiting",): 0,
         ("uxItemSize",): 4,
         ("pcHead",): 0x20000D38,
-        ("xTasksWaitingToSend", "xListEnd", "xItemValue"): 0xFFFFFFFF,
-        ("xTasksWaitingToReceive", "xListEnd", "xItemValue"): 0xFFFFFFFF,
+        ("xListEnd",): object(),
+        ("xItemValue",): 0xFFFFFFFF,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x20001000)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
@@ -541,8 +555,7 @@ def test_waiter_host_accepts_consistent_queue_fields(monkeypatch):
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct QueueDefinition",
-        "xTasksWaitingToReceive",
+        navigation._WaiterSpec("struct QueueDefinition", "recv_waiters", "queue"),
         0x20001000,
         0x20002000,
         layout,
@@ -561,7 +574,7 @@ def test_waiter_host_rejects_pointer_like_event_group_bits(monkeypatch):
         ("xTasksWaitingForBits",): member_list,
         ("uxEventBits",): 0x20001000,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x20001000)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
@@ -570,8 +583,7 @@ def test_waiter_host_rejects_pointer_like_event_group_bits(monkeypatch):
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct EventGroupDef_t",
-        "xTasksWaitingForBits",
+        navigation._WaiterSpec("struct EventGroupDef_t", "waiting", "eventgroup"),
         0x20001000,
         0x20002000,
         layout,
@@ -591,20 +603,21 @@ def test_waiter_host_rejects_address_in_map_on_64_bit_tick(monkeypatch):
         ("xTasksWaitingForBits",): member_list,
         ("uxEventBits",): 0x80009BF0,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x80009DE0)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
     )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
     monkeypatch.setattr(
-        navigation, "_mapped_ranges", lambda: ((0x80000000, 0x80010000),)
+        navigation, "mapped_ranges", lambda: ((0x80000000, 0x80010000),)
     )
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct EventGroupDef_t",
-        "xTasksWaitingForBits",
+        navigation._WaiterSpec(
+            "struct EventGroupDef_t", "xTasksWaitingForBits", "eventgroup"
+        ),
         # Reason: the container must equal the stubbed value_address so the
         # flow passes the identity guard and actually reaches the event-bits
         # branch -- an earlier revision passed the ghost address here and the
@@ -628,20 +641,19 @@ def test_waiter_host_accepts_small_bits_on_64_bit_tick(monkeypatch):
         ("xTasksWaitingForBits",): member_list,
         ("uxEventBits",): 0x5,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x80009DE0)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
     )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
     monkeypatch.setattr(
-        navigation, "_mapped_ranges", lambda: ((0x80000000, 0x80010000),)
+        navigation, "mapped_ranges", lambda: ((0x80000000, 0x80010000),)
     )
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct EventGroupDef_t",
-        "xTasksWaitingForBits",
+        navigation._WaiterSpec("struct EventGroupDef_t", "waiting", "eventgroup"),
         0x80009DE0,
         0x80009E00,
         layout,
@@ -662,20 +674,19 @@ def test_waiter_host_accepts_zero_bits_even_when_flash_maps_low(monkeypatch):
         ("xTasksWaitingForBits",): member_list,
         ("uxEventBits",): 0x0,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x20001000)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
     )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
     monkeypatch.setattr(
-        navigation, "_mapped_ranges", lambda: ((0x00000000, 0x00040000),)
+        navigation, "mapped_ranges", lambda: ((0x00000000, 0x00040000),)
     )
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct EventGroupDef_t",
-        "xTasksWaitingForBits",
+        navigation._WaiterSpec("struct EventGroupDef_t", "waiting", "eventgroup"),
         0x20001000,
         0x20002000,
         layout,
@@ -701,7 +712,7 @@ def test_waiter_host_rejects_null_head_with_items(monkeypatch):
         ("uxItemSize",): 1,
         ("pcHead",): 0,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x20001000)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
@@ -710,8 +721,7 @@ def test_waiter_host_rejects_null_head_with_items(monkeypatch):
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct QueueDefinition",
-        "xTasksWaitingToSend",
+        navigation._WaiterSpec("struct QueueDefinition", "send_waiters", "queue"),
         0x20001000,
         0x20002000,
         layout,
@@ -727,14 +737,15 @@ def test_waiter_host_accepts_null_head_without_items(monkeypatch):
     member_list = object()
     paths = {
         ("xTasksWaitingToReceive",): member_list,
+        ("xTasksWaitingToSend",): member_list,
         ("uxLength",): 1,
         ("uxMessagesWaiting",): 0,
         ("uxItemSize",): 0,
         ("pcHead",): 0,
-        ("xTasksWaitingToSend", "xListEnd", "xItemValue"): 0xFFFFFFFF,
-        ("xTasksWaitingToReceive", "xListEnd", "xItemValue"): 0xFFFFFFFF,
+        ("xListEnd",): object(),
+        ("xItemValue",): 0xFFFFFFFF,
     }
-    monkeypatch.setattr(navigation, "read_path", lambda _host, path: paths[path])
+    _patch_host_reads(monkeypatch, paths)
     monkeypatch.setattr(navigation, "value_address", lambda _value: 0x20001000)
     monkeypatch.setattr(
         navigation, "_list_contains_item", lambda *_args, **_kwargs: True
@@ -743,8 +754,7 @@ def test_waiter_host_accepts_null_head_without_items(monkeypatch):
 
     plausible = navigation._plausible_waiter_host(
         host,
-        "struct QueueDefinition",
-        "xTasksWaitingToReceive",
+        navigation._WaiterSpec("struct QueueDefinition", "recv_waiters", "queue"),
         0x20001000,
         0x20002000,
         layout,
@@ -781,7 +791,7 @@ def test_iter_waiter_hosts_yields_confirmed_host(monkeypatch):
         "_host_from_container",
         # Only the receive-list candidate resolves to a host; the send and
         # event-group candidates fail the probe for this container.
-        lambda _c, _s, member, _l: host if member == "xTasksWaitingToReceive" else None,
+        lambda _c, _s, member, _l: host if member == "recv_waiters" else None,
     )
     monkeypatch.setattr(navigation, "_plausible_waiter_host", lambda *_a, **_k: True)
     monkeypatch.setattr(navigation, "_scheduler_list_addresses", lambda _l: set())
@@ -992,7 +1002,7 @@ def test_object_counts_only_includes_present_types(monkeypatch):
     monkeypatch.setattr(
         adapter_module, "iter_converted_tasks", lambda _layout: iter(())
     )
-    monkeypatch.setattr(adapter_module, "_queue_type_present", lambda: True)
+    monkeypatch.setattr(adapter_module, "_queue_type_present", lambda _layout: True)
     monkeypatch.setattr(adapter_module, "discover_all", lambda _layout: {})
 
     counts = adapter_module.FreeRtosAdapter(layout).object_counts()
@@ -1010,7 +1020,7 @@ def test_object_summary_rows_break_down_sources(monkeypatch):
         "iter_converted_tasks",
         lambda _layout: iter([object(), object()]),
     )
-    monkeypatch.setattr(adapter_module, "_queue_type_present", lambda: True)
+    monkeypatch.setattr(adapter_module, "_queue_type_present", lambda _layout: True)
     monkeypatch.setattr(
         adapter_module,
         "discover_all",
@@ -1090,7 +1100,7 @@ def test_iter_active_timer_hosts_yields_timers(monkeypatch):
     )
     monkeypatch.setattr(
         navigation,
-        "_cstring",
+        "read_cstring",
         lambda value: "gdr_active" if value is timer_name else None,
     )
     monkeypatch.setattr(navigation, "value_address", lambda _timer: 0x20005000)

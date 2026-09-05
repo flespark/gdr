@@ -86,18 +86,39 @@ def _memory_for(entries: list[tuple[int, int, int]], canary: int = 0):
 
 
 def _patch_read_bytes(monkeypatch, mem: dict[int, bytes]):
-    monkeypatch.setattr(heap, "read_bytes", lambda address, _size: mem.get(address))
+    # BlockHeader reads go through read_field_at (layout-described DWARF
+    # offsets); the stand-in decodes the same way from the fake memory
+    # image, whose VALUES are full blocks at their start address -- the two
+    # fields of struct A_BLOCK_LINK sit at offsets 0 / ptrsize inside the
+    # block, exactly as real read_field_at + member_offset would resolve.
+    def fake_read_field_at(addr, _type_name, _layout, field, width, endian):
+        raw = mem.get(addr)
+        if raw is None:
+            return None
+        offset = 0 if field == "next_free" else width
+        return int.from_bytes(raw[offset : offset + width], byteorder=endian)
+
+    monkeypatch.setattr(heap, "read_field_at", fake_read_field_at)
     # Every walk decodes raw memory with the target byte order.
     monkeypatch.setattr(heap, "get_arch_info", lambda: _ARCH)
 
 
 def _minimal_geometry_probes(monkeypatch, size_t_width: int = 4, alignment: int = 8):
-    """Route every geometry probe to "nothing present" defaults."""
-    monkeypatch.setattr(
-        heap,
-        "lookup_type",
-        lambda name: _FakeType(size_t_width) if name == "size_t" else None,
-    )
+    """Route every geometry probe to "nothing present" defaults.
+
+    The ``type_size`` mock only intercepts name-based lookups (a missing
+    DWARF type); object-based reads (``value.type`` already parsed) still
+    pass through to the real primitive so ``_heap_array_size`` sees the
+    fake value's ``sizeof``.
+    """
+    original_type_size = heap.type_size
+
+    def fake_type_size(value):
+        if isinstance(value, str):
+            return size_t_width if value == "size_t" else None
+        return original_type_size(value)
+
+    monkeypatch.setattr(heap, "type_size", fake_type_size)
     monkeypatch.setattr(heap, "symbol_exists", lambda _name: False)
     monkeypatch.setattr(heap, "read_macro_int", lambda _name: None)
     monkeypatch.setattr(
@@ -205,8 +226,8 @@ def test_allocated_bitmask_from_size_t_width(monkeypatch, width, expected):
     monkeypatch.setattr(heap, "lookup_symbol", lambda _name: None)
     monkeypatch.setattr(
         heap,
-        "lookup_type",
-        lambda name: _FakeType(width) if name == "size_t" else None,
+        "type_size",
+        lambda name: width if name == "size_t" else None,
     )
     monkeypatch.setattr(heap, "symbol_exists", lambda _name: False)
     monkeypatch.setattr(heap, "read_macro_int", lambda _name: None)
@@ -261,11 +282,9 @@ def test_struct_size_falls_back_to_computation(monkeypatch):
     monkeypatch.setattr(heap, "lookup_symbol", lambda _name: None)
     monkeypatch.setattr(
         heap,
-        "lookup_type",
+        "type_size",
         lambda name: (
-            _FakeType(8)
-            if name in ("BlockLink_t", "struct A_BLOCK_LINK", "size_t")
-            else None
+            8 if name in ("BlockLink_t", "struct A_BLOCK_LINK", "size_t") else None
         ),
     )
     monkeypatch.setattr(heap, "symbol_exists", lambda _name: False)
@@ -570,7 +589,7 @@ def test_heap5_complete_walk_makes_extremes_a_total(monkeypatch):
     monkeypatch.setattr(heap, "lookup_symbol", lambda _name: object())
     monkeypatch.setattr(heap, "read_int", lambda _value: 16)
 
-    monkeypatch.setattr(heap, "walk_free_list", lambda _geom: free_walk)
+    monkeypatch.setattr(heap, "walk_free_list", lambda _geom, _layout=None: free_walk)
     monkeypatch.setattr(heap, "walk_linear", lambda *_a, **_k: complete)
     snap = heap.heap_snapshot(build_layout(FreeRtosConfig(heap_kind=5), (10, 3, 1)))
     assert snap.total == 0x1018 - 0x1000
@@ -733,7 +752,6 @@ def test_heap2_init_detection_falls_back_to_x_end_size(monkeypatch):
     the flag is unreadable; xEnd.xBlockSize (written by prvHeapInit) decides
     between initialised and pre-init."""
     _minimal_geometry_probes(monkeypatch)
-    monkeypatch.setattr(heap, "read_bytes", lambda _address, _size: None)
     values = {
         "xStart": _FakeValue({"pxNextFreeBlock": 0x3000}),
         "xEnd": _FakeValue({"xBlockSize": 49144}),
@@ -782,8 +800,8 @@ def test_uninitialised_heap_short_circuits(monkeypatch, kind, symbols, version):
     assert snap.free_list is None and snap.linear is None
     assert snap.cross_check == "unavailable: heap not initialised"
     pairs = dict(heap.heap_pairs(snap))
-    assert pairs["Blocks"] == "unavailable"
-    assert pairs["Holes"] == "unavailable"
+    assert pairs["Blocks"] == "N/A"
+    assert pairs["Holes"] == "N/A"
     if kind == 2:
         assert pairs["FreeSize"] == "49144"  # static initializer
 
@@ -814,8 +832,8 @@ def test_heap1_reports_bump_pointer(monkeypatch):
     assert snap.free == 47144
     pairs = dict(heap.heap_pairs(snap))
     assert pairs["Algorithm"] == "heap_1 (bump pointer)"
-    assert pairs["Blocks"] == "unavailable"
-    assert pairs["Holes"] == "unavailable"
+    assert pairs["Blocks"] == "N/A"
+    assert pairs["Holes"] == "N/A"
     assert pairs["CrossCheck"].startswith("unavailable")
     assert heap.heap_status(snap) == "good"
 
@@ -827,7 +845,7 @@ def test_heap3_reports_opaque(monkeypatch):
     monkeypatch.setattr(heap, "lookup_symbol", lambda _name: None)
     snap = heap.heap_snapshot(build_layout(FreeRtosConfig(), (10, 3, 1)))
     for key in ("TotalSize", "FreeSize", "MinEver", "Allocs", "Frees"):
-        assert dict(heap.heap_pairs(snap))[key] == "unavailable"
+        assert dict(heap.heap_pairs(snap))[key] == "N/A"
     assert heap.heap_status(snap) is None
 
     monkeypatch.setattr(heap, "symbol_exists", lambda _name: False)
@@ -855,9 +873,7 @@ def test_heap_pairs_key_order(kind):
 
 
 def test_protector_cell_states():
-    assert (
-        heap._protector_cell(HeapGeometry(kind=4, algorithm="heap_4")) == "unavailable"
-    )
+    assert heap._protector_cell(HeapGeometry(kind=4, algorithm="heap_4")) == "N/A"
     assert (
         heap._protector_cell(
             HeapGeometry(kind=4, algorithm="heap_4", canary_present=True, canary=0xBEEF)
@@ -878,10 +894,10 @@ def test_heap_kind2_pairs_unavailable_without_symbols():
     geom = HeapGeometry(kind=2, algorithm="heap_2")
     snap = HeapSnapshot(geometry=geom, total=49144, free=49144, cross_check="ok")
     pairs = dict(heap.heap_pairs(snap))
-    assert pairs["MinEver"] == "unavailable"
-    assert pairs["Allocs"] == "unavailable"
-    assert pairs["Frees"] == "unavailable"
-    assert pairs["Protector"] == "unavailable"
+    assert pairs["MinEver"] == "N/A"
+    assert pairs["Allocs"] == "N/A"
+    assert pairs["Frees"] == "N/A"
+    assert pairs["Protector"] == "N/A"
 
 
 def test_heap_block_table_shapes():
@@ -907,7 +923,9 @@ def test_heap_block_table_shapes():
         blocks=[HeapBlock(address=0x1000, size=8, allocated=False, next_free=0x1020)],
     )
     snap = HeapSnapshot(
-        geometry=_heap5_geom(), free_list=free_list, cross_check="unavailable"
+        geometry=_heap5_geom(),
+        free_list=free_list,
+        cross_check="unavailable: heap state not collected",
     )
     table = heap.heap_block_table(snap)
     assert table.headers == ["Address", "Size", "Next"]
@@ -923,10 +941,11 @@ def test_heap_block_table_shapes():
 
 
 def test_render_heap_prints_pairs_and_table(monkeypatch):
+    from gdr import commands as gdr_commands
+
     adapter = adapter_module.FreeRtosAdapter(
         build_layout(FreeRtosConfig(heap_kind=4), (10, 3, 1))
     )
-    monkeypatch.setattr(commands, "active", lambda: adapter)
     snap = HeapSnapshot(
         geometry=_heap4_geom(),
         total=49152,
@@ -940,30 +959,34 @@ def test_render_heap_prints_pairs_and_table(monkeypatch):
         ),
     )
     monkeypatch.setattr(heap, "heap_snapshot", lambda _layout: snap)
+    # The neutral renderer (C1) calls the adapter's HeapReport and prints
+    # through the gdr.commands namespace.
+    monkeypatch.setattr(gdr_commands, "active", lambda: adapter)
     rendered_pairs: dict[str, str] = {}
     rendered_table: dict[str, object] = {}
     monkeypatch.setattr(
-        commands, "print_detail", lambda pairs: rendered_pairs.update(pairs)
+        gdr_commands, "print_detail", lambda pairs: rendered_pairs.update(pairs)
     )
     monkeypatch.setattr(
-        commands,
+        gdr_commands,
         "print_table",
         lambda rows, headers, **_kw: rendered_table.update(rows=rows, headers=headers),
     )
-    monkeypatch.setattr(commands, "info", lambda _msg: None)
-    commands.render_heap()
+    monkeypatch.setattr(gdr_commands, "info", lambda _msg: None)
+    gdr_commands.render_heap()
     assert rendered_pairs["Algorithm"] == "heap_4"
     assert rendered_pairs["CrossCheck"] == "ok"
     assert rendered_table["headers"] == ["Address", "Size", "State"]
 
 
 def test_render_heap_warns_without_adapter(monkeypatch):
-    monkeypatch.setattr(commands, "active", lambda: None)
+    from gdr import commands as gdr_commands
+
+    monkeypatch.setattr(gdr_commands, "active", lambda: None)
     warnings: list[str] = []
-    monkeypatch.setattr(commands, "warn", lambda msg: warnings.append(msg))
-    monkeypatch.setattr(commands, "print_detail", lambda _pairs: None)
-    commands.render_heap()
-    assert any("gdr init freertos" in message for message in warnings)
+    monkeypatch.setattr(gdr_commands, "warn", lambda msg: warnings.append(msg))
+    gdr_commands.render_heap()
+    assert any("gdr init" in message for message in warnings)
 
 
 def test_help_mentions_no_owner_attribution():
@@ -983,7 +1006,11 @@ def test_help_mentions_no_owner_attribution():
 def _summary_adapter(monkeypatch, layout):
     monkeypatch.setattr(adapter_module, "iter_converted_tasks", lambda _l: iter([]))
     monkeypatch.setattr(adapter_module, "list_count", lambda _key, _layout: 0)
-    monkeypatch.setattr(adapter_module, "system_value", lambda _name: 0)
+    monkeypatch.setattr(adapter_module, "system_value", lambda _key, _layout: 0)
+    # The system checks read scheduler globals (lookup_symbol) that cannot
+    # run outside GDB; they are exercised by test_diagnostics, so the
+    # summary tests stub them to "no checks" and focus on the heap fields.
+    monkeypatch.setattr(adapter_module, "system_checks", lambda _layout: [])
     return adapter_module.FreeRtosAdapter(layout)
 
 

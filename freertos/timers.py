@@ -23,7 +23,8 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.layout import FreeRtosLayout
-from freertos.navigation import current_tasks
+from freertos.navigation import current_tasks, iter_queue_items
+from gdr.derive import timer_expires_in as derive_timer_expires_in
 from gdr.formatting import (
     format_address,
     format_optional_int,
@@ -37,21 +38,11 @@ from gdr.gdb_bridge import (
     read_cstring,
     read_int,
     safe_dereference,
+    type_field_names,
+    type_size,
     value_address,
 )
-from gdr.layout import read_path
-
-if gdb is not None:
-    _TIMER_ERRORS: tuple[type[BaseException], ...] = (
-        gdb.error,
-        gdb.MemoryError,
-        IndexError,
-        TypeError,
-        ValueError,
-        AttributeError,
-    )
-else:
-    _TIMER_ERRORS = (IndexError, TypeError, ValueError, AttributeError)
+from gdr.layout import read_field, value_at
 
 # timers.c tmrSTATUS_* bit definitions (ucStatus).
 _TMR_STATUS_ACTIVE = 0x01
@@ -252,14 +243,10 @@ def timer_expires_in(
     ``overdue`` instead of a huge unsigned wrap value.  Overflow-list items
     belong to the next tick epoch: their ``xItemValue`` wrapped, so the
     real expiry is ``2**bits + expiry`` (timers.c prvInsertTimerInActiveList).
+    The arithmetic lives in :func:`gdr.derive.timer_expires_in`; this name is
+    kept as the adapter-facing seam its unit tests and tables call.
     """
-    if expiry is None or tick is None:
-        return "N/A"
-    if in_overflow:
-        return str(((mask + 1) - tick) + expiry)
-    if expiry < tick:
-        return "overdue"
-    return str(expiry - tick)
+    return derive_timer_expires_in(expiry, tick, mask, in_overflow=in_overflow)
 
 
 def daemon_is_current(layout: FreeRtosLayout) -> bool:
@@ -293,23 +280,18 @@ def timer_name_at(address: int | None, layout: FreeRtosLayout) -> str | None:
     """
     if gdb is None or not address:
         return None
-    try:
-        sl = layout.structs["struct tmrTimerControl"]
-        typ = gdb.lookup_type(sl.struct_name).pointer()
-        value = gdb.Value(address).cast(typ).dereference()
-        return read_cstring(read_path(value, ("pcTimerName",)))
-    except _TIMER_ERRORS:
+    sl = layout.structs.get("struct tmrTimerControl")
+    if sl is None:
         return None
+    value = value_at(address, sl)
+    if value is None:
+        return None
+    return read_cstring(read_field(value, sl, "name"))
 
 
-def _message_value(address: int, msg_type):
+def _message_value(address: int, msg_layout):
     """Cast a ring-slot address to a ``DaemonTaskMessage_t`` value."""
-    if gdb is None or not address:
-        return None
-    try:
-        return gdb.Value(address).cast(msg_type.pointer()).dereference()
-    except _TIMER_ERRORS:
-        return None
+    return value_at(address, msg_layout)
 
 
 def _callback_arm_present(msg_type) -> bool:
@@ -324,7 +306,7 @@ def _callback_arm_present(msg_type) -> bool:
     """
     try:
         union = msg_type["u"]
-        return any(f.name == "xCallbackParameters" for f in union.type.fields())
+        return "xCallbackParameters" in type_field_names(union.type)
     except (KeyError, TypeError, AttributeError):
         return False
 
@@ -348,13 +330,14 @@ def iter_timer_commands(
     timer_queue = safe_dereference(lookup_symbol("xTimerQueue"))
     if timer_queue is None:
         return ["timer command queue xTimerQueue is unavailable"], []
-    msg_type = lookup_type("struct tmrTimerQueueMessage")
+    msg_layout = layout.internal_structs.get("struct tmrTimerQueueMessage")
+    msg_type = lookup_type(msg_layout.struct_name) if msg_layout is not None else None
     if msg_type is None:
         return ["DaemonTaskMessage_t is not in DWARF; cannot decode commands"], []
-    item_size = read_int(read_path(timer_queue, ("uxItemSize",)))
-    try:
-        expected = int(msg_type.sizeof)
-    except (TypeError, ValueError, AttributeError):
+    ql = layout.structs["struct QueueDefinition"]
+    item_size = read_int(read_field(timer_queue, ql, "item_size"))
+    expected = type_size(msg_type)
+    if expected is None:
         return ["timer command queue message size is unreadable"], []
     if item_size is None:
         return ["timer command queue item size is unreadable"], []
@@ -362,24 +345,19 @@ def iter_timer_commands(
         return [
             f"skipped: item size {item_size} != sizeof(DaemonTaskMessage_t) {expected}"
         ], []
-    waiting = read_int(read_path(timer_queue, ("uxMessagesWaiting",)))
+    waiting = read_int(read_field(timer_queue, ql, "count"))
     if waiting is None:
         return ["timer command queue uxMessagesWaiting is unreadable"], []
     if waiting == 0:
         return ["no pending timer commands"], []
     commands: list[TimerCommand] = []
-    # Reason: local import -- this module is imported by freertos.details
-    # (which renders the command section), so importing the queue FIFO
-    # walker at module scope would form a cycle; by call time the module
-    # graph is fully loaded.
-    from freertos.details import iter_queue_items
-
     for seq, address, _payload in iter_queue_items(timer_queue, layout):
-        message_value = _message_value(address, msg_type)
+        message_value = _message_value(address, msg_layout)
         if message_value is None:
             commands.append(TimerCommand(seq=seq, message_id=None))
             continue
-        message_id = read_int(read_path(message_value, ("xMessageID",)))
+        msg_layout = layout.internal_structs["struct tmrTimerQueueMessage"]
+        message_id = read_int(read_field(message_value, msg_layout, "message_id"))
         if message_id is None:
             commands.append(TimerCommand(seq=seq, message_id=None))
             continue
@@ -393,29 +371,29 @@ def iter_timer_commands(
             # Reason: the acceptance for a genuinely pended callback is the
             # real callback parameters (timers.c u.xCallbackParameters) -- a
             # bare "pended callback" label would hide the values the daemon
-            # would invoke.  Only attempt the union read when the arm exists.
+            # would invoke.  The union arms are declared in the layout, so a
+            # build without the member degrades each read to None (same as
+            # the DWARF arm probe).
             if arm:
-                params = read_path(message_value, ("u", "xCallbackParameters"))
-                if params is not None:
-                    callback = TimerCommand(
-                        seq=seq,
-                        message_id=message_id,
-                        callback_arm=True,
-                        callback_function=read_int(
-                            read_path(params, ("pxCallbackFunction",))
-                        ),
-                        callback_parameter1=read_int(
-                            read_path(params, ("pvParameter1",))
-                        ),
-                        callback_parameter2=read_int(
-                            read_path(params, ("ulParameter2",))
-                        ),
-                    )
+                callback = TimerCommand(
+                    seq=seq,
+                    message_id=message_id,
+                    callback_arm=True,
+                    callback_function=read_int(
+                        read_field(message_value, msg_layout, "callback_fn")
+                    ),
+                    callback_parameter1=read_int(
+                        read_field(message_value, msg_layout, "callback_p1")
+                    ),
+                    callback_parameter2=read_int(
+                        read_field(message_value, msg_layout, "callback_p2")
+                    ),
+                )
             commands.append(callback)
             continue
-        timer = read_int(read_path(message_value, ("u", "xTimerParameters", "pxTimer")))
+        timer = read_int(read_field(message_value, msg_layout, "timer"))
         message_value_field = read_int(
-            read_path(message_value, ("u", "xTimerParameters", "xMessageValue"))
+            read_field(message_value, msg_layout, "message_value")
         )
         commands.append(
             TimerCommand(

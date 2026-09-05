@@ -314,7 +314,10 @@ def test_detect_config_probes_memtrace_from_block_header(monkeypatch):
             return type(
                 "_T",
                 (),
-                {"fields": lambda _self=None: [_Field("magic"), _Field("thread")]},
+                {
+                    "fields": lambda _self=None: [_Field("magic"), _Field("thread")],
+                    "strip_typedefs": lambda _self=None: _self,
+                },
             )()
         return None
 

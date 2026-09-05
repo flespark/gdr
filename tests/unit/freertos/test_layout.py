@@ -21,6 +21,9 @@ class _FakeArrayType:
         return (0, self._last)
 
 
+_FAKE_ARCH = type("_Arch", (), {"ptrsize": 4, "endian": "little"})()
+
+
 class _ArrayValue:
     """Minimal ``gdb.Value``-like array symbol with a decodable bound."""
 
@@ -55,6 +58,9 @@ def _make_config(
     monkeypatch.setattr(
         layout_module, "lookup_type", lambda name: object() if name in types else None
     )
+    # get_arch_info raises outside GDB; the stack-word fallback depends on
+    # it being probed, so the fixture supplies a known 32-bit target.
+    monkeypatch.setattr(layout_module, "get_arch_info", lambda: _FAKE_ARCH)
     if macro_int is not None:
         monkeypatch.setattr(layout_module, "_macro_int", lambda _name: macro_int)
     monkeypatch.setattr(
@@ -98,6 +104,7 @@ def test_detect_config_retains_probed_tcb_capabilities(monkeypatch):
     monkeypatch.setattr(layout_module, "lookup_type", lambda _name: None)
     monkeypatch.setattr(layout_module, "_macro_int", lambda _name: 4)
     monkeypatch.setattr(layout_module, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(layout_module, "get_arch_info", lambda: _FAKE_ARCH)
 
     config = layout_module.detect_config()
 
@@ -273,6 +280,7 @@ def _mini_config(monkeypatch, has_owner: bool):
     monkeypatch.setattr(layout_module, "lookup_symbol", lambda _name: None)
     monkeypatch.setattr(layout_module, "_fields", lambda _type_name: set())
     monkeypatch.setattr(layout_module, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(layout_module, "get_arch_info", lambda: _FAKE_ARCH)
     return layout_module.detect_config()
 
 

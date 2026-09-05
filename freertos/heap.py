@@ -30,29 +30,19 @@ from freertos.layout import FreeRtosLayout
 from gdr.adapter_api import ObjectTable
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.gdb_bridge import (
+    TARGET_ACCESS_ERRORS,
+    _gdb_execute,
     get_arch_info,
     is_plain_identifier,
     lookup_symbol,
-    lookup_type,
-    read_bytes,
     read_int,
     read_macro_int,
     read_macro_text_in_source,
     symbol_exists,
+    type_size,
     value_address,
 )
-
-if gdb is not None:
-    _HEAP_ERRORS: tuple[type[BaseException], ...] = (
-        gdb.error,
-        gdb.MemoryError,
-        IndexError,
-        TypeError,
-        ValueError,
-        AttributeError,
-    )
-else:
-    _HEAP_ERRORS = (IndexError, TypeError, ValueError, AttributeError)
+from gdr.layout import read_field_at
 
 # heap_2 only tracks allocation with the size_t MSB from V10.5.0
 # (heap_2.c heapBLOCK_ALLOCATED_BITMASK); the V10.3.x/V10.4.x releases store
@@ -134,7 +124,7 @@ class HeapSnapshot:
     unavailable_reason: str | None = None
     free_list: HeapWalk | None = None
     linear: HeapWalk | None = None
-    cross_check: str = "unavailable"
+    cross_check: str = "unavailable: no snapshot"
 
 
 # ---------------------------------------------------------------------------
@@ -157,13 +147,8 @@ def _deobfuscate(pointer: int | None, canary: int) -> int:
 
 def _bits_from_type(type_name: str) -> int | None:
     """Return ``sizeof(T) * 8`` for a DWARF type, or None."""
-    typ = lookup_type(type_name)
-    if typ is None:
-        return None
-    try:
-        return int(typ.sizeof) * 8
-    except _HEAP_ERRORS:
-        return None
+    size = type_size(type_name)
+    return size * 8 if size is not None else None
 
 
 def _pointer_bits() -> int:
@@ -189,22 +174,33 @@ def _target_endian() -> Literal["little", "big"]:
     return "little" if info.endian == "little" else "big"
 
 
-def _block_values(address: int, geom: HeapGeometry) -> tuple[int, int] | None:
+_BLOCK_LINK_TYPE = "struct A_BLOCK_LINK"
+
+
+def _block_values(
+    address: int,
+    geom: HeapGeometry,
+    block_layout,
+) -> tuple[int, int] | None:
     """Read ``(pxNextFreeBlock, xBlockSize)`` at a raw BlockLink_t address.
 
-    ``struct A_BLOCK_LINK`` is exactly ``{pointer, size_t}`` (heap_4.c/
-    heap_5.c/heap_2.c); on every supported port ``size_t`` is pointer-width,
-    so the two members are two pointer-width fields at offsets 0/ptrsize.
+    Both members come from the layout-described ``struct A_BLOCK_LINK`` so
+    their DWARF offsets decide the read (never a hard-coded pointer-width
+    assumption); the field widths still follow ``pointer_bits`` because the
+    members are a pointer and a ``size_t``.
     """
     width = geom.pointer_bits // 8
     if width not in (4, 8):
         return None
-    raw = read_bytes(address, width * 2)  # raw target memory, never a file
-    if raw is None:
-        return None
     endian = _target_endian()
-    next_free = int.from_bytes(raw[:width], byteorder=endian)
-    size = int.from_bytes(raw[width:], byteorder=endian)
+    next_free = read_field_at(
+        address, _BLOCK_LINK_TYPE, block_layout, "next_free", width, endian
+    )
+    size = read_field_at(
+        address, _BLOCK_LINK_TYPE, block_layout, "block_size", width, endian
+    )
+    if next_free is None or size is None:
+        return None
     return next_free, size
 
 
@@ -251,25 +247,25 @@ def _macro_int_in_heap_cu(name: str) -> int | None:
     saved_source: str | None = None
     saved_listsize: str | None = None
     try:
-        source_info = gdb.execute("info source", to_string=True)
+        source_info = _gdb_execute("info source")
         match = re.search(r"Current source file is (.+)$", source_info, re.M)
         if match:
             saved_source = match.group(1).strip().removesuffix(".")
-        saved_listsize = gdb.execute("show listsize", to_string=True)
-        gdb.execute("set listsize 1", to_string=True)
-        gdb.execute("list pvPortMalloc", to_string=True)
+        saved_listsize = _gdb_execute("show listsize")
+        _gdb_execute("set listsize 1")
+        _gdb_execute("list pvPortMalloc")
         return read_macro_int(name)
-    except _HEAP_ERRORS:
+    except TARGET_ACCESS_ERRORS:
         return None
     finally:
         if saved_listsize:
             match = re.search(r"(?:listsize is|default is) (.+?)\.", saved_listsize)
             if match:
-                with contextlib.suppress(*_HEAP_ERRORS):
-                    gdb.execute(f"set listsize {match.group(1)}", to_string=True)
+                with contextlib.suppress(*TARGET_ACCESS_ERRORS):
+                    _gdb_execute(f"set listsize {match.group(1)}")
         if saved_source:
-            with contextlib.suppress(*_HEAP_ERRORS):
-                gdb.execute(f"list {saved_source}:1", to_string=True)
+            with contextlib.suppress(*TARGET_ACCESS_ERRORS):
+                _gdb_execute(f"list {saved_source}:1")
 
 
 def _heap_array_size() -> int | None:
@@ -281,10 +277,9 @@ def _heap_array_size() -> int | None:
     """
     value = lookup_symbol("ucHeap")
     if value is not None:
-        try:
-            return int(value.type.sizeof)
-        except _HEAP_ERRORS:
-            return None
+        size = type_size(value.type)
+        if size is not None:
+            return size
     return _macro_int_in_heap_cu("configTOTAL_HEAP_SIZE")
 
 
@@ -350,12 +345,8 @@ def _struct_size(
         raw = read_int(lookup_symbol(name))
         if raw and raw > 0:
             return raw
-    typ = lookup_type("BlockLink_t") or lookup_type("struct A_BLOCK_LINK")
-    if typ is None:
-        return None
-    try:
-        size = int(typ.sizeof)
-    except _HEAP_ERRORS:
+    size = type_size("BlockLink_t") or type_size("struct A_BLOCK_LINK")
+    if size is None:
         return None
     # Reason: ``sizeof(BlockLink_t)`` is already a multiple of the natural
     # alignment and on the GCC ports ``portBYTE_ALIGNMENT`` never exceeds it,
@@ -377,7 +368,7 @@ def _free_list_head(canary: int) -> int | None:
         return None
     try:
         raw = int(value["pxNextFreeBlock"])
-    except _HEAP_ERRORS:
+    except TARGET_ACCESS_ERRORS:
         return None
     if not raw:
         return None
@@ -501,7 +492,7 @@ def _read_x_end_block_size() -> int | None:
         return None
     try:
         return int(value["xBlockSize"])
-    except _HEAP_ERRORS:
+    except TARGET_ACCESS_ERRORS:
         return None
 
 
@@ -531,7 +522,7 @@ def _heap_initialised(geom: HeapGeometry) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def walk_free_list(geom: HeapGeometry) -> HeapWalk:
+def walk_free_list(geom: HeapGeometry, block_layout=None) -> HeapWalk:
     """Walk the kernel's free-block chain, mirroring ``vPortGetHeapStats``.
 
     Termination: the chain ends at ``pxEnd`` for heap_4/5 and at the address
@@ -569,7 +560,7 @@ def walk_free_list(geom: HeapGeometry) -> HeapWalk:
             walk.corrupt_reason = f"free-list cycle at {cur:#x}"
             return walk
         seen.add(cur)
-        values = _block_values(cur, geom)
+        values = _block_values(cur, geom, block_layout)
         if values is None:
             walk.corrupt = True
             walk.corrupt_reason = f"unreadable block header at {cur:#x}"
@@ -615,7 +606,11 @@ def _linear_free_addresses(free_list: HeapWalk | None) -> set[int] | None:
     return {block.address for block in free_list.blocks}
 
 
-def walk_linear(geom: HeapGeometry, free_list: HeapWalk | None = None) -> HeapWalk:
+def walk_linear(
+    geom: HeapGeometry,
+    free_list: HeapWalk | None = None,
+    block_layout=None,
+) -> HeapWalk:
     """Walk the linear block extent [linear_low, heap_limit).
 
     Every byte of the extent belongs to exactly one block (header followed
@@ -659,7 +654,7 @@ def walk_linear(geom: HeapGeometry, free_list: HeapWalk | None = None) -> HeapWa
             walk.corrupt = True
             walk.corrupt_reason = f"misaligned block at {cur:#x}"
             return walk
-        values = _block_values(cur, geom)
+        values = _block_values(cur, geom, block_layout)
         if values is None:
             walk.corrupt = True
             walk.corrupt_reason = f"unreadable block header at {cur:#x}"
@@ -813,8 +808,9 @@ def heap_snapshot(layout: FreeRtosLayout) -> HeapSnapshot:
         snap.min_ever = read_int(lookup_symbol("xMinimumEverFreeBytesRemaining"))
         snap.allocs = read_int(lookup_symbol("xNumberOfSuccessfulAllocations"))
         snap.frees = read_int(lookup_symbol("xNumberOfSuccessfulFrees"))
-    free_list = walk_free_list(geom)
-    linear = walk_linear(geom, free_list=free_list)
+    block_layout = layout.internal_structs.get("struct A_BLOCK_LINK")
+    free_list = walk_free_list(geom, block_layout)
+    linear = walk_linear(geom, free_list=free_list, block_layout=block_layout)
     snap.free_list = free_list
     snap.linear = linear
     # Reason: heap_5's total is not a kernel symbol -- under the protector
@@ -858,7 +854,8 @@ def heap_status(snap: HeapSnapshot) -> str | None:
 
 
 def _num(value: int | None) -> str:
-    return str(value) if value is not None else "unavailable"
+    """Render one scalar heap cell; a missing value is N/A (C3 unified)."""
+    return str(value) if value is not None else "N/A"
 
 
 def _walk_suffix(walk: HeapWalk) -> str:
@@ -871,7 +868,7 @@ def _walk_suffix(walk: HeapWalk) -> str:
 
 def _protector_cell(geom: HeapGeometry) -> str:
     if not geom.canary_present:
-        return "unavailable"
+        return "N/A"
     if geom.canary == 0:
         return "enabled(canary=0)"
     return "enabled"
@@ -902,16 +899,16 @@ def heap_pairs(snap: HeapSnapshot) -> list[tuple[str, str]]:
         free_list = snap.free_list
         linear = snap.linear
         if free_list is None:
-            blocks = "unavailable"
+            blocks = "N/A"
         else:
             blocks = f"{free_list.free_blocks}{_walk_suffix(free_list)}"
         if linear is None or linear.holes is None:
-            holes = "unavailable"
+            holes = "N/A"
         else:
             holes = f"{linear.holes}{_walk_suffix(linear)}"
         pairs += [("Blocks", blocks), ("Holes", holes)]
     else:
-        pairs += [("Blocks", "unavailable"), ("Holes", "unavailable")]
+        pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
     pairs.append(("CrossCheck", snap.cross_check))
     return pairs
 

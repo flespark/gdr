@@ -36,6 +36,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. Type matching uses `strip_typedefs().unqualified().tag` so that typedef-spelled and cv-qualified values resolve to their underlying struct tag. |
 | `version.py` | RTOS-neutral version parsing, range checks, formatting and declared decimal/packed-hex decoding. |
 | `adapter_api.py` | `RtosAdapter`, `ObjectTable`, `ObjectDetail`, `SystemSummary`, and the single active adapter selected by `gdr init`. |
+| `derive.py` | RTOS-neutral derived-value helpers shared by the adapters: wrap-safe timer expiry (with/without the `overdue` label), fill-byte stack watermark counting, and the `count@names` waiter cell. Scalar-in/string-out, never adapter model objects. |
 | `commands.py` / `functions.py` | Generic output coordination and raw-value convenience functions; task columns and object vocabulary remain adapter-owned. |
 
 ### `rtthread/` — adapter
@@ -55,15 +56,15 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | -------- | --------------- |
 | `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. Version detection relies on `-g3` macro debug info and is subject to CU scope limitations (see known constraints below). |
 | `navigation.py` | Pure scheduler-list and current-task traversal functions plus the object discovery channels (`iter_registry_entries`, `iter_static_symbol_objects` with its session cache, `iter_active_timer_hosts`, `iter_mpu_pool_objects`, `iter_waiter_hosts`) and their aggregation (`DiscoveredObject`, `discover`, `discover_all`, `resolve_object`). Queue-family candidates are refined by the `Queue_t` discriminator (`classify_queue`: `ucQueueType` when `configUSE_TRACE_FACILITY` is on, else the `pcHead == NULL` mutex marker and `uxItemSize == 0` semaphore marker), deduplicated across the family so one address never lands in two tables; `discover_all` shares one waiter-channel scan per command call. The symbol channel names timer objects by their `pcTimerName` (read from the cast `Timer_t`) instead of the handle/buffer variable, so dormant timers stay reachable by the name the firmware gave them. List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
-| `timers.py` | FreeRTOS software-timer decoding for the daemon's two active lists and its command queue (`xTimerQueue`): the current/overflow list epoch, the `pvOwner` vs object-address check (container decides `uninitialised`), the wrap-safe `ExpiresIn` formula for both epochs, and `iter_timer_commands()` which ring-reads the queue (item-size and DWARF-type prechecks, slots cast to `DaemonTaskMessage_t`) and maps the 12 `tmrCOMMAND_*` ids to names. |
-| `events.py` | Event-group inspection: control-bit masks derived from `cfg.tick_bits` (the `CLEAR_ON_EXIT` / `UNBLOCKED_DUE_TO_BIT_SET` / `WAIT_FOR_ALL` / `CONTROL_BYTES` / `eventIN_USE` bits are compile-time macros with no DWARF), the raw `xEventListItem` decode for every task blocked on `xTasksWaitingForBits`, the ALL vs ANY `missing` computation, and the `(satisfied — mid-unblock)` marker for a waiter the kernel already unblocked. Feeds the `frt eventgroups` table and the `frt eventgroup <name>` detail via the `uchStaticallyAllocated` config gate. |
-| `streams.py` | Stream/message/batching buffer geometry: the wrap-safe bytes (`prvBytesInBuffer`) and space formulas, the batching `>` vs plain `>=` trigger comparison, the six `ucFlags` classifications (static stays out of the table Type, so the column contract does not drift between variants), the `xLength == 0 && pucBuffer == NULL` deleted-buffer short-circuit, the `NextMsg` length-prefix read gated on the `size_t`-fallback assumption, and the single-`TaskHandle_t` waiter rendering (no waiter discovery channel exists for stream buffers). |
-| `heap.py` | System-heap snapshotting for `frt heap` and the `Heap *` fields of `frt system`. Consumes `cfg.heap_kind` (the discriminator in `layout.py`); splits the `None` case into `heap_3` vs `none` by `pvPortMalloc` presence. Compute-only version gates: the `xHeapStructSize`/`heapSTRUCT_SIZE` symbol (computed from `align_up(sizeof(BlockLink_t), portBYTE_ALIGNMENT)` as fallback), the size_t-MSB `heapBLOCK_ALLOCATED_BITMASK` (off for heap_2 < V10.5.0), and the `xHeapCanary` XOR deobfuscation of every `pxNextFreeBlock` including the chain head. Bounded raw walks replicate `vPortGetHeapStats` semantics (never inferior-call the function): the free-list walk (terminates at `pxEnd` for heap_4/5, at the `xEnd` *value* for heap_2; heap_5 zero-size region link blocks count but skip the smallest-size statistic) and the linear walk (stepping by `xBlockSize`; allocation from the MSB, or free-list membership before the bit exists; started at the kernel's own `align_up(&ucHeap)` base, not at the free-list head, and skipped when that base is unknowable). `cross_validate` compares free-list bytes, linear free bytes and `xFreeBytesRemaining` plus the free-block address sets; any mismatch reports the three concrete numbers and never synthesises a plausible total. |
-| `adapter.py` | The complete `FreeRtosTask` intermediate model, TCB conversion, adapter-owned task columns, system summary, and the object protocol methods (`find_object`, `object_counts`, the provenance summary table, the queue/semaphore/mutex list tables and their details, the `FreeRtosTimerObject` model feeding the `frt timers` table, and the event group / stream buffer tables delegated to `events` / `streams`). |
+| `timers.py` | Software-timer decode: active-list epoch, wrap-safe `ExpiresIn`, and the daemon command queue ring-read with the 12 `tmrCOMMAND_*` names. |
+| `events.py` | Event-group bits and per-waiter decode (control bits derived from tick width, ALL/ANY missing, mid-unblock marker). |
+| `streams.py` | Stream/message/batching ring geometry, trigger asymmetry, deleted-buffer short-circuit, and the assumed `size_t` `NextMsg` length prefix. |
+| `heap.py` | Heap-1..5 snapshot for `frt heap` and `frt system`: kernel counters (never resynthesised), canary decode, bounded free-list/linear walks with a three-way `CrossCheck` verdict. Walks start at the kernel's own `align_up(&ucHeap)` base, never the free-list head. |
+| `adapter.py` | Task/queue/timer/event/stream models, value conversion, list tables, summaries, and the `RtosAdapter` protocol surface. |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
 | `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers` render their own column-contract tables (`object_table()`), and `heap` renders `heap_report()` (algorithm/total/free/min/alloc/free counters, protector state, free-list block count, linear-walk holes and the three-way cross-check verdict, plus the optional block table). |
-| `details.py` | FreeRTOS vertical detail rendering: `frt task <name>` (per-TCB state, high-water mark, notification slots, wake tick, blocked-on), the queue family (`frt queue/semaphore/mutex <name>`, including the FIFO `Item[i]` dump and mutex owner priorities), `frt timer <name>` (List epoch, OwnerCheck, and the pending daemon-command section), `frt eventgroup <name>` (per-waiter wants/mode/clearOnExit/missing decode), and `frt streambuffer <name>` (geometry, trigger-met verdict, NextMsg, the `size_t`-assumed length prefix, the version-gated NotificationIndex and the three-state bounds check). |
-| `diagnostics.py` | Bounded raw list walking and the consistency checks the detail commands consume. `walk_list_raw` starts at `xListEnd.pxNext`, resolves `List_t`/`ListItem_t` member offsets from DWARF (so the optional integrity fields cannot shift it), and reports a cycle, a NULL `pxNext` (a healthy chain always links back to the sentinel, so zero is a cut chain, not an end), a node outside every loadable section, an unreadable item, or the `GDR_MAX_TRAVERSAL_COUNT` bound — never a clean short list. `list_checks`/`task_checks`: `ListInit`, `ListCount`, `ListIndex` (SMP only — on single core `pxIndex` legitimately parks on the rotation cursor, so the check is `skipped`), `ListIntegrity`, `ListIntegrityBytes` (magic derived from `cfg.tick_bits`, not a hard-coded `0x5a5a5a5a`), `ItemOwner`, `ItemContainer`, `StackFillPresent`. `system_checks` (rendered by `frt system`): `TaskCount`, `SchedulerSuspended`, `NextUnblockTime`, `HeapCrossCheck`. Queue-family checks (`queue_checks`): count bound and the storage-window pointer invariants for real data queues only; mutex accounting and semaphore self-head checks for those kinds; `QueueLock` (`cRxLock`/`cTxLock` must be `queueUNLOCKED` outside a `vTaskSuspendAll`, and an unreadable suspend counter is reported as unreadable rather than asserted to be zero). Timer checks (`timer_checks`): `ucStatus`-vs-list sync, nonzero period/callback, and the daemon queue item size vs `sizeof(DaemonTaskMessage_t)`. Event-group check (`event_checks`): `EventWaiterSatisfied`. Inapplicable checks are reported as explicit `skipped` instead of pass/fail. |
+| `details.py` | Vertical detail builders for tasks and the queue/timer/event-group/stream-buffer families. |
+| `diagnostics.py` | Bounded raw list walks and consistency checks (list/task/system/queue/timer/event), each reporting `ok`/`fail`/`skipped` — never a clean short walk on corruption or truncation. |
 
 ## Key decisions
 
@@ -189,14 +190,26 @@ noise and abort the rest of the command.
   through unchanged. Adapting to a missing object is *not* an error and still
   returns a null `gdb.Value`.
 - **Probe helpers.** Bridge primitives (`safe_int`, `safe_dereference`,
-  `value_address`, DWARF `_fields`), and GDB tab completion degrade to safe
-  defaults (`None`, `0`, `[]`). These are the building blocks guards rely on.
-  They catch only *expected* types (`gdb.error`, `gdb.MemoryError`,
-  `IndexError`, `TypeError`, `ValueError`, `AttributeError`); anything
-  unexpected now bubbles to a guard for a full diagnostic instead of being
-  silently swallowed. Completion is a notable exception: GDB completion must
-  never print or raise, so `_object_names` keeps a deliberate broad catch that
-  degrades to no candidates.
+  `value_address`, `read_int`, `lookup_symbol`, `lookup_type`, `read_bytes`,
+  `type_size`, `array_bound`, `type_field_names`, `arch_or_default`), and
+  GDB tab completion degrade to safe defaults (`None`, `0`, `[]`). These are
+  the building blocks guards rely on.  They catch only *expected* types
+  (`gdb.error`, `gdb.MemoryError`, `IndexError`, `TypeError`, `ValueError`,
+  `AttributeError` — the shared `TARGET_ACCESS_ERRORS` defined once in
+  `gdr/gdb_bridge.py`); anything unexpected now bubbles to a guard for a full
+  diagnostic instead of being silently swallowed.
+
+Two deliberate broad catches are sanctioned beyond the probe-helper set:
+
+- **GDB completion** must never print or raise, so `_object_names` keeps
+  `except Exception` that degrades to no candidates (the readline prompt
+  would be corrupted by a guard's warn/err output).
+- **System summary/check sections are best-effort per item.** One broken heap
+  or unreadable scheduler list during `frt system` rendering must not take
+  down the whole summary; each such section degrades to its empty form
+  (`N/A` heap fields, no check section) on `TARGET_ACCESS_ERRORS`.  A
+  *programming* error (KeyError on a layout dict, a refactor-induced
+  TypeError) is not in that set and bubbles to the guard for a diagnostic.
 
 The guard's reporting policy:
 
@@ -376,12 +389,46 @@ Cortex-A9 only.
 
 ### Known constraints
 
-**Fixture-first.** Work may consume a config branch (SMP, heap_N, static
-allocation, stream buffers, MPU, runtime stats, queue sets, …) only when a
-live firmware variant or a static snapshot can falsify it. Branches without
-a fixture stay deferred unit-test stubs, never "done".
+Known limits of the debugging model and the fixture evidence behind each
+decoder branch.  A constraint is a *current* limitation (what GDR cannot do
+or what a lane cannot falsify), not a development rule — development rules
+live in `AGENTS.md` and the per-lane READMEs.
 
-**FreeRTOS live coverage is 32-bit Cortex-M plus one 64-bit RISC-V lane.**
+#### General
+
+**Kernel debug info drives every probe.** Both adapters read versions,
+config features and struct shapes from DWARF and `-g3` macro tables, never
+from version strings or a parsed `.config`.  A build stripped of debug info
+(or a halt in a CU the macro table does not cover) degrades specific probes
+to safe defaults with a warning, never a guess.
+
+**SMP per-core state comes from shared memory, not per-core registers.**
+QEMU models a second core as a separate GDB *inferior*, so per-core register
+reads would need `target extended-remote`; every SMP assertion instead
+derives from shared structure (`pxCurrentTCBs[]` for FreeRTOS, `rt_cpu_index`/
+halted registers for RT-Thread).
+
+#### RT-Thread
+
+**3.1.x has no QEMU RV64 BSP.** Upstream's RV64 BSP starts at 4.0.4
+(`bsp/qemu-riscv-virt64`, renamed `bsp/qemu-virt64-riscv` in 4.1.1), so the
+3.1.x range is verified on Cortex-A9 only; the rv64 lane covers 4.0.4 through
+4.1.1.
+
+**Fixture patch sets fix `RT_NAME_MAX`.** Cortex-A9 fixture patches set
+`RT_NAME_MAX` to 16 to preserve the canonical `test_mutex` / `test_timer`
+names every shared test asserts on (the RV64 BSPs already use 20).  The
+object enum value for `Null` predates 3.1.3 and is asserted only on the
+3.1.x tags whose layout is pinned.
+
+**Heap-manager shape is probed, not asserted.** `small_mem` / `slab` /
+`memheap` change the block-header structure entirely, so the heap walks are
+keyed off the probed `heap_type`; missing counters render `N/A`, never a
+fabricated 0.
+
+#### FreeRTOS
+
+**Live coverage is 32-bit Cortex-M plus one 64-bit RISC-V lane.**
 The 32-bit lanes are `b-l475e-iot01a` Cortex-M4F, `mps2-an385` Cortex-M3,
 `mps2-an521` dual-core Cortex-M33 and the Cortex-M33 static snapshot; a
 `qemu-virt-rv64` lane (QEMU `-machine virt`, `portable/GCC/RISC-V`
@@ -394,7 +441,7 @@ DWARF (`read_path` reads each union arm at its target type, and the reserved
 MPU-pool handle is compared at the target pointer width), so no literal width
 constant exists in the adapter.
 
-**FreeRTOS version detection depends on `-g3` macro debug info and CU scope.**
+**Version detection depends on `-g3` macro debug info and CU scope.**
 `detect_target_version()` reads the `tskKERNEL_VERSION_*` macros via
 identifier eval and `info macro`. Both consult the current compilation unit's
 `.debug_macro` first; `info macro -a` plus the fixture-exported
@@ -402,7 +449,7 @@ identifier eval and `info macro`. Both consult the current compilation unit's
 A remaining miss degrades to a warning ("target FreeRTOS version is not
 exported") and skips the mismatch check rather than guessing.
 
-**FreeRTOS live fixtures are a variant matrix**, not a single configuration.
+**Live fixtures are a variant matrix**, not a single configuration.
 `ci/freertos/fixture/config/<variant>/` plus a shared `main.c` produce
 `base` (the historical B-L475E-IOT01A / 10.3.1 combination), `full`,
 `static-only`, `static-dynamic`, `trace-off`, `heap-1`/`2`/`3`/`5`,
@@ -425,61 +472,20 @@ N/A and HighWater scans `[pxStack, pxTopOfStack)`.
 
 **Not covered by any current fixture (documented, unit-tested only):**
 
-- `stack_grows_up`: **not supported**. GDR decodes stacks as grow-down only
-  (high water mark scans the untouched fill from the low end). The sole
-  upstream `portSTACK_GROWTH +1` port is SDCC/Cygnal 8051, which has no GCC
-  toolchain and no QEMU machine, so no grow-up target can exist; the dead
-  field/branch was removed rather than kept as an untestable probe.
+- `stack_grows_up`: **not supported**. GDR decodes FreeRTOS stacks as
+  grow-down only (high water mark scans the untouched fill from the low end).
+  The sole upstream `portSTACK_GROWTH +1` port is SDCC/Cygnal 8051, which has
+  no GCC toolchain and no QEMU machine, so no grow-up target can exist; the
+  dead field/branch was removed rather than kept as an untestable probe.
 
-**Closed by the fixture matrix (formerly unit-test-only; do not re-add them
-to the list above without re-checking the fixture):**
-
-- The `mpu-pool` channel (`portUSING_MPU_WRAPPERS` + MPU wrappers v2 /
-  `xKernelObjectPool`): live on the `mpu` variant (single-core CM33 on
-  mps2-an521, `configENABLE_MPU 1`, `configUSE_MPU_WRAPPERS_V1 0`,
-  `configRUN_FREERTOS_SECURE_ONLY 1`).  Every object create macro-rewrites to
-  an `MPU_*` entry, so the pool is populated at boot and the channel's
-  empty/reserved-slot skip, `ulKernelObjectType` kind mapping and QUEUE-slot
-  `inferred_kind` are exercised live; `frt objects` reports an `mpu-pool=N`
-  source for every kind.  The live assertion checks `N >= 1` rather than an
-  exact census, which would drift with the fixture's object set.
-- Event-group control bits at **16-bit** tick width: live on the `tick16`
-  variant (`configUSE_16_BIT_TICKS 1`; the legacy knob is defined before the
-  shared header -- it is the one spelling every supported kernel accepts, and
-  `configTICK_TYPE_WIDTH_IN_BITS` exists only from V10.6.0, while FreeRTOS.h
-  rejects a config defining both).
-  `sizeof(TickType_t) == 2`, the top-byte control masks still decode
-  `wants`/`missing` exactly like the 32-bit cells, and the `ListInit` /
-  `NextUnblockTime` sentinel reads are width-correct (a raw pointer-width
-  read would fold the padding bytes after each `xItemValue`).
-- Timer daemon queue `pended callback` arm (`xMessageID < 0`): live on the
-  `pend-callback` variant, which enables `INCLUDE_xTimerPendFunctionCall` and
-  suspends the daemon before enqueueing a callback plus six timer commands.
-  The queue decoder still gates on the presence of the
-  `u.xCallbackParameters` DWARF member and renders a missing arm as
-  `pended-callback arm absent (INCLUDE_xTimerPendFunctionCall=0)` on every
-  other variant.
-- Event-group control bits at 64-bit tick width: live on the
-  `qemu-virt-rv64` lane (`TickType_t` is 64-bit on the RISC-V port, and the
-  lane declares `configTICK_TYPE_WIDTH_IN_BITS` 64, so the top-byte masks
-  match the kernel).
-- Stream/message buffer **ring wrap** (`xHead < xTail`), the `xLength == 0 &&
-  pucBuffer == NULL` deleted-buffer signature and a non-empty `NextMsg`: live
-  on the `streams` variant, which writes/reads/deletes the buffers before the
-  ready marker. The batching `>` trigger asymmetry needs the V11.1+
-  `xStreamBatchingBufferCreate`, so it is live on the V11.1 cell of that
-  variant only (the fixture and the assertion are gated the same way).
-- Event-group `ucStaticallyAllocated == 1`: live on the `static-dynamic`
-  variant (whose "static" event group is now genuinely
-  `xEventGroupCreateStatic`, while `gdr_event_group` stays dynamic); `base`
-  keeps no such key.
-- `ListIntegrityBytes`: live on the static snapshot, which enables
-  `configUSE_LIST_DATA_INTEGRITY_CHECK_BYTES` and stamps every `List_t` (plus
-  the mini `xListEnd` item) with `pdINTEGRITY_CHECK_VALUE`, plus a dedicated
-  negative list with a corrupted `xListIntegrityValue1` (0xdeadbeef vs
-  0x5a5a5a5a).  A live kernel cannot supply the negative either (the bytes
-  are only validated by `configASSERT` inside `vListInsert`, so a corrupted
-  value crashes the target), which is why the negative lives in the snapshot.
+Several decoder branches now have live fixture evidence that used to be
+unit-test-only: the MPU-pool channel (`mpu` variant), event-group control
+bits at 16/64-bit tick widths (`tick16` / the RISC-V lane), the timer
+pended-callback arm (`pend-callback`), stream-buffer ring wrap and the
+deleted-buffer signature (`streams`), and `ListIntegrityBytes` on the static
+snapshot.  Each variant's exact scope is documented in
+`ci/freertos/README.md`; the snapshot lane carries the diagnostic negatives
+a healthy kernel cannot produce.
 
 **Static snapshot lane** (`ci/freertos/build-fixture-snapshot.sh` with sources
 in `ci/freertos/snapshot/`) covers states a healthy kernel cannot produce
@@ -494,15 +500,14 @@ the *allocated-bit* cell (free-list member with the size_t MSB) cannot share
 one heap symbol set — a corrupt walk swallows the mismatch verdict — so the
 allocated-bit cell lives in a second, heap-only ELF (`snapshot_heap.c`).
 
-**FreeRTOS does not provide an `Entry` column.** The FreeRTOS TCB
-(`tskTaskControlBlock`) does not store the task entry function pointer after
-task creation; it exists only transiently on the initial stack frame and is
-overwritten on first context switch. This is a fundamental difference from
-RT-Thread's `rt_thread.entry`, which persists in the TCB. The `frt help`
-output documents this limitation.
+**No `Entry` column.** The FreeRTOS TCB (`tskTaskControlBlock`) does not store
+the task entry function pointer after task creation; it exists only transiently
+on the initial stack frame and is overwritten on first context switch. This is
+a fundamental difference from RT-Thread's `rt_thread.entry`, which persists in
+the TCB. The `frt help` output documents this limitation.
 
-**FreeRTOS high-water mark semantics.** The `HighWater` column reports the
-number of `StackType_t` words that have never been overwritten (matching
+**High-water mark semantics.** The `HighWater` column reports the number of
+`StackType_t` words that have never been overwritten (matching
 `uxTaskGetStackHighWaterMark` semantics). `unavailable` means either the stack
 was never filled with `0xa5` or the distinction between "unfilled" and
 "completely exhausted" cannot be made without an independent evidence source.
@@ -514,7 +519,7 @@ reference config-conditional struct members must be gated by the corresponding
 `FreeRtosConfig` flag; unconditional inclusion produces `N/A` on builds where
 the member is absent.
 
-**FreeRTOS heap blocks carry no owner field, so per-task heap usage is not
+**Heap blocks carry no owner field, so per-task heap usage is not
 attributable.** A `BlockLink_t` is exactly `{pxNextFreeBlock, xBlockSize}`
 (heap_4.c) with no owner member; `frt heap` therefore never offers a thread-occupancy
 breakdown, and `frt help` documents this instead of faking a column. `frt heap`
@@ -565,11 +570,10 @@ before it).
 (`_allocated_bitmask` with the size_t MSB) and the `Heap used + Heap free ==
 Heap total` arithmetic are live-verified there; `_pointer_bits` still falls
 back to 32 only when no type information exists at all. The cross-check
-`mismatch` and walk `corrupt` verdicts
-were historically unit-tested only too (a healthy kernel cannot produce a
-corrupt heap); the static snapshot lane now carries crafted `mismatch` (free-list
-skips a linear-free block) and allocated-bit (free-list member with the size_t
-MSB) cells, so those verdicts have live evidence.
+`mismatch` and walk `corrupt` verdicts have live evidence from the static
+snapshot lane's crafted cells (free-list skips a linear-free block; a
+free-list member carrying the size_t MSB), since a healthy kernel cannot
+produce a corrupt heap.
 
 **Object discovery is a six-channel provenance model, not a registry walk.**
 FreeRTOS keeps no global object registry for most kinds (only the optional
@@ -609,9 +613,9 @@ an adapter-owned list of vertical rows the neutral renderer appends verbatim,
 so the RTOS-specific verdict strings never enter `gdr/`.
 
 A singular detail command refuses a kind it can prove wrong: resolving a name
-or address stamps the *requested* kind on whatever it found, so
-`frt semaphore <a mutex>` used to render a semaphore block whose every
-consistency check failed. The resolved object is refined through the `Queue_t`
+or address stamps the *requested* kind on whatever it found, so a wrong
+kind must be refused before rendering. The resolved object is refined
+through the `Queue_t`
 discriminator and, when the actual kind is known and different, the command
 replies with a redirect (`'gdr_mutex' is a mutex, not a semaphore; try
 `freertos mutex gdr_mutex``). An *inferred* kind never justifies a refusal —

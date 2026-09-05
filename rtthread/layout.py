@@ -30,6 +30,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
+from gdr.gdb_bridge import type_field_names
 from gdr.layout import (
     KernelLayout,
     ListHook,
@@ -218,11 +219,11 @@ def _object_type_names(codes: dict[str, int]) -> dict[int, str]:
 
 # Thread stat → display name (low 3 bits of rt_thread.stat).
 THREAD_STAT_NAMES: dict[int, str] = {
-    int(ThreadState.INIT): "INIT",
-    int(ThreadState.READY): "READY",
-    int(ThreadState.SUSPEND): "SUSPEND",
-    int(ThreadState.RUNNING): "RUNNING",
-    int(ThreadState.CLOSE): "CLOSE",
+    ThreadState.INIT.value: "INIT",
+    ThreadState.READY.value: "READY",
+    ThreadState.SUSPEND.value: "SUSPEND",
+    ThreadState.RUNNING.value: "RUNNING",
+    ThreadState.CLOSE.value: "CLOSE",
 }
 
 # Timer flag bits → display name (for ``flag`` field on rt_timer / rt_object).
@@ -334,10 +335,7 @@ def _probe_using_memtrace(lookup_type, symbol_exists) -> bool:
         type_info = lookup_type(type_name)
         if type_info is None:
             continue
-        try:
-            field_names = {f.name for f in type_info.fields()}
-        except (gdb.error, AttributeError, TypeError):
-            field_names = set()
+        field_names = type_field_names(type_info)
         if "thread" in field_names or "owner_thread_name" in field_names:
             return True
     return symbol_exists("memtrace") or symbol_exists("memcheck")
@@ -409,10 +407,10 @@ def detect_config() -> RtConfig:
     # CPU usage tracking adds a field to rt_thread; detect by type introspection
     rt_thread_type = lookup_type("struct rt_thread")
     if rt_thread_type is not None:
-        thread_fields = {f.name for f in rt_thread_type.fields()}
+        thread_fields = type_field_names(rt_thread_type)
         cfg.thread_has_init_priority = "init_priority" in thread_fields
         cfg.thread_has_pthread_data = "pthread_data" in thread_fields
-        cfg.using_cpu_usage = any(f_name == "duration_tick" for f_name in thread_fields)
+        cfg.using_cpu_usage = "duration_tick" in thread_fields
 
     return cfg
 

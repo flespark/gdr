@@ -20,6 +20,8 @@ gdr/                   RTOS-agnostic core
   layout.py            generic StructLayout + field/list accessors
   printers.py          wrapper-type pretty-printer registration
   adapter_api.py       adapter protocol, tables, details and active session
+  derive.py            RTOS-neutral derived-value helpers (wrap-safe expiry,
+                       fill-byte watermark, waiter cell) shared by adapters
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            RT-Thread ABI field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
@@ -29,71 +31,17 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   version.py           RT-Thread version policy and target symbols
   commands.py          RT-Thread command tree (`rtt threads`, `rtt heap`, ...)
 freertos/              FreeRTOS adapter
-  layout.py            merged config probes, DWARF paths and capability metadata
-  navigation.py        layout-driven scheduler-list traversal, per-TCB state,
-                       the six object-discovery channels (registry / symbol /
-                       active / mpu-pool / waiter / user) with provenance dedup,
-                       and the `Queue_t` queue/semaphore/mutex discriminator
-  timers.py            software-timer decoding: current/overflow list epoch,
-                       wrap-safe `ExpiresIn`, `pvOwner` owner check (container
-                       decides `uninitialised`), and the `xTimerQueue` ring
-                       read with the 12 `tmrCOMMAND_*` names
-  events.py            event-group decoding: control-bit masks derived from
-                       `cfg.tick_bits` (16/32/64), per-waiter
-                       wants/mode/clearOnExit/missing from `xItemValue`, and
-                       the `(satisfied - mid-unblock)` marker
-  streams.py           stream/message/batching buffer geometry: wrap-safe
-                       bytes/space, batching `>` vs plain `>=` trigger, the six
-                       `ucFlags` classifications, deleted-buffer short-circuit
-                       and the `size_t`-assumed `NextMsg` length prefix
-  heap.py              system-heap snapshot for `frt heap` and the `Heap *`
-                       fields of `frt system`: heap_1..heap_5 (plus heap_3 /
-                       none), computed block-header size and `size_t`-MSB
-                       allocation mask, `xHeapCanary` XOR decoding, bounded
-                       free-list and linear walks (linear starts at
-                       `align_up(&ucHeap)`, not the free-list head) and the
-                       three-way `CrossCheck` verdict
-  adapter.py           complete task model, conversion, summaries and tables,
-                       object lookup, per-kind provenance counts, and the
-                       queue/semaphore/mutex, timer, event group and stream
-                       buffer list tables
-  details.py           vertical detail rendering for `frt task <name>` (plus its
-                       `Checks:` section), the queue family
-                       (`frt queue/semaphore/mutex <name>`),
-                       `frt timer <name>` (List epoch, OwnerCheck, Commands),
-                       `frt eventgroup <name>` (per-waiter decode) and
-                       `frt streambuffer <name>` (TriggerMet, NextMsg,
-                       NotificationIndex, BoundsCheck)
-  diagnostics.py       bounded raw list walks (`walk_list_raw`: cycle, NULL
-                       `pxNext`, out-of-section node and traversal bound all
-                       reported, never silently truncated) plus the check
-                       groups consumed by the detail commands: list/task
-                       (ListInit/ListCount/ListIndex/ListIntegrity/
-                       ListIntegrityBytes/ItemOwner/ItemContainer/
-                       StackFillPresent), system (TaskCount/
-                       SchedulerSuspended/NextUnblockTime/HeapCrossCheck),
-                       queue family (pointer invariants, mutex accounting,
-                       semaphore self-head, QueueLock), timer
-                       (`ucStatus`-vs-list sync, daemon queue item size) and
-                       event group (EventWaiterSatisfied); inapplicable
-                       checks report `skipped`
+  layout.py            config/DWARF probes, ABI struct paths, symbol & kind tables
+  navigation.py        scheduler-list traversal, per-TCB state, six-channel object discovery
+  timers.py / events.py / streams.py / heap.py
+                       per-object-kind decode (timer daemon queue, event-group bits,
+                       stream-buffer geometry, system-heap snapshot)
+  adapter.py           task/object models, conversion, list tables, summaries
+  details.py / diagnostics.py
+                       vertical detail builders and bounded raw-memory consistency checks
   version.py           FreeRTOS version policy and target symbols
-  commands.py          FreeRTOS command tree (`frt tasks/task/system/help/objects/heap`,
-                       7 plural + 7 singular + 6 aliases)
+  commands.py          FreeRTOS command tree (`frt tasks/.../heap`, 7 plural + 7 singular + 6 aliases)
 gdr/                   semantic command/function core ($gdr_task, $gdr_tasks,
-                       $gdr_object; internal renderers, not gdr subcommands)
-tests/
-  unit/                hardware-independent core and adapter tests
-    core/              RTOS-neutral rendering, layout, registration, bootstrap
-    rtthread/          RT-Thread layout, navigation, version, adapter tests
-    freertos/          FreeRTOS adapter tests
-  integration/         QEMU/GDB closed-loop tests and fixtures
-    rtthread/          command, function, and pretty-printer assertions
-    freertos/          FreeRTOS boot and command assertions
-  support/             RTOS-neutral harnesses + per-RTOS profiles:
-                       qemu_harness.py / static_elf_harness.py (lifecycle),
-                       <rtos>_qemu_profiles.py (how to boot and attach),
-                       <rtos>_fixture_profiles.py (what the fixture must contain)
 ```
 
 Key design principles (see `docs/architecture.md`):
@@ -288,6 +236,25 @@ ci/validate-podman.sh
 
 The script builds `ci/Dockerfile` for `linux/amd64` and uses the pinned xPack
 toolchains. Start a Podman machine before running it.
+
+## Documentation map
+
+Each repository document serves one audience; a fact belongs in exactly one
+place and is linked from the others, never rephrased into each.  When you
+change behaviour (or the DtoD clerk writes up a phase), update the *one* file
+that owns the fact:
+
+| File | Audience | Owns | Must **not** carry | Granularity |
+| --- | --- | --- | --- | --- |
+| `README.md` / `README.zh-CN.md` | users | install, load, command index, output-decode notes | kernel internals, fixtures/CI, design rationale | each note ≤2 lines, mirror both languages |
+| `AGENTS.md` | contributors/agents | file map (one line per file), setup/commands, CI lane table, conventions | per-module prose (point to architecture.md), lane internals (point to ci/*/README.md) | one line per file |
+| `docs/architecture.md` | design readers | layering, key decisions, invariants, known constraints | trial-and-error history, fixture build details, per-lane evidence | module-table cells ≤1-3 sentences |
+| `CHANGELOG.md` | users | user-visible behaviour changes | fixture/CI/lane/variant internals, implementation narrative | one line per change, ≤4 lines each |
+| `ci/<rtos>/README.md` | lane maintainers | measured build facts, toolchains, cache, linker traps, unreachable variants | adapter design | none |
+
+Rule of thumb: if a fact already exists in another file, add a link, never a
+rewrite.  Process history ("this used to…", "formerly unit-tested…")
+belongs in commit messages and DtoD run artifacts, not in repository docs.
 
 ## Conventions
 

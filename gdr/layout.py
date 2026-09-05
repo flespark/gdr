@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from .constants import GDR_MAX_TRAVERSAL_COUNT
-from .gdb_bridge import lookup_symbol, warn
+from .gdb_bridge import TARGET_ACCESS_ERRORS, lookup_symbol, read_bytes, type_size, warn
 
 try:
     import gdb
@@ -27,16 +27,6 @@ except ImportError:
 # stays evaluable when imported outside GDB (where ``gdb`` is ``None`` would
 # otherwise turn a running handler into an AttributeError).  Unexpected
 # exceptions bubble to a command/function guard for a full diagnostic.
-if gdb is not None:
-    _ACCESS_ERRORS = (
-        gdb.error,
-        gdb.MemoryError,
-        IndexError,
-        TypeError,
-        ValueError,
-    )
-else:
-    _ACCESS_ERRORS = (IndexError, TypeError, ValueError)
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +83,6 @@ class StructField:
             as an ``enum_map``.
     """
 
-    # TODO: StructField attributes simplify
     name: str
     path: tuple[str | int, ...]
     kind: str = ""
@@ -218,13 +207,19 @@ def member_offset(type_name: str, path: tuple[str | int, ...]) -> int | None:
         if isinstance(part, int):
             if t.code != gdb.TYPE_CODE_ARRAY:
                 return None
-            offset_bits += part * t.target().sizeof * 8
+            target_size = type_size(t.target())
+            if target_size is None:
+                return None
+            offset_bits += part * target_size * 8
             t = t.target()
         else:
             found = False
             for f in t.fields():
                 if f.name == part:
-                    offset_bits += f.bitpos
+                    bitpos = f.bitpos
+                    if bitpos is None:
+                        return None
+                    offset_bits += bitpos
                     t = f.type
                     found = True
                     break
@@ -253,9 +248,60 @@ def container_of(
     offset = member_offset(container_type, member_path)
     if offset is None:
         raise ValueError(f"cannot compute offset of {member_path} in {container_type}")
-    addr = int(node_ptr) - offset
+    try:
+        addr = int(node_ptr) - offset
+    except TARGET_ACCESS_ERRORS as exc:
+        raise ValueError(
+            f"cannot resolve node pointer {node_ptr!r} to an address"
+        ) from exc
     ptr_type = gdb.lookup_type(container_type).pointer()
     return gdb.Value(addr).cast(ptr_type).dereference()
+
+
+def value_at(address: int, struct_layout: StructLayout) -> gdb.Value | None:
+    """Cast a raw address to the layout's struct type and dereference it.
+
+    Callers holding only an object address (e.g. a TCB pointer discovered from
+    a ``pvOwner`` field) use this to rebuild the native ``gdb.Value`` before
+    reading layout fields.  The cast type always comes from
+    ``struct_layout.struct_name`` (never a caller literal), so a renamed
+    kernel struct stays correct.  Returns ``None`` when the address is
+    unusable, the type is missing, or the cast fails.
+    """
+    if gdb is None or not address:
+        return None
+    try:
+        ptr_type = gdb.lookup_type(struct_layout.struct_name).pointer()
+        return gdb.Value(address).cast(ptr_type).dereference()
+    except TARGET_ACCESS_ERRORS:
+        return None
+
+
+def read_field_at(
+    addr: int,
+    type_name: str,
+    struct_layout: StructLayout,
+    field: str,
+    width: int,
+    endian: Literal["little", "big"],
+) -> int | None:
+    """Read one fixed-width layout field from a raw struct address.
+
+    The member offset comes from the DWARF type via :func:`member_offset`,
+    never from a hard-coded literal, so config-conditional or renamed fields
+    degrade to ``None`` instead of reading a stale offset.  Raw bytes are
+    decoded with the caller-supplied *endian* (target order).
+    """
+    f = struct_layout.fields.get(field)
+    if f is None:
+        return None
+    offset = member_offset(type_name, f.path)
+    if offset is None:
+        return None
+    raw = read_bytes(addr + offset, width)
+    if raw is None:
+        return None
+    return int.from_bytes(raw, byteorder=endian)
 
 
 def read_path(value: gdb.Value, path: tuple[str | int, ...]) -> gdb.Value | None:
@@ -265,7 +311,7 @@ def read_path(value: gdb.Value, path: tuple[str | int, ...]) -> gdb.Value | None
         for part in path:
             current = current[part]
         return current
-    except _ACCESS_ERRORS:
+    except TARGET_ACCESS_ERRORS:
         return None
 
 
@@ -299,7 +345,7 @@ def resolve_list_head(hook: ListHook):
         return value
     try:
         return value[hook.head_index]
-    except _ACCESS_ERRORS:
+    except TARGET_ACCESS_ERRORS:
         return None
 
 
@@ -343,5 +389,5 @@ def iter_list(
             yield container_of(node, hook.container_type, hook.node_path)
             node = read_path(node, hook.next_path)
             count += 1
-    except _ACCESS_ERRORS:
+    except TARGET_ACCESS_ERRORS:
         return

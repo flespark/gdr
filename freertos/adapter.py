@@ -25,7 +25,12 @@ from freertos.details import (
 )
 from freertos.diagnostics import system_checks
 from freertos.events import event_group_table, value_to_event_group_object
-from freertos.layout import FreeRtosLayout, queue_type_label
+from freertos.layout import (
+    OBJECT_KIND_ORDER,
+    STRUCT_BY_KIND,
+    FreeRtosLayout,
+    queue_type_label,
+)
 from freertos.navigation import (
     _QUEUE_FAMILY_KINDS,
     DiscoveredObject,
@@ -59,21 +64,22 @@ from freertos.timers import (
     timer_subsystem_ready,
 )
 from gdr.adapter_api import (
+    HeapReport,
     ObjectDetail,
     ObjectTable,
     RtosAdapter,
     SystemSummary,
 )
+from gdr.derive import fill_watermark
 from gdr.formatting import format_address, format_optional_int
 from gdr.gdb_bridge import (
-    get_arch_info,
-    lookup_type,
+    TARGET_ACCESS_ERRORS,
     read_bytes,
     read_cstring,
     read_int,
     value_address,
 )
-from gdr.layout import read_field, read_path
+from gdr.layout import read_field, value_at
 
 
 @dataclass
@@ -139,73 +145,34 @@ class FreeRtosQueueObject:
     recursive_count: int | None = None
 
 
-def _ptr(value) -> int:
-    return read_int(value) or 0
-
-
-def _stack_type_size() -> int:
+def _stack_type_size(layout=None) -> int:
     """Return ``sizeof(StackType_t)`` in bytes for the current target.
 
     ``StackType_t`` is a port typedef (``uint32_t`` on ARMv7-M, ``uint64_t`` on
-    RV64), so the value must come from DWARF. When the typedef is absent the
-    fallback is the *target's* pointer width -- every upstream port defines
-    ``portSTACK_TYPE`` at the machine word width -- never a host-side guess.
+    RV64); the width is probed into ``FreeRtosConfig.stack_word_bytes`` by
+    :func:`freertos.layout.detect_config` (DWARF, falling back to the target
+    pointer width), so the watermark scan never probes the type directly here.
+    ``None`` (no layout in scope) keeps the previous probed value.
     """
-    if gdb is None:
-        return 4
-    try:
-        typ = gdb.lookup_type("StackType_t")
-        if typ is not None:
-            return int(typ.sizeof)
-    except _PROBE_ERRORS:
-        pass
-    arch = get_arch_info()
-    return arch.ptrsize if arch is not None else 4
+    if layout is not None and layout.config.stack_word_bytes:
+        return layout.config.stack_word_bytes
+    return 4
 
 
-# Errors expected while probing DWARF types or casting a raw address: the
-# type may be absent from this build, or the address may be unreadable.
-# Anything outside the set intentionally bubbles to a command/function guard.
-if gdb is not None:
-    _PROBE_ERRORS: tuple[type[BaseException], ...] = (
-        gdb.error,
-        gdb.MemoryError,
-        KeyError,
-        TypeError,
-        ValueError,
-        AttributeError,
-    )
-else:
-    _PROBE_ERRORS = (KeyError, TypeError, ValueError, AttributeError)
-
-
-def _count_fill(stack: bytes) -> int:
-    """Count leading ``tskSTACK_FILL_BYTE`` bytes from the low end."""
-    count = 0
-    for byte in stack:
-        if byte != 0xA5:
-            break
-        count += 1
-    return count
-
-
-def _high_water_mark(stack: bytes | None) -> int | None:
+def _high_water_mark(stack: bytes | None, stack_word_bytes: int) -> int | None:
     """Count untouched ``0xa5`` fill bytes at the low end of a stack.
 
     Stacks are prefilled with ``tskSTACK_FILL_BYTE`` (0xa5) under the
     watermarking macros; the high-water mark is the number of words that were
     never overwritten. Returns ``None`` when the stack was never filled (the
     first byte is not 0xa5) or the raw read failed, which the renderer reports
-    as ``unavailable`` rather than a fabricated zero.
+    as ``unavailable`` rather than a fabricated zero.  The count lives in
+    :func:`gdr.derive.fill_watermark`; only grow-down stacks are supported
+    here (the sole upstream ``portSTACK_GROWTH=+1`` port is SDCC/Cygnal 8051,
+    which has no GCC toolchain and no QEMU machine, so the untouched fill
+    always sits at the low end).
     """
-    if stack is None or not stack:
-        return None
-    # Reason: only grow-down stacks are supported. The sole upstream
-    # portSTACK_GROWTH=+1 port is SDCC/Cygnal 8051, which has no GCC toolchain
-    # and no QEMU machine, so the untouched fill always sits at the low end.
-    if stack[0] != 0xA5:
-        return None
-    return _count_fill(stack) // _stack_type_size()
+    return fill_watermark(stack, from_low=True, word_bytes=stack_word_bytes)
 
 
 def _read_notifications(
@@ -228,9 +195,9 @@ def value_to_task(
     value, state: str, core: int | None, layout: FreeRtosLayout
 ) -> FreeRtosTask:
     sl = layout.structs["struct tskTaskControlBlock"]
-    top = _ptr(read_field(value, sl, "top_of_stack"))
-    base = _ptr(read_field(value, sl, "stack_base"))
-    end = _ptr(read_field(value, sl, "stack_end"))
+    top = read_int(read_field(value, sl, "top_of_stack")) or 0
+    base = read_int(read_field(value, sl, "stack_base")) or 0
+    end = read_int(read_field(value, sl, "stack_end")) or 0
     size = end - base if end and base and end >= base else None
     # Reason: pxEndOfStack only exists under configRECORD_STACK_HIGH_ADDRESS
     # or grow-up ports (tasks.c:403), and is absent from the default
@@ -258,7 +225,7 @@ def value_to_task(
         # in the startup window -- which is exactly the direction a debugger
         # must prefer over a fabricated larger number.
         raw = read_bytes(water_base, water_size)
-        high = _high_water_mark(raw)
+        high = _high_water_mark(raw, _stack_type_size(layout))
     state_item = read_field(value, sl, "state_list_item")
     wake_tick = None
     if state_item is not None:
@@ -321,52 +288,30 @@ def find_task(name: str, layout: FreeRtosLayout):
     return None
 
 
-# Semantic kind -> layout struct key used to cast a discovered address back
-# to a native gdb.Value.  Semaphores and mutexes are QueueDefinition structs.
-_STRUCT_BY_KIND: dict[str, str] = {
-    "task": "struct tskTaskControlBlock",
-    "queue": "struct QueueDefinition",
-    "semaphore": "struct QueueDefinition",
-    "mutex": "struct QueueDefinition",
-    "timer": "struct tmrTimerControl",
-    "eventgroup": "struct EventGroupDef_t",
-    "streambuffer": "struct StreamBufferDef_t",
-}
-
-
-# Kinds in display order for the object summary.
-_OBJECT_KIND_ORDER: tuple[str, ...] = (
-    "task",
-    "queue",
-    "semaphore",
-    "mutex",
-    "timer",
-    "eventgroup",
-    "streambuffer",
-)
-
-
 def _cast_object(address: int, kind: str, layout: FreeRtosLayout) -> gdb.Value | None:
     """Cast a discovered object address to its native DWARF struct value."""
     if gdb is None:
         return None
-    struct_key = _STRUCT_BY_KIND.get(kind.strip().lower())
+    struct_key = STRUCT_BY_KIND.get(kind.strip().lower())
     if struct_key is None:
         return None
-    try:
-        struct_name = layout.structs[struct_key].struct_name
-        typ = gdb.lookup_type(struct_name).pointer()
-        return gdb.Value(address).cast(typ).dereference()
-    except _PROBE_ERRORS:
+    struct_layout = layout.structs.get(struct_key)
+    if struct_layout is None:
         return None
+    # Cast through the generic helper so the DWARF type name comes from the
+    # layout description (never a literal); value_at already degrades to
+    # None on any expected access error.
+    return value_at(address, struct_layout)
 
 
-def _queue_type_present() -> bool:
-    """Whether the kernel exposes a QueueDefinition type (queue support)."""
-    return (
-        lookup_type("struct QueueDefinition") is not None
-        or lookup_type("xQUEUE") is not None
-    )
+def _queue_type_present(layout: FreeRtosLayout) -> bool:
+    """Whether the kernel exposes a QueueDefinition type (queue support).
+
+    Probed into ``FreeRtosConfig.queue_support`` by detect_config (the
+    DWARF type presence decides it), so the adapter never re-probes the
+    type name directly.
+    """
+    return layout.config.queue_support
 
 
 def _kind_enabled(kind: str, layout: FreeRtosLayout) -> bool:
@@ -379,7 +324,7 @@ def _kind_enabled(kind: str, layout: FreeRtosLayout) -> bool:
     if kind == "task":
         return True
     if kind in ("queue", "semaphore", "mutex"):
-        return _queue_type_present()
+        return _queue_type_present(layout)
     if kind == "timer":
         return layout.config.timers
     if kind == "eventgroup":
@@ -425,8 +370,8 @@ def waiter_names(value, layout: FreeRtosLayout, wait_list: str) -> list[str] | N
     item's owner is the blocked task's TCB (queue.c vListInsertEnd).
     Returns ``None`` when the list head is unreadable.
     """
-    member = "xTasksWaitingToSend" if wait_list == "send" else "xTasksWaitingToReceive"
-    head = read_path(value, (member,))
+    field = "send_waiters" if wait_list == "send" else "recv_waiters"
+    head = read_field(value, layout.structs["struct QueueDefinition"], field)
     if head is None:
         return None
     sl = layout.structs["struct tskTaskControlBlock"]
@@ -459,9 +404,10 @@ def value_to_queue_object(
     )
     if value is None:
         return obj
-    length = read_int(read_path(value, ("uxLength",)))
-    count = read_int(read_path(value, ("uxMessagesWaiting",)))
-    item_size = read_int(read_path(value, ("uxItemSize",)))
+    ql = layout.structs["struct QueueDefinition"]
+    length = read_int(read_field(value, ql, "length"))
+    count = read_int(read_field(value, ql, "count"))
+    item_size = read_int(read_field(value, ql, "item_size"))
     obj.length = length
     obj.count = count
     obj.item_size = item_size
@@ -469,20 +415,18 @@ def value_to_queue_object(
         obj.free = max(length - count, 0)
     obj.send_waiters = waiter_names(value, layout, "send")
     obj.recv_waiters = waiter_names(value, layout, "receive")
-    obj.rx_lock = _normalize_lock(read_int(read_path(value, ("cRxLock",))))
-    obj.tx_lock = _normalize_lock(read_int(read_path(value, ("cTxLock",))))
+    obj.rx_lock = _normalize_lock(read_int(read_field(value, ql, "rx_lock")))
+    obj.tx_lock = _normalize_lock(read_int(read_field(value, ql, "tx_lock")))
     if layout.config.trace_facility:
-        obj.type_code = read_int(read_path(value, ("ucQueueType",)))
+        obj.type_code = read_int(read_field(value, ql, "type"))
     if layout.config.queue_sets:
-        obj.set_container = read_int(read_path(value, ("pxQueueSetContainer",)))
+        obj.set_container = read_int(read_field(value, ql, "set_container"))
     if found.kind == "mutex":
-        holder = read_int(read_path(value, ("u", "xSemaphore", "xMutexHolder")))
+        holder = read_int(read_field(value, ql, "mutex_holder"))
         obj.holder_address = holder
         if holder:
             obj.holder = task_name_at(holder, layout)
-        obj.recursive_count = read_int(
-            read_path(value, ("u", "xSemaphore", "uxRecursiveCallCount"))
-        )
+        obj.recursive_count = read_int(read_field(value, ql, "recursive_count"))
     return obj
 
 
@@ -532,16 +476,20 @@ def value_to_timer_object(
     )
     if value is None:
         return obj
-    container_field = layout.config.list_item_container_field or "pxContainer"
-    obj.period = read_int(read_path(value, ("xTimerPeriodInTicks",)))
-    obj.status = read_int(read_path(value, ("ucStatus",)))
-    obj.expiry = read_int(read_path(value, ("xTimerListItem", "xItemValue")))
-    obj.callback = read_int(read_path(value, ("pxCallbackFunction",)))
-    obj.id = read_int(read_path(value, ("pvTimerID",)))
-    obj.owner = read_int(read_path(value, ("xTimerListItem", "pvOwner")))
-    obj.container = read_int(read_path(value, ("xTimerListItem", container_field)))
+    tl = layout.structs["struct tmrTimerControl"]
+    obj.period = read_int(read_field(value, tl, "period"))
+    obj.status = read_int(read_field(value, tl, "status"))
+    # The list-item membership fields are nested struct paths declared in
+    # the layout (they compose through the ListItem layout); the container
+    # member name follows the probed spelling (pvContainer / pxContainer)
+    # inside layout.py, so no re-probe here.
+    obj.expiry = read_int(read_field(value, tl, "expiry"))
+    obj.callback = read_int(read_field(value, tl, "callback"))
+    obj.id = read_int(read_field(value, tl, "id"))
+    obj.owner = read_int(read_field(value, tl, "owner"))
+    obj.container = read_int(read_field(value, tl, "container"))
     if layout.config.trace_facility:
-        obj.timer_number = read_int(read_path(value, ("uxTimerNumber",)))
+        obj.timer_number = read_int(read_field(value, tl, "number"))
     return obj
 
 
@@ -597,7 +545,7 @@ class FreeRtosAdapter(RtosAdapter):
             ("task", len(tasks), f"scheduler={len(tasks)}")
         ]
         enabled_kinds = [
-            kind for kind in _OBJECT_KIND_ORDER[1:] if _kind_enabled(kind, self.layout)
+            kind for kind in OBJECT_KIND_ORDER[1:] if _kind_enabled(kind, self.layout)
         ]
         # Reason: the shared channel scan walks every task list, so it only
         # runs when at least one non-task kind can actually exist; a build
@@ -828,7 +776,7 @@ class FreeRtosAdapter(RtosAdapter):
         objects.sort(
             key=lambda obj: 0 if timer_is_on_lists(obj.source, obj.extra_sources) else 1
         )
-        tick = system_value("xTickCount")
+        tick = system_value("tick", self.layout)
         mask = (1 << layout.config.tick_bits) - 1
         rows = []
         transition = False
@@ -1048,7 +996,7 @@ class FreeRtosAdapter(RtosAdapter):
                 row.append(
                     str(task.high_water_mark)
                     if task.high_water_mark is not None
-                    else "unavailable"
+                    else "N/A"
                 )
             if show_runtime:
                 row.append(format_optional_int(task.runtime_counter))
@@ -1060,14 +1008,27 @@ class FreeRtosAdapter(RtosAdapter):
             rows.append(row)
         return ObjectTable(headers=headers, rows=rows, elastic=("Name",))
 
-    def heap_report(self) -> tuple[list[tuple[str, str]], ObjectTable | None]:
+    def heap_report(self) -> HeapReport:
         """One collected heap snapshot formatted for ``frt heap``.
 
         The snapshot is collected once and both the pairs and the block
         table derive from it, so ``frt heap`` never walks the heap twice.
         """
         snap = heap_module.heap_snapshot(self.layout)
-        return heap_module.heap_pairs(snap), heap_module.heap_block_table(snap)
+        table = heap_module.heap_block_table(snap)
+        algorithm = snap.geometry.algorithm
+        messages: list[str] = []
+        if algorithm == "heap_3":
+            messages.append(
+                "heap_3 wraps the C library malloc; the libc heap is not inspectable"
+            )
+        elif algorithm == "none":
+            messages.append("no FreeRTOS heap allocator is linked (no pvPortMalloc)")
+        return HeapReport(
+            pairs=heap_module.heap_pairs(snap),
+            table=table,
+            messages=messages,
+        )
 
     def system_summary(self) -> SystemSummary:
         tasks = list(iter_converted_tasks(self.layout))
@@ -1084,15 +1045,15 @@ class FreeRtosAdapter(RtosAdapter):
             "Suspended": list_count("suspended", self.layout),
             "Termination": list_count("termination", self.layout),
         }
-        scheduler = system_value("xSchedulerRunning")
-        total = system_value("uxCurrentNumberOfTasks")
+        scheduler = system_value("scheduler_running", self.layout)
+        total = system_value("task_count", self.layout)
         # Reason: the heap snapshot is best-effort -- outside GDB the symbol
         # probes raise RuntimeError, and a broken target heap must not take
         # down ``frt system`` -- so a snapshot failure degrades to the
         # layout-only allocator label instead of aborting the summary.
         try:
             snap = heap_module.heap_snapshot(self.layout)
-        except Exception:
+        except TARGET_ACCESS_ERRORS:
             snap = None
         if snap is not None:
             # Reason: pre-init the counters hold their static initializers
@@ -1129,7 +1090,7 @@ class FreeRtosAdapter(RtosAdapter):
         # still rendered from whatever symbols did read).
         try:
             checks = checks_pairs(system_checks(self.layout))
-        except Exception:
+        except TARGET_ACCESS_ERRORS:
             checks = []
         return SystemSummary(
             kernel_version=(
@@ -1139,13 +1100,13 @@ class FreeRtosAdapter(RtosAdapter):
             ),
             current_task=current,
             task_count=total if total is not None else len(tasks),
-            tick_count=system_value("xTickCount"),
+            tick_count=system_value("tick", self.layout),
             scheduler_state=(
                 "running"
                 if scheduler
                 else "not-running"
                 if scheduler is not None
-                else "unavailable"
+                else "N/A"
             ),
             state_counts={
                 name: value for name, value in counts.items() if value is not None

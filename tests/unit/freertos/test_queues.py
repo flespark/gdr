@@ -35,8 +35,21 @@ class _FakeValue:
 
 
 def _patch_reads(monkeypatch, module, paths: dict, read_int=None):
-    """Wire *module*'s read_path/read_int against a path -> value dict."""
-    monkeypatch.setattr(module, "read_path", lambda _value, path: paths.get(path))
+    """Wire *module*'s read_path/read_field against a path -> value dict.
+
+    ``paths`` keys are raw member-path tuples (``("uxLength",)``).  The
+    ``read_field`` mock resolves the logical name through the layout's
+    field path so both read styles hit the same data.
+    """
+    if hasattr(module, "read_path"):
+        monkeypatch.setattr(module, "read_path", lambda _value, path: paths.get(path))
+
+    def fake_read_field(_value, struct_layout, field):
+        f = struct_layout.fields.get(field)
+        return paths.get(f.path) if f is not None else None
+
+    if hasattr(module, "read_field"):
+        monkeypatch.setattr(module, "read_field", fake_read_field)
     monkeypatch.setattr(
         module, "read_int", (lambda value: value) if read_int is None else read_int
     )
@@ -63,7 +76,9 @@ def test_classify_queue_with_trace_facility_covers_six_type_codes(
 ):
     """ucQueueType is definitive when configUSE_TRACE_FACILITY is on."""
     layout = build_layout(FreeRtosConfig(trace_facility=True))
-    monkeypatch.setattr(navigation, "read_path", lambda _v, _path: code)
+    monkeypatch.setattr(
+        navigation, "read_field", lambda _v, _sl, field: code if field == "type" else 0
+    )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
 
     result = navigation.classify_queue(object(), layout)
@@ -108,8 +123,8 @@ def test_classify_queue_treats_unreadable_pc_head_as_mutex(monkeypatch):
     layout = build_layout(FreeRtosConfig(trace_facility=True))
     monkeypatch.setattr(
         navigation,
-        "read_path",
-        lambda _v, _path: None,  # ucQueueType and pcHead both unreadable
+        "read_field",
+        lambda _v, _sl, _field: None,  # ucQueueType and pcHead both unreadable
     )
 
     result = navigation.classify_queue(object(), layout)
@@ -153,7 +168,9 @@ def _refine_with_type_code(monkeypatch, code: int):
     """Make classification definitive via a fake ucQueueType read."""
     layout = build_layout(FreeRtosConfig(trace_facility=True))
     monkeypatch.setattr(navigation, "_queue_value", lambda _address, _l: object())
-    monkeypatch.setattr(navigation, "read_path", lambda _v, _path: code)
+    monkeypatch.setattr(
+        navigation, "read_field", lambda _v, _sl, field: code if field == "type" else 0
+    )
     monkeypatch.setattr(navigation, "read_int", lambda value: value)
     return layout
 
@@ -324,16 +341,21 @@ def test_semaphore_detail_never_reads_semaphore_union_arm(monkeypatch):
         ("u", "xSemaphore", "xMutexHolder"): 0xDEADBEEF,
         ("u", "xSemaphore", "uxRecursiveCallCount"): 0xDEADBEEF,
     }
-    recorded: list[tuple] = []
+    recorded: list[str] = []
 
-    def spy_read_path(_value, path):
-        recorded.append(path)
-        return paths.get(path)
+    def spy_read_field(_value, struct_layout, field):
+        recorded.append(field)
+        f = struct_layout.fields.get(field)
+        return paths.get(f.path) if f is not None else None
 
     for module in (adapter_module, details_module, diagnostics):
-        monkeypatch.setattr(module, "read_path", spy_read_path)
+        if hasattr(module, "read_field"):
+            monkeypatch.setattr(module, "read_field", spy_read_field)
         monkeypatch.setattr(module, "read_int", lambda value: value)
     monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+    monkeypatch.setattr(
+        diagnostics, "lookup_symbol", lambda _name: None
+    )  # scheduler state unknown outside GDB
     monkeypatch.setattr(
         adapter_module, "task_name_at", lambda address, _l: f"0x{address:x}"
     )
@@ -346,8 +368,10 @@ def test_semaphore_detail_never_reads_semaphore_union_arm(monkeypatch):
     assert "RecursiveCallCount" not in keys
     text = "\n".join(f"{key}: {value}" for key, value in pairs).lower()
     assert "deadbeef" not in text
-    # The pipeline must never have touched the xSemaphore union arm at all.
-    assert not any(path[:2] == ("u", "xSemaphore") for path in recorded)
+    # The pipeline must never have touched the xSemaphore union arm at all:
+    # the mutex-only fields are decoded strictly for mutexes (queue.c).
+    assert "mutex_holder" not in recorded
+    assert "recursive_count" not in recorded
 
 
 # ---------------------------------------------------------------------------
@@ -372,16 +396,16 @@ def test_queue_items_follow_fifo_order_and_wrap(monkeypatch):
         ("uxMessagesWaiting",): 3,
         ("uxItemSize",): 4,
     }
-    _patch_reads(monkeypatch, details_module, paths)
+    _patch_reads(monkeypatch, navigation, paths)
     read_sites: list[int] = []
 
     def read_bytes(address, size):
         read_sites.append(address)
         return bytes([address & 0xFF] * size)
 
-    monkeypatch.setattr(details_module, "read_bytes", read_bytes)
+    monkeypatch.setattr(navigation, "read_bytes", read_bytes)
 
-    items = list(details_module.iter_queue_items(object(), layout))
+    items = list(navigation.iter_queue_items(object(), layout))
 
     assert [address for _index, address, _payload in items] == [0x2000, 0x2004, 0x2008]
     assert read_sites == [0x2000, 0x2004, 0x2008]
@@ -399,9 +423,9 @@ def test_queue_item_payload_truncates_at_64_bytes(monkeypatch):
         ("uxMessagesWaiting",): 1,
         ("uxItemSize",): 128,
     }
-    _patch_reads(monkeypatch, details_module, paths)
+    _patch_reads(monkeypatch, navigation, paths)
     _patch_reads(monkeypatch, diagnostics, paths)
-    monkeypatch.setattr(details_module, "read_bytes", lambda _a, size: b"\xab" * size)
+    monkeypatch.setattr(navigation, "read_bytes", lambda _a, size: b"\xab" * size)
     obj = FreeRtosQueueObject(
         name="big",
         address=0x2000,
@@ -539,6 +563,9 @@ def test_queue_checks_pass_and_fail(
     """Each consistency check has one passing and one failing case."""
     _patch_reads(monkeypatch, diagnostics, paths)
     monkeypatch.setattr(diagnostics, "value_address", lambda _value: obj_address)
+    monkeypatch.setattr(
+        diagnostics, "lookup_symbol", lambda _name: None
+    )  # scheduler state unknown outside GDB
 
     results = dict(
         diagnostics.queue_checks(object(), kind, build_layout(FreeRtosConfig()))
@@ -565,6 +592,9 @@ def test_queue_checks_skip_pointer_bounds_for_mutex_and_semaphore(monkeypatch):
         {L: 1, W: 1, ITEM: 0, H: 0, HOLDER: 0},  # free mutex: count 1, no holder
     )
     monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+    monkeypatch.setattr(
+        diagnostics, "lookup_symbol", lambda _name: None
+    )  # scheduler state unknown outside GDB
     mutex_results = dict(
         diagnostics.queue_checks(object(), "mutex", build_layout(FreeRtosConfig()))
     )
@@ -610,6 +640,9 @@ def test_queue_lock_check_flags_stale_lock_counts(monkeypatch, paths, expect_ok)
         {L: 2, W: 0, ITEM: 4, H: 0x2000, **paths},
     )
     monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+    monkeypatch.setattr(
+        diagnostics, "lookup_symbol", lambda _name: None
+    )  # scheduler state unknown outside GDB
 
     results = dict(
         diagnostics.queue_checks(object(), "queue", build_layout(FreeRtosConfig()))
@@ -647,6 +680,9 @@ def test_queue_lock_skips_when_unreadable(monkeypatch):
         {L: 2, W: 0, ITEM: 4, H: 0x2000, RX: None, TX: None},
     )
     monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+    monkeypatch.setattr(
+        diagnostics, "lookup_symbol", lambda _name: None
+    )  # scheduler state unknown outside GDB
 
     results = dict(
         diagnostics.queue_checks(object(), "queue", build_layout(FreeRtosConfig()))
@@ -750,16 +786,13 @@ def test_waiter_names_reads_task_names_from_wait_list(monkeypatch):
     task_a, task_b = object(), object()
     monkeypatch.setattr(
         adapter_module,
-        "read_path",
-        lambda _v, path: head if path == ("xTasksWaitingToReceive",) else None,
+        "read_field",
+        lambda _v, _sl, f: head if f == "recv_waiters" else _v if f == "name" else None,
     )
     monkeypatch.setattr(
         adapter_module, "_iter_list", lambda _head, _l: iter([task_a, task_b])
     )
     names_by_id = {id(task_a): "gdr_qrecv", id(task_b): ""}
-    monkeypatch.setattr(
-        adapter_module, "read_field", lambda task, _sl, f: task if f == "name" else None
-    )
     monkeypatch.setattr(
         adapter_module, "read_cstring", lambda v: names_by_id.get(id(v)) or "-"
     )

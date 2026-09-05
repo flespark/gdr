@@ -23,6 +23,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/fixture-common.sh
+source "$SCRIPT_DIR/lib/fixture-common.sh"
 DEFAULT_REPO="https://github.com/FreeRTOS/FreeRTOS-Kernel.git"
 DEFAULT_TAG="V11.1.0"
 DEFAULT_KERNEL_DIR="/tmp/gdr-freertos-kernel-source"
@@ -39,33 +41,10 @@ toolchain_prefix_for() {
     esac
 }
 
-die() {
-    echo "[gdr-ci] FAILED: $*" >&2
-    exit 1
-}
-
-usage() {
-    sed -n '3,23p' "$0" | sed 's/^# \?//'
-}
-
 # V10.5.1 / V10.3.1-kernel-only -> 10.5.1 / 10.3.1
 version_from_tag() {
     local tag="${1#V}"
     echo "${tag%-kernel-only}"
-}
-
-setup_toolchain() {
-    local gcc tool prefix
-    prefix="$(toolchain_prefix_for)"
-    if [[ -z "$TOOLCHAIN_PATH" ]]; then
-        gcc="$(command -v "${prefix}gcc" || true)"
-        [[ -n "$gcc" ]] || die "${prefix}gcc is not on PATH"
-        TOOLCHAIN_PATH="$(dirname "$gcc")"
-    fi
-    for tool in gcc objcopy; do
-        [[ -x "$TOOLCHAIN_PATH/${prefix}$tool" ]] ||
-            die "required tool not found: $TOOLCHAIN_PATH/${prefix}$tool"
-    done
 }
 
 prepare_kernel() {
@@ -87,18 +66,6 @@ prepare_kernel() {
         git -C "$KERNEL_DIR" fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
     fi
     git -C "$KERNEL_DIR" checkout --detach "$TAG"
-}
-
-heap_source() {
-    local kernel="$1"
-    case "$VARIANT" in
-    static-only) return 0 ;;
-    heap-1) echo "$kernel/portable/MemMang/heap_1.c" ;;
-    heap-2) echo "$kernel/portable/MemMang/heap_2.c" ;;
-    heap-3) echo "$kernel/portable/MemMang/heap_3.c" ;;
-    heap-5 | heap-5-protector) echo "$kernel/portable/MemMang/heap_5.c" ;;
-    *) echo "$kernel/portable/MemMang/heap_4.c" ;;
-    esac
 }
 
 board_flags() {
@@ -196,6 +163,7 @@ compile_fixture() {
         -I"$config_dir"
         -I"$SCRIPT_DIR/fixture/config"
         -I"$board_dir"
+        -I"$SCRIPT_DIR/fixture/common"
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
@@ -219,7 +187,8 @@ compile_fixture() {
         sources=(
             "$SCRIPT_DIR/fixture/main.c"
             "$board_dir/system_init.c"
-            "$board_dir/syscalls.c"
+            "$SCRIPT_DIR/fixture/common/syscalls.c"
+            "$SCRIPT_DIR/fixture/common/runtime_timer.c"
             "$board_dir/startup.s"
             "$KERNEL_DIR/tasks.c" "$KERNEL_DIR/queue.c" "$KERNEL_DIR/list.c"
             "$KERNEL_DIR/timers.c" "$KERNEL_DIR/event_groups.c"
@@ -231,7 +200,8 @@ compile_fixture() {
         sources=(
             "$SCRIPT_DIR/fixture/main.c"
             "$board_dir/system_init.c"
-            "$board_dir/syscalls.c"
+            "$SCRIPT_DIR/fixture/common/syscalls.c"
+            "$SCRIPT_DIR/fixture/common/runtime_timer.c"
             "$board_dir/startup.s"
             "$KERNEL_DIR/tasks.c" "$KERNEL_DIR/queue.c" "$KERNEL_DIR/list.c"
             "$KERNEL_DIR/timers.c" "$KERNEL_DIR/event_groups.c"
@@ -271,18 +241,6 @@ compile_fixture() {
 }
 
 # Mirror the artifacts into the shared fixture cache; see build-fixture-cubel4.sh.
-install_to_cache() {
-    [[ "$CACHE_INSTALL" == 1 ]] || return 0
-    local elf="$CACHE_DIR/freertos.elf"
-    local bin="$CACHE_DIR/freertos.bin"
-    mkdir -p "$CACHE_DIR"
-    [[ "$OUT_ELF" == "$elf" ]] || cp -f "$OUT_ELF" "$elf"
-    [[ "$OUT_BIN" == "$bin" ]] || cp -f "$OUT_BIN" "$bin"
-    if [[ -f "$BUILD_DIR/freertos.map" ]]; then
-        cp -f "$BUILD_DIR/freertos.map" "$CACHE_DIR/freertos.map"
-    fi
-    echo "[gdr-ci] cached fixture: $CACHE_DIR"
-}
 
 parse_args() {
     local -a leftover=()
@@ -338,7 +296,7 @@ parse_args() {
             shift 2
             ;;
         -h | --help)
-            usage
+            usage_from_header 22
             exit 0
             ;;
         *)
@@ -363,6 +321,7 @@ main() {
     OUT_ELF=""
     OUT_BIN=""
     CACHE_DIR=""
+    # shellcheck disable=SC2034 # read by the sourced install_to_cache()
     CACHE_INSTALL=1
     TOOLCHAIN_PATH=""
     KERNEL_DIR_EXPLICIT=0
@@ -371,9 +330,9 @@ main() {
     OUT_ELF="${OUT_ELF:-$BUILD_DIR/freertos.elf}"
     OUT_BIN="${OUT_BIN:-$BUILD_DIR/freertos.bin}"
     VERSION="${VERSION:-$(version_from_tag "$TAG")}"
-    CACHE_ROOT="${FREERTOS_FIXTURE_CACHE:-$HOME/Project/gdr-fixture/freertos}"
+    CACHE_ROOT="$(fixture_cache_root)"
     CACHE_DIR="${CACHE_DIR:-$CACHE_ROOT/$TARGET/$VERSION/$VARIANT}"
-    setup_toolchain
+    setup_toolchain "$(toolchain_prefix_for)"
     prepare_kernel
     compile_fixture
     install_to_cache

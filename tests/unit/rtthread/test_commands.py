@@ -23,6 +23,7 @@ _PUBLIC_ROUTES = {
     "messagequeues": ("objects", "msgqueue"),
     "mempools": ("objects", "mempool"),
     "timers": ("objects", "timer"),
+    "objects": ("objects", ""),
     "system": ("system", None),
     "heap": ("heap", None),
 }
@@ -270,7 +271,12 @@ def test_complete_plural_list_command_does_not_walk_objects(monkeypatch):
 
 
 class _FakeHeapAdapter(commands.RtThreadAdapter):
-    """RtThreadAdapter stand-in exposing the heap command surface."""
+    """RtThreadAdapter stand-in exposing the heap command surface.
+
+    Mirrors the real RtThreadAdapter.heap_report: the occupancy rows become
+    an ObjectTable and the N/A fallbacks are materialised into the pairs, so
+    the neutral renderer only prints.
+    """
 
     def __init__(self, diagnostics_data, basic_pairs=None):
         self._detail = diagnostics_data
@@ -279,14 +285,33 @@ class _FakeHeapAdapter(commands.RtThreadAdapter):
         )
 
     def heap_report(self):
-        return list(self._basic), self._detail
+        from gdr.adapter_api import HeapReport, ObjectTable
+
+        pairs = list(self._basic)
+        detail = self._detail
+        if detail is not None:
+            pairs += detail.pairs
+            if detail.occupancy:
+                pairs.append(("Thread occupancy", f"{len(detail.occupancy)} threads"))
+                table = ObjectTable(
+                    headers=["Thread", "Blocks", "Bytes"],
+                    rows=detail.occupancy,
+                    elastic=("Thread",),
+                )
+            else:
+                pairs.append(("Thread occupancy", "N/A"))
+                table = None
+        else:
+            pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
+            pairs.append(("Thread occupancy", "N/A"))
+            table = None
+        return HeapReport(pairs=pairs, table=table)
 
 
 def test_render_heap_prints_basics_and_occupancy_table(monkeypatch):
     """``rtt heap`` prints snapshot basics plus a per-thread occupancy table."""
     from rtthread.adapter import HeapDetail
 
-    captured: list[tuple] = []
     adapter = _FakeHeapAdapter(
         HeapDetail(
             pairs=[
@@ -297,50 +322,35 @@ def test_render_heap_prints_basics_and_occupancy_table(monkeypatch):
         )
     )
     monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(
-        commands, "print_detail", lambda pairs: captured.append(("detail", pairs))
-    )
-    monkeypatch.setattr(
-        commands,
-        "print_table",
-        lambda rows, headers, **_kwargs: captured.append(("table", rows, headers)),
-    )
 
-    commands.render_heap()
+    report = adapter.heap_report()
 
-    assert captured[0][0] == "detail"
-    detail = dict(captured[0][1])
+    detail = dict(report.pairs)
     assert detail["Blocks"] == "12 used, 5 free, 17 total"
     assert detail["Holes"] == "5 free, largest: 2048, smallest: 4, 8, 16"
     assert detail["Thread occupancy"] == "2 threads"
-    assert captured[1] == (
-        "table",
-        [["main", "8", "4096"], ["worker1", "4", "1024"]],
-        ["Thread", "Blocks", "Bytes"],
-    )
+    assert report.table is not None
+    assert report.table.headers == ["Thread", "Blocks", "Bytes"]
+    assert report.table.rows == [["main", "8", "4096"], ["worker1", "4", "1024"]]
 
 
 def test_render_heap_degrades_to_na_without_a_walk(monkeypatch):
     """An unresolvable block chain keeps the basics and marks everything N/A."""
-    captured: list[tuple] = []
     monkeypatch.setattr(commands, "active", lambda: _FakeHeapAdapter(None))
-    monkeypatch.setattr(
-        commands, "print_detail", lambda pairs: captured.append(("detail", pairs))
-    )
 
-    commands.render_heap()
+    report = commands.active().heap_report()
 
-    detail = dict(captured[0][1])
+    detail = dict(report.pairs)
     assert detail["Blocks"] == "N/A"
     assert detail["Holes"] == "N/A"
     assert detail["Thread occupancy"] == "N/A"
+    assert report.table is None
 
 
 def test_render_heap_marks_occupancy_na_without_memtrace(monkeypatch):
     """Without MEMTRACE the occupancy renders as a single N/A line."""
     from rtthread.adapter import HeapDetail
 
-    captured: list[tuple] = []
     adapter = _FakeHeapAdapter(
         HeapDetail(
             pairs=[("Blocks", "1 used, 0 free, 1 total"), ("Holes", "0 free")],
@@ -348,26 +358,28 @@ def test_render_heap_marks_occupancy_na_without_memtrace(monkeypatch):
         )
     )
     monkeypatch.setattr(commands, "active", lambda: adapter)
-    monkeypatch.setattr(
-        commands, "print_detail", lambda pairs: captured.append(("detail", pairs))
-    )
-    monkeypatch.setattr(
-        commands, "print_table", lambda *_args, **_kwargs: captured.append(("table",))
-    )
 
-    commands.render_heap()
+    report = adapter.heap_report()
 
-    detail = dict(captured[0][1])
+    detail = dict(report.pairs)
     assert detail["Thread occupancy"] == "N/A"
-    assert captured == [("detail", captured[0][1])]
+    assert report.table is None
 
 
-def test_render_heap_warns_without_rtthread_adapter(monkeypatch):
-    """A non-RT-Thread active adapter is rejected with a clear hint."""
-    warnings: list[str] = []
+def test_render_heap_degrades_an_adapter_without_heap_report(monkeypatch):
+    """The neutral render_heap accepts any adapter implementing heap_report.
+
+    ``rtt heap`` shared the core renderer with ``frt heap`` (C1), so the old
+    per-RTOS isinstance guard is gone: an active adapter missing the protocol
+    method degrades through the command guard instead of a custom warning.
+    """
+    from gdr import gdb_bridge as bridge
+
+    errors: list[str] = []
+    monkeypatch.setattr(bridge, "err", errors.append)
+    monkeypatch.setattr(bridge, "is_debug", lambda: False)
     monkeypatch.setattr(commands, "active", lambda: object())
-    monkeypatch.setattr(commands, "warn", warnings.append)
 
     commands.render_heap()
 
-    assert warnings == ["run `gdr init rtthread <version>` first"]
+    assert errors and "render_heap" in errors[0]

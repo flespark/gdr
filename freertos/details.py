@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 try:
@@ -13,7 +12,12 @@ except ImportError:
 from freertos.diagnostics import event_checks, queue_checks, task_checks, timer_checks
 from freertos.events import bits_cell, format_waiter_line
 from freertos.layout import FreeRtosLayout, queue_type_label
-from freertos.navigation import source_label, system_value, task_priority_at
+from freertos.navigation import (
+    iter_queue_items,
+    source_label,
+    system_value,
+    task_priority_at,
+)
 from freertos.streams import bounds_check, stream_label
 from freertos.timers import (
     DAEMON_CURRENT_MESSAGE,
@@ -30,14 +34,13 @@ from freertos.timers import (
     timer_is_on_lists,
     timer_list_label,
 )
-from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
+from gdr.derive import waiter_cell
 from gdr.formatting import format_address, format_optional_int
 from gdr.gdb_bridge import (
     lookup_symbol,
-    read_bytes,
     read_int,
 )
-from gdr.layout import read_path
+from gdr.layout import read_field
 
 if TYPE_CHECKING:
     from freertos.adapter import FreeRtosTask, FreeRtosTimerObject
@@ -83,7 +86,7 @@ def _runtime_percent(task: FreeRtosTask, layout: FreeRtosLayout) -> str | None:
     """Return the task's share of total runtime, or ``None`` when unknown."""
     if task.runtime_counter is None:
         return None
-    total_sym = lookup_symbol("ulTotalRunTime")
+    total_sym = lookup_symbol(layout.symbols["total_runtime"])
     if total_sym is None:
         return None
     total = _sum_runtime_counter(total_sym, layout)
@@ -131,7 +134,7 @@ def task_detail(
                 "HighWater",
                 str(task.high_water_mark)
                 if task.high_water_mark is not None
-                else "unavailable",
+                else "N/A",
             )
         )
     if "mutexes_held" in fields:
@@ -183,17 +186,15 @@ GDR_QUEUE_ITEM_DUMP_BYTES = 64
 def waiter_summary(names: list[str] | None) -> str:
     """Render ``count@names`` with the count first so truncation keeps it.
 
-    Mirrors the RT-Thread IPC waiter contract (rtthread/adapter.py): on a
+    Mirrors the IPC waiter contract of the other adapter package: on a
     narrow terminal the elastic columns shrink from the right, so a
     names-first format would lose the diagnostics count exactly when it
     matters most.  ``None`` (unreadable) renders ``N/A``; an empty list
-    renders ``0``.
+    renders ``0``.  The cell format lives in
+    :func:`gdr.derive.waiter_cell`; this name is kept as the adapter-facing
+    seam its callers and unit tests use.
     """
-    if names is None:
-        return "N/A"
-    if not names:
-        return "0"
-    return f"{len(names)}@{','.join(names)}"
+    return waiter_cell(names)
 
 
 def locks_cell(rx_lock: int | None, tx_lock: int | None) -> str:
@@ -263,55 +264,13 @@ def checks_pairs(checks: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return pairs
 
 
-def iter_queue_items(
-    value,
-    layout: FreeRtosLayout,  # noqa: ARG001 (uniform detail-builder signature)
-    max_payload: int = GDR_QUEUE_ITEM_DUMP_BYTES,
-) -> Iterator[tuple[int, int, bytes | None]]:
-    """Yield queued items ``(index, address, payload)`` in FIFO order.
-
-    The dump starts one slot past ``pcReadFrom`` -- that pointer marks the
-    most recent item *consumed*, so the next unread item is ``pcReadFrom +
-    uxItemSize`` -- and wraps at ``pcTail`` with the kernel's own ``>="``
-    comparison (queue.c prvCopyDataFromQueue).  ``pcTail`` itself is the end
-    marker and never holds an item.  Payloads are capped at *max_payload*
-    bytes; the caller renders any truncation.
-    """
-    pc_head = read_int(read_path(value, ("pcHead",)))
-    pc_tail = read_int(read_path(value, ("u", "xQueue", "pcTail")))
-    pc_read = read_int(read_path(value, ("u", "xQueue", "pcReadFrom")))
-    length = read_int(read_path(value, ("uxLength",)))
-    count = read_int(read_path(value, ("uxMessagesWaiting",)))
-    item_size = read_int(read_path(value, ("uxItemSize",)))
-    if (
-        pc_head is None
-        or pc_tail is None
-        or pc_read is None
-        or length is None
-        or count is None
-        or item_size is None
-    ):
-        return
-    if item_size <= 0 or count <= 0 or length <= 0:
-        return
-    span = pc_tail - pc_head
-    if span <= 0:
-        return
-    for index in range(min(count, length, GDR_MAX_TRAVERSAL_COUNT)):
-        # Reason: wording the wrap as modulo keeps it exact at pcTail (the
-        # kernel wraps with >=), so the slot right before pcTail is the
-        # last usable one and pcTail is never read as item storage.
-        pos = pc_head + ((pc_read + (index + 1) * item_size - pc_head) % span)
-        payload = read_bytes(pos, min(item_size, max_payload))
-        yield index, pos, payload
-
-
 def queue_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
     """Build the vertical pairs for ``frt queue <name>``.
 
     Key order is a stable output contract; ``Set`` appears only when the
     build has queue sets, and the FIFO ``Item[i]`` dump trails the checks.
     """
+    ql = layout.structs["struct QueueDefinition"]
     pairs: list[tuple[str, str]] = [
         ("Name", obj.name),
         ("Address", format_address(obj.address)),
@@ -320,12 +279,12 @@ def queue_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
         ("Length", format_optional_int(obj.length)),
         ("ItemSize", format_optional_int(obj.item_size)),
         ("Free", format_optional_int(obj.free)),
-        ("Head", format_address(read_int(read_path(value, ("pcHead",))))),
-        ("Tail", format_address(read_int(read_path(value, ("u", "xQueue", "pcTail"))))),
-        ("WriteTo", format_address(read_int(read_path(value, ("pcWriteTo",))))),
+        ("Head", format_address(read_int(read_field(value, ql, "head")))),
+        ("Tail", format_address(read_int(read_field(value, ql, "tail")))),
+        ("WriteTo", format_address(read_int(read_field(value, ql, "write_to")))),
         (
             "ReadFrom",
-            format_address(read_int(read_path(value, ("u", "xQueue", "pcReadFrom")))),
+            format_address(read_int(read_field(value, ql, "read_from"))),
         ),
         ("Locks", locks_cell(obj.rx_lock, obj.tx_lock)),
     ]
@@ -423,7 +382,7 @@ def timer_detail(
     as a live deadline.  The pending-command section trails the checks.
     """
     dormant = not timer_is_on_lists(obj.source, obj.extra_sources)
-    tick = system_value("xTickCount")
+    tick = system_value("tick", layout)
     mask = (1 << layout.config.tick_bits) - 1
     in_overflow = timer_epoch(obj.container) == "overflow"
     pairs: list[tuple[str, str]] = [
@@ -554,6 +513,6 @@ def stream_buffer_detail(
         )
     else:
         pairs.append(("NotificationIndex", "N/A (kernel < 11.1.0)"))
-    pairs.append(("BoundsCheck", bounds_check(obj, value)))
+    pairs.append(("BoundsCheck", bounds_check(obj, value, layout)))
     pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
     return pairs

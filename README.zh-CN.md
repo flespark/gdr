@@ -94,31 +94,18 @@ warning: target RT-Thread version not exported; cannot verify version
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态, 通过 `<rtos> help` 查看每个 RTOS 支持的命令和别名 |
 | `<rtos> <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
 
-FreeRTOS 说明：内核对象没有全局注册表，因此 `frt objects` 与各列表命令会在表上方
-标出每个对象的发现来源（`registry`、`symbol`、`waiter` 等）与枚举限制——计数不等于
-完整清单。给 queue 注册名字（`configQUEUE_REGISTRY_SIZE` + `vQueueAddToRegistry()`）
-是让它们能按名字出现的前提。未开 `configUSE_TRACE_FACILITY` 的 build 不保存精确类型，
-`frt queues`/`semaphores`/`mutexes` 会在 `Type` 后加 `?`（如 `mutex?`）；`Set` 列仅在
-开启 `configUSE_QUEUE_SETS` 时存在。软件定时器同理：内核只引用守护任务两张 active 列表里的
-timer，因此已停止 / 已过期的一次性 / 创建后未启动的 timer 只有在 build 里留有静态 timer
-缓冲区或全局句柄时才会出现在 `frt timers`（标为 `dormant`，`Expiry`/`ExpiresIn` 显示 `N/A`）。
+FreeRTOS 说明：
 
-event group 与 stream buffer 的可达范围不同。有任务阻塞在上面的 event group 即使没有
-任何符号命名它也能被发现（从阻塞任务的列表项反推），因此 `frt eventgroups` 可以把匿名
-对象以 `-` 列出，`frt eventgroup <addr>` 仍能逐个等待者解码 `wants` / `mode` /
-`clearOnExit` / `missing`——也就是「这个任务为何仍在阻塞」的答案。stream / message
-buffer 的等待者是单个任务句柄而非列表，没有这样的反推通道：动态创建且句柄不在全局变量里的
-buffer 永远无法枚举。`frt streambuffer <name>` 还会把 `MsgLenBytes` 标注为假设的
-`size_t`（`sbBYTES_TO_STORE_MESSAGE_LENGTH` 宏不留调试信息），并在没有该字段的内核上
-打印 `NotificationIndex: N/A (kernel < 11.1.0)` 而不是省略这一键。
+- 内核对象没有全局注册表，因此 `frt objects` 与各列表命令会在表上方标出每个对象的发现来源
+  （`Src`）与枚举限制——计数不等于完整清单。
+- 未开 `configUSE_TRACE_FACILITY` 的 build 不保存精确 queue 类型，对应行会在 `Type` 后加 `?`；
+  `Set` 列仅在开启 `configUSE_QUEUE_SETS` 时存在。
+- 只有守护任务 active 列表上的 timer 可枚举；已停止/过期的一次性 timer 显示为 `dormant`，
+  `Expiry`/`ExpiresIn` 为 `N/A`（除非静态缓冲区或全局句柄保留了它）。
+- `frt heap` 显示分配器计数器与 free-list/线性遍历的 `CrossCheck` 裁决；FreeRTOS 块头无 owner
+  字段，因此不提供按任务的堆占用归属。
 
-`frt heap` 打印堆管理器的状态：`Algorithm`（heap_1..heap_5，heap_1 会标注为 bump 指针、
-无 free list）、`TotalSize`/`FreeSize`（取自内核自身计数器，绝不用遍历结果重新合成）、
-heap_4/5 才有的 `MinEver`/`Allocs`/`Frees`、`Protector`（`xHeapCanary` 异或去混淆）、
-free-list 的 `Blocks` 与线性遍历的 `Holes`，以及 `CrossCheck` —— free-list 遍历、
-线性遍历与 `xFreeBytesRemaining` 三者的一致性裁决，不一致时给出具体数字。FreeRTOS 的
-堆块头没有 owner 字段，因此不提供按线程的堆占用归属；heap_5 在不开启堆保护器时没有任何
-region 边界符号，线性遍历会被跳过（`CrossCheck` 会如实说明），free list 仍可显示。
+详见 `docs/architecture.md`。
 
 ## 便捷函数
 

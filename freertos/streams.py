@@ -31,25 +31,8 @@ from freertos.layout import FreeRtosLayout
 from freertos.navigation import source_label, task_name_at
 from gdr.adapter_api import ObjectTable
 from gdr.formatting import format_address
-from gdr.gdb_bridge import get_arch_info, lookup_type, read_bytes, read_int
-from gdr.layout import read_path
-
-try:
-    import gdb
-except ImportError:
-    gdb = None  # type: ignore[assignment]
-
-if gdb is not None:
-    _STREAM_ERRORS: tuple[type[BaseException], ...] = (
-        gdb.error,
-        gdb.MemoryError,
-        IndexError,
-        TypeError,
-        ValueError,
-        AttributeError,
-    )
-else:
-    _STREAM_ERRORS = (IndexError, TypeError, ValueError, AttributeError)
+from gdr.gdb_bridge import get_arch_info, read_bytes, read_int, type_size
+from gdr.layout import read_field
 
 # stream_buffer.c sbFLAGS_* (ucFlags bit definitions).
 _FLAG_MESSAGE_BUFFER = 0x01
@@ -144,18 +127,12 @@ def message_length_size() -> tuple[int, bool]:
     failing (no DWARF) degrades to a 4-byte assumption for the target byte
     order, still flagged assumed.
     """
-    mb_type = lookup_type("configMESSAGE_BUFFER_LENGTH_TYPE")
-    if mb_type is not None:
-        try:
-            return int(mb_type.sizeof), False
-        except _STREAM_ERRORS:
-            pass
-    size_t = lookup_type("size_t")
-    if size_t is not None:
-        try:
-            return int(size_t.sizeof), True
-        except _STREAM_ERRORS:
-            pass
+    mb_size = type_size("configMESSAGE_BUFFER_LENGTH_TYPE")
+    if mb_size is not None:
+        return mb_size, False
+    size_t_size = type_size("size_t")
+    if size_t_size is not None:
+        return size_t_size, True
     return 4, True
 
 
@@ -211,8 +188,9 @@ def value_to_stream_buffer_object(
     )
     if value is None:
         return obj
-    length = read_int(read_path(value, ("xLength",)))
-    buffer = read_int(read_path(value, ("pucBuffer",)))
+    sl = layout.structs["struct StreamBufferDef_t"]
+    length = read_int(read_field(value, sl, "size"))
+    buffer = read_int(read_field(value, sl, "buffer"))
     obj.length = length
     # Reason: the deleted signature is xLength==0 *and* a readable NULL
     # pucBuffer (vStreamBufferDeleteStatic memsets the struct); an unreadable
@@ -220,10 +198,10 @@ def value_to_stream_buffer_object(
     obj.deleted = length == 0 and buffer == 0
     if obj.deleted:
         return obj
-    head = read_int(read_path(value, ("xHead",)))
-    tail = read_int(read_path(value, ("xTail",)))
-    trigger = read_int(read_path(value, ("xTriggerLevelBytes",)))
-    flags = read_int(read_path(value, ("ucFlags",)))
+    head = read_int(read_field(value, sl, "head"))
+    tail = read_int(read_field(value, sl, "tail"))
+    trigger = read_int(read_field(value, sl, "trigger"))
+    flags = read_int(read_field(value, sl, "flags"))
     obj.flags = flags
     obj.kind = stream_kind(flags)
     obj.capacity = length - 1 if length is not None and length > 0 else None
@@ -246,14 +224,14 @@ def value_to_stream_buffer_object(
             obj.next_message = _read_prefix(buffer, tail, obj)
         else:
             obj.next_message = None
-    recv = read_int(read_path(value, ("xTaskWaitingToReceive",)))
-    send = read_int(read_path(value, ("xTaskWaitingToSend",)))
+    recv = read_int(read_field(value, sl, "recv_waiter"))
+    send = read_int(read_field(value, sl, "send_waiter"))
     if recv:
         obj.recv_waiter = task_name_at(recv, layout) or "-"
     if send:
         obj.send_waiter = task_name_at(send, layout) or "-"
     if layout.config.stream_buffer_notification_index:
-        index = read_int(read_path(value, ("uxNotificationIndex",)))
+        index = read_int(read_field(value, sl, "notification_index"))
         obj.notification_index = index
     return obj
 
@@ -290,7 +268,7 @@ def _read_prefix(buffer: int, tail: int, obj: FreeRtosStreamBufferObject) -> int
     return int.from_bytes(raw, "little")
 
 
-def bounds_check(obj: FreeRtosStreamBufferObject, value) -> str:
+def bounds_check(obj: FreeRtosStreamBufferObject, value, layout: FreeRtosLayout) -> str:
     """Three-state ring-bounds verdict: ``ok`` / ``skipped: ...`` / ``fail: ...``.
 
     xHead/xTail are byte offsets into the storage window and must stay below
@@ -302,9 +280,10 @@ def bounds_check(obj: FreeRtosStreamBufferObject, value) -> str:
     if obj.deleted:
         return "skipped: deleted buffer"
     length = obj.length
-    head = read_int(read_path(value, ("xHead",)))
-    tail = read_int(read_path(value, ("xTail",)))
-    buffer = read_int(read_path(value, ("pucBuffer",)))
+    sl = layout.structs["struct StreamBufferDef_t"]
+    head = read_int(read_field(value, sl, "head"))
+    tail = read_int(read_field(value, sl, "tail"))
+    buffer = read_int(read_field(value, sl, "buffer"))
     if length is None or head is None or tail is None or buffer is None:
         return "skipped: unreadable"
     if not buffer:
