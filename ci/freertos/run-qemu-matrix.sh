@@ -4,14 +4,14 @@
 # Usage:
 #   run-qemu-matrix.sh [<target>] [<version>] [<variant>...]
 #
-# ``snapshot`` is a file-only variant (no QEMU). Target/version select the
-# calling cell; the snapshot ELF itself is always kernel V11.1.0:
-#   run-qemu-matrix.sh mps2-an385 10.4.6 snapshot
+# ``snapshot`` is the file-only variant (no QEMU) for the data-corruption
+# negatives; its cell pins kernel 11.1.0:
+#   run-qemu-matrix.sh mps2-an521 11.1.0 snapshot
 #
 # Optional environment (caller configuration, not internal plumbing):
 #   FREERTOS_FIXTURE_CACHE   firmware cache root with
 #                            <target>/<version>/<variant>/freertos.elf
-#                            and snapshot/snapshot.elf.
+#                            (the snapshot cell also holds snapshot_heap.elf).
 #                            Default: ~/Project/gdr-fixture/freertos.
 #                            A cached fixture is reused; missing ones are built
 #                            and then installed into this cache.
@@ -28,7 +28,6 @@ DEFAULT_VERSION="10.3.1"
 DEFAULT_VARIANT="base"
 DEFAULT_BUILD_DIR="/tmp/gdr-freertos-build"
 DEFAULT_CACHE_ROOT="$HOME/Project/gdr-fixture/freertos"
-SNAPSHOT_VERSION="11.1.0"
 
 die() {
     echo "[gdr-ci] FAILED: $*" >&2
@@ -156,65 +155,6 @@ fixture_sources_newer_than() {
     [[ -n "$newer" ]]
 }
 
-snapshot_sources_newer_than() {
-    local elf="$1"
-    local -a sources=(
-        "$SCRIPT_DIR/snapshot/snapshot.c"
-        "$SCRIPT_DIR/snapshot/snapshot_heap.c"
-        "$SCRIPT_DIR/snapshot/FreeRTOSConfig.h"
-        "$SCRIPT_DIR/snapshot/linker.ld"
-        "$SCRIPT_DIR/build-fixture-snapshot.sh"
-    )
-    local newer
-    newer="$(find "${sources[@]}" -newer "$elf" -print -quit 2>/dev/null || true)"
-    [[ -n "$newer" ]]
-}
-
-build_snapshot_elf() {
-    local source="$1" out_elf="$2" cache_name="$3"
-    local -a build_args=(
-        --source "$SCRIPT_DIR/snapshot/$source"
-        --out-elf "$out_elf"
-        --cache-name "$cache_name"
-        --cache-dir "$CACHE_ROOT/snapshot"
-    )
-    if [[ -d "${FREERTOS_KERNEL_DIR:-}" ]]; then
-        build_args+=(--kernel-dir "$FREERTOS_KERNEL_DIR")
-    fi
-    local toolchain_path
-    toolchain_path="$(toolchain_path_for "mps2-an385")"
-    if [[ -n "$toolchain_path" ]]; then
-        build_args+=(--toolchain-path "$toolchain_path")
-    fi
-    bash "$SCRIPT_DIR/build-fixture-snapshot.sh" "${build_args[@]}"
-}
-
-run_snapshot() {
-    local target="$1" version="$2"
-    local cache_dir="$CACHE_ROOT/snapshot"
-    local cached_elf="$cache_dir/snapshot.elf"
-    local cached_heap="$cache_dir/snapshot_heap.elf"
-    local out_dir="$SCRIPT_DIR/snapshot/out"
-    mkdir -p "$out_dir"
-    if [[ ! -f "$cached_elf" || "${GDR_FORCE_BUILD:-0}" == 1 ]] ||
-        snapshot_sources_newer_than "$cached_elf"; then
-        log_matrix_entry "$target" "$version" "snapshot" "building snapshot ELF"
-        build_snapshot_elf "snapshot.c" "$out_dir/snapshot.elf" "snapshot.elf"
-    else
-        log_matrix_entry "$target" "$version" "snapshot" "reusing cached snapshot ELF"
-    fi
-    if [[ ! -f "$cached_heap" || "${GDR_FORCE_BUILD:-0}" == 1 ]] ||
-        snapshot_sources_newer_than "$cached_heap"; then
-        log_matrix_entry "$target" "$version" "snapshot" "building snapshot heap ELF"
-        build_snapshot_elf "snapshot_heap.c" "$out_dir/snapshot_heap.elf" "snapshot_heap.elf"
-    else
-        log_matrix_entry "$target" "$version" "snapshot" "reusing cached snapshot heap ELF"
-    fi
-    # Reason: the snapshot image is compiled against V11.1.0 headers (SMP);
-    # the matrix target/version only name the calling cell.
-    run_pytest "$target" "$SNAPSHOT_VERSION" "snapshot"
-}
-
 run_live() {
     local target="$1" version="$2" variant="$3"
     local cached_elf="$CACHE_ROOT/$target/$version/$variant/freertos.elf"
@@ -252,11 +192,7 @@ main() {
 
     local variant
     for variant in "${variants[@]}"; do
-        if [[ "$variant" == "snapshot" ]]; then
-            run_snapshot "$target" "$version"
-        else
-            run_live "$target" "$version" "$variant"
-        fi
+        run_live "$target" "$version" "$variant"
     done
 }
 

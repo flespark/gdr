@@ -29,6 +29,7 @@ _SUPPORTED_VARIANTS = (
     "mpu",
     "rv64",
     "smp",
+    "snapshot",
     "tick16",
 )
 

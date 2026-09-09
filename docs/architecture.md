@@ -489,11 +489,12 @@ bits at 16/64-bit tick widths (`tick16` / the RISC-V lane), the timer
 pended-callback arm (`pend-callback`), stream-buffer ring wrap and the
 deleted-buffer signature (`streams`), and `ListIntegrityBytes` on the static
 snapshot.  Each variant's exact scope is documented in
-`ci/freertos/README.md`; the snapshot lane carries the diagnostic negatives
+`ci/freertos/README.md`; the snapshot variant carries the diagnostic negatives
 a healthy kernel cannot produce.
 
-**Static snapshot lane** (`ci/freertos/build-fixture-snapshot.sh` with sources
-in `ci/freertos/snapshot/`) covers states a healthy kernel cannot produce
+**Static snapshot variant** (`build-fixture-kernel.sh --variant snapshot`,
+cell `mps2-an521/11.1.0`, sources in `ci/freertos/fixture/config/snapshot/`)
+covers states a healthy kernel cannot produce
 (corrupt lists, SMP `xTaskRunState` of `0`/`1`/`-1`/`-2` without a live
 dual-core port, a timer on the overflow list, and corrupt-heap cells). Snapshot
 data is non-zero-initialized into `.data`; file-only GDB synthesises zeros for
@@ -576,7 +577,7 @@ before it).
 Heap total` arithmetic are live-verified there; `_pointer_bits` still falls
 back to 32 only when no type information exists at all. The cross-check
 `mismatch` and walk `corrupt` verdicts have live evidence from the static
-snapshot lane's crafted cells (free-list skips a linear-free block; a
+snapshot variant's crafted cells (free-list skips a linear-free block; a
 free-list member carrying the size_t MSB), since a healthy kernel cannot
 produce a corrupt heap.
 

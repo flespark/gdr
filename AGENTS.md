@@ -125,8 +125,9 @@ The RV64 target uses `qemu-system-riscv64 -machine virt` and boots
 
 ### FreeRTOS smoke test
 
-FreeRTOS verification has three lanes, one builder each, all installing into
-one fixture cache (details in `ci/freertos/README.md`):
+FreeRTOS verification has two live lanes, one builder each, plus the static
+`snapshot` variant built by the kernel-direct builder; all install into one
+fixture cache (details in `ci/freertos/README.md`):
 
 - **CubeL4 live (`b-l475e-iot01a`):** `ci/freertos/build-fixture-cubel4.sh`
   compiles the shared fixture against the FreeRTOS submodule bundled in
@@ -152,24 +153,26 @@ one fixture cache (details in `ci/freertos/README.md`):
   (64-bit pointers, and the RISC-V port always uses 64-bit ticks). The
   kernel-direct compiler follows the target (`riscv-none-elf-` on
   `qemu-virt-rv64`, `arm-none-eabi-` elsewhere).
-- **Static snapshot:** `ci/freertos/build-fixture-snapshot.sh` builds a
-  Cortex-M33 ELF whose `.data` holds pre-initialized SMP scheduler structures
-  plus the diagnostic negatives a healthy kernel cannot produce (corrupt
-  lists, a timer on the overflow list, a heap whose free-list/linear/counter
-  triple disagrees). Its `--source`/`--cache-name` options build a second,
-  heap-only ELF (`snapshot/snapshot_heap.c` -> `snapshot_heap.elf`) for the
-  free-list-member-with-allocated-bit case, which cannot share one heap symbol
-  set with the mismatch case.
-  `tests/integration/freertos/test_snapshot.py` loads them with `file` only (no
-  QEMU) via `tests/support/freertos_elf_harness.py`; a cached snapshot ELF
-  older than its sources is rebuilt, like the live lanes.
+- **Static snapshot** (kernel-direct variant `snapshot`, cell
+  `mps2-an521/11.1.0`): `ci/freertos/build-fixture-kernel.sh` compiles a
+  file-only Cortex-M33 ELF pair from `fixture/config/snapshot/` whose `.data`
+  holds pre-initialized SMP scheduler structures plus the diagnostic
+  negatives a healthy kernel cannot produce (corrupt lists, a timer on the
+  overflow list, a heap whose free-list/linear/counter triple disagrees) —
+  the data-corruption negative-testing arm of the matrix. A second, heap-only
+  ELF (`snapshot_heap.c` -> `snapshot_heap.elf`) carries the
+  free-list-member-with-allocated-bit case, which cannot share one heap
+  symbol set with the mismatch case. `tests/integration/freertos/test_snapshot.py`
+  loads them with `file` only (no QEMU) via
+  `tests/support/freertos_elf_harness.py`; a cached snapshot ELF older than
+  its sources is rebuilt, like the live lanes.
 
 `bash ci/freertos/run-qemu-matrix.sh [<target>] [<version>] [<variant>...]`
 drives the live lanes and the file-only `snapshot` variant.
 
 ```bash
 bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-dynamic
-bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 snapshot   # file-only ELF
+bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.1.0 snapshot   # file-only ELF
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp        # dual-core SMP
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu        # MPU wrappers v2
 bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 base   # 64-bit RISC-V
@@ -182,10 +185,10 @@ FREERTOS_FIXTURE_CACHE=/path/to/cache \
   bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
 ```
 
-Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` plus
-`<cache>/snapshot/snapshot.elf` and `<cache>/snapshot/snapshot_heap.elf`, rooted
-at `FREERTOS_FIXTURE_CACHE`
-(default `~/Project/gdr-fixture/freertos`). `GDR_FIXTURE_VARIANT` selects the
+Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` rooted at
+`FREERTOS_FIXTURE_CACHE` (the snapshot cell `mps2-an521/11.1.0/snapshot/`
+also holds `snapshot_heap.elf`; default `~/Project/gdr-fixture/freertos`).
+`GDR_FIXTURE_VARIANT` selects the
 variant, `GDR_FORCE_BUILD=1` forces a rebuild, and a missing artifact is
 `pytest.skip` so partial local caches stay usable. The B-L475E fixture uses the
 Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, not the
@@ -219,13 +222,12 @@ CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
 defined in `.cnb.yml`, one per verification axis and named `<rtos>-<axis>`:
 ruff + unit coverage on Python 3.10/3.14, the GDB 12 compatibility baseline,
 RT-Thread split by target (`rtthread-a9-target` / `rtthread-rv64-target`), and
-FreeRTOS split by what
-each lane can falsify — `freertos-snapshot` (static ELF, no QEMU),
-`freertos-config-scope` (kernel 10.3.1, 14 config variants) and
-`freertos-version-scope` (kernel version sweep, the dual-core SMP and
-single-core MPU lanes on mps2-an521, and the 64-bit RISC-V lane).
-The FreeRTOS split matches the three fixture builders, so each lane mounts only
-the sources it builds from. Every test pipeline is defined once as a YAML anchor
+FreeRTOS split by what each lane can falsify — `freertos-config-scope`
+(kernel 10.3.1, 14 config variants) and `freertos-version-scope` (kernel
+version sweep, the dual-core SMP and single-core MPU lanes on mps2-an521,
+the 64-bit RISC-V lane, and the static snapshot for data-corruption negative
+testing). The FreeRTOS split matches the two fixture builders, so each lane
+mounts only the sources it builds from. Every test pipeline is defined once as a YAML anchor
 and referenced from both `push:` and `pull_request:`; the two event lists differ
 only in the two image publishers, which are push-only so a PR never moves a
 shared tag.

@@ -13,8 +13,6 @@ import pytest
 
 from tests.support.gdb_process import GdbProcess
 
-_SNAPSHOT_VERSION = "11.1.0"
-
 
 class StaticElfSession(GdbProcess):
     """GDB session with ``file <elf>`` only, no ``target remote``.
@@ -28,7 +26,7 @@ class StaticElfSession(GdbProcess):
         gdb_binary: str,
         elf_path: Path,
         gdr_root: Path,
-        version: str = _SNAPSHOT_VERSION,
+        version: str,
     ) -> None:
         super().__init__(gdb_binary, gdr_root)
         self.elf_path = elf_path

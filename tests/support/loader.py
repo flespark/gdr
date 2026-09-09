@@ -20,7 +20,6 @@ _DEFAULT_RTTHREAD_CACHE = Path("/workspace/fixture/rtthread")
 _FREERTOS_DEFAULT_VERSION = "10.3.1"
 _FREERTOS_DEFAULT_TARGET = "b-l475e-iot01a"
 _FREERTOS_DEFAULT_VARIANT = "base"
-_FREERTOS_SNAPSHOT_VERSION = "11.1.0"
 _RTTHREAD_DEFAULT_VERSION = "4.0.5"
 _RTTHREAD_DEFAULT_TARGET = "cortex-a9"
 # (rtos, target) pairs whose QEMU machine boots a raw BIN via -bios instead
@@ -80,13 +79,12 @@ class IntegrationSpec:
     def fixture_dir(self) -> Path:
         """Return the cache directory holding this session's built firmware.
 
-        Layout: ``<root>/<target>/<version>/<variant>/freertos.elf`` for a
-        live FreeRTOS cell, ``<root>/snapshot/`` for the file-only variant,
-        and ``<root>/<target>/<version>/rtthread.elf`` for RT-Thread.
+        Layout: ``<root>/<target>/<version>/<variant>/freertos.elf`` for any
+        FreeRTOS variant (the file-only ``snapshot`` cell included, which
+        also holds ``snapshot_heap.elf``) and
+        ``<root>/<target>/<version>/rtthread.elf`` for RT-Thread.
         """
         if self.rtos == "freertos":
-            if self.variant == "snapshot":
-                return self.fixture_cache / "snapshot"
             return self.fixture_cache / self.target / self.version / self.variant
         return self.fixture_cache / self.target / self.version
 
@@ -124,12 +122,7 @@ def load_integration_spec(
     rtos = _env_str(env, "GDR_RTOS", "rtthread")
     if rtos == "freertos":
         variant = _env_str(env, "GDR_FIXTURE_VARIANT", _FREERTOS_DEFAULT_VARIANT)
-        default_version = (
-            _FREERTOS_SNAPSHOT_VERSION
-            if variant == "snapshot"
-            else _FREERTOS_DEFAULT_VERSION
-        )
-        version = _env_str(env, "GDR_VERSION", default_version)
+        version = _env_str(env, "GDR_VERSION", _FREERTOS_DEFAULT_VERSION)
         target = _env_str(env, "GDR_QEMU_TARGET", _FREERTOS_DEFAULT_TARGET)
         cache = Path(
             _env_str(env, "FREERTOS_FIXTURE_CACHE", str(_DEFAULT_FREERTOS_CACHE))

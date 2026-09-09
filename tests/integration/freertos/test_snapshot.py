@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -22,12 +23,13 @@ from tests.support.loader import load_integration_spec
 SPEC = load_integration_spec()
 GDR_ROOT = Path(__file__).resolve().parents[3]
 FREERTOS_CI_DIR = GDR_ROOT / "ci" / "freertos"
-SNAPSHOT_DIR = FREERTOS_CI_DIR / "snapshot"
-BUILD_SCRIPT = FREERTOS_CI_DIR / "build-fixture-snapshot.sh"
-CACHED_SNAPSHOT_ELF = SPEC.fixture_dir() / "snapshot.elf"
+SNAPSHOT_DIR = FREERTOS_CI_DIR / "fixture" / "config" / "snapshot"
+BUILD_SCRIPT = FREERTOS_CI_DIR / "build-fixture-kernel.sh"
+# Reason: the snapshot is an ordinary cache cell — the main ELF follows the
+# freertos.elf convention and the heap-only negative rides along as a second
+# artifact in the same directory.
+CACHED_SNAPSHOT_ELF = SPEC.fixture_dir() / "freertos.elf"
 CACHED_HEAP_SNAPSHOT_ELF = SPEC.fixture_dir() / "snapshot_heap.elf"
-SNAPSHOT_ELF = SNAPSHOT_DIR / "out" / "snapshot.elf"
-HEAP_SNAPSHOT_ELF = SNAPSHOT_DIR / "out" / "snapshot_heap.elf"
 
 pytestmark = pytest.mark.skipif(
     SPEC.variant != "snapshot",
@@ -47,7 +49,7 @@ def _snapshot_sources_newer_than(elf: Path) -> bool:
     Mirrors ``ci/freertos/run-qemu-matrix.sh::fixture_sources_newer_than``:
     a stale cached fixture would silently run the *old* negative data against
     the new assertions -- the exact false-pass trap the live-lane fix
-    addressed -- so the snapshot lane rebuilds when its sources changed.
+    addressed -- so the snapshot variant rebuilds when its sources changed.
     """
     if not elf.exists():
         return True
@@ -55,6 +57,7 @@ def _snapshot_sources_newer_than(elf: Path) -> bool:
         SNAPSHOT_DIR / "snapshot.c",
         SNAPSHOT_DIR / "snapshot_heap.c",
         SNAPSHOT_DIR / "FreeRTOSConfig.h",
+        SNAPSHOT_DIR / "portmacro.h",
         SNAPSHOT_DIR / "linker.ld",
         BUILD_SCRIPT,
     ]
@@ -64,44 +67,58 @@ def _snapshot_sources_newer_than(elf: Path) -> bool:
     )
 
 
-def _ensure_elf(elf: Path, cached: Path, source: str, cache_name: str) -> Path:
-    if not SPEC.force_build:
-        for candidate in (cached, elf):
-            if candidate.exists() and not _snapshot_sources_newer_than(candidate):
-                return candidate
-    gcc = shutil.which("arm-none-eabi-gcc")
-    if gcc is None:
-        pytest.skip("arm-none-eabi-gcc not available for the snapshot lane")
-    elf.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        "bash",
-        str(BUILD_SCRIPT),
-        "--out-elf",
-        str(elf),
-        "--source",
-        str(SNAPSHOT_DIR / source),
-        "--cache-name",
-        cache_name,
-        "--cache-dir",
-        str(cached.parent),
-    ]
-    # Reason: no --kernel-dir plumbing here — the builder reads
-    # FREERTOS_KERNEL_DIR from the inherited environment itself and
-    # shallow-clones the pinned V11.1.0 headers otherwise.
-    result = subprocess.run(command, check=False, capture_output=True, text=True)
-    # Reason: a broken snapshot build must fail the lane. Skipping here is how
-    # the C layer previously stayed "green" in CI while decoding nothing.
-    assert result.returncode == 0, (
-        f"snapshot build failed ({result.returncode}):\n"
-        f"{result.stdout}\n{result.stderr}"
+def _snapshot_cache_fresh() -> bool:
+    """Whether both cached ELFs exist and are newer than their sources."""
+    return (
+        CACHED_SNAPSHOT_ELF.exists()
+        and CACHED_HEAP_SNAPSHOT_ELF.exists()
+        and not _snapshot_sources_newer_than(CACHED_SNAPSHOT_ELF)
+        and not _snapshot_sources_newer_than(CACHED_HEAP_SNAPSHOT_ELF)
     )
-    return elf
+
+
+def _ensure_snapshot_cache() -> None:
+    """Reuse the cached snapshot pair or rebuild it through the shared builder."""
+    if _snapshot_cache_fresh() and not SPEC.force_build:
+        return
+    if shutil.which("arm-none-eabi-gcc") is None:
+        pytest.skip("arm-none-eabi-gcc not available for the snapshot variant")
+    with tempfile.TemporaryDirectory(prefix="gdr-snapshot-build") as build_dir:
+        command = [
+            "bash",
+            str(BUILD_SCRIPT),
+            "--tag",
+            f"V{SPEC.version}",
+            "--target",
+            SPEC.target,
+            "--variant",
+            "snapshot",
+            "--version",
+            SPEC.version,
+            "--build-dir",
+            build_dir,
+            "--out-elf",
+            str(Path(build_dir) / "freertos.elf"),
+            "--cache-dir",
+            str(SPEC.fixture_dir()),
+        ]
+        # Reason: no --kernel-dir plumbing here — the builder resolves kernel
+        # headers itself (FREERTOS_KERNEL_DIR from the inherited environment,
+        # else the shared tag clone).
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        # Reason: a broken snapshot build must fail the lane. Skipping here is
+        # how the C layer previously stayed "green" in CI while decoding
+        # nothing.
+        assert result.returncode == 0, (
+            f"snapshot build failed ({result.returncode}):\n"
+            f"{result.stdout}\n{result.stderr}"
+        )
 
 
 @pytest.fixture(scope="module")
 def snapshot_session():
-    elf = _ensure_elf(SNAPSHOT_ELF, CACHED_SNAPSHOT_ELF, "snapshot.c", "snapshot.elf")
-    session = StaticElfSession(SPEC.gdb, elf, GDR_ROOT)
+    _ensure_snapshot_cache()
+    session = StaticElfSession(SPEC.gdb, CACHED_SNAPSHOT_ELF, GDR_ROOT, SPEC.version)
     session.start()
     yield session
     session.stop()
@@ -109,13 +126,10 @@ def snapshot_session():
 
 @pytest.fixture(scope="module")
 def heap_snapshot_session():
-    elf = _ensure_elf(
-        HEAP_SNAPSHOT_ELF,
-        CACHED_HEAP_SNAPSHOT_ELF,
-        "snapshot_heap.c",
-        "snapshot_heap.elf",
+    _ensure_snapshot_cache()
+    session = StaticElfSession(
+        SPEC.gdb, CACHED_HEAP_SNAPSHOT_ELF, GDR_ROOT, SPEC.version
     )
-    session = StaticElfSession(SPEC.gdb, elf, GDR_ROOT)
     session.start()
     yield session
     session.stop()

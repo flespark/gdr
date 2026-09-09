@@ -28,9 +28,6 @@ venv/
 # mypy
 .mypy_cache/
 
-# Test firmware artifacts (QEMU builds, ELF binaries)
-ci/freertos/snapshot/out/
-
 # Local toolchain archives seeded into the Docker build context by
 # ci/validate-podman.sh (GDR_CI_XPACK_DIR); never commit the ~300MB blobs
 ci/gdr-xpack/*.tar.gz

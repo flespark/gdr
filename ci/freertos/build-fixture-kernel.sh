@@ -20,6 +20,12 @@
 #                            FREERTOS_FIXTURE_CACHE defaults to ~/Project/gdr-fixture/freertos)
 #   --no-cache-install      build only, do not copy into the fixture cache
 #   --toolchain-path DIR    directory containing arm-none-eabi-* binaries
+#
+# ``--variant snapshot`` builds the static snapshot instead: a file-only
+# Cortex-M33 ELF pair from fixture/config/snapshot/ for the data-corruption
+# negatives a healthy kernel cannot produce. It compiles against kernel
+# headers only (no kernel sources, port or board) and never boots QEMU, so
+# --out-bin is unused on this variant.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -240,6 +246,50 @@ compile_fixture() {
     echo "[gdr-ci] built BIN: $OUT_BIN"
 }
 
+# Reason: the static snapshot is the negative-testing variant — a single
+# hand-written TU whose .data holds corrupt scheduler structures a healthy
+# kernel cannot produce. It needs only kernel *headers* (no kernel sources,
+# no port, no board), compiles freestanding with the portmacro.h/linker.ld
+# that ship inside the variant directory, and produces two ELFs: the main
+# snapshot plus the heap-only allocated-bit negative.
+compile_snapshot() {
+    local cc="$TOOLCHAIN_PATH/$(toolchain_prefix_for)gcc"
+    local config_dir="$SCRIPT_DIR/fixture/config/$VARIANT"
+    local heap_elf
+    [[ -d "$config_dir" ]] || die "unknown variant: $VARIANT ($config_dir)"
+    heap_elf="${OUT_ELF%.elf}_heap.elf"
+    mkdir -p "$(dirname "$OUT_ELF")"
+    echo "[gdr-ci] FreeRTOS-Kernel: $REPO@$TAG ($(git -C "$KERNEL_DIR" rev-parse HEAD))"
+    echo "[gdr-ci] target: $TARGET variant: $VARIANT (static snapshot, no QEMU)"
+    echo "[gdr-ci] compiler: $($cc --version | head -1)"
+    local -a snap_flags=(
+        -mcpu=cortex-m33 -mthumb -Og -g3 -std=c11
+        -Wall -Wextra -Werror -ffunction-sections -fdata-sections -fno-lto
+        -I"$config_dir" -I"$KERNEL_DIR/include"
+    )
+    "$cc" "${snap_flags[@]}" "$config_dir/snapshot.c" \
+        -T"$config_dir/linker.ld" -nostdlib -nostartfiles \
+        -Wl,--gc-sections -o "$OUT_ELF"
+    "$cc" "${snap_flags[@]}" "$config_dir/snapshot_heap.c" \
+        -T"$config_dir/linker.ld" -nostdlib -nostartfiles \
+        -Wl,--gc-sections -o "$heap_elf"
+    echo "[gdr-ci] built ELF: $OUT_ELF"
+    echo "[gdr-ci] built ELF: $heap_elf"
+}
+
+# The snapshot installs its own artifact pair (no BIN/MAP: QEMU never boots
+# it) instead of install_to_cache.
+install_snapshot() {
+    [[ "$CACHE_INSTALL" == 1 ]] || return 0
+    local heap_elf="${OUT_ELF%.elf}_heap.elf"
+    mkdir -p "$CACHE_DIR"
+    [[ "$OUT_ELF" == "$CACHE_DIR/freertos.elf" ]] ||
+        cp -f "$OUT_ELF" "$CACHE_DIR/freertos.elf"
+    [[ "$heap_elf" == "$CACHE_DIR/snapshot_heap.elf" ]] ||
+        cp -f "$heap_elf" "$CACHE_DIR/snapshot_heap.elf"
+    echo "[gdr-ci] cached snapshot: $CACHE_DIR/freertos.elf + snapshot_heap.elf"
+}
+
 # Mirror the artifacts into the shared fixture cache; see build-fixture-cubel4.sh.
 
 parse_args() {
@@ -296,7 +346,7 @@ parse_args() {
             shift 2
             ;;
         -h | --help)
-            usage_from_header 22
+            usage_from_header 28
             exit 0
             ;;
         *)
@@ -334,8 +384,13 @@ main() {
     CACHE_DIR="${CACHE_DIR:-$CACHE_ROOT/$TARGET/$VERSION/$VARIANT}"
     setup_toolchain "$(toolchain_prefix_for)"
     prepare_kernel
-    compile_fixture
-    install_to_cache
+    if [[ "$VARIANT" == "snapshot" ]]; then
+        compile_snapshot
+        install_snapshot
+    else
+        compile_fixture
+        install_to_cache
+    fi
 }
 
 main "$@"

@@ -63,26 +63,19 @@ def test_freertos_rv64_firmware_is_the_bin():
     assert spec.firmware_path() == spec.fixture_dir() / "freertos.bin"
 
 
-def test_snapshot_uses_snapshot_cache_not_a_board_path():
+def test_snapshot_is_an_ordinary_cache_cell():
     spec = load_integration_spec(
         {
             "GDR_RTOS": "freertos",
             "GDR_FIXTURE_VARIANT": "snapshot",
-            "GDR_QEMU_TARGET": "mps2-an385",
-            "GDR_VERSION": "10.4.6",
+            "GDR_QEMU_TARGET": "mps2-an521",
+            "GDR_VERSION": "11.1.0",
             "FREERTOS_FIXTURE_CACHE": "/tmp/cache",
         }
     )
     assert spec.variant == "snapshot"
-    assert spec.version == "10.4.6"
-    assert spec.fixture_dir() == Path("/tmp/cache/snapshot")
-
-
-def test_snapshot_default_version_is_11_1_0():
-    spec = load_integration_spec(
-        {"GDR_RTOS": "freertos", "GDR_FIXTURE_VARIANT": "snapshot"}
-    )
-    assert spec.version == "11.1.0"
+    assert spec.fixture_dir() == Path("/tmp/cache/mps2-an521/11.1.0/snapshot")
+    assert spec.elf_path() == spec.fixture_dir() / "freertos.elf"
 
 
 def test_elf_override_repoints_gdb_and_the_qemu_boot_image():

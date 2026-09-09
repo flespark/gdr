@@ -1,20 +1,22 @@
 # FreeRTOS fixture builds
 
 Firmware and static-image builders for GDR's FreeRTOS closed-loop tests, plus
-the facts that constrain them. Three builders exist, one per test lane:
+the facts that constrain them. Two builders exist, one per live lane, and the
+kernel-direct builder also produces the static `snapshot` variant:
 
 | Lane | Builder | Kernel source | What only this lane can prove |
 | --- | --- | --- | --- |
 | CubeL4 live | `build-fixture-cubel4.sh` | FreeRTOS 10.3.1 bundled in STM32CubeL4 `v1.18.2` | config branches on real running firmware (heap manager, trace facility, static allocation, runtime stats, queue sets, registry size) |
 | Kernel-direct live | `build-fixture-kernel.sh` | `FreeRTOS-Kernel` at a git tag | version branches (notification array, mini list item, V11 heap protector, array-typed run-time totals) |
-| Static snapshot | `build-fixture-snapshot.sh` | kernel headers only, data written by `snapshot/snapshot.c` | states a healthy kernel cannot produce: SMP decoding, corrupted structures, mismatched counters |
+| Static snapshot (kernel-direct variant) | `build-fixture-kernel.sh --variant snapshot` | kernel headers only, data written by `fixture/config/snapshot/snapshot.c` | states a healthy kernel cannot produce: SMP decoding, corrupted structures, mismatched counters |
 
-`run-qemu-matrix.sh [<target>] [<version>] [<variant>...]` drives the two live
+`run-qemu-matrix.sh [<target>] [<version>] [<variant>...]` drives the live
 lanes and the file-only `snapshot` variant: it reuses a cached fixture when one
 exists, otherwise builds it and installs it into the cache, then runs
-`tests/integration/freertos`. Snapshot is started the same way as a live cell,
-for example `run-qemu-matrix.sh mps2-an385 10.4.6 snapshot` (the image itself
-is always kernel V11.1.0; target/version name the calling cell).
+`tests/integration/freertos`. The snapshot is an ordinary variant on the cell
+`mps2-an521/11.1.0` — the negative-testing arm for data-corruption scenarios —
+started the same way as a live cell: `run-qemu-matrix.sh mps2-an521 11.1.0
+snapshot`.
 
 ## Fixture cache
 
@@ -24,8 +26,7 @@ runner and other machines read the same layout:
 ```text
 $FREERTOS_FIXTURE_CACHE/                 default ~/Project/gdr-fixture/freertos
   <target>/<version>/<variant>/freertos.elf   (+ .bin, + .map)
-  snapshot/snapshot.elf
-  snapshot/snapshot_heap.elf
+  mps2-an521/11.1.0/snapshot/snapshot_heap.elf   (second artifact of the snapshot cell)
 ```
 
 `--cache-dir DIR` overrides the destination, `--no-cache-install` builds
@@ -44,8 +45,9 @@ regression.
 
 ## Toolchain
 
-All three builders use `arm-none-eabi-gcc`, resolved from `--toolchain-path`,
-then `RTOS_TOOLCHAIN_PATH` / `XPACK_ARM_TOOLCHAIN_PATH`, then `PATH`.
+Both builders resolve their compiler from `--toolchain-path`,
+then `RTOS_TOOLCHAIN_PATH` / `XPACK_ARM_TOOLCHAIN_PATH`, then `PATH`
+(`arm-none-eabi-gcc` everywhere except the RISC-V lane's `riscv-none-elf-gcc`).
 
 The GDB used by the tests (`GDR_GDB`) must have an embedded Python
 interpreter, which is not implied by the toolchain name:
@@ -202,18 +204,19 @@ sentinels and the width-correct list-value raw reads on every supported lane
 (10.3.1 CubeL4 and the 11.1.0 kernel-direct build). The tick wraps every
 ~65.5 s at 1000 Hz, so no assertion may hard-code absolute tick values.
 
-## Static snapshot lane
+## Static snapshot variant
 
-`build-fixture-snapshot.sh` compiles `snapshot/snapshot.c` for Cortex-M33 into
-an ELF that is never executed. The matrix runner launches it as the `snapshot`
-variant; `tests/integration/freertos/test_snapshot.py` then loads the ELF with
-GDB's `file` command only, with no QEMU and no `target remote`.
+`build-fixture-kernel.sh --variant snapshot` compiles
+`fixture/config/snapshot/snapshot.c` for Cortex-M33 into an ELF that is never
+executed — the negative-testing arm for data-corruption scenarios. The matrix
+runner launches it as the ordinary `snapshot` variant on the cell
+`mps2-an521/11.1.0`; `tests/integration/freertos/test_snapshot.py` then loads
+the ELF with GDB's `file` command only, with no QEMU and no `target remote`.
 It keeps 4-byte pointers and the real ABI types so DWARF matches a genuine
-target. A second, heap-only ELF (`snapshot/snapshot_heap.c`, built via the
-script's `--source`/`--cache-name` options) carries the free-list-member-
-with-allocated-bit corruption, because one heap symbol set can only show one
-corruption and `cross_validate` refuses to compare numbers over a corrupt
-walk.
+target. A second, heap-only ELF (`snapshot_heap.c`, installed alongside as
+`snapshot_heap.elf`) carries the free-list-member-with-allocated-bit
+corruption, because one heap symbol set can only show one corruption and
+`cross_validate` refuses to compare numbers over a corrupt walk.
 
 The snapshot carries the diagnostic negatives a healthy kernel cannot
 produce: a timer on the overflow list, a heap whose free-list/linear/counter
@@ -235,7 +238,7 @@ successful decode of empty lists and NULL pointers, which is indistinguishable
 from a healthy but empty kernel.
 
 The snapshot is an SMP image (`configNUMBER_OF_CORES 2`), which the kernel only
-supports from V11.0.0 onwards, so the header clone defaults to tag `V11.1.0`.
+supports from V11.0.0 onwards, so its cell pins kernel 11.1.0.
 Stack fill words use `0xa5a5a5a5`, not `0xa5`: the kernel's fill byte is applied
 per byte, so an untouched `StackType_t` word reads as the repeated pattern. A
 word holding plain `0xa5` would stop the high-water scan after one byte and

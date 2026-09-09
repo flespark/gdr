@@ -132,9 +132,6 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
             # its cache root, so it must target a container-writable
             # directory -- the host FREERTOS_FIXTURE_CACHE is mounted.
             export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
-            # snapshot: file-only ELF, same matrix runner as the live cells.
-            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-            bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 snapshot
             # config-scope: the CubeL4 board carries the 14-variant matrix.
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
             bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
@@ -147,5 +144,9 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
             bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu
             RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
             bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
+            # snapshot: file-only ELF for the data-corruption negatives,
+            # same matrix runner and kernel source as the other an521 cells.
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.1.0 snapshot
         fi
     '

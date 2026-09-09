@@ -1,6 +1,6 @@
 # CNB pipeline for GDR.
 #
-# Eleven pipelines:
+# Pipelines:
 #  1. validate-py310 — ruff + unit coverage on Python 3.10
 #  2. validate-py314 — same checks on Python 3.14
 #  3. publish-qemu-matrix-image — timestamped QEMU matrix image (push only)
@@ -8,27 +8,27 @@
 #  5. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
 #  6. rtthread-a9-target — RT-Thread Cortex-A9 closed-loop test
 #  7. rtthread-rv64-target — RT-Thread RISC-V RV64 closed-loop test
-#  8. freertos-snapshot — file-only static ELF decode, no QEMU
-#  9. freertos-config-scope — FreeRTOS kernel config variant matrix
-# 10. freertos-version-scope — FreeRTOS kernel version matrix, incl. dual-core
-# 11. release — source archives and a CNB Release on every pushed tag
+#  8. freertos-config-scope — FreeRTOS kernel config variant matrix
+#  9. freertos-version-scope — FreeRTOS kernel version matrix, incl. dual-core
+# 10. release — source archives and a CNB Release on every pushed tag
 #
 # One pipeline per verification axis, named `<rtos>-<axis>`, so a red badge
 # names the axis that broke without opening a log. RT-Thread splits by target
 # (Cortex-A9 / RV64) because a failure there is almost always ISA- or
 # port-specific. FreeRTOS is all 32-bit Cortex-M, so target is not its
-# interesting axis; its three lanes split by what each one can falsify, which
-# also matches the three fixture builders (see ci/freertos/README.md):
-#   - freertos-snapshot     ci/freertos/build-fixture-snapshot.sh — a static ELF
-#                           holding the diagnostic negatives a healthy kernel
-#                           cannot produce. No QEMU, so it is the cheapest lane.
+# interesting axis; its two live lanes split by what each one can falsify,
+# which also matches the two fixture builders (see ci/freertos/README.md):
 #   - freertos-config-scope ci/freertos/build-fixture-cubel4.sh — kernel pinned
 #                           at 10.3.1, 14 config variants (heap_N, static
 #                           allocation, trace, registry size, tick width, ...).
 #   - freertos-version-scope ci/freertos/build-fixture-kernel.sh — clones
 #                           FreeRTOS-Kernel at a tag: 10.4.6, 10.5.1, 11.1.0 on
-#                           mps2-an385, plus dual-core SMP and single-core MPU
-#                           on mps2-an521 at 11.3.1.
+#                           mps2-an385, dual-core SMP and single-core MPU on
+#                           mps2-an521 at 11.3.1, the 64-bit RISC-V lane, plus
+#                           the static snapshot (mps2-an521 at 11.1.0) — a
+#                           file-only ELF for the data-corruption negatives a
+#                           healthy kernel cannot produce, kept as its own
+#                           stage for at-a-glance failure attribution.
 # Splitting the two live lanes also lets each mount only the sources it builds
 # from: the CubeL4 lane never clones FreeRTOS-Kernel, and the kernel-direct lane
 # never downloads the STM32CubeL4 tree.
@@ -113,12 +113,6 @@
 
 # Reason: probe the exact tools each lane needs before pytest; a missing gcc
 # would otherwise pytest.skip the whole lane and report green.
-.gdb-python-sanity: &gdb-python-sanity
-  name: toolchain sanity (no green-by-skip)
-  script: |
-    arm-none-eabi-gcc --version | head -1
-    "$GDR_GDB" --nx --quiet --batch --ex 'python print("GDR_PYTHON_OK")'
-
 .gdb-python-qemu-sanity: &gdb-python-qemu-sanity
   name: toolchain sanity (no green-by-skip)
   script: |
@@ -178,27 +172,6 @@
     - name: pytest RV64 matrix (QEMU closed-loop)
       script: bash ci/rt-thread/run-qemu-matrix.sh rv64
 
-# Reason: the snapshot lane needs arm-none-eabi-gcc and a Python GDB
-# (file-only decode, no QEMU). validate-py310/314 run on plain
-# python:3.10/3.14 images with neither, so this must live on the
-# qemu-matrix image instead of becoming a green-but-empty skip.
-.freertos-snapshot: &freertos-snapshot
-  name: freertos-snapshot
-  runner: *amd64-runner
-  docker:
-    build: *qemu-matrix-build
-    volumes:
-      - /tmp/freertos-fixture:copy-on-write
-      # The snapshot builder clones FreeRTOS-Kernel only for its headers.
-      - /tmp/gdr-freertos-kernel-source:copy-on-write
-      - /root/.cache/uv:copy-on-write
-  env: *freertos-env
-  stages:
-    - <<: *gdb-python-sanity
-    - name: static snapshot lane (no QEMU)
-      script: |
-        GDR_FORCE_BUILD=1 bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 snapshot
-
 .freertos-config-scope: &freertos-config-scope
   name: freertos-config-scope
   runner: *amd64-runner
@@ -251,6 +224,15 @@
     # container env provides XPACK_RISCV_TOOLCHAIN_PATH.
     - name: FreeRTOS 64-bit RISC-V (qemu-virt-rv64, kernel 11.1.0)
       script: bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
+    # Reason: the static snapshot (file-only ELF, no QEMU) is the
+    # negative-testing arm of the FreeRTOS matrix — the data-corruption
+    # states a healthy kernel cannot produce (corrupt scheduler lists, a
+    # timer on the overflow list, mismatched heap counters). It builds from
+    # the same FreeRTOS-Kernel source volume this lane already mounts
+    # (V11.1.0 headers) and stays its own stage so a snapshot failure is
+    # attributable at a glance.
+    - name: FreeRTOS static snapshot — data-corruption negatives (mps2-an521, kernel 11.1.0)
+      script: bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.1.0 snapshot
 
 main: # branch: main
   push:
@@ -308,7 +290,6 @@ main: # branch: main
     - <<: *gdb12-compat-a9
     - <<: *rtthread-a9-target
     - <<: *rtthread-rv64-target
-    - <<: *freertos-snapshot
     - <<: *freertos-config-scope
     - <<: *freertos-version-scope
 
@@ -319,7 +300,6 @@ main: # branch: main
     - <<: *gdb12-compat-a9
     - <<: *rtthread-a9-target
     - <<: *rtthread-rv64-target
-    - <<: *freertos-snapshot
     - <<: *freertos-config-scope
     - <<: *freertos-version-scope
 
