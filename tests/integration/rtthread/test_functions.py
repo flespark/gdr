@@ -8,24 +8,16 @@ these target-native value assertions synchronized.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
+from tests.support.loader import load_integration_spec
 from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
 
-_VERSION = os.environ.get(
-    "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-)
-_TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
-_PROFILE = get_rtthread_test_profile(_VERSION, _TARGET)
-_DEFAULT_POINTER_BYTES = "8" if _TARGET == "rv64" else "4"
-_EXPECTED_POINTER_BYTES = int(
-    os.environ.get("GDR_EXPECT_POINTER_BYTES", _DEFAULT_POINTER_BYTES)
-)
+SPEC = load_integration_spec()
+_PROFILE = get_rtthread_test_profile(SPEC.version, SPEC.target)
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("GDR_RTOS", "rtthread") != "rtthread",
+    SPEC.rtos != "rtthread",
     reason="requires an RT-Thread QEMU profile",
 )
 
@@ -237,7 +229,8 @@ print(
 
 def test_target_pointer_width_matches_the_qemu_profile(gdb_session):
     output = gdb_session.run("p sizeof(void *)")
-    assert f"= {_EXPECTED_POINTER_BYTES}" in output, output
+    expected = 8 if SPEC.target == "rv64" else 4
+    assert f"= {expected}" in output, output
 
 
 def test_arch_info_matches_the_connected_target(gdb_session):
@@ -253,5 +246,6 @@ if arch is not None:
 """
     )
     assert "arch_found=True" in output, output
-    assert f"ptrsize={_EXPECTED_POINTER_BYTES}" in output, output
+    expected = 8 if SPEC.target == "rv64" else 4
+    assert f"ptrsize={expected}" in output, output
     assert "endian=little" in output, output

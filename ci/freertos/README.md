@@ -10,8 +10,11 @@ the facts that constrain them. Three builders exist, one per test lane:
 | Static snapshot | `build-fixture-snapshot.sh` | kernel headers only, data written by `snapshot/snapshot.c` | states a healthy kernel cannot produce: SMP decoding, corrupted structures, mismatched counters |
 
 `run-qemu-matrix.sh [<target>] [<version>] [<variant>...]` drives the two live
-lanes: it reuses a cached fixture when one exists, otherwise builds it and
-installs it into the cache, then runs `tests/integration/freertos`.
+lanes and the file-only `snapshot` variant: it reuses a cached fixture when one
+exists, otherwise builds it and installs it into the cache, then runs
+`tests/integration/freertos`. Snapshot is started the same way as a live cell,
+for example `run-qemu-matrix.sh mps2-an385 10.4.6 snapshot` (the image itself
+is always kernel V11.1.0; target/version name the calling cell).
 
 ## Fixture cache
 
@@ -22,6 +25,7 @@ runner and other machines read the same layout:
 $FREERTOS_FIXTURE_CACHE/                 default ~/Project/gdr-fixture/freertos
   <target>/<version>/<variant>/freertos.elf   (+ .bin, + .map)
   snapshot/snapshot.elf
+  snapshot/snapshot_heap.elf
 ```
 
 `--cache-dir DIR` overrides the destination, `--no-cache-install` builds
@@ -201,8 +205,9 @@ sentinels and the width-correct list-value raw reads on every supported lane
 ## Static snapshot lane
 
 `build-fixture-snapshot.sh` compiles `snapshot/snapshot.c` for Cortex-M33 into
-an ELF that is never executed: `tests/integration/freertos/test_snapshot.py`
-loads it with GDB's `file` command only, with no QEMU and no `target remote`.
+an ELF that is never executed. The matrix runner launches it as the `snapshot`
+variant; `tests/integration/freertos/test_snapshot.py` then loads the ELF with
+GDB's `file` command only, with no QEMU and no `target remote`.
 It keeps 4-byte pointers and the real ABI types so DWARF matches a genuine
 target. A second, heap-only ELF (`snapshot/snapshot_heap.c`, built via the
 script's `--source`/`--cache-name` options) carries the free-list-member-

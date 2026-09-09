@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
+from tests.support.loader import load_integration_spec
+
+SPEC = load_integration_spec()
+
 pytestmark = pytest.mark.skipif(
-    os.environ.get("GDR_RTOS") != "freertos",
+    SPEC.rtos != "freertos" or SPEC.variant == "snapshot",
     reason="requires the FreeRTOS QEMU profile",
 )
 

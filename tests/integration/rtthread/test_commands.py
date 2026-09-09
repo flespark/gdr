@@ -10,21 +10,18 @@ of the fixture belongs in unit tests instead.
 from __future__ import annotations
 
 import contextlib
-import os
 import re
 
 import pytest
 
+from tests.support.loader import load_integration_spec
 from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
 
-_VERSION = os.environ.get(
-    "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-)
-_TARGET = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
-_PROFILE = get_rtthread_test_profile(_VERSION, _TARGET)
+SPEC = load_integration_spec()
+_PROFILE = get_rtthread_test_profile(SPEC.version, SPEC.target)
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("GDR_RTOS", "rtthread") != "rtthread",
+    SPEC.rtos != "rtthread",
     reason="requires an RT-Thread QEMU profile",
 )
 

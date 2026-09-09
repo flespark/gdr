@@ -1,6 +1,6 @@
 """Shared persistent-GDB process plumbing for the integration harnesses.
 
-``GdbSession`` (QEMU target) and ``StaticElfSession`` (file-only ELF) both
+``GdbSession`` (QEMU target) and the FreeRTOS ``StaticElfSession`` both
 drive one long-lived GDB process through pexpect; everything except the
 ``start()`` command sequence is identical (spawn, run/run_many/run_python,
 stop, embedded-Python probe).  This base class owns that shared 80%

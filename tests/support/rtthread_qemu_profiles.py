@@ -2,80 +2,53 @@
 
 COUPLED: each target/version selected here must have a corresponding fixture
 patch set under ``ci/rt-thread/patches/`` and a matching expectation profile in
-``tests/support/rtthread_fixture_profiles.py``.
+``tests.support.rtthread_fixture_profiles``.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from tests.support.loader import IntegrationSpec, load_integration_spec
 from tests.support.qemu_harness import QemuProfile
 
-_ELF_NAME = "rtthread.elf"
-_BIN_NAME = "rtthread.bin"
-# Reason: CNB closed-loop hosts keep prebuilt firmware under /workspace/fixture.
-_DEFAULT_FIXTURE_CACHE = Path("/workspace/fixture/rtthread")
 
-
-def _env_path(name: str, default: Path) -> Path:
-    value = os.environ.get(name)
-    return Path(value) if value else default
-
-
-def resolve_rtthread_fixture_dir(_gdr_root: Path, target: str, version: str) -> Path:
-    """Return the firmware directory for one target/version pair.
-
-    ``RT_THREAD_FIXTURE_CACHE`` overrides the CNB default cache root
-    ``/workspace/fixture/rtthread``; both layouts are
-    ``<cache>/<target>/<version>/rtthread.elf``.
-    """
-    cache = Path(os.environ.get("RT_THREAD_FIXTURE_CACHE", str(_DEFAULT_FIXTURE_CACHE)))
-    return cache / target / version
-
-
-def get_rtthread_qemu_profile(gdr_root: Path) -> QemuProfile:
-    """Return the selected legacy-compatible RT-Thread QEMU profile."""
-    target = os.environ.get("GDR_QEMU_TARGET", "cortex-a9")
-    version = os.environ.get(
-        "GDR_VERSION", os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-    )
-    fixture_dir = resolve_rtthread_fixture_dir(gdr_root, target, version)
-    default_elf = fixture_dir / _ELF_NAME
-    default_bin = fixture_dir / _BIN_NAME
-    elf_path = _env_path("GDR_ELF_PATH", default_elf)
-    if target == "cortex-a9":
-        firmware_path = _env_path("GDR_FIRMWARE_PATH", elf_path)
+def get_rtthread_qemu_profile(
+    gdr_root: Path, spec: IntegrationSpec | None = None
+) -> QemuProfile:
+    """Return the selected RT-Thread QEMU profile."""
+    del gdr_root  # paths come from the shared cache layout, not the repo tree
+    spec = spec if spec is not None else load_integration_spec()
+    if spec.target == "cortex-a9":
         return QemuProfile(
             rtos="rtthread",
-            version=version,
-            target=target,
-            qemu_binary="qemu-system-arm",
+            version=spec.version,
+            target=spec.target,
+            qemu_binary=spec.qemu or "qemu-system-arm",
             machine="vexpress-a9",
             gdb_architecture="arm",
-            elf_path=elf_path,
-            firmware_path=firmware_path,
+            elf_path=spec.elf_path(),
+            firmware_path=spec.firmware_path(),
             firmware_option="-kernel",
             ready_marker="GDR test fixture ready.",
             pointer_width=4,
             qemu_args=(),
-            init_command=f"gdr init rtthread {version}",
+            init_command=f"gdr init rtthread {spec.version}",
         )
-    if target == "rv64":
-        firmware_path = _env_path("GDR_FIRMWARE_PATH", default_bin)
+    if spec.target == "rv64":
         return QemuProfile(
             rtos="rtthread",
-            version=version,
-            target=target,
-            qemu_binary="qemu-system-riscv64",
+            version=spec.version,
+            target=spec.target,
+            qemu_binary=spec.qemu or "qemu-system-riscv64",
             machine="virt",
             gdb_architecture="riscv:rv64",
-            elf_path=elf_path,
-            firmware_path=firmware_path,
+            elf_path=spec.elf_path(),
+            firmware_path=spec.firmware_path(),
             firmware_option="-bios",
             ready_marker="GDR test fixture ready.",
             pointer_width=8,
             qemu_args=("-cpu", "rv64", "-m", "256M"),
-            init_command=f"gdr init rtthread {version}",
+            init_command=f"gdr init rtthread {spec.version}",
         )
-    raise RuntimeError(f"unknown GDR_QEMU_TARGET: {target}")
+    raise RuntimeError(f"unknown GDR_QEMU_TARGET: {spec.target}")

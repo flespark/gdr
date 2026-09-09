@@ -342,10 +342,15 @@ This approach (borrowed from `pytest-embedded-jtag`'s `Gdb` class) is
 preferred over spawning a fresh GDB batch process per test: it is faster
 and avoids registration-state loss between tests.
 
+`tests/support/loader.py` is the single reader of closed-loop environment
+variables (`GDR_RTOS` / `GDR_VERSION` / `GDR_QEMU_TARGET` /
+`GDR_FIXTURE_VARIANT` plus cache and optional ELF overrides). Matrix scripts
+and integration tests both call it; they do not parse `os.environ` themselves.
 `tests/integration/conftest.py` is the pytest assembly layer: it selects
 profiles and constructs session fixtures. Reusable QEMU/GDB process lifecycle,
 dynamic ports, logs and timeout diagnostics live in
-`tests/support/qemu_harness.py`; the two files intentionally remain separate.
+`tests/support/qemu_harness.py`. The FreeRTOS snapshot lane uses
+`tests/support/freertos_elf_harness.py` (`file` only, no QEMU).
 
 ### Target profiles
 

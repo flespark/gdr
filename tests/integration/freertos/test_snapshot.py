@@ -10,26 +10,29 @@ set can only show one corruption.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from tests.support.static_elf_harness import StaticElfSession
+from tests.support.freertos_elf_harness import StaticElfSession
+from tests.support.loader import load_integration_spec
 
+SPEC = load_integration_spec()
 GDR_ROOT = Path(__file__).resolve().parents[3]
 FREERTOS_CI_DIR = GDR_ROOT / "ci" / "freertos"
 SNAPSHOT_DIR = FREERTOS_CI_DIR / "snapshot"
 BUILD_SCRIPT = FREERTOS_CI_DIR / "build-fixture-snapshot.sh"
-_DEFAULT_CACHE = Path.home() / "Project" / "gdr-fixture" / "freertos"
-FIXTURE_CACHE = Path(os.environ.get("FREERTOS_FIXTURE_CACHE", str(_DEFAULT_CACHE)))
-CACHED_SNAPSHOT_ELF = FIXTURE_CACHE / "snapshot" / "snapshot.elf"
-CACHED_HEAP_SNAPSHOT_ELF = FIXTURE_CACHE / "snapshot" / "snapshot_heap.elf"
+CACHED_SNAPSHOT_ELF = SPEC.fixture_dir() / "snapshot.elf"
+CACHED_HEAP_SNAPSHOT_ELF = SPEC.fixture_dir() / "snapshot_heap.elf"
 SNAPSHOT_ELF = SNAPSHOT_DIR / "out" / "snapshot.elf"
 HEAP_SNAPSHOT_ELF = SNAPSHOT_DIR / "out" / "snapshot_heap.elf"
-GDB_BIN = os.environ.get("GDR_GDB", "gdb")
+
+pytestmark = pytest.mark.skipif(
+    SPEC.variant != "snapshot",
+    reason="requires the FreeRTOS snapshot variant",
+)
 
 # The overflow timer's expiry wraps into the next tick epoch (timers.c
 # prvInsertTimerInActiveList): real expiry = (2^tick_bits - tick) + expiry.
@@ -62,7 +65,7 @@ def _snapshot_sources_newer_than(elf: Path) -> bool:
 
 
 def _ensure_elf(elf: Path, cached: Path, source: str, cache_name: str) -> Path:
-    if os.environ.get("GDR_FORCE_BUILD") != "1":
+    if not SPEC.force_build:
         for candidate in (cached, elf):
             if candidate.exists() and not _snapshot_sources_newer_than(candidate):
                 return candidate
@@ -82,9 +85,9 @@ def _ensure_elf(elf: Path, cached: Path, source: str, cache_name: str) -> Path:
         "--cache-dir",
         str(cached.parent),
     ]
-    kernel = os.environ.get("FREERTOS_KERNEL_DIR")
-    if kernel:
-        command += ["--kernel-dir", kernel]
+    # Reason: no --kernel-dir plumbing here — the builder reads
+    # FREERTOS_KERNEL_DIR from the inherited environment itself and
+    # shallow-clones the pinned V11.1.0 headers otherwise.
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     # Reason: a broken snapshot build must fail the lane. Skipping here is how
     # the C layer previously stayed "green" in CI while decoding nothing.
@@ -98,7 +101,7 @@ def _ensure_elf(elf: Path, cached: Path, source: str, cache_name: str) -> Path:
 @pytest.fixture(scope="module")
 def snapshot_session():
     elf = _ensure_elf(SNAPSHOT_ELF, CACHED_SNAPSHOT_ELF, "snapshot.c", "snapshot.elf")
-    session = StaticElfSession(GDB_BIN, elf, GDR_ROOT)
+    session = StaticElfSession(SPEC.gdb, elf, GDR_ROOT)
     session.start()
     yield session
     session.stop()
@@ -112,7 +115,7 @@ def heap_snapshot_session():
         "snapshot_heap.c",
         "snapshot_heap.elf",
     )
-    session = StaticElfSession(GDB_BIN, elf, GDR_ROOT)
+    session = StaticElfSession(SPEC.gdb, elf, GDR_ROOT)
     session.start()
     yield session
     session.stop()

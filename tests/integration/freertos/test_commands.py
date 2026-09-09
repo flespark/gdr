@@ -7,23 +7,29 @@ COUPLED: fixture object names and waiter relationships come from
 from __future__ import annotations
 
 import contextlib
-import os
 import re
 
 import pytest
 
 from tests.support.freertos_fixture_profiles import get_freertos_test_profile
+from tests.support.loader import load_integration_spec
 
-_VERSION = os.environ.get("GDR_VERSION", "10.3.1")
-_TARGET = os.environ.get("GDR_QEMU_TARGET", "b-l475e-iot01a")
-_VARIANT = os.environ.get("GDR_FIXTURE_VARIANT", "base")
-_PROFILE = get_freertos_test_profile(_VARIANT, _VERSION, _TARGET)
+SPEC = load_integration_spec()
+_PROFILE = (
+    get_freertos_test_profile(SPEC.variant, SPEC.version, SPEC.target)
+    if SPEC.rtos == "freertos" and SPEC.variant != "snapshot"
+    else None
+)
 # The registry slot names the queue "gdr_queue" (main.c pcQueueName); without
 # a registry the symbol channel names it after the handle variable.
-_FIXTURE_QUEUE_NAME = "gdr_queue" if _PROFILE.registry_size else "gdr_registered_queue"
+_FIXTURE_QUEUE_NAME = (
+    "gdr_queue"
+    if _PROFILE is not None and _PROFILE.registry_size
+    else "gdr_registered_queue"
+)
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("GDR_RTOS") != "freertos",
+    SPEC.rtos != "freertos" or SPEC.variant == "snapshot",
     reason="requires the FreeRTOS QEMU profile",
 )
 
@@ -31,7 +37,9 @@ pytestmark = pytest.mark.skipif(
 def _idle_name() -> str:
     """SMP kernels append the core digit to the idle task name
     (tasks.c: IDLE0/IDLE1); single-core keeps configIDLE_TASK_NAME."""
-    return "IDLE" if _PROFILE.number_of_cores == 1 else "IDLE0"
+    if _PROFILE is None or _PROFILE.number_of_cores == 1:
+        return "IDLE"
+    return "IDLE0"
 
 
 _PUBLIC_COMMANDS = (
@@ -924,7 +932,7 @@ def test_notification_index_gated_by_kernel_version(gdb_session):
     """uxNotificationIndex exists from V11.1.0 only; the detail says so."""
     detail = gdb_session.run("freertos streambuffer gdr_stream_buffer", timeout=20)
     _assert_clean_command_output(detail)
-    major, minor, _patch = (int(part) for part in _VERSION.split("."))
+    major, minor, _patch = (int(part) for part in SPEC.version.split("."))
     if (major, minor) >= (11, 1):
         assert "NotificationIndex: 0" in detail, detail
     else:

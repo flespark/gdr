@@ -43,33 +43,33 @@ resolve_matrix() {
     local target="$1"
     shift
     case "$target" in
-        cortex-a9)
-            TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:-}}"
-            TOOLCHAIN_PREFIX="arm-none-eabi-"
-            if [[ $# -gt 0 ]]; then
-                REFS=("$@")
-            elif [[ -n "${RT_THREAD_REFS:-}" ]]; then
-                read -r -a REFS <<<"$RT_THREAD_REFS"
-            else
-                REFS=(v3.1.0 v3.1.1 v3.1.2 v3.1.3 v3.1.4 v3.1.5 v4.0.0 v4.0.5 v4.1.1)
-            fi
-            ;;
-        rv64)
-            TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-${XPACK_RISCV_TOOLCHAIN_PATH:-}}"
-            TOOLCHAIN_PREFIX="riscv64-unknown-elf-"
-            if [[ $# -gt 0 ]]; then
-                REFS=("$@")
-            elif [[ -n "${RT_THREAD_REFS:-}" ]]; then
-                read -r -a REFS <<<"$RT_THREAD_REFS"
-            else
-                REFS=(v4.0.4 v4.0.5 v4.1.0 v4.1.1)
-            fi
-            ;;
-        *)
-            echo "usage: $0 <cortex-a9|rv64> [version-refs...]" >&2
-            echo "  version-ref: RT-Thread release tag or branch (e.g. v4.0.5)" >&2
-            die "unknown target: $target"
-            ;;
+    cortex-a9)
+        TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:-}}"
+        TOOLCHAIN_PREFIX="arm-none-eabi-"
+        if [[ $# -gt 0 ]]; then
+            REFS=("$@")
+        elif [[ -n "${RT_THREAD_REFS:-}" ]]; then
+            read -r -a REFS <<<"$RT_THREAD_REFS"
+        else
+            REFS=(v3.1.0 v3.1.1 v3.1.2 v3.1.3 v3.1.4 v3.1.5 v4.0.0 v4.0.5 v4.1.1)
+        fi
+        ;;
+    rv64)
+        TOOLCHAIN_PATH="${RTOS_TOOLCHAIN_PATH:-${XPACK_RISCV_TOOLCHAIN_PATH:-}}"
+        TOOLCHAIN_PREFIX="riscv64-unknown-elf-"
+        if [[ $# -gt 0 ]]; then
+            REFS=("$@")
+        elif [[ -n "${RT_THREAD_REFS:-}" ]]; then
+            read -r -a REFS <<<"$RT_THREAD_REFS"
+        else
+            REFS=(v4.0.4 v4.0.5 v4.1.0 v4.1.1)
+        fi
+        ;;
+    *)
+        echo "usage: $0 <cortex-a9|rv64> [version-refs...]" >&2
+        echo "  version-ref: RT-Thread release tag or branch (e.g. v4.0.5)" >&2
+        die "unknown target: $target"
+        ;;
     esac
 }
 
@@ -81,8 +81,8 @@ should_run_pytest() {
         return 0
     fi
     case "$ref" in
-        v3.1.0|v3.1.3|v3.1.5|v4.0.0|v4.0.2|v4.0.5|v4.1.1) return 0 ;;
-        *) return 1 ;;
+    v3.1.0 | v3.1.3 | v3.1.5 | v4.0.0 | v4.0.2 | v4.0.5 | v4.1.1) return 0 ;;
+    *) return 1 ;;
     esac
 }
 
@@ -137,12 +137,16 @@ collect_fixture() {
     echo "[gdr-ci] fixture collected: $dst/rtthread.elf"
 }
 
+# Parameterize pytest through the shared loader (tests.support.loader).
+# Target/version/gdb/cache are the only knobs; QEMU machine and the RV64
+# boot image are derived on the Python side. A fresh build (no cache) still
+# passes GDR_ELF_PATH because the ELF lives in a build dir; the RV64 .bin
+# QEMU boots is always its sibling.
 run_rtthread_pytest() {
-    local target="$1" version="$2" fixture_cache="${3:-}"
-    local elf_path="${4:-}" firmware_path="${5:-}"
+    local target="$1" version="$2" fixture_cache="${3:-}" elf_path="${4:-}"
     log_matrix_entry "$target" "$version" "pytest"
-    local -a runner=(env -u GDR_ELF_PATH -u GDR_FIRMWARE_PATH)
-    runner+=(
+    local -a runner=(
+        env -u GDR_ELF_PATH
         "GDR_RTOS=rtthread"
         "GDR_QEMU_TARGET=$target"
         "GDR_VERSION=$version"
@@ -152,9 +156,6 @@ run_rtthread_pytest() {
         runner+=("RT_THREAD_FIXTURE_CACHE=$fixture_cache")
     else
         runner+=("GDR_ELF_PATH=$elf_path")
-        if [[ -n "$firmware_path" ]]; then
-            runner+=("GDR_FIRMWARE_PATH=$firmware_path")
-        fi
     fi
     (
         cd "$REPO_ROOT"
@@ -208,10 +209,10 @@ main() {
         if [[ -n "$fixture_cache" ]]; then
             if should_run_pytest "$target" "$ref"; then
                 fixture_dir="$fixture_cache/$target/$version"
-                [[ -f "$fixture_dir/rtthread.elf" ]] || \
+                [[ -f "$fixture_dir/rtthread.elf" ]] ||
                     die "cached fixture missing: $fixture_dir/rtthread.elf"
                 if [[ "$target" == "rv64" ]]; then
-                    [[ -f "$fixture_dir/rtthread.bin" ]] || \
+                    [[ -f "$fixture_dir/rtthread.bin" ]] ||
                         die "cached RV64 firmware missing: $fixture_dir/rtthread.bin"
                 fi
                 run_rtthread_pytest "$target" "$version" "$fixture_cache"
@@ -231,7 +232,7 @@ main() {
             collect_fixture "$target" "$version" "$elf_path" "$firmware_path"
         fi
         if should_run_pytest "$target" "$ref"; then
-            run_rtthread_pytest "$target" "$version" "" "$elf_path" "$firmware_path"
+            run_rtthread_pytest "$target" "$version" "" "$elf_path"
         fi
     done
 }

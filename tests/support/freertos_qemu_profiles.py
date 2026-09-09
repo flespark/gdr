@@ -3,67 +3,36 @@
 COUPLED: each target/variant selected here must have a fixture config under
 ``ci/freertos/fixture/config/<variant>/`` plus a board under
 ``ci/freertos/fixture/board/<target>/``, and a matching capability profile in
-``tests/support/freertos_fixture_profiles.py``.
+``tests.support.freertos_fixture_profiles``.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from tests.support.loader import IntegrationSpec, load_integration_spec
 from tests.support.qemu_harness import QemuProfile
 
-_ELF_NAME = "freertos.elf"
-# Reason: the build scripts install every fixture into this cache root, so the
-# test-side default has to be the same path (overridable per host/CI).
-_DEFAULT_FIXTURE_CACHE = Path.home() / "Project" / "gdr-fixture" / "freertos"
 _KNOWN_TARGETS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521", "qemu-virt-rv64")
+_MACHINES = {
+    "mps2-an385": "mps2-an385",
+    "mps2-an521": "mps2-an521",
+    "b-l475e-iot01a": "b-l475e-iot01a",
+    "qemu-virt-rv64": "virt",
+}
 
 
-def _env_path(name: str, default: Path) -> Path:
-    value = os.environ.get(name)
-    return Path(value) if value else default
-
-
-def _env_str(name: str, default: str) -> str:
-    # Reason: callers (and .pi/dtod/env.sh) export blank overrides to mean
-    # "use the profile default"; os.environ.get would return that "" and
-    # shutil.which("") then fails the tool check with an empty name.
-    return os.environ.get(name) or default
-
-
-def resolve_freertos_fixture_dir(
-    _gdr_root: Path, target: str, version: str, variant: str = "base"
-) -> Path:
-    """Return the firmware directory for one target/version/variant triple.
-
-    ``FREERTOS_FIXTURE_CACHE`` overrides the default cache root
-    ``~/Project/gdr-fixture/freertos``. Layout is
-    ``<cache>/<target>/<version>/<variant>/freertos.elf``.
-    """
-    cache = Path(os.environ.get("FREERTOS_FIXTURE_CACHE", str(_DEFAULT_FIXTURE_CACHE)))
-    return cache / target / version / variant
-
-
-def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
-    """Build a FreeRTOS QEMU profile from standard overrides."""
-    version = _env_str("GDR_VERSION", "10.3.1")
-    target = _env_str("GDR_QEMU_TARGET", "b-l475e-iot01a")
-    variant = _env_str("GDR_FIXTURE_VARIANT", "base")
-    if target not in _KNOWN_TARGETS:
-        raise RuntimeError(f"unknown FreeRTOS QEMU target: {target}")
-    fixture_dir = resolve_freertos_fixture_dir(gdr_root, target, version, variant)
-    elf_path = _env_path("GDR_ELF_PATH", fixture_dir / _ELF_NAME)
-    firmware_path = _env_path("GDR_FIRMWARE_PATH", elf_path)
-    machine = _env_str(
-        "GDR_QEMU_MACHINE",
-        {
-            "mps2-an385": "mps2-an385",
-            "mps2-an521": "mps2-an521",
-            "b-l475e-iot01a": "b-l475e-iot01a",
-            "qemu-virt-rv64": "virt",
-        }[target],
-    )
+def get_freertos_qemu_profile(
+    gdr_root: Path, spec: IntegrationSpec | None = None
+) -> QemuProfile:
+    """Build a FreeRTOS QEMU profile from :func:`load_integration_spec`."""
+    del gdr_root  # paths come from the shared cache layout, not the repo tree
+    spec = spec if spec is not None else load_integration_spec()
+    if spec.variant == "snapshot":
+        raise RuntimeError("snapshot lane has no QEMU profile")
+    if spec.target not in _KNOWN_TARGETS:
+        raise RuntimeError(f"unknown FreeRTOS QEMU target: {spec.target}")
+    is_rv64 = spec.target == "qemu-virt-rv64"
     # Reason: mps2-an521 is fixed at two CPUs (default_cpus == min == max),
     # so an explicit -smp 2 is redundant and -smp 1 would be rejected;
     # leave the machine default alone.  The RISC-V lane uses QEMU's RISC-V
@@ -72,25 +41,23 @@ def get_freertos_qemu_profile(gdr_root: Path) -> QemuProfile:
     # at 0x80000000 while GDB reads the ELF.
     qemu_args = (
         ("-cpu", "rv64", "-m", "256M", "-semihosting-config", "enable=on")
-        if target == "qemu-virt-rv64"
+        if is_rv64
         else ("-semihosting-config", "enable=on,target=native")
     )
+    qemu_binary = spec.qemu or ("qemu-system-riscv64" if is_rv64 else "qemu-system-arm")
     return QemuProfile(
         rtos="freertos",
-        version=version,
-        target=target,
-        qemu_binary=_env_str(
-            "GDR_QEMU",
-            "qemu-system-riscv64" if target == "qemu-virt-rv64" else "qemu-system-arm",
-        ),
-        machine=machine,
-        gdb_architecture="riscv:rv64" if target == "qemu-virt-rv64" else "arm",
-        elf_path=elf_path,
-        firmware_path=firmware_path,
-        firmware_option="-bios" if target == "qemu-virt-rv64" else "-kernel",
+        version=spec.version,
+        target=spec.target,
+        qemu_binary=qemu_binary,
+        machine=_MACHINES[spec.target],
+        gdb_architecture="riscv:rv64" if is_rv64 else "arm",
+        elf_path=spec.elf_path(),
+        firmware_path=spec.firmware_path(),
+        firmware_option="-bios" if is_rv64 else "-kernel",
         ready_marker="GDR FreeRTOS fixture ready.",
-        pointer_width=8 if target == "qemu-virt-rv64" else 4,
-        init_command=f"gdr init freertos {version}",
+        pointer_width=8 if is_rv64 else 4,
+        init_command=f"gdr init freertos {spec.version}",
         qemu_args=qemu_args,
         extra_env={"GDR_RTOS": "", "GDR_VERSION": ""},
     )

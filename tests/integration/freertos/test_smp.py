@@ -15,19 +15,20 @@ registers.  Every user-visible SMP fact comes from shared memory
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from tests.support.freertos_fixture_profiles import get_freertos_test_profile
+from tests.support.loader import load_integration_spec
 
-_VERSION = os.environ.get("GDR_VERSION", "10.3.1")
-_TARGET = os.environ.get("GDR_QEMU_TARGET", "b-l475e-iot01a")
-_VARIANT = os.environ.get("GDR_FIXTURE_VARIANT", "base")
-_PROFILE = get_freertos_test_profile(_VARIANT, _VERSION, _TARGET)
+SPEC = load_integration_spec()
+_PROFILE = (
+    get_freertos_test_profile(SPEC.variant, SPEC.version, SPEC.target)
+    if SPEC.rtos == "freertos" and SPEC.variant != "snapshot"
+    else None
+)
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("GDR_RTOS") != "freertos" or _PROFILE.number_of_cores == 1,
+    _PROFILE is None or _PROFILE.number_of_cores == 1,
     reason="requires the SMP FreeRTOS QEMU profile",
 )
 

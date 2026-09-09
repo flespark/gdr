@@ -11,23 +11,19 @@ those patches require reviewing these assertions together.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
+from tests.support.loader import load_integration_spec
 from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
 
 # Symbolic thread state names (mirror rtthread.layout.ThreadState).
 # The printer's enum_map must render the raw stat int as one of these.
 _THREAD_STATE_SYMBOLS = {"INIT", "READY", "SUSPEND", "RUNNING", "CLOSE"}
-_IS_RV64 = os.environ.get("GDR_QEMU_TARGET") == "rv64"
-_RTTHREAD_VERSION = os.environ.get("GDR_RTTHREAD_VERSION", "4.0.5")
-_PROFILE = get_rtthread_test_profile(
-    _RTTHREAD_VERSION, "rv64" if _IS_RV64 else "cortex-a9"
-)
+SPEC = load_integration_spec()
+_PROFILE = get_rtthread_test_profile(SPEC.version, SPEC.target)
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("GDR_RTOS", "rtthread") != "rtthread",
+    SPEC.rtos != "rtthread",
     reason="requires an RT-Thread QEMU profile",
 )
 

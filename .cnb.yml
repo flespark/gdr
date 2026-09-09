@@ -197,8 +197,7 @@
     - <<: *gdb-python-sanity
     - name: static snapshot lane (no QEMU)
       script: |
-        uv sync --group dev
-        GDR_FORCE_BUILD=1 uv run pytest tests/integration/freertos/test_snapshot.py -v --tb=short
+        GDR_FORCE_BUILD=1 bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 snapshot
 
 .freertos-config-scope: &freertos-config-scope
   name: freertos-config-scope

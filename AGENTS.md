@@ -100,10 +100,11 @@ directories unless it applies cleanly to both BSP paths and toolchains.
 The integration harness resolves fixture paths from
 `RT_THREAD_FIXTURE_CACHE/<target>/<version>/rtthread.elf` (plus
 `rtthread.bin` for RV64). The default cache root is the CNB host path
-`/workspace/fixture/rtthread`. Explicit `GDR_ELF_PATH` /
-`GDR_FIRMWARE_PATH` overrides still win. Missing tools or fixture artifacts
-are skipped per test via `pytest.skip` (see
-`tests/support/qemu_harness.py`), so partial local caches stay usable.
+`/workspace/fixture/rtthread`. An explicit `GDR_ELF_PATH` still wins; on
+RV64 the QEMU boot image is always its `.bin` sibling. Env parsing lives in
+`tests/support/loader.py`; missing tools or fixture artifacts are skipped
+per test via `pytest.skip` (see `tests/support/qemu_harness.py`), so
+partial local caches stay usable.
 
 ```bash
 # Run the Cortex-A9 matrix against the default CNB fixture cache.
@@ -160,14 +161,15 @@ one fixture cache (details in `ci/freertos/README.md`):
   free-list-member-with-allocated-bit case, which cannot share one heap symbol
   set with the mismatch case.
   `tests/integration/freertos/test_snapshot.py` loads them with `file` only (no
-  QEMU), so this lane can run on `validate-py310/314`; a cached snapshot ELF
+  QEMU) via `tests/support/freertos_elf_harness.py`; a cached snapshot ELF
   older than its sources is rebuilt, like the live lanes.
 
 `bash ci/freertos/run-qemu-matrix.sh [<target>] [<version>] [<variant>...]`
-drives the two live lanes.
+drives the live lanes and the file-only `snapshot` variant.
 
 ```bash
 bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-dynamic
+bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 snapshot   # file-only ELF
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp        # dual-core SMP
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu        # MPU wrappers v2
 bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 base   # 64-bit RISC-V

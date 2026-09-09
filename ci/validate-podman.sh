@@ -114,10 +114,10 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
     bash -c '
         set -e
         # What to run inside the container.  Default: every CNB lane
-        # (RT-Thread both targets; the FreeRTOS snapshot lane plus one
-        # representative cell per live board), so the local reproducer can
-        # never drift from CI.  GDR_VALIDATE_LANES="rtthread:freertos" or
-        # a narrower list opts into a fast subset.
+        # (RT-Thread both targets; FreeRTOS snapshot plus one representative
+        # cell per live board), so the local reproducer can never drift from
+        # CI.  GDR_VALIDATE_LANES="rtthread:freertos" or a narrower list
+        # opts into a fast subset.
         lanes="${GDR_VALIDATE_LANES:-all}"
 
         if [[ "$lanes" == *all* || "$lanes" == *rtthread* ]]; then
@@ -127,18 +127,14 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
             bash ci/rt-thread/run-qemu-matrix.sh rv64
         fi
 
-        if [[ "$lanes" == *all* || "$lanes" == *snapshot* ]]; then
-            # The static snapshot lane builds its own ELF (no cached
-            # fixture needed) and loads it with GDB "file" only.
-            UV_PROJECT_ENVIRONMENT=/tmp/gdr-venv uv run pytest \
-                tests/integration/freertos/test_snapshot.py -v --tb=short
-        fi
-
         if [[ "$lanes" == *all* || "$lanes" == *freertos* ]]; then
             # Reason: the FreeRTOS lane installs freshly built fixtures into
             # its cache root, so it must target a container-writable
             # directory -- the host FREERTOS_FIXTURE_CACHE is mounted.
             export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
+            # snapshot: file-only ELF, same matrix runner as the live cells.
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 snapshot
             # config-scope: the CubeL4 board carries the 14-variant matrix.
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
             bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
