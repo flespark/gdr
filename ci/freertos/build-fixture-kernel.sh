@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a FreeRTOS QEMU fixture directly from FreeRTOS-Kernel (no CubeL4).
+# Build a FreeRTOS QEMU fixture directly from FreeRTOS-Kernel.
 #
 # Usage:
 #   build-fixture-kernel.sh [options]
@@ -289,7 +289,7 @@ install_snapshot() {
     echo "[gdr-ci] cached snapshot: $CACHE_DIR/freertos.elf + snapshot_heap.elf"
 }
 
-# Mirror the artifacts into the shared fixture cache; see build-fixture-cubel4.sh.
+# Mirror the artifacts into the shared fixture cache.
 
 parse_args() {
     local -a leftover=()

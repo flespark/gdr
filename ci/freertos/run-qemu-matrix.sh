@@ -16,14 +16,14 @@
 #                            A cached fixture is reused; missing ones are built
 #                            and then installed into this cache.
 #   GDR_FORCE_BUILD=1        rebuild even when the cached fixture exists
-#   FREERTOS_KERNEL_DIR      local FreeRTOS-Kernel checkout for non-CubeL4 lanes
+#   FREERTOS_KERNEL_DIR      local FreeRTOS-Kernel checkout override
 #   RTOS_TOOLCHAIN_PATH      compiler bin directory (or XPACK_ARM_TOOLCHAIN_PATH)
 #   GDR_GDB                  GDB binary for the closed-loop tests
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DEFAULT_TARGET="b-l475e-iot01a"
+DEFAULT_TARGET="mps2-an385"
 DEFAULT_VERSION="10.3.1"
 DEFAULT_VARIANT="base"
 DEFAULT_BUILD_DIR="/tmp/gdr-freertos-build"
@@ -36,10 +36,6 @@ die() {
 
 log_matrix_entry() {
     echo "[gdr-ci] freertos/$1/$2/$3: $4"
-}
-
-is_cube_lane() {
-    [[ "$1" == "b-l475e-iot01a" ]]
 }
 
 kernel_tag_for_version() {
@@ -95,42 +91,27 @@ build_one() {
     toolchain_path="$(toolchain_path_for "$target")"
     local -a build_args
     mkdir -p "$build_dir"
-    if is_cube_lane "$target"; then
-        build_args=(
-            --variant "$variant"
-            --build-dir "$build_dir"
-            --out-elf "$elf_path"
-            --out-bin "$bin_path"
-            --cache-dir "$cache_dir"
-        )
-        if [[ -n "$toolchain_path" ]]; then
-            build_args+=(--toolchain-path "$toolchain_path")
-        fi
-        log_matrix_entry "$target" "$version" "$variant" "building CubeL4 fixture"
-        bash "$SCRIPT_DIR/build-fixture-cubel4.sh" "${build_args[@]}"
-    else
-        build_args=(
-            --tag "$(kernel_tag_for_version "$version")"
-            --target "$target"
-            --variant "$variant"
-            --version "$version"
-            --build-dir "$build_dir"
-            --out-elf "$elf_path"
-            --out-bin "$bin_path"
-            --cache-dir "$cache_dir"
-        )
-        # Reason: only an explicitly configured checkout is trusted; the build
-        # script clones the tag itself otherwise, so no developer-specific path
-        # is baked into the lane.
-        if [[ -d "${FREERTOS_KERNEL_DIR:-}" ]]; then
-            build_args+=(--kernel-dir "$FREERTOS_KERNEL_DIR")
-        fi
-        if [[ -n "$toolchain_path" ]]; then
-            build_args+=(--toolchain-path "$toolchain_path")
-        fi
-        log_matrix_entry "$target" "$version" "$variant" "building kernel fixture"
-        bash "$SCRIPT_DIR/build-fixture-kernel.sh" "${build_args[@]}"
+    build_args=(
+        --tag "$(kernel_tag_for_version "$version")"
+        --target "$target"
+        --variant "$variant"
+        --version "$version"
+        --build-dir "$build_dir"
+        --out-elf "$elf_path"
+        --out-bin "$bin_path"
+        --cache-dir "$cache_dir"
+    )
+    # Reason: only an explicitly configured checkout is trusted; the build
+    # script clones the tag itself otherwise, so no developer-specific path
+    # is baked into the lane.
+    if [[ -d "${FREERTOS_KERNEL_DIR:-}" ]]; then
+        build_args+=(--kernel-dir "$FREERTOS_KERNEL_DIR")
     fi
+    if [[ -n "$toolchain_path" ]]; then
+        build_args+=(--toolchain-path "$toolchain_path")
+    fi
+    log_matrix_entry "$target" "$version" "$variant" "building kernel fixture"
+    bash "$SCRIPT_DIR/build-fixture-kernel.sh" "${build_args[@]}"
     run_pytest "$target" "$version" "$variant"
 }
 
@@ -147,7 +128,6 @@ fixture_sources_newer_than() {
         "$SCRIPT_DIR/fixture/config/$variant"
         "$SCRIPT_DIR/fixture/board/$target"
         "$SCRIPT_DIR/fixture/common"
-        "$SCRIPT_DIR/build-fixture-cubel4.sh"
         "$SCRIPT_DIR/build-fixture-kernel.sh"
     )
     local newer

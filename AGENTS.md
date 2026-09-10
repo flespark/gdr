@@ -125,19 +125,16 @@ The RV64 target uses `qemu-system-riscv64 -machine virt` and boots
 
 ### FreeRTOS smoke test
 
-FreeRTOS verification has two live lanes, one builder each, plus the static
-`snapshot` variant built by the kernel-direct builder; all install into one
-fixture cache (details in `ci/freertos/README.md`):
+FreeRTOS verification has one kernel-direct builder plus its static `snapshot`
+variant, all installing into one fixture cache (details in
+`ci/freertos/README.md`):
 
-- **CubeL4 live (`b-l475e-iot01a`):** `ci/freertos/build-fixture-cubel4.sh`
-  compiles the shared fixture against the FreeRTOS submodule bundled in
-  STM32CubeL4 `v1.18.2` (commit
-  `5fe3a380e5eadb6ce0a5149725210c3fe70d1c15`), so it is pinned to kernel
-  `10.3.1` and carries the **config variant** matrix.
-- **Kernel-direct live (`mps2-an385`, `mps2-an521`, `qemu-virt-rv64`):**
+- **Kernel-direct (`mps2-an385`, `mps2-an521`, `qemu-virt-rv64`):**
   `ci/freertos/build-fixture-kernel.sh` clones `FreeRTOS-Kernel` at a tag and
-  links a port directory chosen by target, so it carries the **kernel version**
-  matrix. `mps2-an385` links `portable/GCC/ARM_CM3` (single core).
+  links a port directory chosen by target, carrying both the **config variant**
+  matrix (14 variants on `mps2-an385` at 10.3.1, the `V10.3.1-kernel-only`
+  tag) and the **kernel version** matrix (10.4.6, 10.5.1, 11.1.0).
+  `mps2-an385` links `portable/GCC/ARM_CM3` (single core).
   `mps2-an521` links `portable/GCC/ARM_CM33_NTZ/non_secure` and hosts two
   mutually exclusive single-board variants: the **dual-core SMP** lane (QEMU
   models that board as SSE-200 with two Cortex-M33, ARMv8-M SMP exists only
@@ -171,7 +168,7 @@ fixture cache (details in `ci/freertos/README.md`):
 drives the live lanes and the file-only `snapshot` variant.
 
 ```bash
-bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-dynamic
+bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 base full static-dynamic
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.1.0 snapshot   # file-only ELF
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp        # dual-core SMP
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu        # MPU wrappers v2
@@ -182,7 +179,7 @@ bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 base   # 64-bit RISC-V
 # Point the fixture cache elsewhere. A cached fixture is reused only while it is
 # newer than the fixture sources; a missing or stale one is rebuilt and installed.
 FREERTOS_FIXTURE_CACHE=/path/to/cache \
-  bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
+  bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 base
 ```
 
 Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` rooted at
@@ -190,9 +187,7 @@ Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` rooted at
 also holds `snapshot_heap.elf`; default `~/Project/gdr-fixture/freertos`).
 `GDR_FIXTURE_VARIANT` selects the
 variant, `GDR_FORCE_BUILD=1` forces a rebuild, and a missing artifact is
-`pytest.skip` so partial local caches stay usable. The B-L475E fixture uses the
-Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, not the
-board's unsupported LPTIM. Shared fixture sources live in
+`pytest.skip` so partial local caches stay usable. Shared fixture sources live in
 `ci/freertos/fixture/` (`config/<variant>/`, `board/<board>/`, `main.c`).
 Board code owns the platform details a shared `main.c` must not carry: the
 `mps2-an521` board directory holds the CPU1 entry point and the
@@ -222,12 +217,10 @@ CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
 defined in `.cnb.yml`, one per verification axis and named `<rtos>-<axis>`:
 ruff + unit coverage on Python 3.10/3.14, the GDB 12 compatibility baseline,
 RT-Thread split by target (`rtthread-a9-target` / `rtthread-rv64-target`), and
-FreeRTOS split by what each lane can falsify — `freertos-config-scope`
-(kernel 10.3.1, 14 config variants) and `freertos-version-scope` (kernel
-version sweep, the dual-core SMP and single-core MPU lanes on mps2-an521,
-the 64-bit RISC-V lane, and the static snapshot for data-corruption negative
-testing). The FreeRTOS split matches the two fixture builders, so each lane
-mounts only the sources it builds from. Every test pipeline is defined once as a YAML anchor
+`freertos-kernel-scope` building every FreeRTOS cell from FreeRTOS-Kernel at a
+tag (the config matrix at 10.3.1, the version sweep, the dual-core SMP and
+single-core MPU lanes on mps2-an521, the 64-bit RISC-V lane, and the static
+snapshot for data-corruption negative testing). Every test pipeline is defined once as a YAML anchor
 and referenced from both `push:` and `pull_request:`; the two event lists differ
 only in the two image publishers, which are push-only so a PR never moves a
 shared tag.

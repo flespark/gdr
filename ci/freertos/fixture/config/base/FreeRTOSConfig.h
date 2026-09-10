@@ -1,6 +1,6 @@
 /* GDR fixture variant: base.
  *
- * Historical B-L475E-IOT01A / 10.3.1 combination: heap_4, trace on,
+ * Historical 10.3.1 combination: heap_4, trace on,
  * dynamic-only, registry=8, no pxEndOfStack, no runtime stats.
  */
 #ifndef FREERTOS_CONFIG_H

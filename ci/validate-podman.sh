@@ -132,10 +132,11 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
             # its cache root, so it must target a container-writable
             # directory -- the host FREERTOS_FIXTURE_CACHE is mounted.
             export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
-            # config-scope: the CubeL4 board carries the 14-variant matrix.
+            # config axis: 10.3.1 representative cell (the 14-variant matrix
+            # runs in CI on the same board).
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-            bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base
-            # version-scope: one kernel-direct cell per board.
+            bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 base
+            # version axis: one kernel-direct cell per board.
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
             bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 base
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \

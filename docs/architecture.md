@@ -310,7 +310,7 @@ creates known objects and assert, where an adapter implementation exists:
 - convenience functions return non-null `gdb.Value` with expected fields,
 - aggregate commands list the expected objects.
 
-The FreeRTOS B-L475E-IOT01A fixture asserts ready-marker delivery, retained
+The FreeRTOS `mps2-an385` fixture asserts ready-marker delivery, retained
 DWARF for kernel structures, the 32-bit ABI, persistent GDB, scheduler-list
 navigation, current-task marking, system counters, and pretty-printer fold
 for typedef-spelled kernel objects (Task/List/Queue). The queue family adds
@@ -360,8 +360,7 @@ dynamic ports, logs and timeout diagnostics live in
 | -------- | -------------- | ------------- | ------- |
 | `cortex-a9` | `qemu-system-arm -M vexpress-a9 -kernel rtthread.elf` | `rtthread.elf` | No SD device is required for the fixture boot path. |
 | `rv64` | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | M-Mode boot, no SD image, `set architecture riscv:rv64`. |
-| `b-l475e-iot01a` | `qemu-system-arm -M b-l475e-iot01a -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS V10.3.1 Cortex-M4F SysTick fixture, 32-bit pointers. Variant selected by `GDR_FIXTURE_VARIANT`. |
-| `mps2-an385` | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS-Kernel tag builds (10.4.x / 10.5.x / 11.1.x) on Cortex-M3. |
+| `mps2-an385` | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | FreeRTOS-Kernel tag builds (10.3.1 config matrix / 10.4.x / 10.5.x / 11.1.x) on Cortex-M3. |
 | `mps2-an521` | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | Dual-core Cortex-M33 (SSE-200) SMP lane, kernel `11.3.1`, `smp` variant. The machine is fixed at two cores, so `-smp` is redundant. GDB sees the second core as a separate *inferior*, not a second thread, so per-core register reads would need `target extended-remote`; every SMP assertion instead derives from shared memory (`pxCurrentTCBs[]`). |
 
 The ELF and firmware image may be separate: RV64 deliberately boots a raw BIN
@@ -434,7 +433,7 @@ fabricated 0.
 #### FreeRTOS
 
 **Live coverage is 32-bit Cortex-M plus one 64-bit RISC-V lane.**
-The 32-bit lanes are `b-l475e-iot01a` Cortex-M4F, `mps2-an385` Cortex-M3,
+The 32-bit lanes are `mps2-an385` Cortex-M3,
 `mps2-an521` dual-core Cortex-M33 and the Cortex-M33 static snapshot; a
 `qemu-virt-rv64` lane (QEMU `-machine virt`, `portable/GCC/RISC-V`
 rv64imac) covers 64-bit pointers and 64-bit ticks (the RISC-V port hardcodes
@@ -456,7 +455,7 @@ exported") and skips the mismatch check rather than guessing.
 
 **Live fixtures are a variant matrix**, not a single configuration.
 `ci/freertos/fixture/config/<variant>/` plus a shared `main.c` produce
-`base` (the historical B-L475E-IOT01A / 10.3.1 combination), `full`,
+`base` (the historical 10.3.1 combination), `full`,
 `static-only`, `static-dynamic`, `trace-off`, `heap-1`/`2`/`3`/`5`,
 `heap-protector` (≥V11), `heap-5-protector` (heap_5 + the protector, one
 region), `registry-0`, `pend-callback` (`INCLUDE_xTimerPendFunctionCall`),
@@ -468,7 +467,7 @@ buffers), `mpu` (single-core `configENABLE_MPU`, wrappers v2), `smp`
 capabilities live in `tests/support/freertos_fixture_profiles.py` and must not
 be derived from `freertos/layout.py`.
 
-The historical `base` combination remains: single-core / Cortex-M4F / heap_4
+The historical `base` combination remains: single-core / Cortex-M3 / heap_4
 / trace_facility=on / FreeRTOS 10.3.1 / `configENABLE_BACKWARD_COMPATIBILITY=1`
 (member name `pvContainer`) / no `pxEndOfStack` / scalar `ucNotifyState` /
 no runtime statistics / `configMAX_PRIORITIES=6` / stack grows down. Default
@@ -557,7 +556,7 @@ compares only free bytes and free-block addresses, all at or above the head —
 still reports `ok`. GDR walks from the kernel's own `pucAlignedHeap`
 (`align_up(&ucHeap, portBYTE_ALIGNMENT)`); when the `ucHeap` symbol cannot be
 resolved the walk is skipped (`Holes`/`CrossCheck` become `unavailable`) rather
-than truncated from the head. Live evidence on `b-l475e-iot01a/10.3.1/base`: the
+than truncated from the head. Live evidence on `mps2-an385/10.3.1/base`: the
 aligned base is 13792 bytes below `xStart.pxNextFreeBlock`, and the walk from the
 base covers 57 blocks (56 allocated, 1 free) up to `pxEnd`, summing to exactly
 `xFreeBytesRemaining`.

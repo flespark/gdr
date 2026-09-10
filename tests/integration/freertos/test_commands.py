@@ -1055,7 +1055,7 @@ def test_freertos_heap_contract_matches_variant(gdb_session):
         # not at the free-list head: heap_4 carves allocations from the front
         # of the first free block, so the fixture's boot-time task stacks and
         # objects sit below the head and must show up in the block count
-        # (b-l475e base: 57 blocks, only 1 free).
+        # (mps2-an385 10.3.1 base: 57 blocks, only 1 free).
         match = re.search(r"linear walk: (\d+) block", output)
         assert match, output
         assert int(match.group(1)) > 1, output

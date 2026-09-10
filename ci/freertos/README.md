@@ -1,13 +1,12 @@
 # FreeRTOS fixture builds
 
 Firmware and static-image builders for GDR's FreeRTOS closed-loop tests, plus
-the facts that constrain them. Two builders exist, one per live lane, and the
-kernel-direct builder also produces the static `snapshot` variant:
+the facts that constrain them. One builder exists, and it also produces the
+static `snapshot` variant:
 
 | Lane | Builder | Kernel source | What only this lane can prove |
 | --- | --- | --- | --- |
-| CubeL4 live | `build-fixture-cubel4.sh` | FreeRTOS 10.3.1 bundled in STM32CubeL4 `v1.18.2` | config branches on real running firmware (heap manager, trace facility, static allocation, runtime stats, queue sets, registry size) |
-| Kernel-direct live | `build-fixture-kernel.sh` | `FreeRTOS-Kernel` at a git tag | version branches (notification array, mini list item, V11 heap protector, array-typed run-time totals) |
+| Kernel-direct live | `build-fixture-kernel.sh` | `FreeRTOS-Kernel` at a git tag | config branches on real running firmware (heap manager, trace facility, static allocation, runtime stats, queue sets, registry size) and version branches (notification array, mini list item, V11 heap protector, array-typed run-time totals) |
 | Static snapshot (kernel-direct variant) | `build-fixture-kernel.sh --variant snapshot` | kernel headers only, data written by `fixture/config/snapshot/snapshot.c` | states a healthy kernel cannot produce: SMP decoding, corrupted structures, mismatched counters |
 
 `run-qemu-matrix.sh [<target>] [<version>] [<variant>...]` drives the live
@@ -20,7 +19,7 @@ snapshot`.
 
 ## Fixture cache
 
-Every builder installs its artifacts into one cache root so tests, the matrix
+The builder installs its artifacts into one cache root so tests, the matrix
 runner and other machines read the same layout:
 
 ```text
@@ -36,7 +35,7 @@ cached fixture is present. A missing artifact makes the corresponding test
 
 `run-qemu-matrix.sh` reuses a cached ELF only while it is newer than the fixture
 sources it was built from (`fixture/main.c`, `fixture/config/gdr_fixture_common.h`,
-`fixture/config/<variant>/`, `fixture/board/<target>/`, and the two builders);
+`fixture/config/<variant>/`, `fixture/board/<target>/`, and the builder);
 otherwise it rebuilds and logs `cached fixture is older than its sources;
 rebuilding`. Reason: a fixture edit silently invalidates every variant that is
 not rebuilt, and the resulting failures point at the decoder rather than at the
@@ -45,7 +44,7 @@ regression.
 
 ## Toolchain
 
-Both builders resolve their compiler from `--toolchain-path`,
+The builder resolves its compiler from `--toolchain-path`,
 then `RTOS_TOOLCHAIN_PATH` / `XPACK_ARM_TOOLCHAIN_PATH`, then `PATH`
 (`arm-none-eabi-gcc` everywhere except the RISC-V lane's `riscv-none-elf-gcc`).
 
@@ -64,20 +63,6 @@ Probe a candidate rather than trusting its name:
 
 ## Live lanes
 
-### CubeL4 (`b-l475e-iot01a`)
-
-`build-fixture-cubel4.sh` sparse-clones STM32CubeL4 `v1.18.2` (default
-`/tmp/stm32cubel4-v1.18.2`) and compiles the shared fixture sources against the
-FreeRTOS submodule that ships with it, so this lane is pinned to kernel
-10.3.1 - the cache coordinates `b-l475e-iot01a/10.3.1` are constants, not
-options. Startup code, linker script and `system_stm32l4xx.c` come from the
-`FreeRTOS_LowPower_LPTIM` example project; the fixture itself uses the
-Cortex-M SysTick port (`portable/GCC/ARM_CM4F`) and QEMU semihosting, because
-QEMU does not model the board's LPTIM.
-
-Because the kernel version is fixed, this is the lane that carries the config
-variant matrix (`fixture/config/<variant>/FreeRTOSConfig.h`).
-
 ### Kernel-direct (`mps2-an385`)
 
 `build-fixture-kernel.sh` shallow-clones `FreeRTOS-Kernel` at a tag (default
@@ -87,7 +72,9 @@ variant matrix (`fixture/config/<variant>/FreeRTOSConfig.h`).
 A caller-supplied checkout is copied into the build directory before
 `git checkout`, so a developer's reference tree is never mutated.
 
-This lane carries the version matrix. The tags matter because they bracket ABI
+This lane carries both matrices: the config variants at 10.3.1 (the
+`V10.3.1-kernel-only` tag) and the version sweep. The tags matter because they
+bracket ABI
 changes: notification fields became arrays in V10.4.0, `configUSE_MINI_LIST_ITEM`
 arrived in V10.5.0, and V11.0.0 removed `xBlockAllocatedBit`, added
 `configENABLE_HEAP_PROTECTOR` / `xHeapCanary`, and made `ulTotalRunTime` an
@@ -201,7 +188,7 @@ only exists from V10.6.0, and FreeRTOS.h rejects a config defining both).
 `sizeof(TickType_t) == 2` and `portMAX_DELAY` shrinks to `0xffff`, so this is
 the live cell for the tick-width-derived event-group masks, the `portMAX_DELAY`
 sentinels and the width-correct list-value raw reads on every supported lane
-(10.3.1 CubeL4 and the 11.1.0 kernel-direct build). The tick wraps every
+(the 10.3.1 and 11.1.0 kernel-direct cells). The tick wraps every
 ~65.5 s at 1000 Hz, so no assertion may hard-code absolute tick values.
 
 ## Static snapshot variant

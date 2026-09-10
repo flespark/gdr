@@ -17,10 +17,10 @@
 #include "task.h"
 #include "timers.h"
 
-/* Reason: the CubeL4 lane bundles kernel 10.3.1, whose FreeRTOS.h predates
- * the SMP configNUMBER_OF_CORES knob (added in V11); V11 headers default it
- * to 1 themselves.  Provide the same default here so the shared fixture's
- * SMP-gated expressions compile on both lanes. */
+/* Reason: kernel 10.3.1's FreeRTOS.h predates the SMP configNUMBER_OF_CORES
+ * knob (added in V11); V11 headers default it to 1 themselves.  Provide the
+ * same default here so the shared fixture's SMP-gated expressions compile on
+ * every supported kernel generation. */
 #ifndef configNUMBER_OF_CORES
 #define configNUMBER_OF_CORES 1
 #endif
@@ -641,8 +641,8 @@ static void gdr_register(QueueHandle_t handle, const char *name)
 #ifdef GDR_FIXTURE_HEAP_5
 /* Reason: heap_5 asserts that regions arrive with strictly increasing start
  * addresses (heap_5.c vPortDefineHeapRegions). Two separate globals have no
- * guaranteed link order -- the b-l475e build placed the second array below
- * the first and the fixture died in that configASSERT before reaching
+ * guaranteed link order -- a fixture build once placed the second array
+ * below the first and died in that configASSERT before reaching
  * vTaskStartScheduler -- so the regions come from one ordered object.  The
  * heap-5-protector cell uses exactly one region so the protector's region
  * extremes (pucHeapLowAddress/HighAddress) span no gaps. */

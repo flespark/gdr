@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Shared fixture-builder plumbing for the FreeRTOS closed-loop lanes.
 #
-# Sourced by build-fixture-cubel4.sh / build-fixture-kernel.sh (and the
-# snapshot builder for die/usage).  Each builder keeps its own source
-# acquisition (Cube sparse clone vs FreeRTOS-Kernel tag clone), compile
-# flags and cache coordinates; everything generic (errors, usage text,
-# toolchain resolution, heap source selection, cache install) lives here
-# so the three builders cannot drift.
+# Sourced by build-fixture-kernel.sh (the single FreeRTOS fixture builder);
+# everything generic (errors, usage text, toolchain resolution, heap source
+# selection, cache install) lives here so the builder's live and snapshot
+# paths cannot drift.
 
 # Error with a uniform [gdr-ci] prefix.
 die() {

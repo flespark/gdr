@@ -213,7 +213,7 @@ def test_suspended_no_event_notify_waiting_is_blocked(monkeypatch):
 def test_suspended_scalar_notify_waiting_is_blocked(monkeypatch):
     """Pre-V10.4.0 kernels keep ucNotifyState as a scalar member.
 
-    The B-L475E-IOT01A V10.3.1 fixture is exactly this shape, so subscripting
+    The 10.3.1 `base` fixture is exactly this shape, so subscripting
     the member would raise and silently downgrade Blocked to Suspended.
     """
     assert _task_state(

@@ -8,30 +8,21 @@
 #  5. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
 #  6. rtthread-a9-target — RT-Thread Cortex-A9 closed-loop test
 #  7. rtthread-rv64-target — RT-Thread RISC-V RV64 closed-loop test
-#  8. freertos-config-scope — FreeRTOS kernel config variant matrix
-#  9. freertos-version-scope — FreeRTOS kernel version matrix, incl. dual-core
-# 10. release — source archives and a CNB Release on every pushed tag
+#  8. freertos-kernel-scope — FreeRTOS closed loop from FreeRTOS-Kernel source
+#  9. release — source archives and a CNB Release on every pushed tag
 #
 # One pipeline per verification axis, named `<rtos>-<axis>`, so a red badge
 # names the axis that broke without opening a log. RT-Thread splits by target
 # (Cortex-A9 / RV64) because a failure there is almost always ISA- or
-# port-specific. FreeRTOS is all 32-bit Cortex-M, so target is not its
-# interesting axis; its two live lanes split by what each one can falsify,
-# which also matches the two fixture builders (see ci/freertos/README.md):
-#   - freertos-config-scope ci/freertos/build-fixture-cubel4.sh — kernel pinned
-#                           at 10.3.1, 14 config variants (heap_N, static
-#                           allocation, trace, registry size, tick width, ...).
-#   - freertos-version-scope ci/freertos/build-fixture-kernel.sh — clones
-#                           FreeRTOS-Kernel at a tag: 10.4.6, 10.5.1, 11.1.0 on
-#                           mps2-an385, dual-core SMP and single-core MPU on
-#                           mps2-an521 at 11.3.1, the 64-bit RISC-V lane, plus
-#                           the static snapshot (mps2-an521 at 11.1.0) — a
-#                           file-only ELF for the data-corruption negatives a
-#                           healthy kernel cannot produce, kept as its own
-#                           stage for at-a-glance failure attribution.
-# Splitting the two live lanes also lets each mount only the sources it builds
-# from: the CubeL4 lane never clones FreeRTOS-Kernel, and the kernel-direct lane
-# never downloads the STM32CubeL4 tree.
+# port-specific. FreeRTOS builds every cell from FreeRTOS-Kernel at a tag with
+# one builder (see ci/freertos/README.md), so it runs as a single kernel-scope
+# pipeline whose stages split by what each one can falsify: the config variant
+# matrix on mps2-an385 at 10.3.1 (14 variants, `V10.3.1-kernel-only` tag),
+# the version sweep on mps2-an385 (10.4.6, 10.5.1, 11.1.0), dual-core SMP and
+# single-core MPU on mps2-an521 at 11.3.1, the 64-bit RISC-V lane, and the
+# static snapshot (mps2-an521 at 11.1.0) — a file-only ELF for the
+# data-corruption negatives a healthy kernel cannot produce, kept as its own
+# stage for at-a-glance failure attribution.
 #
 # The QEMU jobs use `docker.build` with their respective CI Dockerfiles; the
 # resulting images are cached by hash on the CNB artifact registry, so later
@@ -172,26 +163,11 @@
     - name: pytest RV64 matrix (QEMU closed-loop)
       script: bash ci/rt-thread/run-qemu-matrix.sh rv64
 
-.freertos-config-scope: &freertos-config-scope
-  name: freertos-config-scope
-  runner: *amd64-runner
-  docker:
-    build: *qemu-matrix-build
-    volumes:
-      - /tmp/freertos-fixture:copy-on-write
-      # CubeL4 bundles its own kernel copy, so no FreeRTOS-Kernel clone here.
-      - /tmp/stm32cubel4-v1.18.2:copy-on-write
-      - /tmp/gdr-venv:copy-on-write
-      - /root/.cache/uv:copy-on-write
-  env: *freertos-env
-  stages:
-    - <<: *gdb-python-qemu-sanity
-    - name: FreeRTOS config variant matrix (kernel 10.3.1)
-      script: |
-        bash ci/freertos/run-qemu-matrix.sh b-l475e-iot01a 10.3.1 base full static-only static-dynamic trace-off heap-1 heap-2 heap-3 heap-5 heap-protector registry-0 pend-callback streams tick16
-
-.freertos-version-scope: &freertos-version-scope
-  name: freertos-version-scope
+# Reason: one freertos lane — every cell builds from FreeRTOS-Kernel at a tag
+# with build-fixture-kernel.sh, so one kernel-source volume serves the config
+# matrix (10.3.1), the version sweep, SMP/MPU, RISC-V and the snapshot alike.
+.freertos-kernel-scope: &freertos-kernel-scope
+  name: freertos-kernel-scope
   runner: *amd64-runner
   docker:
     build: *qemu-matrix-build
@@ -203,7 +179,12 @@
   env: *freertos-env
   stages:
     - <<: *gdb-python-qemu-sanity
-    - name: FreeRTOS kernel version matrix
+    - name: FreeRTOS config variant matrix (mps2-an385, kernel 10.3.1)
+      script: |
+        bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 base full static-only static-dynamic trace-off heap-1 heap-2 heap-3 heap-5 heap-protector registry-0 pend-callback streams tick16
+    # Reason: the config axis pins 10.3.1 (the V10.3.1-kernel-only tag); the
+    # version axis sweeps the newer ABI generations on the same board.
+    - name: FreeRTOS kernel version matrix (mps2-an385)
       script: |
         bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 base
         bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.5.1 base
@@ -290,8 +271,7 @@ main: # branch: main
     - <<: *gdb12-compat-a9
     - <<: *rtthread-a9-target
     - <<: *rtthread-rv64-target
-    - <<: *freertos-config-scope
-    - <<: *freertos-version-scope
+    - <<: *freertos-kernel-scope
 
   pull_request:
     # Same test pipelines as push, minus the two image publishers.
@@ -300,8 +280,7 @@ main: # branch: main
     - <<: *gdb12-compat-a9
     - <<: *rtthread-a9-target
     - <<: *rtthread-rv64-target
-    - <<: *freertos-config-scope
-    - <<: *freertos-version-scope
+    - <<: *freertos-kernel-scope
 
 # `$` applies to every reference. CNB sets CNB_BRANCH to the pushed tag when
 # `tag_push` fires. The imported Secret repository file provides

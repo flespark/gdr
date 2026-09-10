@@ -1,7 +1,7 @@
 /* Shared FreeRTOSConfig knobs for every GDR fixture variant.
  *
  * Variant headers include this file after setting their deltas. Keep the
- * defaults identical to the historical B-L475E-IOT01A / 10.3.1 combination
+ * defaults identical to the historical 10.3.1 combination
  * so the `base` variant reproduces the original assertions.
  */
 #ifndef GDR_FIXTURE_COMMON_H

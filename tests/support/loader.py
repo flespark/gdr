@@ -18,7 +18,7 @@ _DEFAULT_FREERTOS_CACHE = Path.home() / "Project" / "gdr-fixture" / "freertos"
 _DEFAULT_RTTHREAD_CACHE = Path("/workspace/fixture/rtthread")
 
 _FREERTOS_DEFAULT_VERSION = "10.3.1"
-_FREERTOS_DEFAULT_TARGET = "b-l475e-iot01a"
+_FREERTOS_DEFAULT_TARGET = "mps2-an385"
 _FREERTOS_DEFAULT_VARIANT = "base"
 _RTTHREAD_DEFAULT_VERSION = "4.0.5"
 _RTTHREAD_DEFAULT_TARGET = "cortex-a9"

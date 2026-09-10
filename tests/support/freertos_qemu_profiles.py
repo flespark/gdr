@@ -13,11 +13,10 @@ from pathlib import Path
 from tests.support.loader import IntegrationSpec, load_integration_spec
 from tests.support.qemu_harness import QemuProfile
 
-_KNOWN_TARGETS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521", "qemu-virt-rv64")
+_KNOWN_TARGETS = ("mps2-an385", "mps2-an521", "qemu-virt-rv64")
 _MACHINES = {
     "mps2-an385": "mps2-an385",
     "mps2-an521": "mps2-an521",
-    "b-l475e-iot01a": "b-l475e-iot01a",
     "qemu-virt-rv64": "virt",
 }
 

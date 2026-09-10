@@ -17,7 +17,7 @@
  * only tolerated a wrong value because it dropped the exact-width assert.
  * With 8-bit priorities the lowest interrupt is number 255, so
  * configLIBRARY_LOWEST_INTERRUPT_PRIORITY is 255 here (the common header's
- * 15 only fits the 4-bit B-L475E NVIC). */
+ * 15 assumes a 4-bit NVIC). */
 #ifndef configPRIO_BITS
 #define configPRIO_BITS 8
 #endif

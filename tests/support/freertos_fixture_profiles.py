@@ -33,7 +33,7 @@ _SUPPORTED_VARIANTS = (
     "tick16",
 )
 
-_SUPPORTED_BOARDS = ("b-l475e-iot01a", "mps2-an385", "mps2-an521", "qemu-virt-rv64")
+_SUPPORTED_BOARDS = ("mps2-an385", "mps2-an521", "qemu-virt-rv64")
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ def list_freertos_boards() -> tuple[str, ...]:
 
 
 def get_freertos_test_profile(
-    variant: str, version: str, target: str = "b-l475e-iot01a"
+    variant: str, version: str, target: str = "mps2-an385"
 ) -> FreeRtosTestProfile:
     """Return expectations independent from GDR's production layout probes."""
     if variant not in _SUPPORTED_VARIANTS:
