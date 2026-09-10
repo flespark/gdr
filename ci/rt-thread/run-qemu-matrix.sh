@@ -38,6 +38,16 @@ log_matrix_entry() {
     echo "[gdr-ci] rtthread/$1/$2: $3"
 }
 
+# GDB architecture each target's closed loop needs; handed to
+# check-gdb-python.sh so an incapable GDB is refused before the build,
+# instead of pytest failing every test on a half-initialised session.
+gdb_architecture_for() {
+    case "$1" in
+    rv64) echo "riscv:rv64" ;;
+    *) echo "arm" ;;
+    esac
+}
+
 # Populate REFS / TOOLCHAIN_PATH / TOOLCHAIN_PREFIX for one QEMU target.
 resolve_matrix() {
     local target="$1"
@@ -183,7 +193,7 @@ main() {
     # Check the embedded interpreter before spending time fetching or building a
     # fixture. This is deliberately in the shared runner so all GDB/QEMU jobs use
     # the same compatibility gate.
-    bash "$SCRIPT_DIR/../check-gdb-python.sh"
+    bash "$SCRIPT_DIR/../check-gdb-python.sh" "$(gdb_architecture_for "$target")"
     # Reason: keep local container runs from creating a Linux virtualenv in the mounted repo.
     export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/gdr-venv}"
     uv sync --group dev

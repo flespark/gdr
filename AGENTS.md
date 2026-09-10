@@ -172,9 +172,10 @@ bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 base full static-dynamic
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.1.0 snapshot   # file-only ELF
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp        # dual-core SMP
 bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu        # MPU wrappers v2
-bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 base   # 64-bit RISC-V
+bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64   # 64-bit RISC-V
 # The GDR_GDB used for the closed loop must match the lane's architecture
-# (riscv-none-elf-gdb-py3 for qemu-virt-rv64, arm-none-eabi-gdb-py3 elsewhere).
+# (riscv-none-elf-gdb-py3 for qemu-virt-rv64, arm-none-eabi-gdb-py3 elsewhere);
+# the matrix runner probes the architecture and refuses to start otherwise.
 
 # Point the fixture cache elsewhere. A cached fixture is reused only while it is
 # newer than the fixture sources; a missing or stale one is rebuilt and installed.

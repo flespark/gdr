@@ -61,6 +61,10 @@ Probe a candidate rather than trusting its name:
 "$GDR_GDB" --nx --quiet --batch --ex 'python print("ok")'
 ```
 
+It must also speak the lane's target architecture (`riscv:rv64` on
+`qemu-virt-rv64`, `arm` elsewhere). The matrix runner probes both before
+building anything and refuses to start on an incapable GDB.
+
 ## Live lanes
 
 ### Kernel-direct (`mps2-an385`)
@@ -190,6 +194,17 @@ the live cell for the tick-width-derived event-group masks, the `portMAX_DELAY`
 sentinels and the width-correct list-value raw reads on every supported lane
 (the 10.3.1 and 11.1.0 kernel-direct cells). The tick wraps every
 ~65.5 s at 1000 Hz, so no assertion may hard-code absolute tick values.
+
+### 64-bit RISC-V (`qemu-virt-rv64`, variant `rv64`)
+
+The lane must run the `rv64` variant: the RISC-V port hardcodes
+`TickType_t` to the architecture width (64), while the kernel's tick-width
+*constants* follow `configTICK_TYPE_WIDTH_IN_BITS`, which a plain variant
+leaves at 32 — the event-group control bits then land at bits 24..31 on a
+64-bit `TickType_t`, which the event decode and the `tick_bits` profile
+comparison correctly flag. The `rv64` config declares the 64-bit width
+(see its header for the full chain); `qemu-virt-rv64 11.1.0 base` is not a
+valid cell.
 
 ## Static snapshot variant
 

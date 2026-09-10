@@ -61,6 +61,16 @@ toolchain_path_for() {
     esac
 }
 
+# GDB architecture each target's closed loop needs; handed to
+# check-gdb-python.sh so an incapable GDB is refused before the build,
+# instead of pytest failing every test on a half-initialised session.
+gdb_architecture_for() {
+    case "$1" in
+    qemu-virt-rv64) echo "riscv:rv64" ;;
+    *) echo "arm" ;;
+    esac
+}
+
 # Parameterize pytest through the shared loader (tests.support.loader).
 # Target/version/variant/cache/gdb are the only knobs; QEMU machine, ELF
 # and firmware paths are derived on the Python side from that tuple.
@@ -163,7 +173,7 @@ main() {
     fi
 
     export GDR_GDB="${GDR_GDB:-gdb-multiarch}"
-    bash "$REPO_ROOT/ci/check-gdb-python.sh"
+    bash "$REPO_ROOT/ci/check-gdb-python.sh" "$(gdb_architecture_for "$target")"
     export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/gdr-venv}"
     uv sync --group dev
 
