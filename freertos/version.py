@@ -46,15 +46,21 @@ def _range_text() -> str:
     )
 
 
-def validate_version(value: str) -> Version:
+def validate_version(value: str) -> Version | None:
+    """Validate the version argument; ``None`` (already warned) on failure.
+
+    Reason: policy failures must not raise ``SystemExit`` -- a GDB command
+    that raises it kills the whole GDB session, so a typo'd version would
+    cost the user their target. Callers abort the init on ``None`` instead.
+    """
     parsed = parse_version(value)
     if parsed is None:
         warn(f"invalid FreeRTOS version: {value!r}; expected X.Y.Z")
-        raise SystemExit(1)
+        return None
     if not version_in_ranges(parsed, SUPPORTED_RANGES):
         warn(f"unsupported FreeRTOS version: {value!r}")
         warn(f"supported public ranges: {_range_text()}")
-        raise SystemExit(1)
+        return None
     return parsed
 
 
@@ -133,8 +139,17 @@ def detect_target_version() -> Version | None:
     return decode_version(numeric, ("decimal", "packed-hex"), SUPPORTED_RANGES)
 
 
-def check_version(value: str) -> Version:
+def check_version(value: str) -> Version | None:
+    """Validate the requested version against the target's exported one.
+
+    Returns the parsed version, or ``None`` (already warned) when the
+    argument is invalid/unsupported or disagrees with the target -- the
+    bootstrap aborts the init on ``None`` instead of raising (a GDB command
+    that raises ``SystemExit`` kills the whole session).
+    """
     expected = validate_version(value)
+    if expected is None:
+        return None
     actual = detect_target_version()
     if actual is None:
         warn(
@@ -145,5 +160,5 @@ def check_version(value: str) -> Version:
             f"FreeRTOS version mismatch: requested {value}, "
             f"target exports {format_version(actual)}"
         )
-        raise SystemExit(1)
+        return None
     return expected

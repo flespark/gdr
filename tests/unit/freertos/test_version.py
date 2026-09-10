@@ -15,15 +15,13 @@ def test_validate_version_accepts_supported_ranges(value, monkeypatch):
 
 
 def test_validate_version_rejects_invalid_and_unsupported_values(monkeypatch):
+    """Policy failures warn and return None; SystemExit would kill GDB."""
     warnings: list[str] = []
     monkeypatch.setattr(version, "warn", warnings.append)
 
-    with pytest.raises(SystemExit):
-        version.validate_version("10.3")
-    with pytest.raises(SystemExit):
-        version.validate_version("11.4.0")
-    with pytest.raises(SystemExit):
-        version.validate_version("12.0.0")
+    assert version.validate_version("10.3") is None
+    assert version.validate_version("11.4.0") is None
+    assert version.validate_version("12.0.0") is None
 
     assert "invalid FreeRTOS version" in warnings[0]
     assert (
@@ -134,11 +132,11 @@ def test_detect_version_returns_none_when_nothing_exported(monkeypatch):
 
 
 def test_check_version_rejects_a_target_mismatch(monkeypatch):
+    """A mismatch aborts the init (None), never the GDB session."""
     warnings: list[str] = []
     monkeypatch.setattr(version, "warn", warnings.append)
     monkeypatch.setattr(version, "detect_target_version", lambda: (10, 5, 0))
 
-    with pytest.raises(SystemExit):
-        version.check_version("10.3.1")
+    assert version.check_version("10.3.1") is None
 
     assert "version mismatch" in warnings[-1]

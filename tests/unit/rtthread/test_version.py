@@ -20,8 +20,7 @@ def test_validate_version_rejects_unverified_gaps(value, monkeypatch):
     """Adjacent and intermediate releases are not implied by range support."""
     monkeypatch.setattr(version, "warn", lambda _message: None)
 
-    with pytest.raises(SystemExit):
-        version.validate_version(value)
+    assert version.validate_version(value) is None
 
 
 def test_check_version_returns_the_parsed_target_profile(monkeypatch):
@@ -58,11 +57,11 @@ def test_detect_target_version_uses_macros_when_symbols_are_absent(monkeypatch):
 
 
 def test_check_version_rejects_a_target_mismatch(monkeypatch):
+    """A mismatch aborts the init (None), never the GDB session."""
     warnings: list[str] = []
     monkeypatch.setattr(version, "warn", warnings.append)
     monkeypatch.setattr(version, "detect_target_version", lambda: (4, 0, 5))
 
-    with pytest.raises(SystemExit):
-        version.check_version("3.1.3")
+    assert version.check_version("3.1.3") is None
 
     assert "version mismatch" in warnings[-1]

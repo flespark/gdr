@@ -39,6 +39,9 @@ All notable changes to GDR are documented in this file.
 
 ### Fixed
 
+- `gdr init` no longer kills the GDB session on policy failures (unknown
+  RTOS name, invalid or unsupported version, declared/target version
+  mismatch): it warns and returns to the prompt with no adapter registered.
 - `rtt` and `frt` heap/system output uses a single `N/A` sentinel; a bare
   `unavailable` cell is rejected by a boundary test.
 

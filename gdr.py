@@ -101,9 +101,10 @@ def _invoke_command(argument: str) -> None:
 
     A guarded entry means an unexpected failure in argument parsing or RTOS
     setup surfaces as a single ``[gdr] error`` diagnostic instead of raw GDB
-    "Python Exception" noise.  ``SystemExit`` (unsupported RTOS / version)
-    intentionally passes through: it is a ``BaseException`` the guard does
-    not catch.
+    "Python Exception" noise.  Init-time policy failures (unknown RTOS,
+    invalid/unsupported version, declared/target mismatch) warn and abort
+    the init: ``SystemExit`` from a GDB command kills the whole session,
+    which a typo must never do.
     """
     argv = gdb.string_to_argv(argument) if gdb is not None else argument.split()
     if not argv or argv[0] in ("help", "--help", "-h"):
@@ -138,6 +139,8 @@ def _setup_rtthread(version: str) -> None:
         return
 
     target_version = check_version(version)
+    if target_version is None:
+        return
     info(f"setting up RT-Thread v{version}...")
     cfg = detect_config()
     info(
@@ -174,6 +177,8 @@ def _setup_freertos(version: str) -> None:
         return
 
     target_version = check_version(version)
+    if target_version is None:
+        return
     info(f"setting up FreeRTOS v{version}...")
     cfg = detect_config()
     info(
@@ -204,7 +209,6 @@ def _setup_rtos(rtos: str, version: str) -> None:
     else:
         warn(f"unsupported RTOS: {rtos!r}")
         warn("currently supported: rtthread, freertos")
-        raise SystemExit(1)
 
 
 def initialize() -> None:
@@ -226,7 +230,11 @@ def initialize() -> None:
         _print_usage()
         return
 
+    from gdr.adapter_api import is_initialized
+
     _setup_rtos(rtos, version)
+    if not is_initialized():
+        info("GDR loaded without an active adapter; run `gdr init <rtos> <version>`.")
 
 
 # GDB sources this file as a script, so __name__ is "__main__" when loaded
