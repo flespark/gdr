@@ -29,8 +29,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=lib/fixture-common.sh
-source "$SCRIPT_DIR/lib/fixture-common.sh"
+source "$SCRIPT_DIR/fixture-common.sh"
 DEFAULT_REPO="https://github.com/FreeRTOS/FreeRTOS-Kernel.git"
 DEFAULT_TAG="V11.1.0"
 DEFAULT_KERNEL_DIR="/tmp/gdr-freertos-kernel-source"

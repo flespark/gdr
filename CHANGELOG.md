@@ -33,7 +33,7 @@ All notable changes to GDR are documented in this file.
 - Repetitive adapter helpers moved into `gdr/` (`arch_or_default`,
   `value_at`, `read_field_at`, `loadable_ranges`, command completion), and
   the FreeRTOS `timers ↔ details` import cycle was removed.
-- Fixture builders share `ci/freertos/lib/fixture-common.sh` and
+- Fixture builders share `ci/freertos/fixture-common.sh` and
   `fixture/common/` sources; the three FreeRTOS CI lanes and the local
   `ci/validate-podman.sh` reproducer now stay in sync.
 

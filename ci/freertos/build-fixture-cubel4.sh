@@ -20,8 +20,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=lib/fixture-common.sh
-source "$SCRIPT_DIR/lib/fixture-common.sh"
+source "$SCRIPT_DIR/fixture-common.sh"
 DEFAULT_CUBE_REPO="https://github.com/STMicroelectronics/STM32CubeL4.git"
 DEFAULT_CUBE_REF="v1.18.2"
 DEFAULT_CUBE_DIR="/tmp/stm32cubel4-v1.18.2"
