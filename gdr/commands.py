@@ -66,7 +66,7 @@ def render_system() -> None:
         ("Kernel version", summary.kernel_version),
         ("Current task", summary.current_task or "N/A"),
         (
-            "Task count",
+            summary.task_count_label,
             str(summary.task_count) if summary.task_count is not None else "N/A",
         ),
         (

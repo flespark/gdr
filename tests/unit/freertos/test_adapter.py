@@ -69,7 +69,7 @@ def test_value_to_task_preserves_the_complete_intermediate_model(monkeypatch):
 
 
 def test_value_to_task_computes_high_water_from_the_stack_bytes(monkeypatch):
-    """A filled stack yields a word-counted high-water mark."""
+    """A filled stack yields its untouched-fill size in bytes."""
     layout = build_layout(FreeRtosConfig(stack_end_field="pxEndOfStack"), (10, 3, 1))
     raw = object()
     values = {
@@ -94,7 +94,8 @@ def test_value_to_task_computes_high_water_from_the_stack_bytes(monkeypatch):
 
     task = adapter_module.value_to_task(raw, "Ready", None, layout)
 
-    assert task.high_water_mark == 32
+    # 128 fill bytes = 32 words x 4; the model converts words to bytes.
+    assert task.high_water_mark == 128
 
 
 def test_high_water_uses_px_top_of_stack_window_when_stack_end_absent(monkeypatch):
@@ -135,8 +136,8 @@ def test_high_water_uses_px_top_of_stack_window_when_stack_end_absent(monkeypatc
 
     # Read window is [stack_base, pxTopOfStack] since stack_end is absent.
     assert read_bytes_calls == [(0x1000, 0x180)]
-    # Whole window 0xa5 => 0x180 bytes / 4 = 0x60 words, reported conservatively.
-    assert task.high_water_mark == 0x60
+    # Whole window 0xa5 => 96 words = 0x180 bytes, reported conservatively.
+    assert task.high_water_mark == 0x180
     # Stack/Used stay gated off (no stack_end); only HighWater becomes available.
     assert task.stack_size is None
     assert task.stack_used is None
@@ -212,7 +213,8 @@ def test_system_summary_uses_one_scheduler_snapshot(monkeypatch):
     assert traversals == 1
     assert summary.current_task == "task-running"
     assert summary.task_count == 2
-    assert summary.object_counts == {"task": 2}
+    assert summary.task_count_label == "Task count (kernel)"
+    assert summary.object_counts == {"task (walked)": 2}
     assert summary.heap_allocator is None
     assert summary.heap_status is None
 

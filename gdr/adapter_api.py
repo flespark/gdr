@@ -19,6 +19,11 @@ class SystemSummary:
     kernel_version: str = "unknown"
     current_task: str | None = None
     task_count: int | None = None
+    # Row label for task_count; adapters override it to name the evidence
+    # source (a kernel counter vs a scheduler-list walk). Whether both
+    # sources exist is adapter-specific, so the neutral default stays
+    # unqualified.
+    task_count_label: str = "Task count"
     tick_count: int | None = None
     scheduler_state: str = "N/A"
     state_counts: dict[str, int] = field(default_factory=dict)

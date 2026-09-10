@@ -511,9 +511,10 @@ on the initial stack frame and is overwritten on first context switch. This is
 a fundamental difference from RT-Thread's `rt_thread.entry`, which persists in
 the TCB. The `frt help` output documents this limitation.
 
-**High-water mark semantics.** The `HighWater` column reports the number of
-`StackType_t` words that have never been overwritten (matching
-`uxTaskGetStackHighWaterMark` semantics). `unavailable` means either the stack
+**High-water mark semantics.** The `HighWater` column reports bytes of stack
+never overwritten, the same unit as `Stack`/`Used`. The scan itself is
+word-granular (`uxTaskGetStackHighWaterMark` also counts `StackType_t` words;
+GDR converts at the model boundary). `unavailable` means either the stack
 was never filled with `0xa5` or the distinction between "unfilled" and
 "completely exhausted" cannot be made without an independent evidence source.
 The scan window is `[pxStack, pxTopOfStack)` (no `pxEndOfStack` required).

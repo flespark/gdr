@@ -244,7 +244,7 @@ supports from V11.0.0 onwards, so its cell pins kernel 11.1.0.
 Stack fill words use `0xa5a5a5a5`, not `0xa5`: the kernel's fill byte is applied
 per byte, so an untouched `StackType_t` word reads as the repeated pattern. A
 word holding plain `0xa5` would stop the high-water scan after one byte and
-report zero free words - a fake friendlier than the real thing, which would hide
+report zero free bytes - a fake friendlier than the real thing, which would hide
 watermark regressions.
 
 The snapshot's TCB is a hand-written struct whose tag matches `tasks.c`

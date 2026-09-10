@@ -176,16 +176,16 @@ def test_runtime_percent_uses_array_total(snapshot_session):
     assert "10.0%" in detail, detail
 
 
-def test_high_water_scan_counts_untouched_fill_words(snapshot_session):
-    """The 0xa5a5a5a5 prefill below pxTopOfStack is reported as free words.
+def test_high_water_scan_reports_untouched_fill_bytes(snapshot_session):
+    """The 0xa5a5a5a5 prefill below pxTopOfStack is reported as free bytes.
 
-    idle0's stack holds 12 untouched fill words followed by 4 used words, so
-    a watermark scan that stops at the first non-fill byte (or counts bytes
-    instead of words) cannot produce 12.
+    idle0's stack holds 12 untouched fill words (0xa5a5a5a5 each) followed
+    by 4 used words; the word-granular scan counts 12 words and the model
+    converts them to 12 * 4 = 48 bytes -- the same unit as Stack/Used.
     """
     detail = snapshot_session.run("freertos task idle0", timeout=20)
     pairs = _pairs(detail)
-    assert pairs["HighWater"] == "12", detail
+    assert pairs["HighWater"] == "48", detail
 
 
 def test_overflow_timer_expires_in_uses_next_epoch(snapshot_session):
@@ -252,7 +252,7 @@ def test_system_reports_corrupt_heap_status(snapshot_session):
         in output
     ), output
     # The rest of the system stays consistent on the snapshot.
-    assert "Task count: 9" in output, output
+    assert "Task count (kernel): 9" in output, output
     assert "Scheduler state: running" in output, output
 
 

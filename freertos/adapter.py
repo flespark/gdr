@@ -94,6 +94,7 @@ class FreeRtosTask:
     stack_end: int = 0
     stack_size: int | None = None
     stack_used: int | None = None
+    # Bytes of untouched 0xa5 fill; the scan itself is word-granular.
     high_water_mark: int | None = None
     runtime_counter: int | None = None
     core: int | None = None
@@ -218,6 +219,7 @@ def value_to_task(
         else None
     )
     high = None
+    word_bytes = _stack_type_size(layout)
     if water_size is not None and water_base:
         # Reason: when the whole window is untouched fill (all 0xa5) the count
         # reports the full window's word count. That is intentionally
@@ -225,7 +227,11 @@ def value_to_task(
         # in the startup window -- which is exactly the direction a debugger
         # must prefer over a fabricated larger number.
         raw = read_bytes(water_base, water_size)
-        high = _high_water_mark(raw, _stack_type_size(layout))
+        # Reason: the scan is word-granular (the kernel's fill and
+        # uxTaskGetStackHighWaterMark both count StackType_t words), but the
+        # model carries bytes so Stack/Used/HighWater render in one unit.
+        high_words = _high_water_mark(raw, word_bytes)
+        high = high_words * word_bytes if high_words is not None else None
     state_item = read_field(value, sl, "state_list_item")
     wake_tick = None
     if state_item is not None:
@@ -1100,6 +1106,13 @@ class FreeRtosAdapter(RtosAdapter):
             ),
             current_task=current,
             task_count=total if total is not None else len(tasks),
+            # Reason: name the evidence source -- the kernel counter and the
+            # scheduler-list walk are independent counts that agree on a
+            # healthy kernel and diverge on a corrupt one (the TaskCount
+            # check compares them), so the rows must not read as duplicates.
+            task_count_label=(
+                "Task count (kernel)" if total is not None else "Task count (walked)"
+            ),
             tick_count=system_value("tick", self.layout),
             scheduler_state=(
                 "running"
@@ -1111,7 +1124,7 @@ class FreeRtosAdapter(RtosAdapter):
             state_counts={
                 name: value for name, value in counts.items() if value is not None
             },
-            object_counts={"task": len(tasks)},
+            object_counts={"task (walked)": len(tasks)},
             heap_allocator=heap_allocator,
             heap_used=heap_used,
             heap_total=(snap.total if snap is not None else None),
