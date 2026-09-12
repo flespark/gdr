@@ -142,10 +142,10 @@ def detect_target_version() -> Version | None:
 def check_version(value: str) -> Version | None:
     """Validate the requested version against the target's exported one.
 
-    Returns the parsed version, or ``None`` (already warned) when the
-    argument is invalid/unsupported or disagrees with the target -- the
-    bootstrap aborts the init on ``None`` instead of raising (a GDB command
-    that raises ``SystemExit`` kills the whole session).
+    Returns the parsed version, or ``None`` when validation fails. Invalid or
+    unsupported arguments already emit warnings; a declared/target mismatch
+    emits an error because it aborts adapter registration. The bootstrap uses
+    ``None`` instead of raising because ``SystemExit`` would kill GDB.
     """
     expected = validate_version(value)
     if expected is None:
@@ -158,7 +158,7 @@ def check_version(value: str) -> Version | None:
     elif actual != expected:
         warn(
             f"FreeRTOS version mismatch: requested {value}, "
-            f"target exports {format_version(actual)}"
+            f"but target exports {format_version(actual)}"
         )
         return None
     return expected

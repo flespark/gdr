@@ -38,6 +38,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `adapter_api.py` | `RtosAdapter`, `ObjectTable`, `ObjectDetail`, `SystemSummary`, and the single active adapter selected by `gdr init`. |
 | `derive.py` | RTOS-neutral derived-value helpers shared by the adapters: wrap-safe timer expiry (with/without the `overdue` label), fill-byte stack watermark counting, and the `count@names` waiter cell. Scalar-in/string-out, never adapter model objects. |
 | `commands.py` / `functions.py` | Generic output coordination and raw-value convenience functions; task columns and object vocabulary remain adapter-owned. |
+| `help.py` | RTOS-neutral dataclasses and terminal/Markdown renderers for help trees. Command metadata stays structured so the same source can feed GDB now and MkDocs later. |
 
 ### `rtthread/` — adapter
 
@@ -48,7 +49,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `adapter.py` | RT-Thread intermediate object models, `gdb.Value` conversion, adapter-owned task/object tables, detail dispatch and system summaries. These models are presentation inputs, not ABI layout descriptions. |
 | `diagnostics.py` | Consumes adapter intermediate models for detail rendering and performs bounded raw mailbox/message-queue/mempool and system-heap walks and consistency diagnostics. |
 | `version.py` | RT-Thread support ranges, exported target symbols, encoding order and RT-Thread-specific diagnostics. |
-| `commands.py` | The `rtthread` / `rtt` command tree, including routing, aliases, `rtt help`, and `rtt heap`. |
+| `commands.py` / `help_docs.py` | The `rtthread` / `rtt` router and its structured help tree. `rtt help <topic>` renders command fields, tips, configuration dependencies and implementation limits; printer subtopics are derived from active layout metadata. |
 
 ### `freertos/` — adapter
 
@@ -62,7 +63,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `heap.py` | Heap-1..5 snapshot for `frt heap` and `frt system`: kernel counters (never resynthesised), canary decode, bounded free-list/linear walks with a three-way `CrossCheck` verdict. Walks start at the kernel's own `align_up(&ucHeap)` base, never the free-list head. |
 | `adapter.py` | Task/queue/timer/event/stream models, value conversion, list tables, summaries, and the `RtosAdapter` protocol surface. |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
-| `commands.py` | The `freertos` / `frt` command tree: 7 plural list commands (`tasks`/`queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers`), 7 singular detail commands (`frt task <name>`, etc.), standalone `help`/`system`/`objects`/`heap`, and 6 aliases (`threads`/`sems`/`mtxs`/`qs`/`egs`/`sbs`). `objects` is rendered locally (`render_object_summary`) because the neutral core renderer has no provenance column; `queues`/`semaphores`/`mutexes`/`timers`/`eventgroups`/`streambuffers` render their own column-contract tables (`object_table()`), and `heap` renders `heap_report()` (algorithm/total/free/min/alloc/free counters, protector state, free-list block count, linear-walk holes and the three-way cross-check verdict, plus the optional block table). |
+| `commands.py` / `help_docs.py` | The `freertos` / `frt` router and structured help tree for the 7 plural lists, 7 singular details, `system`/`objects`/`heap`, aliases, functions and layout-derived pretty-printers. `frt help <topic>` is rendered from metadata shared with the Markdown exporter rather than assembled output strings. |
 | `details.py` | Vertical detail builders for tasks and the queue/timer/event-group/stream-buffer families. |
 | `diagnostics.py` | Bounded raw list walks and consistency checks (list/task/system/queue/timer/event), each reporting `ok`/`fail`/`skipped` — never a clean short walk on corruption or truncation. |
 

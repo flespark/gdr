@@ -193,6 +193,7 @@ class CommandTreeSpec:
     detail_kinds: dict[str, str]
     object_names_fn: Callable[[str], list[str]]
     preserve_spaces: bool = False
+    help_topics: list[str] | None = None
 
 
 def complete_command_tree(
@@ -211,6 +212,8 @@ def complete_command_tree(
     if not parts:
         return prefix_candidates(word, spec.vocabulary)
     command = spec.aliases.get(parts[0].lower(), parts[0].lower())
+    if command == "help" and " " in text and spec.help_topics is not None:
+        return prefix_candidates(word, spec.help_topics)
     if command in spec.detail_kinds and (
         " " in text if spec.preserve_spaces else len(parts) > 1
     ):

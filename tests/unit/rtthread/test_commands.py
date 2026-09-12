@@ -88,9 +88,30 @@ def test_help_lists_every_command_and_alias(argument, capsys):
     assert set(commands._COMMAND_DESCRIPTIONS) == {"help", *_PUBLIC_ROUTES}
     for command in commands._COMMAND_DESCRIPTIONS:
         assert f"rtt {command}" in commands._HELP
+    for command in commands._DETAIL_DESCRIPTIONS:
+        assert f"rtt {command}" in commands._HELP
     for alias, public_command in commands._COMMAND_ALIASES.items():
-        assert f"{alias}" in commands._HELP
-        assert f"-> {public_command}" in commands._HELP
+        assert alias in commands._HELP
+        assert f"-> rtt {public_command}" in commands._HELP
+    assert "Run 'rtt help <topic>'" in commands._HELP
+
+
+def test_help_topic_documents_fields_tips_config_and_limits(capsys):
+    """List, detail, heap and printer nodes expose structured sections."""
+    commands._invoke_command("help threads")
+    threads = capsys.readouterr().out
+    commands._invoke_command("help thread")
+    thread = capsys.readouterr().out
+    commands._invoke_command("help heap")
+    heap = capsys.readouterr().out
+
+    for output in (threads, thread, heap):
+        assert "DESCRIPTION" in output
+        assert "FIELDS" in output
+        assert "TIPS" in output
+        assert "CONFIGURATION" in output
+        assert "LIMITATIONS" in output
+    assert "Thread occupancy" in heap
 
 
 def test_unknown_or_extra_arguments_refer_to_help(monkeypatch):
@@ -101,8 +122,9 @@ def test_unknown_or_extra_arguments_refer_to_help(monkeypatch):
     commands._invoke_command("events extra")
     commands._invoke_command("help extra")
     commands._invoke_command("unknown")
+    commands._invoke_command("pretty-printers timer")
 
-    assert warnings == [commands._USAGE] * 3
+    assert warnings == [commands._USAGE] * 4
     assert "rtt help" in commands._USAGE
 
 
@@ -149,13 +171,13 @@ def test_singular_command_without_name_refers_to_help(monkeypatch):
 
 
 def test_help_documents_singular_detail_syntax(capsys):
-    """Help lists every singular detail form with its canonical kind."""
+    """Help lists every singular detail form and points to topic lookup."""
     commands._invoke_command("help")
 
     help_output = capsys.readouterr().out
     for command in commands._SINGULAR_COMMANDS:
         assert f"rtt {command}" in help_output
-    assert "Single-object detail" in help_output
+    assert "Run 'rtt help <topic>'" in help_output
 
 
 def test_complete_suggests_commands_for_the_first_word():

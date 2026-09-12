@@ -22,114 +22,78 @@ from gdr.gdb_bridge import (
     info,
     warn,
 )
+from gdr.help import command_aliases, command_topics, find_topic, render_terminal
 from rtthread.adapter import RtThreadAdapter
+from rtthread.help_docs import build_help_tree
 from rtthread.navigation import iter_object_names
 
 _command_registered = False
 _alias_registered = False
 
-_OBJECT_COMMANDS = {
-    "semaphores": "semaphore",
-    "mutexes": "mutex",
-    "events": "event",
-    "mailboxs": "mailbox",
-    "messagequeues": "msgqueue",
-    "mempools": "mempool",
-    "timers": "timer",
-}
-# Singular forms render one object's vertical detail: ``rtt <object> <name>``.
+_HELP_TREE = build_help_tree()
+_COMMANDS = {topic.name: topic for topic in command_topics(_HELP_TREE)}
+_COMMAND_ALIASES = command_aliases(_HELP_TREE)
 _SINGULAR_COMMANDS = {
-    "thread": "task",
-    "timer": "timer",
-    "semaphore": "semaphore",
-    "mutex": "mutex",
-    "event": "event",
-    "mailbox": "mailbox",
-    "messagequeue": "msgqueue",
-    "mempool": "mempool",
+    topic.name: topic.kind for topic in _COMMANDS.values() if topic.action == "detail"
 }
-_COMMAND_ALIASES = {
-    "tasks": "threads",
-    "sems": "semaphores",
-    "msgs": "messagequeues",
-    "mtxs": "mutexes",
-    "mboxs": "mailboxs",
-    # Accept the conventional spelling in addition to RT-Thread's historical
-    # command spelling used by the short alias above.
-    "mailboxes": "mailboxs",
-}
+# Compatibility views for callers that inspect the public command vocabulary.
 _COMMAND_DESCRIPTIONS = {
     "help": "Show this help",
-    "threads": "List threads",
-    "semaphores": "List semaphores",
-    "mutexes": "List mutexes",
-    "events": "List events",
-    "mailboxs": "List mailboxes",
-    "messagequeues": "List message queues",
-    "mempools": "List memory pools",
-    "timers": "List timers",
-    "objects": "Show object counts",
-    "system": "Show the system summary",
-    "heap": "Show system heap status and diagnostics",
+    **{
+        name: topic.summary
+        for name, topic in _COMMANDS.items()
+        if topic.action != "detail"
+    },
 }
 _DETAIL_DESCRIPTIONS = {
-    "thread": "Show one thread's detail (rtt thread <name>)",
-    "timer": "Show one timer's detail (rtt timer <name>)",
-    "semaphore": "Show one semaphore's detail (rtt semaphore <name>)",
-    "mutex": "Show one mutex's detail (rtt mutex <name>)",
-    "event": "Show one event's detail (rtt event <name>)",
-    "mailbox": "Show one mailbox's detail (rtt mailbox <name>)",
-    "messagequeue": "Show one message queue's detail (rtt messagequeue <name>)",
-    "mempool": "Show one memory pool's detail (rtt mempool <name>)",
+    name: topic.summary for name, topic in _COMMANDS.items() if topic.action == "detail"
 }
-_USAGE = "usage: rtthread <command> (run 'rtt help' for available commands)"
-_HELP = (
-    "RT-Thread commands:\n"
-    + "\n".join(
-        f"  rtt {command:<14} {description}"
-        for command, description in _COMMAND_DESCRIPTIONS.items()
-    )
-    + "\n\nSingle-object detail (rtt <object> <name>):\n"
-    + "\n".join(
-        f"  rtt {command:<14} {description}"
-        for command, description in _DETAIL_DESCRIPTIONS.items()
-    )
-    + "\n\nAliases:\n"
-    + "\n".join(
-        f"  {alias:<10} -> {command}" for alias, command in _COMMAND_ALIASES.items()
-    )
-)
+_USAGE = "usage: rtthread <command> (run 'rtt help <topic>' for detailed help)"
+_HELP = render_terminal(_HELP_TREE)
+
+
+def _help_tree():
+    """Return docs enriched with the active adapter's concrete printer layout."""
+    adapter = active()
+    layout = adapter.layout if isinstance(adapter, RtThreadAdapter) else None
+    return build_help_tree(layout)
 
 
 @gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one RT-Thread command without depending on GDB."""
     args = argument.split()
-    if not args or (len(args) == 1 and args[0].lower() == "help"):
-        print(_HELP)
+    if not args:
+        print(render_terminal(_help_tree()))
+        return
+    if args[0].lower() == "help":
+        path = tuple(args[1:])
+        tree = _help_tree()
+        if path and find_topic(tree, path) is None:
+            warn(_USAGE)
+            return
+        print(render_terminal(tree, path))
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
     if len(args) == 2 and command in _SINGULAR_COMMANDS:
         render_object_detail(_SINGULAR_COMMANDS[command], args[1])
     elif len(args) != 1:
         warn(_USAGE)
-    elif command == "threads":
+    elif command in _COMMANDS and _COMMANDS[command].action == "tasks":
         render_tasks()
-    elif command == "objects":
-        render_objects("")
-    elif command == "system":
+    elif command in _COMMANDS and _COMMANDS[command].action == "objects":
+        render_objects(_COMMANDS[command].kind)
+    elif command in _COMMANDS and _COMMANDS[command].action == "system":
         render_system()
-    elif command == "heap":
+    elif command in _COMMANDS and _COMMANDS[command].action == "heap":
         render_heap()
-    elif command in _OBJECT_COMMANDS:
-        render_objects(_OBJECT_COMMANDS[command])
     else:
         warn(_USAGE)
 
 
 def _command_vocabulary() -> list[str]:
     """Return every word the first argument may complete against."""
-    return list(_COMMAND_DESCRIPTIONS) + list(_SINGULAR_COMMANDS)
+    return ["help", *list(_COMMANDS), "functions", "pretty-printers"]
 
 
 def _object_names(kind: str) -> list[str]:
@@ -168,6 +132,7 @@ def _complete(text: str, word: str | None) -> list[str]:
             _COMMAND_ALIASES,
             _SINGULAR_COMMANDS,
             _object_names,
+            help_topics=[topic.name for topic in _HELP_TREE.topics],
         ),
         text,
         word,

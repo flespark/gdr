@@ -19,6 +19,7 @@ gdr/                   RTOS-agnostic core
   version.py           shared version parsing and numeric decoding
   layout.py            generic StructLayout + field/list accessors
   printers.py          wrapper-type pretty-printer registration
+  help.py              structured help schema + terminal/Markdown renderers
   adapter_api.py       adapter protocol, tables, details and active session
   derive.py            RTOS-neutral derived-value helpers (wrap-safe expiry,
                        fill-byte watermark, waiter cell) shared by adapters
@@ -29,7 +30,8 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   adapter.py           intermediate models, value converters, summaries and tables
   diagnostics.py       bounded raw-memory walks (IPC, heap) and consistency diagnostics
   version.py           RT-Thread version policy and target symbols
-  commands.py          RT-Thread command tree (`rtt threads`, `rtt heap`, ...)
+  commands.py          RT-Thread command routing and completion
+  help_docs.py         RT-Thread command/output help metadata
 freertos/              FreeRTOS adapter
   layout.py            config/DWARF probes, ABI struct paths, symbol & kind tables
   navigation.py        scheduler-list traversal, per-TCB state, six-channel object discovery
@@ -40,8 +42,8 @@ freertos/              FreeRTOS adapter
   details.py / diagnostics.py
                        vertical detail builders and bounded raw-memory consistency checks
   version.py           FreeRTOS version policy and target symbols
-  commands.py          FreeRTOS command tree (`frt tasks/.../heap`, 7 plural + 7 singular + 6 aliases)
-gdr/                   semantic command/function core ($gdr_task, $gdr_tasks,
+  commands.py          FreeRTOS command routing and completion
+  help_docs.py         FreeRTOS command/output help metadata
 ```
 
 Key design principles (see `docs/architecture.md`):

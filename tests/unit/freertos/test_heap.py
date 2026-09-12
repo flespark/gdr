@@ -990,12 +990,12 @@ def test_render_heap_warns_without_adapter(monkeypatch):
 
 
 def test_help_mentions_no_owner_attribution():
-    """Help states FreeRTOS heap blocks carry no owner field and that the
-    heap command is no longer a placeholder."""
-    assert commands._COMMAND_DESCRIPTIONS["heap"] == "Show system heap status"
-    assert "no owner field" in commands._HEAP_NO_OWNER
-    assert "No thread-ownership attribution" in commands._HELP
-    assert "not implemented" not in commands._HELP
+    """The heap topic explains the allocator ownership limitation."""
+    output = commands.render_terminal(commands._HELP_TREE, ("heap",))
+
+    assert commands._COMMAND_DESCRIPTIONS["heap"] == "Inspect the FreeRTOS allocator"
+    assert "no owner field" in output
+    assert "not implemented" not in output
 
 
 # ---------------------------------------------------------------------------

@@ -753,7 +753,7 @@ def print_detail(pairs: Sequence[tuple[str, str]]) -> None:
 def warn(msg: str) -> None:
     """Print a warning-prefixed message to GDB stderr."""
     _ensure_gdb()
-    gdb.write(f"warning: {msg}\n", stream=gdb.STDERR)
+    gdb.write(f"[gdr] warning: {msg}\n", stream=gdb.STDERR)
 
 
 def err(msg: str) -> None:

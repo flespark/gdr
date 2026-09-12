@@ -8,6 +8,12 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- Git-style structured help trees for `gdr`, `rtt` and `frt`: every list,
+  detail and heap topic documents output fields, usage tips, configuration
+  dependencies and implementation limits; convenience functions and active
+  layout-derived pretty-printers are also discoverable. The same dataclasses
+  render terminal help and MkDocs-ready Markdown.
+
 - FreeRTOS object support: six-channel object discovery (registry, symbol,
   active timer lists, MPU pool, waiter, user) with provenance (`Src` cells),
   per-kind list tables and singular details for queues, semaphores, mutexes,

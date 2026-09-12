@@ -93,12 +93,31 @@ def test_help_lists_every_command_and_alias(argument, capsys):
     assert set(commands._COMMAND_DESCRIPTIONS) == {"help", *_PUBLIC_ROUTES}
     for command in commands._COMMAND_DESCRIPTIONS:
         assert f"frt {command}" in commands._HELP
+    for command in commands._DETAIL_DESCRIPTIONS:
+        assert f"frt {command}" in commands._HELP
     for alias, public_command in commands._COMMAND_ALIASES.items():
         assert alias in commands._HELP
-        assert f"-> {public_command}" in commands._HELP
-    # Help documents why the task table has no Entry column.
-    assert "Entry" in commands._HELP
-    assert "Single-object detail" in commands._HELP
+        assert f"-> frt {public_command}" in commands._HELP
+    assert "Run 'frt help <topic>'" in commands._HELP
+
+
+def test_help_topic_documents_fields_tips_config_and_limits(capsys):
+    """Every command is a detailed topic, including list and detail forms."""
+    commands._invoke_command("help tasks")
+    tasks = capsys.readouterr().out
+    commands._invoke_command("help task")
+    task = capsys.readouterr().out
+    commands._invoke_command("help heap")
+    heap = capsys.readouterr().out
+
+    for output in (tasks, task, heap):
+        assert "DESCRIPTION" in output
+        assert "FIELDS" in output
+        assert "TIPS" in output
+        assert "CONFIGURATION" in output
+        assert "LIMITATIONS" in output
+    assert "Entry column" in tasks
+    assert "owner field" in heap
 
 
 def test_help_extra_args_rejected(monkeypatch):
@@ -118,8 +137,9 @@ def test_unknown_or_extra_arguments_refer_to_help(monkeypatch):
 
     commands._invoke_command("tasks extra")
     commands._invoke_command("unknown")
+    commands._invoke_command("pretty-printers timer")
 
-    assert warnings == [commands._USAGE] * 2
+    assert warnings == [commands._USAGE] * 3
     assert "frt help" in commands._USAGE
 
 

@@ -56,10 +56,12 @@ def test_safe_value_helpers_contain_unreadable_gdb_values():
 class _TableGdb:
     """Minimal GDB stand-in that records complete writes."""
 
+    STDERR = object()
+
     def __init__(self):
         self.writes: list[str] = []
 
-    def write(self, text: str):
+    def write(self, text: str, stream=None):  # noqa: ARG002
         self.writes.append(text)
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 
 # Reason: GDB's Python interpreter does not add the script directory to
 # sys.path, so `source gdr.py` from an arbitrary cwd would fail on the first
@@ -33,7 +34,95 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.gdb_bridge import gdb_command_guard, info, warn  # noqa: E402
+from gdr.help import (  # noqa: E402
+    CommandHelp,
+    HelpField,
+    HelpTopic,
+    HelpTree,
+    find_topic,
+    pretty_printer_topic,
+    render_terminal,
+)
 from gdr.printers import register_printers  # noqa: E402
+
+
+def _root_help_tree() -> HelpTree:
+    """Build RTOS-neutral bootstrap and reference help."""
+    topics: list[HelpTopic] = [
+        CommandHelp(
+            "init",
+            "Initialize one RTOS adapter",
+            "Selects an RTOS/version, probes configuration, builds layouts and registers commands, functions and pretty-printers.",
+            usage=("gdr init <rtos> <version>",),
+            fields=(
+                HelpField("rtos", "rtthread/rtt or freertos/frt."),
+                HelpField(
+                    "version", "Exact supported kernel version declared by the user."
+                ),
+            ),
+            tips=(
+                "Use `rtt help` or `frt help` after initialization.",
+                "Restart GDB before selecting a different adapter or version.",
+            ),
+            configuration=(
+                "Kernel features are probed from symbols and DWARF; the RTOS itself is never auto-detected.",
+            ),
+            limitations=(
+                "The target ELF needs debug symbols; GDR never calls inferior functions.",
+            ),
+            action="init",
+            category="Available command",
+        ),
+        HelpTopic(
+            "rtthread",
+            "Continue with the registered `rtt` command tree",
+            "After RT-Thread initialization, use `rtt help <topic>` for command fields, tips, configuration and limitations.",
+            usage=("rtt help", "rtt help <topic>"),
+            category="RTOS command tree",
+        ),
+        HelpTopic(
+            "freertos",
+            "Continue with the registered `frt` command tree",
+            "After FreeRTOS initialization, use `frt help <topic>` for command fields, tips, configuration and limitations.",
+            usage=("frt help", "frt help <topic>"),
+            category="RTOS command tree",
+        ),
+        replace(
+            pretty_printer_topic(None),
+            summary="Explain automatic one-line formatting of kernel structs",
+            description=(
+                "GDR's core pretty-printer mechanism is RTOS-neutral and uses the "
+                "active adapter's layout metadata. For concrete registered types and "
+                "fields, run `rtt help pretty-printers` or "
+                "`frt help pretty-printers`."
+            ),
+            tips=(
+                "After initialization, use the selected RTOS help tree for concrete printer subtopics.",
+            ),
+            children=(),
+            category="Help topic",
+        ),
+    ]
+    return HelpTree(
+        "gdr",
+        "GDR help",
+        "Bootstrap and documentation entry point for GDR's help trees.",
+        tuple(topics),
+        category_descriptions=(
+            (
+                "Available command",
+                "Executable `gdr` subcommands. Run one directly at the GDB prompt.",
+            ),
+            (
+                "RTOS command tree",
+                "The matching command tree is registered by `gdr init`; run `rtt help` or `frt help` to browse its commands.",
+            ),
+            (
+                "Help topic",
+                "Documentation only, not an executable GDB subcommand. Open it with `gdr help <topic>`.",
+            ),
+        ),
+    )
 
 
 def _parse_args() -> dict[str, str]:
@@ -58,26 +147,21 @@ def _parse_args() -> dict[str, str]:
     return args
 
 
-def _print_usage() -> None:
-    """Print usage information."""
-    print(
-        """
-GDR — GDB helper for RTOS debugging
+def _print_usage(path: tuple[str, ...] = ()) -> None:
+    """Print structured bootstrap help or one nested topic."""
+    print(render_terminal(_root_help_tree(), path))
 
-Usage:
-    source gdr.py
-    gdr init <rtos> <version>
-    gdr help
 
-Automation:
-    GDR_RTOS=<name> GDR_VERSION=<ver> gdb ... -ex 'source gdr.py'
+def _complete(text: str, word: str | None) -> list[str]:
+    """Tab-complete bootstrap subcommands and structured help topics."""
+    from gdr.commands import prefix_candidates
 
-Examples:
-    source gdr.py
-    gdr init rtthread 4.0.5
-    rtt threads
-"""
-    )
+    parts = text.split()
+    if parts and parts[0].lower() == "help" and " " in text:
+        return prefix_candidates(
+            word, [topic.name for topic in _root_help_tree().topics]
+        )
+    return prefix_candidates(word, ["init", "help"])
 
 
 _GdbCommandBase = gdb.Command if gdb is not None else object
@@ -94,6 +178,10 @@ class GdrCommand(_GdbCommandBase):  # type: ignore[misc]
     def invoke(self, argument: str, from_tty: bool) -> None:  # noqa: ARG002
         _invoke_command(argument)
 
+    def complete(self, text: str, word: str | None) -> list[str]:
+        """Complete root commands and help topics without touching target state."""
+        return _complete(text, word)
+
 
 @gdb_command_guard
 def _invoke_command(argument: str) -> None:
@@ -107,13 +195,20 @@ def _invoke_command(argument: str) -> None:
     which a typo must never do.
     """
     argv = gdb.string_to_argv(argument) if gdb is not None else argument.split()
-    if not argv or argv[0] in ("help", "--help", "-h"):
+    if not argv or argv[0] in ("--help", "-h"):
         _print_usage()
+        return
+    if argv[0].lower() == "help":
+        path = tuple(argv[1:])
+        tree = _root_help_tree()
+        if path and find_topic(tree, path) is None:
+            warn("usage: gdr help [topic]")
+            return
+        _print_usage(path)
         return
 
     if len(argv) != 3 or argv[0] != "init":
-        warn("usage: gdr init <rtos> <version>")
-        _print_usage()
+        warn("usage: gdr init <rtos> <version> (run 'gdr help' for help)")
         return
     _setup_rtos(argv[1].lower(), argv[2])
 
@@ -140,6 +235,7 @@ def _setup_rtthread(version: str) -> None:
 
     target_version = check_version(version)
     if target_version is None:
+        info(f"invalid RT-Thread version: {version!r}")
         return
     info(f"setting up RT-Thread v{version}...")
     cfg = detect_config()
@@ -178,6 +274,7 @@ def _setup_freertos(version: str) -> None:
 
     target_version = check_version(version)
     if target_version is None:
+        info(f"invalid FreeRTOS version: {version!r}")
         return
     info(f"setting up FreeRTOS v{version}...")
     cfg = detect_config()

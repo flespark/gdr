@@ -8,6 +8,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.adapter import FreeRtosAdapter, iter_task_names
+from freertos.help_docs import build_help_tree
 from freertos.navigation import discover
 from gdr.adapter_api import active
 from gdr.commands import (
@@ -20,102 +21,59 @@ from gdr.commands import (
     render_tasks,
 )
 from gdr.gdb_bridge import gdb_command_guard, info, warn
+from gdr.help import (
+    command_aliases,
+    command_topics,
+    find_topic,
+    render_terminal,
+)
 
 _command_registered = False
 _alias_registered = False
 
-# Plural list commands and their semantic object kind. Only ``task`` is
-# enumerable today; the other kinds are routed anyway so the command surface
-# stays stable while their discovery channels land.
-_OBJECT_COMMANDS = {
-    "tasks": "task",
-    "queues": "queue",
-    "semaphores": "semaphore",
-    "mutexes": "mutex",
-    "timers": "timer",
-    "eventgroups": "eventgroup",
-    "streambuffers": "streambuffer",
-}
-# Singular forms render one object's vertical detail: ``frt <object> <name>``.
+_HELP_TREE = build_help_tree()
+_COMMANDS = {topic.name: topic for topic in command_topics(_HELP_TREE)}
+_COMMAND_ALIASES = command_aliases(_HELP_TREE)
 _SINGULAR_COMMANDS = {
-    "task": "task",
-    "queue": "queue",
-    "semaphore": "semaphore",
-    "mutex": "mutex",
-    "timer": "timer",
-    "eventgroup": "eventgroup",
-    "streambuffer": "streambuffer",
+    topic.name: topic.kind for topic in _COMMANDS.values() if topic.action == "detail"
 }
-_COMMAND_ALIASES = {
-    "threads": "tasks",
-    "sems": "semaphores",
-    "mtxs": "mutexes",
-    "qs": "queues",
-    "egs": "eventgroups",
-    "sbs": "streambuffers",
-}
+# Compatibility views for callers that inspect the public command vocabulary.
 _COMMAND_DESCRIPTIONS = {
     "help": "Show this help",
-    "tasks": "List tasks",
-    "queues": "List queues",
-    "semaphores": "List semaphores",
-    "mutexes": "List mutexes",
-    "timers": "List timers",
-    "eventgroups": "List event groups",
-    "streambuffers": "List stream buffers",
-    "system": "Show the system summary",
-    "objects": "Show object counts",
-    "heap": "Show system heap status",
+    **{
+        name: topic.summary
+        for name, topic in _COMMANDS.items()
+        if topic.action != "detail"
+    },
 }
 _DETAIL_DESCRIPTIONS = {
-    "task": "Show one task's detail (frt task <name>)",
-    "queue": "Show one queue's detail (frt queue <name>)",
-    "semaphore": "Show one semaphore's detail (frt semaphore <name>)",
-    "mutex": "Show one mutex's detail (frt mutex <name>)",
-    "timer": "Show one timer's detail (frt timer <name>)",
-    "eventgroup": "Show one event group's detail (frt eventgroup <name>)",
-    "streambuffer": "Show one stream buffer's detail (frt streambuffer <name>)",
+    name: topic.summary for name, topic in _COMMANDS.items() if topic.action == "detail"
 }
-_USAGE = "usage: freertos <command> (run 'frt help' for available commands)"
-# Reason: FreeRTOS TCBs do not store the task entry function pointer -- the
-# initial stack frame carries it, so there is no stable DWARF field to read an
-# ``Entry`` column from. The table deliberately omits it and help says why.
-_NO_ENTRY_COLUMN = (
-    "No 'Entry' column: FreeRTOS TCBs do not store a task entry function "
-    "pointer, so there is no reliable field to display."
-)
-# Reason: a heap block header is exactly ``{pxNextFreeBlock, xBlockSize}``
-# (heap_4.c BlockLink_t) and carries no owner field, so per-task heap usage
-# cannot be attributed; help says why instead of faking a column.
-_HEAP_NO_OWNER = (
-    "No thread-ownership attribution for the heap: FreeRTOS block headers "
-    "carry only pxNextFreeBlock + xBlockSize (no owner field), so per-task "
-    "heap usage is not attributable."
-)
-_HELP = (
-    "FreeRTOS commands:\n"
-    + "\n".join(
-        f"  frt {command:<14} {description}"
-        for command, description in _COMMAND_DESCRIPTIONS.items()
-    )
-    + "\n\nSingle-object detail (frt <object> <name>):\n"
-    + "\n".join(
-        f"  frt {command:<14} {description}"
-        for command, description in _DETAIL_DESCRIPTIONS.items()
-    )
-    + f"\n\n{_NO_ENTRY_COLUMN}\n{_HEAP_NO_OWNER}\n\nAliases:\n"
-    + "\n".join(
-        f"  {alias:<10} -> {command}" for alias, command in _COMMAND_ALIASES.items()
-    )
-)
+_USAGE = "usage: freertos <command> (run 'frt help <topic>' for detailed help)"
+_HELP = render_terminal(_HELP_TREE)
+
+
+def _help_tree():
+    """Return docs enriched with the active adapter's concrete printer layout."""
+    adapter = active()
+    layout = adapter.layout if isinstance(adapter, FreeRtosAdapter) else None
+    return build_help_tree(layout)
 
 
 @gdb_command_guard
 def _invoke_command(argument: str) -> None:
     """Parse and dispatch one FreeRTOS command without depending on GDB."""
     args = argument.split()
-    if not args or (len(args) == 1 and args[0].lower() == "help"):
-        print(_HELP)
+    if not args:
+        print(render_terminal(_help_tree()))
+        return
+    if args[0].lower() == "help":
+        path = tuple(args[1:])
+        tree = _help_tree()
+        if path and find_topic(tree, path) is None:
+            warn(_USAGE)
+            return
+        print(render_terminal(tree, path))
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
     if len(args) >= 2 and command in _SINGULAR_COMMANDS:
@@ -129,23 +87,21 @@ def _invoke_command(argument: str) -> None:
         )
     elif len(args) != 1:
         warn(_USAGE)
-    elif command == "tasks":
+    elif command in _COMMANDS and _COMMANDS[command].action == "tasks":
         render_tasks()
-    elif command == "system":
+    elif command in _COMMANDS and _COMMANDS[command].action == "system":
         render_system()
-    elif command == "objects":
-        render_objects("")
-    elif command == "heap":
+    elif command in _COMMANDS and _COMMANDS[command].action == "objects":
+        render_objects(_COMMANDS[command].kind)
+    elif command in _COMMANDS and _COMMANDS[command].action == "heap":
         render_heap()
-    elif command in _OBJECT_COMMANDS:
-        render_objects(_OBJECT_COMMANDS[command])
     else:
         warn(_USAGE)
 
 
 def _command_vocabulary() -> list[str]:
     """Return every word the first argument may complete against."""
-    return list(_COMMAND_DESCRIPTIONS) + list(_SINGULAR_COMMANDS)
+    return ["help", *list(_COMMANDS), "functions", "pretty-printers"]
 
 
 def _object_names(kind: str) -> list[str]:
@@ -188,6 +144,7 @@ def _complete(text: str, word: str | None) -> list[str]:
             _SINGULAR_COMMANDS,
             _object_names,
             preserve_spaces=True,
+            help_topics=[topic.name for topic in _HELP_TREE.topics],
         ),
         text,
         word,

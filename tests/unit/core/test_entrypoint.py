@@ -190,3 +190,47 @@ def test_invoke_command_passes_unsupported_rtos_to_setup(monkeypatch):
     monkeypatch.setattr(entrypoint, "_setup_rtos", _record)
     entrypoint._invoke_command("init rtthread 4.0.5")
     assert received == [["rtthread", "4.0.5"]]
+
+
+def test_root_help_supports_topics_and_completion(capsys):
+    entrypoint = _load_entrypoint()
+
+    entrypoint._invoke_command("help init")
+    output = capsys.readouterr().out
+
+    assert "DESCRIPTION" in output
+    assert "CONFIGURATION" in output
+    assert "LIMITATIONS" in output
+
+    entrypoint._invoke_command("help")
+    overview = capsys.readouterr().out
+    assert "AVAILABLE COMMAND" in overview
+    assert "Executable `gdr` subcommands" in overview
+    assert "RTOS COMMAND TREE" in overview
+    assert "run `rtt help` or `frt help`" in overview
+    assert "HELP TOPIC" in overview
+    assert "not an executable GDB subcommand" in overview
+    assert "GUIDES" not in overview
+    assert "pretty-printers" in overview
+
+    entrypoint._invoke_command("help pretty-printers")
+    printers = capsys.readouterr().out
+    assert "RTOS-neutral" in printers
+    assert "rtt help pretty-printers" in printers
+    assert "frt help pretty-printers" in printers
+    assert "SUBTOPICS" not in printers
+    assert "tskTaskControlBlock" not in printers
+
+    assert entrypoint._complete("help pre", "pre") == ["pretty-printers"]
+    assert "init" in entrypoint._complete("help ", None)
+
+
+def test_invalid_root_command_prints_only_one_usage_warning(monkeypatch, capsys):
+    entrypoint = _load_entrypoint()
+    warnings: list[str] = []
+    monkeypatch.setattr(entrypoint, "warn", warnings.append)
+
+    entrypoint._invoke_command("pretty-printers timer")
+
+    assert warnings == ["usage: gdr init <rtos> <version> (run 'gdr help' for help)"]
+    assert capsys.readouterr().out == ""

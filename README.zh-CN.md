@@ -91,7 +91,9 @@ warning: target RT-Thread version not exported; cannot verify version
 | 命令 | 说明 |
 | ------ | ------ |
 | `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
-| `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态, 通过 `<rtos> help` 查看每个 RTOS 支持的命令和别名 |
+| `gdr help [topic]` | 查看初始化或 pretty-printer 帮助 |
+| `<rtos> help [topic]` | 浏览命令树；topic 包含字段说明、使用 tips、配置依赖与实现限制 |
+| `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |
 | `<rtos> <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
 
 FreeRTOS 说明：

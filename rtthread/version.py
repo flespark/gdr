@@ -62,10 +62,10 @@ def detect_target_version() -> Version | None:
 def check_version(version: str) -> Version | None:
     """Validate the requested version and compare with the target when known.
 
-    ``None`` (already warned) when the argument is invalid/unsupported or
-    disagrees with the target; the bootstrap aborts the init on ``None``
-    instead of raising (a GDB command that raises ``SystemExit`` kills the
-    whole session).
+    ``None`` when the argument is invalid/unsupported or disagrees with the
+    target. Validation failures are already warned; a target mismatch is an
+    error because adapter registration is aborted. The bootstrap uses ``None``
+    instead of raising because ``SystemExit`` would kill GDB.
     """
     expected = validate_version(version)
     if expected is None:
@@ -76,8 +76,8 @@ def check_version(version: str) -> Version | None:
         return expected
     if detected != expected:
         warn(
-            f"RT-Thread version mismatch: expected {version}, "
-            f"target is {format_version(detected)}"
+            f"RT-Thread version mismatch: requested {version}, "
+            f"but target exports {format_version(detected)}"
         )
         return None
     return expected
