@@ -4,7 +4,7 @@
 
 All notable changes to GDR are documented in this file.
 
-## [Unreleased]
+## [2026.03] - 2026-09-22
 
 ### Added
 
@@ -13,7 +13,6 @@ All notable changes to GDR are documented in this file.
   dependencies and implementation limits; convenience functions and active
   layout-derived pretty-printers are also discoverable. The same dataclasses
   render terminal help and MkDocs-ready Markdown.
-
 - FreeRTOS object support: six-channel object discovery (registry, symbol,
   active timer lists, MPU pool, waiter, user) with provenance (`Src` cells),
   per-kind list tables and singular details for queues, semaphores, mutexes,

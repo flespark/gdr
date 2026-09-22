@@ -185,7 +185,7 @@ wheels = [
 
 [[package]]
 name = "gdr"
-version = "2026.2"
+version = "2026.3"
 source = { editable = "." }
 
 [package.dev-dependencies]
