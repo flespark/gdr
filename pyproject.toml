@@ -65,6 +65,14 @@ reportOptionalMemberAccess = "none"
 reportOptionalSubscript = "none"
 reportOptionalIterable = "none"
 reportInvalidTypeForm = "none"
+# Reason: the gdb stub declares `Function.invoke(self, *args)`, but GDB itself
+# never predetermines convenience-function arity -- all available arguments are
+# passed to `invoke` and explicit parameter names are the documented idiomatic
+# form (see ref/gdb/python_api_doc.md, "Writing new convenience functions").
+# Every `invoke` override in gdr/functions.py therefore trips this rule, and
+# all five predate the machine-readable API; the finding is a stub artifact,
+# not a defect.
+reportIncompatibleMethodOverride = "none"
 
 # ---------------------------------------------------------------------------
 # Ruff: linter + formatter (drop-in replacement for black)
@@ -115,9 +123,11 @@ addopts = "-ra"
 branch = true
 source = [
     "gdr.adapter_api",
+    "gdr.api",
     "gdr.commands",
     "gdr.constants",
     "gdr.formatting",
+    "gdr.serialize",
     "gdr.version",
     "rtthread.adapter",
     "rtthread.diagnostics",

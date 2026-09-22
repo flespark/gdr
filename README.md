@@ -94,7 +94,8 @@ warning: target RT-Thread version not exported; cannot verify version
 
 | Command | Description |
 | --------- | ------------- |
-| `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
+| `gdr init <rtos> <version> [--force]` | Initialize the selected RTOS adapter; `--force` replaces one without restarting GDB |
+| `gdr reset` | Drop the active adapter and session caches |
 | `gdr help [topic]` | Show bootstrap or pretty-printer help |
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |

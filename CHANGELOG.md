@@ -4,6 +4,17 @@
 
 All notable changes to GDR are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `gdr reset` and `gdr init --force` replace the active adapter without
+  restarting GDB, so switching target or version no longer costs a session.
+- A versioned JSON API for tooling (the IDE plugin): `gdr api <verb>` prints
+  one envelope and `$gdr_json` / `$gdr_json_chunk` return it through GDB
+  evaluate, with a chunked fallback for payloads larger than one result.
+  `gdr init --json` reports the init outcome as one structured line.
+
 ## [2026.03] - 2026-09-22
 
 ### Added

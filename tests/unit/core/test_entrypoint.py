@@ -64,8 +64,9 @@ def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch)
         ),
     )
     monkeypatch.setattr("gdr.functions.register_functions", lambda: None)
+    monkeypatch.setattr("gdr.functions.register_api_functions", lambda: None)
     monkeypatch.setattr("rtthread.commands.register_commands", lambda: None)
-    monkeypatch.setattr("gdr.adapter_api.register", lambda _adapter: None)
+    monkeypatch.setattr("gdr.adapter_api.register", lambda _adapter, **_kwargs: None)
     monkeypatch.setattr(entrypoint, "register_printers", lambda _layout: None)
 
     entrypoint._setup_rtthread("3.1.3")
@@ -74,7 +75,7 @@ def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "failure_stage", ["adapter", "printers", "functions", "commands"]
+    "failure_stage", ["adapter", "printers", "functions", "api_functions", "commands"]
 )
 def test_setup_rtthread_commits_only_after_all_registration_steps(
     monkeypatch, failure_stage
@@ -91,7 +92,10 @@ def test_setup_rtthread_commits_only_after_all_registration_steps(
             raise RuntimeError(f"{name} registration interrupted")
 
     monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: bool(registrations))
-    monkeypatch.setattr("gdr.adapter_api.register", registrations.append)
+    monkeypatch.setattr(
+        "gdr.adapter_api.register",
+        lambda adapter, **_kwargs: registrations.append(adapter),
+    )
     monkeypatch.setattr(version, "check_version", lambda _value: (4, 0, 5))
     monkeypatch.setattr(entrypoint, "info", lambda _message: None)
     monkeypatch.setattr("rtthread.layout.detect_config", RtConfig)
@@ -107,6 +111,9 @@ def test_setup_rtthread_commits_only_after_all_registration_steps(
         entrypoint, "register_printers", lambda _layout: step("printers")
     )
     monkeypatch.setattr("gdr.functions.register_functions", lambda: step("functions"))
+    monkeypatch.setattr(
+        "gdr.functions.register_api_functions", lambda: step("api_functions")
+    )
     monkeypatch.setattr("rtthread.commands.register_commands", lambda: step("commands"))
 
     with pytest.raises(RuntimeError, match=f"{failure_stage} registration interrupted"):
@@ -128,7 +135,8 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
 
     monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
     monkeypatch.setattr(
-        "gdr.adapter_api.register", lambda selected: events.append(("active", selected))
+        "gdr.adapter_api.register",
+        lambda selected, **_kwargs: events.append(("active", selected)),
     )
     monkeypatch.setattr("freertos.version.check_version", lambda _value: (10, 3, 1))
     monkeypatch.setattr("freertos.layout.detect_config", FreeRtosConfig)
@@ -146,6 +154,9 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
         "gdr.functions.register_functions", lambda: events.append("functions")
     )
     monkeypatch.setattr(
+        "gdr.functions.register_api_functions", lambda: events.append("api_functions")
+    )
+    monkeypatch.setattr(
         "freertos.commands.register_commands", lambda: events.append("commands")
     )
     monkeypatch.setattr(entrypoint, "info", lambda _message: None)
@@ -156,6 +167,7 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
         "adapter",
         "printers",
         "functions",
+        "api_functions",
         "commands",
         ("active", adapter_instance),
     ]
@@ -234,3 +246,84 @@ def test_invalid_root_command_prints_only_one_usage_warning(monkeypatch, capsys)
 
     assert warnings == ["usage: gdr init <rtos> <version> (run 'gdr help' for help)"]
     assert capsys.readouterr().out == ""
+
+
+def test_api_command_writes_a_json_file(monkeypatch, tmp_path):
+    """``gdr api --out`` writes the envelope a plugin reads back."""
+    import json
+
+    entrypoint = _load_entrypoint()
+    notes: list[str] = []
+    monkeypatch.setattr(entrypoint, "info", notes.append)
+    monkeypatch.setattr(
+        "gdr.api.envelope_json",
+        lambda _verb, *_args: '{"ok":true,"verb":"tasks"}',
+    )
+    out = tmp_path / "tasks.json"
+
+    entrypoint._api_command(["tasks", "--out", str(out)])
+
+    assert json.loads(out.read_text(encoding="utf-8"))["ok"] is True
+    assert notes and "wrote" in notes[0]
+
+
+def test_init_json_reports_a_failed_setup(monkeypatch, capsys):
+    """``gdr init --json`` is one structured line, not log scraping."""
+    import json
+
+    entrypoint = _load_entrypoint()
+    monkeypatch.setattr(entrypoint, "_setup_rtos", lambda _rtos, _version: None)
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
+
+    entrypoint._init_command(["rtthread", "4.0.5", "--json"])
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is False
+    assert result["rtos"] == "rtthread"
+    assert "error" in result
+
+
+def test_init_force_resets_before_replacing(monkeypatch):
+    """``--force`` drops the active adapter instead of refusing."""
+    entrypoint = _load_entrypoint()
+    calls: list[str] = []
+    monkeypatch.setattr(entrypoint, "_reset_command", lambda: calls.append("reset"))
+    monkeypatch.setattr(
+        entrypoint, "_setup_rtos", lambda _rtos, _version: calls.append("setup")
+    )
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: True)
+
+    entrypoint._init_command(["freertos", "10.3.1", "--force"])
+
+    assert calls == ["reset", "setup"]
+
+
+def test_reset_command_clears_the_semantic_session(monkeypatch):
+    """Reset unhooks printers, clears caches, then drops the session.
+
+    Printer unregistration matters for a cross-RTOS re-init: the layout-derived
+    lookup is registered once per session, so a stale one would fold new-RTOS
+    objects through the previous adapter's layout.
+    """
+    entrypoint = _load_entrypoint()
+    notes: list[str] = []
+    resets: list[str] = []
+
+    class _Adapter:
+        def reset(self):
+            resets.append("adapter")
+
+    monkeypatch.setattr(entrypoint, "info", notes.append)
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: True)
+    monkeypatch.setattr("gdr.adapter_api.active", lambda: _Adapter())
+    monkeypatch.setattr("gdr.adapter_api.reset", lambda: resets.append("session"))
+    monkeypatch.setattr(
+        "gdr.printers.unregister_printers", lambda: resets.append("printers")
+    )
+    monkeypatch.setattr("gdr.gdb_bridge.reset_loadable_ranges", lambda: None)
+    monkeypatch.setattr("gdr.api.next_generation", lambda: 1)
+
+    entrypoint._reset_command()
+
+    assert resets == ["adapter", "printers", "session"]
+    assert notes and "reset" in notes[0]

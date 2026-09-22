@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from gdr.adapter_api import active
-from gdr.formatting import format_optional_int
+from gdr.adapter_api import HeapReport, ObjectDetail, ObjectTable, active
 from gdr.gdb_bridge import (
     gdb_command_guard,
     info,
@@ -14,6 +13,7 @@ from gdr.gdb_bridge import (
     print_table,
     warn,
 )
+from gdr.serialize import system_summary_pairs
 
 
 @gdb_command_guard
@@ -23,7 +23,7 @@ def render_tasks() -> None:
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
-    table = adapter.task_table()
+    table = collect_task_table(adapter)
     for message in table.messages:
         info(message)
     print_table(table.rows, table.headers, elastic=table.elastic)
@@ -44,7 +44,7 @@ def render_object_detail(kind: str, name: str) -> None:
     if not name.strip():
         warn("object name must not be empty")
         return
-    detail = adapter.object_detail(requested, name)
+    detail = collect_object_detail(adapter, requested, name)
     if detail is None:
         warn(f"object kind {requested!r} is not reliably enumerable")
         return
@@ -61,32 +61,7 @@ def render_system() -> None:
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
-    summary = adapter.system_summary()
-    pairs: list[tuple[str, str]] = [
-        ("Kernel version", summary.kernel_version),
-        ("Current task", summary.current_task or "N/A"),
-        (
-            summary.task_count_label,
-            str(summary.task_count) if summary.task_count is not None else "N/A",
-        ),
-        (
-            "Tick count",
-            str(summary.tick_count) if summary.tick_count is not None else "N/A",
-        ),
-        ("Scheduler state", summary.scheduler_state),
-    ]
-    pairs.extend((state, str(count)) for state, count in summary.state_counts.items())
-    pairs.extend(
-        (kind, str(count)) for kind, count in sorted(summary.object_counts.items())
-    )
-    pairs.append(("Heap allocator", summary.heap_allocator or "N/A"))
-    if summary.heap_used is not None or summary.heap_total is not None:
-        pairs.append(("Heap used", format_optional_int(summary.heap_used)))
-        pairs.append(("Heap total", format_optional_int(summary.heap_total)))
-    if summary.heap_status is not None:
-        pairs.append(("Heap status", summary.heap_status))
-    pairs.extend(summary.extra_pairs)
-    print_detail(pairs)
+    print_detail(system_summary_pairs(adapter.system_summary()))
 
 
 @gdb_command_guard
@@ -101,36 +76,22 @@ def render_objects(kind: str = "") -> None:
         warn("run `gdr init <rtos> <version>` first")
         return
     requested = _canonical_kind(kind)
+    if requested == "task":
+        render_tasks()
+        return
     if requested:
-        if requested == "task":
-            render_tasks()
-            return
-        table = adapter.object_table(requested)
-        if table is not None:
-            for message in table.messages:
-                info(message)
-            print_table(table.rows, table.headers, elastic=table.elastic)
-            return
-        counts = adapter.object_counts()
-        if requested not in counts:
+        table = collect_object_listing(adapter, requested)
+        if table is None:
             warn(f"object kind {requested!r} is not reliably enumerable")
             return
-        print_table([[requested, str(counts[requested])]], ["Kind", "Count"])
-        return
-    # The provenance summary wins when the adapter provides one (its
-    # per-object source channels); otherwise fall back to the plain
-    # Kind/Count table so every RTOS shares one renderer.
-    summary = adapter.object_summary_table()
-    if summary is not None:
-        for message in summary.messages:
-            info(message)
-        print_table(summary.rows, summary.headers, elastic=summary.elastic)
-        return
-    counts = adapter.object_counts()
-    print_table(
-        [[name, str(count)] for name, count in sorted(counts.items())],
-        ["Kind", "Count"],
-    )
+    else:
+        # The provenance summary wins when the adapter provides one (its
+        # per-object source channels); otherwise fall back to the plain
+        # Kind/Count table so every RTOS shares one renderer.
+        table = collect_object_overview(adapter)
+    for message in table.messages:
+        info(message)
+    print_table(table.rows, table.headers, elastic=table.elastic)
 
 
 @gdb_command_guard
@@ -145,7 +106,7 @@ def render_heap() -> None:
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
-    report = adapter.heap_report()
+    report = collect_heap_report(adapter)
     if report is None:
         return
     print_detail(report.pairs)
@@ -157,6 +118,50 @@ def render_heap() -> None:
         print_table(
             report.table.rows, report.table.headers, elastic=report.table.elastic
         )
+
+
+def collect_task_table(adapter) -> ObjectTable:
+    """The adapter-owned task table, without printing."""
+    return adapter.task_table()
+
+
+def collect_object_listing(adapter, kind: str) -> ObjectTable | None:
+    """One kind's object table, or the Kind/Count fallback.
+
+    ``None`` means the kind is not reliably enumerable (the renderer warns).
+    """
+    requested = _canonical_kind(kind)
+    table = adapter.object_table(requested)
+    if table is not None:
+        return table
+    counts = adapter.object_counts()
+    if requested not in counts:
+        return None
+    return ObjectTable(
+        headers=["Kind", "Count"], rows=[[requested, str(counts[requested])]]
+    )
+
+
+def collect_object_overview(adapter) -> ObjectTable:
+    """The per-kind overview, provenance summary when the adapter has one."""
+    summary = adapter.object_summary_table()
+    if summary is not None:
+        return summary
+    counts = adapter.object_counts()
+    return ObjectTable(
+        headers=["Kind", "Count"],
+        rows=[[name, str(count)] for name, count in sorted(counts.items())],
+    )
+
+
+def collect_object_detail(adapter, kind: str, name: str) -> ObjectDetail | None:
+    """One object's vertical detail, or ``None`` when the kind is unknown."""
+    return adapter.object_detail(_canonical_kind(kind), name)
+
+
+def collect_heap_report(adapter) -> HeapReport | None:
+    """The adapter's heap snapshot, or ``None`` when it has no heap."""
+    return adapter.heap_report()
 
 
 def _canonical_kind(kind: str) -> str:

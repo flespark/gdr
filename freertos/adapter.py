@@ -505,6 +505,12 @@ class FreeRtosAdapter(RtosAdapter):
     def __init__(self, layout: FreeRtosLayout) -> None:
         self.layout = layout
 
+    def reset(self) -> None:
+        """Drop the session symbol scan so a re-init sees the new image."""
+        from freertos.navigation import reset_symbol_object_cache
+
+        reset_symbol_object_cache()
+
     def find_task(self, name: str) -> gdb.Value | None:
         return find_task(name, self.layout)
 

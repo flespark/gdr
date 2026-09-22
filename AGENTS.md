@@ -21,6 +21,10 @@ gdr/                   RTOS-agnostic core
   printers.py          wrapper-type pretty-printer registration
   help.py              structured help schema + terminal/Markdown renderers
   adapter_api.py       adapter protocol, tables, details and active session
+  commands.py          shared collectors plus their guarded text renderers
+  functions.py         convenience functions incl. the $gdr_json transport
+  serialize.py         pure API envelope and chunked evaluate transport
+  api.py               neutral verb layer over the active adapter
   derive.py            RTOS-neutral derived-value helpers (wrap-safe expiry,
                        fill-byte watermark, waiter cell) shared by adapters
 rtthread/              RT-Thread 3.1.x/4.x adapter

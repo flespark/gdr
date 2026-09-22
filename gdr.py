@@ -53,7 +53,7 @@ def _root_help_tree() -> HelpTree:
             "init",
             "Initialize one RTOS adapter",
             "Selects an RTOS/version, probes configuration, builds layouts and registers commands, functions and pretty-printers.",
-            usage=("gdr init <rtos> <version>",),
+            usage=("gdr init <rtos> <version> [--force]",),
             fields=(
                 HelpField("rtos", "rtthread/rtt or freertos/frt."),
                 HelpField(
@@ -62,7 +62,7 @@ def _root_help_tree() -> HelpTree:
             ),
             tips=(
                 "Use `rtt help` or `frt help` after initialization.",
-                "Restart GDB before selecting a different adapter or version.",
+                "`gdr init <rtos> <version> --force` replaces the active adapter without restarting GDB.",
             ),
             configuration=(
                 "Kernel features are probed from symbols and DWARF; the RTOS itself is never auto-detected.",
@@ -161,7 +161,7 @@ def _complete(text: str, word: str | None) -> list[str]:
         return prefix_candidates(
             word, [topic.name for topic in _root_help_tree().topics]
         )
-    return prefix_candidates(word, ["init", "help"])
+    return prefix_candidates(word, ["init", "reset", "api", "help"])
 
 
 _GdbCommandBase = gdb.Command if gdb is not None else object
@@ -206,11 +206,206 @@ def _invoke_command(argument: str) -> None:
             return
         _print_usage(path)
         return
-
-    if len(argv) != 3 or argv[0] != "init":
+    if argv[0] == "api":
+        _api_command(argv[1:])
+        return
+    if argv[0] == "reset":
+        _reset_command()
+        return
+    if argv[0] != "init":
         warn("usage: gdr init <rtos> <version> (run 'gdr help' for help)")
         return
-    _setup_rtos(argv[1].lower(), argv[2])
+    _init_command(argv[1:])
+
+
+def _init_command(rest: list[str]) -> None:
+    """``gdr init <rtos> <version> [--force] [--json]``.
+
+    ``--force`` replaces an already initialized adapter instead of refusing.
+    ``--json`` is the machine channel a plugin uses to read one structured
+    result instead of parsing log lines, so it is not advertised in help.
+    """
+    from gdr.adapter_api import is_initialized
+    from gdr.constants import GDR_API_SCHEMA_VERSION
+
+    force = "--force" in rest
+    json_mode = "--json" in rest
+    positional = [token for token in rest if not token.startswith("--")]
+    if len(positional) != 2:
+        warn("usage: gdr init <rtos> <version> [--force]")
+        return
+    rtos, version = positional[0].lower(), positional[1]
+    if is_initialized() and not force:
+        message = "an RTOS adapter is already initialized; add --force to replace it"
+        if json_mode:
+            _write_json(
+                {
+                    "schema_version": GDR_API_SCHEMA_VERSION,
+                    "ok": False,
+                    "rtos": rtos,
+                    "version": version,
+                    "error": message,
+                }
+            )
+        else:
+            warn(message)
+        return
+    if force and is_initialized():
+        _reset_command()
+    _setup_rtos(rtos, version)
+    if not json_mode:
+        return
+    result: dict[str, object] = {
+        "schema_version": GDR_API_SCHEMA_VERSION,
+        "ok": is_initialized(),
+        "rtos": rtos,
+        "version": version,
+    }
+    if not is_initialized():
+        result["error"] = f"failed to initialize {rtos} {version}"
+    _write_json(result)
+
+
+def _write_json(document: dict[str, object]) -> None:
+    """Print one compact JSON document to GDB stdout."""
+    import json
+
+    if gdb is None:
+        print(json.dumps(document, separators=(",", ":")))
+        return
+    gdb.write(json.dumps(document, separators=(",", ":")) + "\n")
+
+
+def _api_command(argv: list[str]) -> None:
+    """``gdr api <verb> [args...] [--json] [--out <path>]``.
+
+    Default output is pretty-printed JSON for a human at the prompt;
+    ``--json`` is compact and ``--out`` writes a file a plugin reads back.
+    """
+    import json
+
+    from gdr.api import envelope_json
+
+    out_path: str | None = None
+    compact = False
+    verb_args: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--json":
+            compact = True
+        elif token == "--out":
+            if index + 1 >= len(argv):
+                warn("gdr api --out requires a path")
+                return
+            out_path = argv[index + 1]
+            index += 1
+        else:
+            verb_args.append(token)
+        index += 1
+    if not verb_args:
+        warn("usage: gdr api <verb> [args...] [--json] [--out <path>]")
+        return
+    verb, *args = verb_args
+    document = envelope_json(verb, *args)
+    if out_path is not None:
+        try:
+            with open(out_path, "w", encoding="utf-8") as handle:
+                handle.write(document)
+        except OSError as exc:
+            warn(f"gdr api --out {out_path}: {exc}")
+            return
+        info(f"gdr api {verb}: wrote {len(document)} bytes to {out_path}")
+        return
+    if not compact:
+        parsed = None
+        try:
+            parsed = json.loads(document)
+        except json.JSONDecodeError:
+            parsed = None
+        if parsed is not None:
+            document = json.dumps(parsed, indent=2)
+    if gdb is None:
+        print(document)
+        return
+    gdb.write(document + "\n")
+
+
+def _reset_command() -> None:
+    """Drop the active adapter and all session caches (re-init point).
+
+    Printers are unregistered as well: ``register_printers`` keeps one
+    layout-derived lookup per session, so a re-init into a different RTOS
+    would otherwise fold objects through the previous adapter's layout.
+    """
+    from gdr.adapter_api import active, is_initialized, reset
+    from gdr.api import next_generation
+    from gdr.gdb_bridge import reset_loadable_ranges
+    from gdr.printers import unregister_printers
+
+    if not is_initialized():
+        warn("no active RTOS adapter to reset")
+        return
+    adapter = active()
+    reset_adapter = getattr(adapter, "reset", None)
+    if reset_adapter is not None:
+        reset_adapter()
+    reset_loadable_ranges()
+    unregister_printers()
+    reset()
+    next_generation()
+    info("GDR session reset; run `gdr init <rtos> <version>` to re-initialize")
+
+
+_EVENTS_REGISTERED = False
+
+
+def _register_session_events() -> None:
+    """Bump the API generation and clear caches on session-changing events.
+
+    ``gdb.events`` handlers must never raise: they run inside GDB's event
+    loop and a raise would surface as unexpected Python noise mid-session.
+    """
+    global _EVENTS_REGISTERED
+    if _EVENTS_REGISTERED or gdb is None or not hasattr(gdb, "events"):
+        return
+    _EVENTS_REGISTERED = True
+
+    def on_stop(_event: object = None) -> None:
+        try:
+            from gdr.api import next_generation
+
+            next_generation()
+        except Exception:  # pragma: no cover - defensive event-loop guard
+            # Reason: an event hook that raises aborts GDB's event dispatch
+            # and prints a raw traceback into the prompt; generation is a
+            # cache hint, so losing one bump is preferable to that.
+            return
+
+    def on_new_objfile(_event: object = None) -> None:
+        try:
+            from gdr.adapter_api import active
+            from gdr.api import next_generation
+            from gdr.gdb_bridge import reset_loadable_ranges
+
+            next_generation()
+            reset_loadable_ranges()
+            adapter = active()
+            reset_adapter = getattr(adapter, "reset", None)
+            if reset_adapter is not None:
+                reset_adapter()
+        except Exception:  # pragma: no cover - defensive event-loop guard
+            # Reason: same as on_stop; a reflash must not crash the session
+            # if one cache clear fails.
+            return
+
+    try:
+        gdb.events.stop.connect(on_stop)
+        gdb.events.new_objfile.connect(on_new_objfile)
+    except Exception:  # pragma: no cover - older GDB event API
+        # Reason: gdb.events exists from GDB 7.9; a build without it still
+        # serves every command, it just cannot auto-invalidate caches.
+        return
 
 
 def _setup_rtthread(version: str) -> None:
@@ -220,7 +415,7 @@ def _setup_rtthread(version: str) -> None:
         version: Full RT-Thread version string (e.g. ``"4.0.5"``).
     """
     from gdr.adapter_api import is_initialized, register
-    from gdr.functions import register_functions
+    from gdr.functions import register_api_functions, register_functions
     from rtthread.adapter import RtThreadAdapter
     from rtthread.commands import register_commands
     from rtthread.layout import build_layouts, detect_config
@@ -250,8 +445,9 @@ def _setup_rtthread(version: str) -> None:
 
     register_printers(kl)
     register_functions()
+    register_api_functions()
     register_commands()
-    register(adapter)
+    register(adapter, rtos="rtthread", version=version)
 
     info("RT-Thread support ready. Type 'rtt help' for commands.")
 
@@ -263,7 +459,7 @@ def _setup_freertos(version: str) -> None:
     from freertos.layout import build_layout, detect_config
     from freertos.version import check_version
     from gdr.adapter_api import is_initialized, register
-    from gdr.functions import register_functions
+    from gdr.functions import register_api_functions, register_functions
 
     if is_initialized():
         warn(
@@ -287,8 +483,9 @@ def _setup_freertos(version: str) -> None:
     adapter = FreeRtosAdapter(layout)
     register_printers(layout)
     register_functions()
+    register_api_functions()
     register_commands()
-    register(adapter)
+    register(adapter, rtos="freertos", version=version)
     info("FreeRTOS support ready. Type 'freertos help' (alias: frt) for commands.")
 
 
@@ -315,6 +512,7 @@ def initialize() -> None:
         raise SystemExit(1)
 
     GdrCommand()
+    _register_session_events()
     args = _parse_args()
     rtos = args.get("rtos", "")
     version = args.get("version", "")

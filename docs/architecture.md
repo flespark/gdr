@@ -22,8 +22,9 @@ duplicating what `rust-gdb` / `gdb` already display well.
        gdr/  (RTOS-agnostic core)      selected RTOS adapter
          |                                |
   adapter_api.py / commands.py      layout.py / navigation.py
-  formatting.py / gdb_bridge.py     adapter.py / diagnostics.py
-  layout.py / printers.py           commands.py / version.py
+  api.py / serialize.py             adapter.py / diagnostics.py
+  formatting.py / gdb_bridge.py     commands.py / version.py
+  layout.py / printers.py
 ```
 
 ### `gdr/` — core
@@ -35,9 +36,11 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`). It interprets adapter-supplied paths but contains no target type names, symbols, or list conventions. |
 | `printers.py` | Generic pretty-printer registration and rendering. Display labels, summary fields, enum maps, and pointee display paths come from the adapter layout. Type matching uses `strip_typedefs().unqualified().tag` so that typedef-spelled and cv-qualified values resolve to their underlying struct tag. |
 | `version.py` | RTOS-neutral version parsing, range checks, formatting and declared decimal/packed-hex decoding. |
-| `adapter_api.py` | `RtosAdapter`, `ObjectTable`, `ObjectDetail`, `SystemSummary`, and the single active adapter selected by `gdr init`. |
+| `adapter_api.py` | `RtosAdapter`, presentation dataclasses, session identity and `gdr reset`. `ColumnSpec`/`Capabilities` are optional plugin metadata; text tables stay the default. |
+| `serialize.py` | Pure envelope and chunk protocol for the machine-readable API, plus the shared `system_summary_pairs` builder the text renderer prints. `SCHEMA_VERSION` is independent of the GDR release version. |
+| `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`system`/`heap`/`capabilities`/`snapshot`) over the same collectors the text renderers use. |
 | `derive.py` | RTOS-neutral derived-value helpers shared by the adapters: wrap-safe timer expiry (with/without the `overdue` label), fill-byte stack watermark counting, and the `count@names` waiter cell. Scalar-in/string-out, never adapter model objects. |
-| `commands.py` / `functions.py` | Generic output coordination and raw-value convenience functions; task columns and object vocabulary remain adapter-owned. |
+| `commands.py` / `functions.py` | Generic output coordination — the `collect_*` functions plus their guarded text renderers — and convenience functions including the `$gdr_json` transport; task columns and object vocabulary remain adapter-owned. |
 | `help.py` | RTOS-neutral dataclasses and terminal/Markdown renderers for help trees. Command metadata stays structured so the same source can feed GDB now and MkDocs later. |
 
 ### `rtthread/` — adapter
@@ -157,6 +160,20 @@ inspection is left to `$gdr_task(name)` + `p $gdr_task(name).field`. This
 keeps the command set small and avoids commands silently breaking when a field
 is renamed (the function returns the raw `gdb.Value`).
 
+### One machine-readable contract, rendered from the same collectors
+
+Text tables cannot be consumed by an IDE, and DAP `evaluate` with a `repl`
+context never returns command output, so the client contract is a versioned
+JSON envelope reached either inline through `$gdr_json` or as base64 frames
+through `$gdr_json_chunk`. Frames of one transfer are frozen from a single
+envelope, so a target that moves mid-pull cannot reassemble two snapshots.
+`gdr/api.py` routes every verb through the same `collect_*` functions the text
+renderers print, so a verb result and its command output cannot drift apart;
+`SCHEMA_VERSION` is bumped only on a breaking envelope change and is
+deliberately independent of the release version. The verbs and the transport
+are tooling surface: they are documented for design readers here and in the
+changelog, not in the user command index.
+
 ## Main design
 
 ### Unified routing through the active adapter
@@ -168,7 +185,11 @@ target through `adapter_api.active()` and dispatches on the active adapter's
 one routing entry point — the session adapter selected by `gdr init` — so
 `gdr/` never branches on an RTOS name or hardcodes a command vocabulary. A new
 RTOS only needs to implement the protocol to obtain the shared command tree,
-pretty-printers and convenience functions unchanged.
+pretty-printers and convenience functions unchanged. `gdr reset` (and
+`gdr init --force`) clears that entry point together with the adapter's
+session caches and the layout-derived printer lookup, so re-initializing into
+another RTOS cannot fold objects through the previous adapter's layout;
+registration still refuses a second active adapter.
 
 ### Exception guard for kernel data collection
 
@@ -200,7 +221,7 @@ noise and abort the rest of the command.
   `gdr/gdb_bridge.py`); anything unexpected now bubbles to a guard for a full
   diagnostic instead of being silently swallowed.
 
-Two deliberate broad catches are sanctioned beyond the probe-helper set:
+Three deliberate broad catches are sanctioned beyond the probe-helper set:
 
 - **GDB completion** must never print or raise, so `_object_names` keeps
   `except Exception` that degrades to no candidates (the readline prompt
@@ -211,6 +232,15 @@ Two deliberate broad catches are sanctioned beyond the probe-helper set:
   (`N/A` heap fields, no check section) on `TARGET_ACCESS_ERRORS`.  A
   *programming* error (KeyError on a layout dict, a refactor-induced
   TypeError) is not in that set and bubbles to the guard for a diagnostic.
+- **The API envelope boundary never raises.** `gdr.api.api_call` owes a
+  machine client an answer, so it converts failures instead of letting them
+  escape: `TARGET_ACCESS_ERRORS` becomes `target_unavailable`, because a
+  failed target read is degradation the client retries after the next stop,
+  while any other exception becomes `internal` and, in a `GDR_DEBUG` build,
+  prints the full `show_last_exception()` diagnostic first and re-raises under
+  `GDR_PROPAGATE_EXCEPTION`. Unlike the command guard it adds no `err()`
+  one-liner: the envelope carries the same message and every caller (the
+  `gdr api` renderer, the plugin) already shows it.
 
 The guard's reporting policy:
 
@@ -281,7 +311,15 @@ Initialization selects the adapter and builds its layout before registration:
 
 ```text
 gdr init -> RTOS version policy -> config probes/layout -> adapter
-         -> printers/functions/commands registration
+         -> printers/functions/api registration
+```
+
+Machine-readable clients use the same collectors as the text commands:
+
+```text
+gdr api <verb> / $gdr_json -> collector -> active adapter
+  -> ObjectTable/ObjectDetail/SystemSummary/HeapReport
+  -> envelope JSON (inline, or chunked when it exceeds one evaluate result)
 ```
 
 Aggregate commands use the adapter-owned presentation path:
@@ -309,7 +347,10 @@ creates known objects and assert, where an adapter implementation exists:
 
 - pretty-printers registered and fold correctly,
 - convenience functions return non-null `gdb.Value` with expected fields,
-- aggregate commands list the expected objects.
+- aggregate commands list the expected objects,
+- the machine-readable envelope round trip: `gdr api` output parses, the
+  `$gdr_json` frames reassemble to the same envelope, and a rejected re-init
+  leaves the live session usable.
 
 The FreeRTOS `mps2-an385` fixture asserts ready-marker delivery, retained
 DWARF for kernel structures, the 32-bit ABI, persistent GDB, scheduler-list

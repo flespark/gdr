@@ -8,9 +8,11 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.adapter_api import active
+from gdr.api import chunk_response, transport_response
 from gdr.gdb_bridge import gdb_function_guard, make_pointer_array, read_cstring
 
 _registered_functions: set[str] = set()
+_registered_api_functions: set[str] = set()
 
 
 if gdb is not None:
@@ -69,6 +71,43 @@ if gdb is not None:
             )
             return result if result is not None else gdb.Value(0)
 
+    class GdrJsonFunction(gdb.Function):
+        """Return one GDR API envelope for a verb as a JSON string.
+
+        Usage: ``p $gdr_json("tasks")``. Small envelopes ride inline;
+        larger ones return the chunked-transport meta frame, which the
+        caller feeds to ``$gdr_json_chunk``.
+        """
+
+        def __init__(self) -> None:
+            super().__init__("gdr_json")
+
+        @gdb_function_guard
+        def invoke(self, verb, *rest):
+            args = [read_cstring(arg) or "" for arg in rest]
+            return gdb.Value(transport_response(read_cstring(verb) or "", *args))
+
+    class GdrJsonChunkFunction(gdb.Function):
+        """Return one base64 frame of a GDR API envelope.
+
+        Usage: ``p $gdr_json_chunk(0, "tasks")`` for the meta frame, then
+        ``p $gdr_json_chunk(1, ...)`` up to the meta's ``total``.
+        """
+
+        def __init__(self) -> None:
+            super().__init__("gdr_json_chunk")
+
+        @gdb_function_guard
+        def invoke(self, index, verb, *rest):
+            args = [read_cstring(arg) or "" for arg in rest]
+            try:
+                chunk_index = int(index)
+            except (TypeError, ValueError):
+                chunk_index = -1
+            return gdb.Value(
+                chunk_response(chunk_index, read_cstring(verb) or "", *args)
+            )
+
 
 def register_functions() -> None:
     """Register generic function names, resuming after a partial failure."""
@@ -84,3 +123,23 @@ def register_functions() -> None:
             continue
         function_type()
         _registered_functions.add(name)
+
+
+def register_api_functions() -> None:
+    """Register the machine-readable API transport functions.
+
+    Kept separate from :func:`register_functions` so the human convenience
+    functions and the plugin transport have independent registration
+    state; both are called once per adapter setup.
+    """
+    if gdb is None:
+        raise RuntimeError("not running inside GDB")
+    functions = (
+        ("gdr_json", GdrJsonFunction),
+        ("gdr_json_chunk", GdrJsonChunkFunction),
+    )
+    for name, function_type in functions:
+        if name in _registered_api_functions:
+            continue
+        function_type()
+        _registered_api_functions.add(name)
