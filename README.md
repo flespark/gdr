@@ -100,23 +100,6 @@ warning: target RT-Thread version not exported; cannot verify version
 | `<rtos> <objects>` | List the kernel object type collective status |
 | `<rtos> <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
 
-FreeRTOS specifics:
-
-- Kernel objects have no global registry, so `frt objects` and every list
-  command print where each object was found (`Src`) plus the enumeration
-  limit above the table — a count is never a complete inventory.
-- Builds without `configUSE_TRACE_FACILITY` cannot store the exact queue
-  kind, so such rows carry a `?` in `Type`; the `Set` column only exists
-  when `configUSE_QUEUE_SETS` is on.
-- Only timers on the daemon's active lists are reachable; stopped/expired
-  ones render `dormant` with `Expiry`/`ExpiresIn` `N/A` unless a static
-  buffer or global handle keeps them in the symbol table.
-- `frt heap` shows the allocator's counters and a free-list/linear-walk
-  `CrossCheck` verdict; FreeRTOS block headers carry no owner field, so
-  per-task heap usage is not attributable.
-
-See `docs/architecture.md` for the discovery and heap details.
-
 ## Convenience functions
 
 | Function | Returns | Example |

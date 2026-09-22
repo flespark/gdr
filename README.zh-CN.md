@@ -96,19 +96,6 @@ warning: target RT-Thread version not exported; cannot verify version
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |
 | `<rtos> <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
 
-FreeRTOS 说明：
-
-- 内核对象没有全局注册表，因此 `frt objects` 与各列表命令会在表上方标出每个对象的发现来源
-  （`Src`）与枚举限制——计数不等于完整清单。
-- 未开 `configUSE_TRACE_FACILITY` 的 build 不保存精确 queue 类型，对应行会在 `Type` 后加 `?`；
-  `Set` 列仅在开启 `configUSE_QUEUE_SETS` 时存在。
-- 只有守护任务 active 列表上的 timer 可枚举；已停止/过期的一次性 timer 显示为 `dormant`，
-  `Expiry`/`ExpiresIn` 为 `N/A`（除非静态缓冲区或全局句柄保留了它）。
-- `frt heap` 显示分配器计数器与 free-list/线性遍历的 `CrossCheck` 裁决；FreeRTOS 块头无 owner
-  字段，因此不提供按任务的堆占用归属。
-
-详见 `docs/architecture.md`。
-
 ## 便捷函数
 
 | 函数 | 返回值 | 示例 |
