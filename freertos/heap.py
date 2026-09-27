@@ -26,8 +26,9 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
+from freertos.columns import HEAP_FREE_LIST_SPECS, HEAP_LINEAR_SPECS
 from freertos.layout import FreeRtosLayout
-from gdr.adapter_api import ObjectTable
+from gdr.adapter_api import ObjectTable, address_cell, number_cell, raw_cell
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
 from gdr.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
@@ -925,9 +926,9 @@ def heap_block_table(snap: HeapSnapshot) -> ObjectTable | None:
     if linear is not None and linear.blocks:
         rows = [
             [
-                hex(block.address),
-                str(block.size),
-                "free" if not block.allocated else "alloc",
+                address_cell(block.address),
+                number_cell(block.size),
+                raw_cell("free" if not block.allocated else "alloc", block.allocated),
             ]
             for block in linear.blocks
         ]
@@ -938,15 +939,16 @@ def heap_block_table(snap: HeapSnapshot) -> ObjectTable | None:
         ]
         if linear.incomplete_reason:
             messages.append(linear.incomplete_reason)
-        return ObjectTable(
-            headers=["Address", "Size", "State"], rows=rows, messages=messages
-        )
+        return ObjectTable.from_specs(HEAP_LINEAR_SPECS, rows, messages=messages)
     if free_list is not None and free_list.blocks:
         rows = [
             [
-                hex(block.address),
-                str(block.size),
-                hex(block.next_free) if block.next_free else "-",
+                address_cell(block.address),
+                number_cell(block.size),
+                raw_cell(
+                    hex(block.next_free) if block.next_free else "-",
+                    block.next_free,
+                ),
             ]
             for block in free_list.blocks
         ]
@@ -957,10 +959,7 @@ def heap_block_table(snap: HeapSnapshot) -> ObjectTable | None:
         ]
         if free_list.corrupt and free_list.corrupt_reason:
             messages.append(free_list.corrupt_reason)
-        return ObjectTable(
-            headers=["Address", "Size", "Next"],
-            rows=rows,
-            messages=messages,
-            elastic=("Next",),
+        return ObjectTable.from_specs(
+            HEAP_FREE_LIST_SPECS, rows, messages=messages, elastic=("Next",)
         )
     return None

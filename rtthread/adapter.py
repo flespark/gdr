@@ -27,17 +27,26 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.adapter_api import (
+    Capabilities,
+    Cell,
+    CheckFinding,
+    ColumnSpec,
     HeapReport,
+    KindCapability,
     ObjectDetail,
     ObjectTable,
     RtosAdapter,
     SystemSummary,
+    address_cell,
+    count_cell,
+    number_cell,
+    raw_cell,
+    sections_from_pairs,
+    symbol_cell,
+    text_cell,
+    waiters_cell,
 )
 from gdr.derive import timer_expires_in as derive_timer_expires_in
-from gdr.formatting import (
-    format_address,
-    format_symbol_or_address,
-)
 from gdr.gdb_bridge import (
     lookup_symbol_at,
     read_bytes,
@@ -47,6 +56,18 @@ from gdr.gdb_bridge import (
 )
 from gdr.layout import KernelLayout, read_field
 from rtthread import diagnostics
+from rtthread.columns import (
+    EVENT_SPECS,
+    KIND_SPECS,
+    MAILBOX_SPECS,
+    MEMPOOL_SPECS,
+    MSGQUEUE_SPECS,
+    MUTEX_SPECS,
+    SEMAPHORE_SPECS,
+    TIMER_SPECS,
+    smp_columns_present,
+    task_specs,
+)
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
     RT_EVENT_FLAG_CLEAR,
@@ -450,6 +471,63 @@ def _cpu_or_none(raw: int | None, cpu_count: int | None) -> int | None:
     return raw
 
 
+def _heap_accounting_finding(info: HeapInfo) -> CheckFinding:
+    """Cross-check the heap snapshot counters against exact chain accounting.
+
+    The walk reports exact chain bytes only when it closed cleanly, so this is
+    a real cross-check rather than a restated snapshot: a disagreement means
+    one of the two sources is stale or the chain is not the whole heap.
+
+    An overrun (used above total) is caught first because it needs no walk.
+    """
+    used, total = info.used, info.total
+    if used is not None and total is not None and used > total:
+        return CheckFinding(
+            "HeapAccounting", "fail", f"used {used} exceeds total {total}", "system"
+        )
+    walk = info.walk
+    if walk is None or walk.used_bytes is None or walk.total_bytes is None:
+        return CheckFinding(
+            "HeapAccounting", "skipped", "exact chain accounting unavailable", "system"
+        )
+    if used is None or total is None:
+        return CheckFinding(
+            "HeapAccounting", "skipped", "snapshot counters unavailable", "system"
+        )
+    if walk.used_bytes == used and walk.total_bytes == total:
+        return CheckFinding("HeapAccounting", "ok", scope="system")
+    return CheckFinding(
+        "HeapAccounting",
+        "fail",
+        f"snapshot {used}/{total} != walk {walk.used_bytes}/{walk.total_bytes}",
+        "system",
+    )
+
+
+def _heap_chain_finding(walk: diagnostics.HeapWalk | None) -> CheckFinding:
+    """Verdict for the bounded block-chain walk."""
+    if walk is None:
+        return CheckFinding(
+            "HeapChain", "skipped", "block chain not resolvable", "system"
+        )
+    if walk.corrupt:
+        return CheckFinding("HeapChain", "fail", "the block chain is corrupt", "system")
+    if walk.truncated:
+        return CheckFinding(
+            "HeapChain", "skipped", "the walk hit the traversal bound", "system"
+        )
+    return CheckFinding("HeapChain", "ok", scope="system")
+
+
+def _detail(pairs: list[tuple[str, str]], *, found: bool = True) -> ObjectDetail:
+    """Wrap a flat detail block, adding its grouped verdict rows.
+
+    ``pairs`` remains the complete flat view the text renderer prints, so the
+    section adds severity without changing terminal output.
+    """
+    return ObjectDetail(pairs=pairs, found=found, sections=sections_from_pairs(pairs))
+
+
 def _ipc_policy(flag: int | None) -> str:
     """Decode an RT-Thread IPC object's scheduling policy from its flag."""
     if flag is None:
@@ -504,6 +582,33 @@ def _waiter_summary(
     if not names:
         return "0"
     return f"{len(names)}@{','.join(names)}"
+
+
+def _waiter_cell(
+    value: gdb.Value,
+    layout: KernelLayout,
+    struct_name: str,
+    field_name: str,
+    *,
+    available: bool = True,
+) -> Cell:
+    """A waiter column cell carrying both its text and the waiter names.
+
+    The names ride along so a plugin can list who is blocked without a second
+    target walk.  An empty list stays distinct from ``None``: the former means
+    "nobody waits", the latter "this kernel has no such wait list".
+    """
+    if not available:
+        return waiters_cell("N/A")
+    names = suspend_thread_names(value, layout, struct_name, field_name)
+    if not names:
+        return waiters_cell("0", [])
+    return waiters_cell(f"{len(names)}@{','.join(names)}", names)
+
+
+def _count_cell(text: str | None) -> Cell:
+    """A tick-count cell; the shared helper owns the numeric-value rule."""
+    return count_cell(text)
 
 
 def _waiter_detail_pairs(
@@ -651,23 +756,31 @@ class RtThreadAdapter(RtosAdapter):
         source; that column keeps the table shape symmetric with FreeRTOS'
         provenance summary (``frt objects``) through the neutral renderer.
         """
-        rows: list[list[str]] = []
+        specs = (
+            ColumnSpec("Kind", doc="semantic object kind"),
+            ColumnSpec("Count", kind="int", align="right"),
+            ColumnSpec("Sources", elastic=True, doc="provenance channel"),
+        )
+        rows: list[list[Cell]] = []
         for type_code, info in self.layout.object_types.items():
             if not info.enabled:
                 continue
             kind = "task" if info.name == "thread" else info.name
             count = sum(1 for _ in iter_objects(type_code, self.layout))
-            rows.append([kind, str(count), f"registry={count}"])
-        rows.sort(key=lambda row: row[0])
-        return ObjectTable(
-            headers=["Kind", "Count", "Sources"],
-            rows=rows,
+            rows.append(
+                [text_cell(kind), number_cell(count), text_cell(f"registry={count}")]
+            )
+        rows.sort(key=lambda row: row[0].text)
+        return ObjectTable.from_specs(
+            specs,
+            rows,
             messages=[
                 "object counts come from the kernel object registry "
                 "(rt_object_get_information); a count is a complete inventory "
                 "of registered kernel objects"
             ],
             elastic=("Sources",),
+            id_key="",
         )
 
     def _registered_objects(
@@ -685,6 +798,7 @@ class RtThreadAdapter(RtosAdapter):
             values = self._registered_objects("semaphore", "struct rt_semaphore")
             if values is None:
                 return None
+            specs = SEMAPHORE_SPECS
             rows = []
             for value in values:
                 semaphore = value_to_semaphore(value, self.layout)
@@ -695,25 +809,24 @@ class RtThreadAdapter(RtosAdapter):
                 )
                 rows.append(
                     [
-                        semaphore.name,
-                        str(semaphore.value),
-                        _ipc_policy(flag),
-                        _waiter_summary(
+                        text_cell(semaphore.name),
+                        number_cell(semaphore.value),
+                        raw_cell(_ipc_policy(flag), flag),
+                        _waiter_cell(
                             value, self.layout, "struct rt_semaphore", "suspend_thread"
                         ),
-                        hex(semaphore.address),
+                        address_cell(semaphore.address),
                     ]
                 )
-            return ObjectTable(
-                ["Name", "Value", "Policy", "Waiters", "Addr"],
-                rows,
-                elastic=("Waiters", "Name"),
+            return ObjectTable.from_specs(
+                specs, rows, elastic=("Waiters", "Name"), id_key="Addr"
             )
         # --- mutex --------------------------------------------------
         if kind == "mutex":
             values = self._registered_objects("mutex", "struct rt_mutex")
             if values is None:
                 return None
+            specs = MUTEX_SPECS
             rows = []
             for value in values:
                 mutex = value_to_mutex(value, self.layout)
@@ -722,37 +835,27 @@ class RtThreadAdapter(RtosAdapter):
                 )
                 rows.append(
                     [
-                        mutex.name,
-                        str(mutex.value),
-                        str(mutex.hold),
-                        str(mutex.original_priority),
-                        mutex.owner or "N/A",
-                        _ipc_policy(flag),
-                        _waiter_summary(
+                        text_cell(mutex.name),
+                        number_cell(mutex.value),
+                        number_cell(mutex.hold),
+                        number_cell(mutex.original_priority),
+                        text_cell(mutex.owner or "N/A"),
+                        raw_cell(_ipc_policy(flag), flag),
+                        _waiter_cell(
                             value, self.layout, "struct rt_mutex", "suspend_thread"
                         ),
-                        hex(mutex.address),
+                        address_cell(mutex.address),
                     ]
                 )
-            return ObjectTable(
-                [
-                    "Name",
-                    "Value",
-                    "Hold",
-                    "OrigPrio",
-                    "Owner",
-                    "Policy",
-                    "Waiters",
-                    "Addr",
-                ],
-                rows,
-                elastic=("Waiters", "Owner", "Name"),
+            return ObjectTable.from_specs(
+                specs, rows, elastic=("Waiters", "Owner", "Name"), id_key="Addr"
             )
         # --- event --------------------------------------------------
         if kind == "event":
             values = self._registered_objects("event", "struct rt_event")
             if values is None:
                 return None
+            specs = EVENT_SPECS
             rows = []
             for value in values:
                 event = value_to_event(value, self.layout)
@@ -761,25 +864,24 @@ class RtThreadAdapter(RtosAdapter):
                 )
                 rows.append(
                     [
-                        event.name,
-                        hex(event.set),
-                        _ipc_policy(flag),
-                        _waiter_summary(
+                        text_cell(event.name),
+                        raw_cell(hex(event.set), event.set),
+                        raw_cell(_ipc_policy(flag), flag),
+                        _waiter_cell(
                             value, self.layout, "struct rt_event", "suspend_thread"
                         ),
-                        hex(event.address),
+                        address_cell(event.address),
                     ]
                 )
-            return ObjectTable(
-                ["Name", "Set", "Policy", "Waiters", "Addr"],
-                rows,
-                elastic=("Waiters", "Name"),
+            return ObjectTable.from_specs(
+                specs, rows, elastic=("Waiters", "Name"), id_key="Addr"
             )
         # --- mailbox --------------------------------------------------
         if kind == "mailbox":
             values = self._registered_objects("mailbox", "struct rt_mailbox")
             if values is None:
                 return None
+            specs = MAILBOX_SPECS
             rows = []
             for value in values:
                 mailbox = value_to_mailbox(value, self.layout)
@@ -788,40 +890,27 @@ class RtThreadAdapter(RtosAdapter):
                 )
                 rows.append(
                     [
-                        mailbox.name,
-                        str(mailbox.entry),
-                        str(mailbox.size),
-                        str(max(mailbox.size - mailbox.entry, 0)),
-                        str(mailbox.in_offset),
-                        str(mailbox.out_offset),
-                        _ipc_policy(flag),
-                        _waiter_summary(
+                        text_cell(mailbox.name),
+                        number_cell(mailbox.entry),
+                        number_cell(mailbox.size),
+                        number_cell(max(mailbox.size - mailbox.entry, 0)),
+                        number_cell(mailbox.in_offset),
+                        number_cell(mailbox.out_offset),
+                        raw_cell(_ipc_policy(flag), flag),
+                        _waiter_cell(
                             value, self.layout, "struct rt_mailbox", "suspend_thread"
                         ),
-                        _waiter_summary(
+                        _waiter_cell(
                             value,
                             self.layout,
                             "struct rt_mailbox",
                             "suspend_sender_thread",
                         ),
-                        hex(mailbox.address),
+                        address_cell(mailbox.address),
                     ]
                 )
-            return ObjectTable(
-                [
-                    "Name",
-                    "Entry",
-                    "Size",
-                    "Free",
-                    "In",
-                    "Out",
-                    "Policy",
-                    "RecvWait",
-                    "SendWait",
-                    "Addr",
-                ],
-                rows,
-                elastic=("RecvWait", "SendWait", "Name"),
+            return ObjectTable.from_specs(
+                specs, rows, elastic=("RecvWait", "SendWait", "Name"), id_key="Addr"
             )
         # --- msgqueue --------------------------------------------------
         if kind == "msgqueue":
@@ -834,6 +923,7 @@ class RtThreadAdapter(RtosAdapter):
             sender_available = (
                 mq_layout is not None and "suspend_sender_thread" in mq_layout.fields
             )
+            specs = MSGQUEUE_SPECS
             rows = []
             for value in values:
                 msgqueue = value_to_messagequeue(value, self.layout)
@@ -844,70 +934,57 @@ class RtThreadAdapter(RtosAdapter):
                 )
                 rows.append(
                     [
-                        msgqueue.name,
-                        str(msgqueue.entry),
-                        str(msgqueue.msg_size),
-                        str(msgqueue.max_msgs),
-                        str(max(msgqueue.max_msgs - msgqueue.entry, 0)),
-                        _ipc_policy(flag),
-                        _waiter_summary(
+                        text_cell(msgqueue.name),
+                        number_cell(msgqueue.entry),
+                        number_cell(msgqueue.msg_size),
+                        number_cell(msgqueue.max_msgs),
+                        number_cell(max(msgqueue.max_msgs - msgqueue.entry, 0)),
+                        raw_cell(_ipc_policy(flag), flag),
+                        _waiter_cell(
                             value,
                             self.layout,
                             "struct rt_messagequeue",
                             "suspend_thread",
                         ),
-                        _waiter_summary(
+                        _waiter_cell(
                             value,
                             self.layout,
                             "struct rt_messagequeue",
                             "suspend_sender_thread",
                             available=sender_available,
                         ),
-                        hex(msgqueue.address),
+                        address_cell(msgqueue.address),
                     ]
                 )
-            return ObjectTable(
-                [
-                    "Name",
-                    "Entry",
-                    "MsgSize",
-                    "MaxMsgs",
-                    "Free",
-                    "Policy",
-                    "RecvWait",
-                    "SendWait",
-                    "Addr",
-                ],
-                rows,
-                elastic=("RecvWait", "SendWait", "Name"),
+            return ObjectTable.from_specs(
+                specs, rows, elastic=("RecvWait", "SendWait", "Name"), id_key="Addr"
             )
         # --- mempool --------------------------------------------------
         if kind == "mempool":
             values = self._registered_objects("mempool", "struct rt_mempool")
             if values is None:
                 return None
+            specs = MEMPOOL_SPECS
             rows = []
             for value in values:
                 mempool = value_to_mempool(value, self.layout)
                 rows.append(
                     [
-                        mempool.name,
-                        str(mempool.block_size),
-                        str(mempool.block_total_count),
-                        str(mempool.block_free_count),
-                        str(
+                        text_cell(mempool.name),
+                        number_cell(mempool.block_size),
+                        number_cell(mempool.block_total_count),
+                        number_cell(mempool.block_free_count),
+                        number_cell(
                             max(mempool.block_total_count - mempool.block_free_count, 0)
                         ),
-                        _waiter_summary(
+                        _waiter_cell(
                             value, self.layout, "struct rt_mempool", "suspend_thread"
                         ),
-                        hex(mempool.address),
+                        address_cell(mempool.address),
                     ]
                 )
-            return ObjectTable(
-                ["Name", "BlockSize", "Total", "Free", "Used", "Waiters", "Addr"],
-                rows,
-                elastic=("Waiters", "Name"),
+            return ObjectTable.from_specs(
+                specs, rows, elastic=("Waiters", "Name"), id_key="Addr"
             )
         # --- timer --------------------------------------------------
         if kind == "timer":
@@ -916,36 +993,42 @@ class RtThreadAdapter(RtosAdapter):
             for value in iter_timers(self.layout):
                 timer = value_to_timer(value, self.layout)
                 callback = lookup_symbol_at(timer.callback) if timer.callback else None
+                expires_text = (
+                    _timer_expires_in(timer.timeout_tick, current_tick)
+                    if timer.active
+                    else "N/A"
+                )
                 rows.append(
                     [
-                        timer.name,
-                        "active" if timer.active else "inactive",
-                        "periodic" if timer.periodic else "one-shot",
-                        "soft" if timer.soft_timer else "hard",
-                        str(timer.init_tick),
-                        str(timer.timeout_tick),
-                        _timer_expires_in(timer.timeout_tick, current_tick)
-                        if timer.active
-                        else "N/A",
-                        f"<{callback}>" if callback else hex(timer.callback),
-                        hex(timer.address),
+                        text_cell(timer.name),
+                        raw_cell(
+                            "active" if timer.active else "inactive", timer.active
+                        ),
+                        raw_cell(
+                            "periodic" if timer.periodic else "one-shot",
+                            timer.periodic,
+                        ),
+                        raw_cell(
+                            "soft" if timer.soft_timer else "hard", timer.soft_timer
+                        ),
+                        number_cell(timer.init_tick),
+                        number_cell(timer.timeout_tick),
+                        _count_cell(expires_text),
+                        raw_cell(
+                            f"<{callback}>" if callback else hex(timer.callback),
+                            timer.callback,
+                        ),
+                        address_cell(timer.address),
                     ]
                 )
-            return ObjectTable(
-                [
-                    "Name",
-                    "State",
-                    "Mode",
-                    "Type",
-                    "InitTick",
-                    "TimeoutTick",
-                    "ExpiresIn",
-                    "Callback",
-                    "Addr",
-                ],
+            return ObjectTable.from_specs(
+                TIMER_SPECS,
                 rows,
-                [f"Kernel tick: {current_tick if current_tick is not None else 'N/A'}"],
+                messages=[
+                    f"Kernel tick: {current_tick if current_tick is not None else 'N/A'}"
+                ],
                 elastic=("Callback", "Name"),
+                id_key="Addr",
             )
         return None
 
@@ -960,8 +1043,8 @@ class RtThreadAdapter(RtosAdapter):
             value = find_thread(name, self.layout)
             if value is None:
                 return ObjectDetail(found=False)
-            return ObjectDetail(
-                pairs=diagnostics.thread_detail(value_to_thread(value, self.layout))
+            return _detail(
+                diagnostics.thread_detail(value_to_thread(value, self.layout))
             )
         if kind == "timer":
             current_tick = get_tick()
@@ -981,7 +1064,7 @@ class RtThreadAdapter(RtosAdapter):
                             else "N/A",
                         ),
                     ]
-                    return ObjectDetail(pairs=pairs)
+                    return _detail(pairs)
             return ObjectDetail(found=False)
 
         type_code = resolve_object_type_code(kind, self.layout)
@@ -991,7 +1074,7 @@ class RtThreadAdapter(RtosAdapter):
         if value is None:
             return ObjectDetail(found=False)
         if kind == "event":
-            return ObjectDetail(pairs=_event_detail_with_waiters(value, self.layout))
+            return _detail(_event_detail_with_waiters(value, self.layout))
         entry = _DETAIL_BUILDERS.get(kind)
         if entry is None:
             return None
@@ -1023,7 +1106,7 @@ class RtThreadAdapter(RtosAdapter):
                 "struct rt_mempool",
                 (("Waiters", "suspend_thread"),),
             )
-        return ObjectDetail(pairs=pairs)
+        return _detail(pairs)
 
     def iter_tasks(self):
         yield from iter_threads(self.layout)
@@ -1053,48 +1136,31 @@ class RtThreadAdapter(RtosAdapter):
             yield self._task_view(value, current_address)
 
     def task_table(self) -> ObjectTable:
-        thread_layout = self.layout.structs.get("struct rt_thread")
-        smp = bool(
-            thread_layout
-            and ("oncpu" in thread_layout.fields or "bind_cpu" in thread_layout.fields)
-        )
-        headers = [
-            "Name",
-            "State",
-            "Prio",
-            "BasePrio",
-            "SP",
-            "Stack",
-            "Used",
-            "HighWater",
-            "Entry",
-        ]
-        if smp:
-            headers += ["CPU", "Bind"]
-        headers.append("Addr")
-
-        rows = []
+        smp = smp_columns_present(self.layout)
+        rows: list[list[Cell]] = []
         for thread, state, current_core in self._task_views():
             symbol = lookup_symbol_at(thread.entry) if thread.entry else None
             row = [
-                thread.name + (" *" if current_core is not None else ""),
-                state,
-                str(thread.current_priority),
-                str(thread.init_priority),
-                format_address(thread.sp),
-                format_optional_int(thread.stack_size or None),
-                format_optional_int(thread.stack_used),
-                format_optional_int(thread.max_stack_used),
-                format_symbol_or_address(thread.entry, symbol),
+                text_cell(thread.name + (" *" if current_core is not None else "")),
+                text_cell(state),
+                number_cell(thread.current_priority),
+                number_cell(thread.init_priority),
+                address_cell(thread.sp),
+                number_cell(thread.stack_size or None),
+                number_cell(thread.stack_used),
+                number_cell(thread.max_stack_used),
+                symbol_cell(thread.entry, symbol),
             ]
             if smp:
                 row += [
-                    format_optional_int(thread.oncpu),
-                    format_optional_int(thread.bind_cpu),
+                    number_cell(thread.oncpu),
+                    number_cell(thread.bind_cpu),
                 ]
-            row.append(format_address(thread.address))
+            row.append(address_cell(thread.address))
             rows.append(row)
-        return ObjectTable(headers=headers, rows=rows, elastic=("Entry", "Name"))
+        return ObjectTable.from_specs(
+            task_specs(smp), rows, elastic=("Entry", "Name"), id_key="Addr"
+        )
 
     def system_summary(self) -> SystemSummary:
         tasks = list(self._task_views())
@@ -1204,6 +1270,61 @@ class RtThreadAdapter(RtosAdapter):
         """
         heap = info if info is not None else self.heap_info()
         return _heap_detail_from_walk(heap.walk, heap.used, heap.total)
+
+    def capabilities(self) -> Capabilities:
+        """Structured capability claims: kinds, columns and their gating.
+
+        Columns come from the same contracts the tables are built from, so a
+        plugin never offers a column this session cannot produce.  ``note``
+        carries the reason a column or kind is degraded -- what a UI needs to
+        tell the user which kernel option would enable it.
+        """
+        counts = self.object_counts()
+        detail_kinds = frozenset(_DETAIL_BUILDERS) | {"task", "timer", "event"}
+        kinds: dict[str, KindCapability] = {}
+        for kind, specs in KIND_SPECS.items():
+            note = None
+            if kind == "msgqueue":
+                note = (
+                    "SendWait is N/A on kernels whose message queue has no "
+                    "sender wait list (before v3.1.4, and v4.0.0-v4.0.1)"
+                )
+            kinds[kind] = KindCapability(
+                enumerable=kind in counts,
+                detail=kind in detail_kinds,
+                columns=tuple(spec.key for spec in specs),
+                note=note,
+            )
+        smp = smp_columns_present(self.layout)
+        kinds["task"] = KindCapability(
+            enumerable="task" in counts,
+            detail=True,
+            columns=tuple(spec.key for spec in task_specs(smp)),
+            note=(
+                "CPU/Bind appear only on SMP builds; HighWater is N/A unless "
+                "the build fills stacks"
+            ),
+        )
+        return Capabilities(
+            kinds=kinds,
+            extra={"smp": smp, "heap_type": self.heap_type},
+        )
+
+    def diagnostics_report(self) -> list[CheckFinding]:
+        """System-wide verdicts: the heap chain and its counter accounting.
+
+        Per-object verdicts stay in the detail verbs; what is system-wide here
+        is whether the block chain walked cleanly and whether the snapshot
+        counters agree with the exact chain accounting.
+        """
+        if self.heap_type == "none":
+            return [
+                CheckFinding(
+                    "HeapChain", "skipped", "no system heap in this build", "system"
+                )
+            ]
+        info = self.heap_info()
+        return [_heap_chain_finding(info.walk), _heap_accounting_finding(info)]
 
     def heap_report(self) -> HeapReport:
         """One snapshot+walk collection formatted for ``rtt heap``.

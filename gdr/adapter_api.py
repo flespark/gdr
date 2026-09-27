@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
+
+from .formatting import format_address, format_optional_int, format_symbol_or_address
 
 try:
     import gdb
@@ -51,7 +53,7 @@ class ColumnSpec:
     Attributes:
         key: Column header (matches ``ObjectTable.headers``).
         kind: Value semantics: ``text``/``int``/``hex``/``addr``/
-            ``percent``/``waiters``/``symbol``.
+            ``percent``/``waiters``/``symbol``/``enum``.
         align: ``left`` or ``right`` for the plugin grid.
         elastic: Whether the plugin may shrink this column on narrow widths.
         doc: One-line column meaning (tooltip source).
@@ -62,6 +64,65 @@ class ColumnSpec:
     align: str = "left"
     elastic: bool = False
     doc: str = ""
+
+
+@dataclass(frozen=True)
+class Cell:
+    """One table cell: the terminal text plus its machine value.
+
+    ``value`` is ``None`` for columns whose text already is the value (names,
+    states, labels).  Numeric, address, waiter and symbol columns carry their
+    machine form, so a plugin can sort, right-align, draw a percentage bar or
+    open the memory view without re-parsing a rendered string.
+    """
+
+    text: str
+    value: object = None
+
+
+def text_cell(value: str) -> Cell:
+    """A cell whose text is its value (names, states, labels)."""
+    return Cell(text=value)
+
+
+def raw_cell(text: str, value: object = None) -> Cell:
+    """A cell with an explicit text and machine value (enums, counts)."""
+    return Cell(text=text, value=value)
+
+
+def number_cell(value: int | None) -> Cell:
+    """An integer column: ``N/A`` text with a ``None`` value when absent."""
+    return Cell(text=format_optional_int(value), value=value)
+
+
+def address_cell(value: int | None) -> Cell:
+    """An address column: hexadecimal text, integer value."""
+    return Cell(text=format_address(value), value=value)
+
+
+def symbol_cell(address: int | None, symbol: str | None = None) -> Cell:
+    """A symbol-or-address column; the value stays the raw address."""
+    return Cell(text=format_symbol_or_address(address, symbol), value=address)
+
+
+def waiters_cell(text: str, names: Sequence[str] | None = None) -> Cell:
+    """A waiter column; the value is the waiter name list when known."""
+    return Cell(text=text, value=list(names) if names is not None else None)
+
+
+def count_cell(text: str | None) -> Cell:
+    """A tick/remaining-count cell whose value is numeric only when it can be.
+
+    A wrap-safe ``ExpiresIn`` renders ``overdue`` and an inactive timer renders
+    ``N/A``; those states have no tick count, so the machine value stays
+    ``None`` rather than a fabricated number.
+    """
+    rendered = text or "N/A"
+    try:
+        value = int(rendered)
+    except ValueError:
+        value = None
+    return Cell(text=rendered, value=value)
 
 
 @dataclass
@@ -85,6 +146,217 @@ class ObjectTable:
     elastic: tuple[str, ...] = ()
     column_specs: tuple[ColumnSpec, ...] = ()
     value_rows: list[list[object]] | None = None
+    # Column whose value is the row's stable object identity (usually
+    # ``Addr``); the serializer turns it into row ``ids`` a UI can key on
+    # across refreshes.  Empty means the table has no stable identity.
+    id_key: str = ""
+
+    def __post_init__(self) -> None:
+        # Reason: rows and value_rows are two views of one row set, so a
+        # width mismatch means a cell was appended to only one of them -- the
+        # exact failure that would silently shift every typed column after it.
+        if self.value_rows is None:
+            return
+        if len(self.value_rows) != len(self.rows):
+            raise RuntimeError("ObjectTable value_rows must mirror rows")
+        for row, values in zip(self.rows, self.value_rows, strict=True):
+            if len(values) != len(row):
+                raise RuntimeError("ObjectTable value_rows must mirror row width")
+
+    @classmethod
+    def from_specs(
+        cls,
+        specs: Sequence[ColumnSpec],
+        cell_rows: Sequence[Sequence[Cell]],
+        *,
+        messages: Sequence[str] = (),
+        elastic: Sequence[str] | None = None,
+        id_key: str = "",
+    ) -> ObjectTable:
+        """Build a table whose headers come from the column specs.
+
+        Taking the column contract as the single source removes any chance of
+        a header list and a spec list disagreeing about a column's position.
+        ``elastic`` stays explicit because a column's shrink *priority* is not
+        its display order; ``None`` falls back to spec order.
+        """
+        return cls.from_cells(
+            [spec.key for spec in specs],
+            cell_rows,
+            messages=messages,
+            elastic=(
+                tuple(elastic)
+                if elastic is not None
+                else tuple(spec.key for spec in specs if spec.elastic)
+            ),
+            column_specs=tuple(specs),
+            id_key=id_key,
+        )
+
+    @classmethod
+    def from_cells(
+        cls,
+        headers: Sequence[str],
+        cell_rows: Sequence[Sequence[Cell]],
+        *,
+        messages: Sequence[str] = (),
+        elastic: Sequence[str] = (),
+        column_specs: Sequence[ColumnSpec] = (),
+        id_key: str = "",
+    ) -> ObjectTable:
+        """Build a table from typed cells, keeping text and values aligned.
+
+        Text and machine value come from one construction path, so a column
+        cannot be typed into the wrong position.  ``value_rows`` stays empty
+        when every cell is text-only, so a text-only table serializes exactly
+        as it did before typing was introduced.
+        """
+        if column_specs and len(column_specs) != len(headers):
+            raise RuntimeError(
+                f"column_specs ({len(column_specs)}) must match "
+                f"headers ({len(headers)})"
+            )
+        if column_specs and elastic:
+            flagged = {spec.key for spec in column_specs if spec.elastic}
+            unflagged = [key for key in elastic if key not in flagged]
+            if unflagged:
+                raise RuntimeError(
+                    f"elastic columns are not flagged in the specs: {unflagged}"
+                )
+        rows: list[list[str]] = []
+        values: list[list[object]] = []
+        typed = False
+        for cell_row in cell_rows:
+            if len(cell_row) != len(headers):
+                raise RuntimeError(
+                    f"row has {len(cell_row)} cells for {len(headers)} headers"
+                )
+            rows.append([cell.text for cell in cell_row])
+            values.append([cell.value for cell in cell_row])
+            typed = typed or any(cell.value is not None for cell in cell_row)
+        return cls(
+            headers=list(headers),
+            rows=rows,
+            messages=list(messages),
+            elastic=tuple(elastic),
+            column_specs=tuple(column_specs),
+            value_rows=values if typed else None,
+            id_key=id_key,
+        )
+
+
+DetailSeverity = Literal["info", "ok", "fail", "skipped"]
+
+# Verdict words the diagnostics modules prefix a value with; see
+# ``verdict_severity`` for the two conventions in use.
+_VERDICT_WORDS: dict[str, DetailSeverity] = {
+    "ok": "ok",
+    "fail": "fail",
+    "skipped": "skipped",
+}
+
+
+@dataclass(frozen=True)
+class DetailRow:
+    """One vertical detail row with its semantic severity.
+
+    ``severity`` is ``info`` for a plain fact and ``ok``/``fail``/``skipped``
+    for a consistency verdict, so a plugin badges checks without parsing them.
+    """
+
+    key: str
+    value: str
+    severity: DetailSeverity = "info"
+
+
+@dataclass(frozen=True)
+class DetailSection:
+    """A named group of detail rows (the consistency checks, say)."""
+
+    title: str
+    rows: tuple[DetailRow, ...] = ()
+
+
+@dataclass(frozen=True)
+class CheckFinding:
+    """One consistency-check result for the ``checks`` verb.
+
+    ``verdict`` is the parsed severity and ``detail`` the reason after the
+    verdict's colon, so a client renders a badge and a reason without
+    splitting strings itself.
+    """
+
+    name: str
+    verdict: DetailSeverity
+    detail: str = ""
+    scope: str = ""
+
+
+def verdict_severity(key: str, value: str) -> DetailSeverity:
+    """Classify one detail row as a verdict row or a plain fact.
+
+    Two deliberate conventions exist across the diagnostics modules, and both
+    are matched here:
+
+    * a verdict-prefixed value -- ``ok``, ``fail: reason``,
+      ``skipped: reason`` (the ``*_checks`` helpers' return form);
+    * a named verdict -- a ``*Check`` key whose value is ``ok`` or the failure
+      reason (the inline style), plus an aggregated ``Checks`` row whose value
+      is ``ok`` or an ``N failed`` summary.
+
+    Anything else is a plain fact and stays ``info``.
+    """
+    word = value.partition(":")[0].strip().lower()
+    severity = _VERDICT_WORDS.get(word)
+    if severity is not None:
+        return severity
+    if key.endswith("Check"):
+        text = value.strip().lower()
+        if text == "ok":
+            return "ok"
+        if text.startswith(("n/a", "unavailable", "invalid", "<invalid>")):
+            return "skipped"
+        return "fail"
+    if key == "Checks":
+        return "ok" if value.strip().lower().startswith("ok") else "fail"
+    return "info"
+
+
+def sections_from_pairs(
+    pairs: Sequence[tuple[str, str]], *, title: str = "Checks"
+) -> list[DetailSection]:
+    """Group the verdict rows of a flat detail block into one section.
+
+    Adapters that render checks inline call this once so the JSON view carries
+    per-row severity while ``pairs`` keeps printing the complete flat block
+    unchanged.  Row order is preserved and a block with no verdict rows yields
+    no sections.
+    """
+    checks = tuple(
+        DetailRow(key=key, value=value, severity=verdict_severity(key, value))
+        for key, value in pairs
+        if verdict_severity(key, value) != "info"
+    )
+    return [DetailSection(title=title, rows=checks)] if checks else []
+
+
+def check_findings(
+    results: Sequence[tuple[str, str]], *, scope: str = ""
+) -> list[CheckFinding]:
+    """Convert ``(name, "ok"|"fail: reason"|"skipped: reason")`` results."""
+    findings: list[CheckFinding] = []
+    for name, status in results:
+        head, _, rest = status.partition(":")
+        severity = _VERDICT_WORDS.get(head.strip().lower(), "info")
+        findings.append(
+            CheckFinding(
+                name=name,
+                verdict=severity,
+                detail=rest.strip() if severity != "ok" else "",
+                scope=scope,
+            )
+        )
+    return findings
 
 
 @dataclass
@@ -101,6 +373,11 @@ class ObjectDetail:
     pairs: list[tuple[str, str]] = field(default_factory=list)
     found: bool = True
     message: str | None = None
+    # Grouped view of the verdict rows inside ``pairs`` (see
+    # ``sections_from_pairs``).  ``pairs`` stays the complete flat block the
+    # text renderer prints, so sections add severity without reordering or
+    # replacing the terminal output.
+    sections: list[DetailSection] = field(default_factory=list)
 
 
 @dataclass
@@ -264,5 +541,14 @@ class RtosAdapter(Protocol):
 
         Called by ``gdr reset`` and the ``new_objfile`` event hook when a
         reflash/reset changed the symbol set.  No-op by default.
+        """
+        return None
+
+    def diagnostics_report(self) -> list[CheckFinding] | None:
+        """System-wide consistency findings for the ``checks`` verb.
+
+        ``None`` means the adapter has no system-level checks; otherwise it
+        returns the same conclusions its system view renders, structured so a
+        plugin can badge them (``gdr.api`` maps this onto the verb).
         """
         return None

@@ -54,6 +54,61 @@ def test_gdr_api_command_prints_a_versioned_envelope(gdb):
     assert len(data["rows"]) >= 1
 
 
+def test_tasks_envelope_carries_the_column_contract(gdb):
+    """The envelope carries typed cells, aligned values and stable row ids.
+
+    The text rows stay what the terminal shows, so the typed view is asserted
+    to mirror them exactly rather than to replace them.
+    """
+    data = _envelope_line(gdb.run("gdr api tasks --json", timeout=20))["data"]
+
+    assert data["kind"] == "task"
+    columns = {column["key"]: column for column in data["columns"]}
+    assert list(columns) == data["headers"]
+    assert columns["Addr"]["kind"] == "addr"
+    assert columns["Prio"]["kind"] == "int"
+    assert columns["Prio"]["align"] == "right"
+
+    value_rows = data["value_rows"]
+    assert len(value_rows) == len(data["rows"])
+    assert all(len(row) == len(data["headers"]) for row in value_rows)
+    assert len(data["ids"]) == len(data["rows"])
+
+    address_index = data["headers"].index("Addr")
+    priority_index = data["headers"].index("Prio")
+    for text_row, value_row, row_id in zip(
+        data["rows"], value_rows, data["ids"], strict=True
+    ):
+        assert row_id == value_row[address_index]
+        assert text_row[address_index] == hex(row_id)
+        # The typed value is the number the text renders, not a re-parse of it.
+        assert str(value_row[priority_index]) == text_row[priority_index]
+
+
+def test_capabilities_and_checks_answer_on_a_live_target(gdb):
+    """The capability claim and the system verdicts are reachable verbs."""
+    capabilities = _envelope_line(gdb.run("gdr api capabilities --json", timeout=20))
+    checks = _envelope_line(gdb.run("gdr api checks --json", timeout=20))
+
+    task = capabilities["data"]["kinds"]["task"]
+    assert task["enumerable"] is True
+    assert task["columns"][0] == "Name"
+    assert "HighWater" in task["columns"]
+    assert isinstance(capabilities["data"]["extra"], dict)
+
+    assert checks["ok"] is True
+    findings = checks["data"]["findings"]
+    assert findings, "a live target must report at least one heap finding"
+    assert all(
+        finding["verdict"] in {"ok", "fail", "skipped", "info"} for finding in findings
+    )
+    expected = {
+        verdict: sum(1 for f in findings if f["verdict"] == verdict)
+        for verdict in {f["verdict"] for f in findings}
+    }
+    assert checks["data"]["counts"] == expected
+
+
 def test_gdr_api_detail_reports_the_fixture_thread(gdb):
     """A detail verb answers with the object's vertical pairs.
 

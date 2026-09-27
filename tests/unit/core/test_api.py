@@ -9,7 +9,13 @@ import pytest
 
 import gdr.adapter_api as adapter_api
 import gdr.api as api
-from gdr.adapter_api import HeapReport, ObjectDetail, ObjectTable, SystemSummary
+from gdr.adapter_api import (
+    CheckFinding,
+    HeapReport,
+    ObjectDetail,
+    ObjectTable,
+    SystemSummary,
+)
 from gdr.serialize import reassemble_chunks
 
 
@@ -29,6 +35,9 @@ class _ApiAdapter:
     )
     report: HeapReport | None = field(
         default_factory=lambda: HeapReport(pairs=[("Algorithm", "small")])
+    )
+    findings: list[CheckFinding] = field(
+        default_factory=lambda: [CheckFinding("TaskCount", "ok", scope="system")]
     )
     resets: int = 0
     boom: bool = False
@@ -69,6 +78,9 @@ class _ApiAdapter:
     def capabilities(self):
         return None
 
+    def diagnostics_report(self):
+        return self.findings
+
     def reset(self):
         self.resets += 1
 
@@ -93,6 +105,26 @@ def _error(envelope: dict[str, object]) -> dict[str, object]:
     error = envelope["error"]
     assert isinstance(error, dict)
     return error
+
+
+def _dict_list(value: object) -> list[dict[str, object]]:
+    """Narrow a serialized list of objects for typed assertions."""
+    assert isinstance(value, list)
+    result: list[dict[str, object]] = []
+    for item in value:
+        assert isinstance(item, dict)
+        result.append(item)
+    return result
+
+
+def _strings(value: object) -> list[str]:
+    """Narrow a serialized list of strings for typed assertions."""
+    assert isinstance(value, list)
+    result: list[str] = []
+    for item in value:
+        assert isinstance(item, str)
+        result.append(item)
+    return result
 
 
 def test_tasks_envelope_carries_session_identity(session):  # noqa: ARG001
@@ -165,6 +197,37 @@ def test_system_heap_capabilities_and_snapshot_compose(session):
     assert heap["table"] is None
     assert queue["enumerable"] is True
     assert "tasks" in data
+    checks = data["checks"]
+    assert isinstance(checks, dict)
+    assert checks["counts"] == {"ok": 1}
+    assert _dict_list(checks["findings"])[0]["name"] == "TaskCount"
+
+
+def test_checks_verb_reports_findings_and_counts(session):
+    """The checks verb is the structured form of the system verdicts."""
+    session.findings = [
+        CheckFinding("TaskCount", "ok", scope="system"),
+        CheckFinding("HeapCrossCheck", "fail", "blocks disagree", scope="system"),
+    ]
+
+    envelope = api.api_call("checks")
+
+    assert envelope["ok"] is True
+    data = _data(envelope)
+    assert data["counts"] == {"fail": 1, "ok": 1}
+    assert _dict_list(data["findings"])[1]["detail"] == "blocks disagree"
+
+
+def test_checks_verb_explains_an_adapter_without_system_checks(session):
+    """An adapter without system checks still answers, with a capability note."""
+    session.findings = None
+
+    envelope = api.api_call("checks")
+
+    assert envelope["ok"] is True
+    assert _data(envelope)["findings"] == []
+    notes = _strings(envelope["warnings"])
+    assert any("no system-level checks" in note for note in notes)
 
 
 def test_uninitialized_and_unknown_verb_are_structured(session):

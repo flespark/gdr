@@ -19,6 +19,7 @@ from collections.abc import Sequence
 
 from gdr.adapter_api import (
     Capabilities,
+    CheckFinding,
     HeapReport,
     ObjectDetail,
     ObjectTable,
@@ -79,14 +80,24 @@ def pack_envelope(
     return envelope
 
 
-def object_table_to_dict(table: ObjectTable) -> dict[str, object]:
-    """Serialize a list table; typed metadata only when the adapter set it."""
+def object_table_to_dict(
+    table: ObjectTable, *, kind: str | None = None
+) -> dict[str, object]:
+    """Serialize a list table; typed metadata only when the adapter set it.
+
+    ``ids`` are the rows' stable identities (the ``id_key`` column's machine
+    value) and ``kind`` names the object family they belong to, so a client
+    can keep a selection or expansion state across refreshes.  Both are
+    omitted when the adapter declares no identity column.
+    """
     result: dict[str, object] = {
         "headers": list(table.headers),
         "rows": [list(row) for row in table.rows],
         "messages": list(table.messages),
         "elastic": list(table.elastic),
     }
+    if kind is not None:
+        result["kind"] = kind
     if table.column_specs:
         result["columns"] = [
             {
@@ -100,16 +111,35 @@ def object_table_to_dict(table: ObjectTable) -> dict[str, object]:
         ]
     if table.value_rows is not None:
         result["value_rows"] = table.value_rows
+        if table.id_key in table.headers:
+            index = table.headers.index(table.id_key)
+            result["ids"] = [row[index] for row in table.value_rows]
     return result
 
 
 def object_detail_to_dict(detail: ObjectDetail) -> dict[str, object]:
-    """Serialize one vertical detail block."""
-    return {
+    """Serialize one vertical detail block.
+
+    ``pairs`` stays the complete flat view the text renderer prints;
+    ``sections`` adds the grouped verdict rows with per-row severity.
+    """
+    result: dict[str, object] = {
         "pairs": [[key, value] for key, value in detail.pairs],
         "found": detail.found,
         "message": detail.message,
     }
+    if detail.sections:
+        result["sections"] = [
+            {
+                "title": section.title,
+                "rows": [
+                    {"key": row.key, "value": row.value, "severity": row.severity}
+                    for row in section.rows
+                ],
+            }
+            for section in detail.sections
+        ]
+    return result
 
 
 def system_summary_pairs(summary: SystemSummary) -> list[tuple[str, str]]:
@@ -175,6 +205,25 @@ def capabilities_to_dict(capabilities: Capabilities) -> dict[str, object]:
             for kind, claim in sorted(capabilities.kinds.items())
         },
         "extra": capabilities.extra,
+    }
+
+
+def checks_to_dict(findings: Sequence[CheckFinding]) -> dict[str, object]:
+    """Serialize system check findings plus their per-severity counts."""
+    counts: dict[str, int] = {}
+    for finding in findings:
+        counts[finding.verdict] = counts.get(finding.verdict, 0) + 1
+    return {
+        "findings": [
+            {
+                "name": finding.name,
+                "verdict": finding.verdict,
+                "detail": finding.detail,
+                "scope": finding.scope,
+            }
+            for finding in findings
+        ],
+        "counts": dict(sorted(counts.items())),
     }
 
 

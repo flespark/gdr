@@ -41,6 +41,7 @@ from gdr.gdb_bridge import (
 )
 from gdr.serialize import (
     capabilities_to_dict,
+    checks_to_dict,
     chunk_payload,
     heap_report_to_dict,
     object_detail_to_dict,
@@ -86,7 +87,7 @@ def _tasks_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     if args:
         raise ApiError("bad_args", "tasks takes no arguments")
     table = collect_task_table(adapter)
-    return object_table_to_dict(table), list(table.messages)
+    return object_table_to_dict(table, kind="task"), list(table.messages)
 
 
 def _objects_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
@@ -95,15 +96,16 @@ def _objects_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     if not args:
         table = collect_object_overview(adapter)
         return object_table_to_dict(table), list(table.messages)
-    if args[0].strip().lower() == "task":
+    requested = args[0].strip().lower()
+    if requested == "task":
         return _tasks_verb(adapter, ())
-    table = collect_object_listing(adapter, args[0])
+    table = collect_object_listing(adapter, requested)
     if table is None:
         raise ApiError(
             "kind_not_enumerable",
             f"object kind {args[0]!r} is not reliably enumerable",
         )
-    return object_table_to_dict(table), list(table.messages)
+    return object_table_to_dict(table, kind=requested), list(table.messages)
 
 
 def _detail_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
@@ -144,6 +146,19 @@ def _capabilities_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult
     return capabilities_to_dict(claims), []
 
 
+def _checks_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
+    """The adapter's system-wide consistency conclusions, structured."""
+    if args:
+        raise ApiError("bad_args", "checks takes no arguments")
+    findings = adapter.diagnostics_report()
+    if findings is None:
+        return checks_to_dict([]), [
+            "this adapter reports no system-level checks; per-object "
+            "verdicts stay in the detail verbs"
+        ]
+    return checks_to_dict(findings), []
+
+
 def _snapshot_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     """Every panel-facing verb in one envelope, one round trip."""
     if args:
@@ -153,13 +168,15 @@ def _snapshot_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     system, _system_warnings = _system_verb(adapter, ())
     heap, heap_warnings = _heap_verb(adapter, ())
     capabilities, _capability_warnings = _capabilities_verb(adapter, ())
-    warnings = task_warnings + object_warnings + heap_warnings
+    checks, check_warnings = _checks_verb(adapter, ())
+    warnings = task_warnings + object_warnings + heap_warnings + check_warnings
     data = {
         "tasks": tasks,
         "objects": objects,
         "system": system,
         "heap": heap,
         "capabilities": capabilities,
+        "checks": checks,
     }
     return data, warnings
 
@@ -172,6 +189,7 @@ _VERBS: dict[str, _VerbHandler] = {
     "system": _system_verb,
     "heap": _heap_verb,
     "capabilities": _capabilities_verb,
+    "checks": _checks_verb,
     "snapshot": _snapshot_verb,
 }
 

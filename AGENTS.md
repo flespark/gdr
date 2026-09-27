@@ -30,6 +30,7 @@ gdr/                   RTOS-agnostic core
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            RT-Thread ABI field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
+  columns.py           RT-Thread column contracts for every table
   navigation.py        RT-Thread symbols, object navigation, and heap snapshot
   adapter.py           intermediate models, value converters, summaries and tables
   diagnostics.py       bounded raw-memory walks (IPC, heap) and consistency diagnostics
@@ -38,6 +39,7 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   help_docs.py         RT-Thread command/output help metadata
 freertos/              FreeRTOS adapter
   layout.py            config/DWARF probes, ABI struct paths, symbol & kind tables
+  columns.py           FreeRTOS column contracts for every table
   navigation.py        scheduler-list traversal, per-TCB state, six-channel object discovery
   timers.py / events.py / streams.py / heap.py
                        per-object-kind decode (timer daemon queue, event-group bits,

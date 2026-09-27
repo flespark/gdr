@@ -23,11 +23,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from freertos.columns import EVENT_GROUP_SPECS
 from freertos.layout import FreeRtosLayout
 from freertos.navigation import mapped_ranges, source_label, task_name_at
-from gdr.adapter_api import ObjectTable
+from gdr.adapter_api import (
+    ObjectTable,
+    address_cell,
+    number_cell,
+    raw_cell,
+    text_cell,
+)
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
-from gdr.formatting import format_address
 from gdr.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     read_int,
@@ -273,7 +279,7 @@ def bits_cell(bits: int | None) -> str:
     return "-" if bits is None else f"0x{bits:x}"
 
 
-_EVENT_GROUP_HEADERS = ["Name", "Bits", "Waiters", "Src", "Addr"]
+_EVENT_GROUP_HEADERS = [spec.key for spec in EVENT_GROUP_SPECS]
 
 
 def event_group_table(
@@ -290,17 +296,14 @@ def event_group_table(
         messages.append("no event groups in this build (configUSE_EVENT_GROUPS=0)")
     rows = [
         [
-            obj.name,
-            bits_cell(obj.bits),
-            str(len(obj.waiters)),
-            source_label(obj.source, obj.extra_sources),
-            format_address(obj.address),
+            text_cell(obj.name),
+            raw_cell(bits_cell(obj.bits), obj.bits),
+            number_cell(len(obj.waiters)),
+            text_cell(source_label(obj.source, obj.extra_sources)),
+            address_cell(obj.address),
         ]
         for obj in objects
     ]
-    return ObjectTable(
-        headers=_EVENT_GROUP_HEADERS,
-        rows=rows,
-        messages=messages,
-        elastic=("Name",),
+    return ObjectTable.from_specs(
+        EVENT_GROUP_SPECS, rows, messages=messages, id_key="Addr"
     )

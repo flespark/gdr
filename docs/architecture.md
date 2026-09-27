@@ -48,6 +48,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | Module | Responsibility |
 | -------- | --------------- |
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** Defines `RtConfig`, `detect_config()` (symbol-presence probing), and `build_layouts(config) -> KernelLayout`. Handles config-conditional fields (SMP, heap manager, IPC toggles) via factory branches, not version-branched files. |
+| `columns.py` | RT-Thread column contracts: each table's headers, `ColumnSpec` metadata, machine-value semantics and shrink priority. `adapter.py` builds the rows from these specs, and the same specs feed the capability claim, so a table and what it advertises cannot disagree. |
 | `navigation.py` | RT-Thread object navigation: registry/current-thread/tick entry symbols, type codes, timer traversal, and the halted system-heap snapshot. Returns raw `gdb.Value` objects using the layouts supplied by `layout.py`. |
 | `adapter.py` | RT-Thread intermediate object models, `gdb.Value` conversion, adapter-owned task/object tables, detail dispatch and system summaries. These models are presentation inputs, not ABI layout descriptions. |
 | `diagnostics.py` | Consumes adapter intermediate models for detail rendering and performs bounded raw mailbox/message-queue/mempool and system-heap walks and consistency diagnostics. |
@@ -59,6 +60,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | Module | Responsibility |
 | -------- | --------------- |
 | `layout.py` | FreeRTOS config/DWARF probes, logical struct paths, `FreeRtosLayout`, and the complete `FreeRtosTask`-related capability metadata. Config and layout stay together because the detected TCB fields directly determine the built paths. Version detection relies on `-g3` macro debug info and is subject to CU scope limitations (see known constraints below). |
+| `columns.py` | FreeRTOS column contracts: the same single-source rule as the other adapter, plus the build-flag-dependent specs (`task_specs`, `queue_specs`) that keep a column the build cannot populate out of the table entirely. |
 | `navigation.py` | Pure scheduler-list and current-task traversal functions plus the object discovery channels (`iter_registry_entries`, `iter_static_symbol_objects` with its session cache, `iter_active_timer_hosts`, `iter_mpu_pool_objects`, `iter_waiter_hosts`) and their aggregation (`DiscoveredObject`, `discover`, `discover_all`, `resolve_object`). Queue-family candidates are refined by the `Queue_t` discriminator (`classify_queue`: `ucQueueType` when `configUSE_TRACE_FACILITY` is on, else the `pcHead == NULL` mutex marker and `uxItemSize == 0` semaphore marker), deduplicated across the family so one address never lands in two tables; `discover_all` shares one waiter-channel scan per command call. The symbol channel names timer objects by their `pcTimerName` (read from the cast `Timer_t`) instead of the handle/buffer variable, so dormant timers stay reachable by the name the firmware gave them. List member access uses logical `end`/`next`/`owner`/`count` fields from `FreeRtosLayout`; walks are bounded and corruption-guarded. |
 | `timers.py` | Software-timer decode: active-list epoch, wrap-safe `ExpiresIn`, and the daemon command queue ring-read with the 12 `tmrCOMMAND_*` names. |
 | `events.py` | Event-group bits and per-waiter decode (control bits derived from tick width, ALL/ANY missing, mid-unblock marker). |
@@ -190,6 +192,35 @@ pretty-printers and convenience functions unchanged. `gdr reset` (and
 session caches and the layout-derived printer lookup, so re-initializing into
 another RTOS cannot fold objects through the previous adapter's layout;
 registration still refuses a second active adapter.
+
+### Typed presentation contract for machine clients
+
+The envelope carries more than rendered text, and one construction path keeps
+the two views honest:
+
+- **Cells.** A row is built from `Cell(text, value)` objects (`text_cell`,
+  `number_cell`, `address_cell`, `symbol_cell`, `waiters_cell`, `count_cell`,
+  `raw_cell`), and `ObjectTable.from_specs` / `from_cells` derives `rows` and
+  `value_rows` from the same cells. A column therefore cannot be typed into the
+  wrong position, and a text-only table still serializes exactly as it did
+  before typing existed.
+- **Columns.** Each adapter declares its columns once in `<rtos>/columns.py`
+  (`ColumnSpec` kinds: `text`, `int`, `hex`, `addr`, `percent`, `waiters`,
+  `symbol`, `enum`). Headers, alignment and the shrink *priority* come from
+  that declaration, and the capability claim is derived from it too.
+- **Capabilities.** `capabilities()` reports per kind whether it is enumerable,
+  whether a detail exists, its columns, and a `note` naming the configuration
+  that would enable a missing column or channel. This is the structured form of
+  the "enable this config macro" hints the text tables print as messages.
+- **Stable ids.** A table names its identity column (`id_key`, usually `Addr`);
+  the serializer emits those machine addresses as row `ids`, so a client keeps
+  a selection or expansion state across refreshes.
+- **Verdicts.** `diagnostics_report()` returns `CheckFinding` rows for the
+  `checks` verb. A detail block keeps `pairs` as the complete flat view the
+  text renderer prints and adds `sections` built by `sections_from_pairs`,
+  which classifies the two documented verdict forms (a verdict-prefixed value,
+  or a `*Check` key) into `ok`/`fail`/`skipped` severity. Grouping therefore
+  adds severity without reordering or replacing terminal output.
 
 ### Exception guard for kernel data collection
 

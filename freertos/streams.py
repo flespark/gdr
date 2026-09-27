@@ -27,10 +27,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from freertos.columns import STREAM_BUFFER_SPECS
 from freertos.layout import FreeRtosLayout
 from freertos.navigation import source_label, task_name_at
-from gdr.adapter_api import ObjectTable
-from gdr.formatting import format_address
+from gdr.adapter_api import (
+    ObjectTable,
+    address_cell,
+    raw_cell,
+    text_cell,
+)
 from gdr.gdb_bridge import get_arch_info, read_bytes, read_int, type_size
 from gdr.layout import read_field
 
@@ -336,22 +341,24 @@ def stream_buffer_table(
             next_msg = "N/A"
         rows.append(
             [
-                obj.name,
-                obj.kind,
-                "-" if obj.bytes_used is None else str(obj.bytes_used),
-                "-" if obj.space is None else str(obj.space),
-                "-" if obj.capacity is None else str(obj.capacity),
-                "-" if obj.trigger is None else str(obj.trigger),
-                next_msg,
-                obj.recv_waiter or "-",
-                obj.send_waiter or "-",
-                source_label(obj.source, obj.extra_sources),
-                format_address(obj.address),
+                text_cell(obj.name),
+                text_cell(obj.kind),
+                raw_cell(
+                    "-" if obj.bytes_used is None else str(obj.bytes_used),
+                    obj.bytes_used,
+                ),
+                raw_cell("-" if obj.space is None else str(obj.space), obj.space),
+                raw_cell(
+                    "-" if obj.capacity is None else str(obj.capacity), obj.capacity
+                ),
+                raw_cell("-" if obj.trigger is None else str(obj.trigger), obj.trigger),
+                raw_cell(next_msg, obj.next_message),
+                text_cell(obj.recv_waiter or "-"),
+                text_cell(obj.send_waiter or "-"),
+                text_cell(source_label(obj.source, obj.extra_sources)),
+                address_cell(obj.address),
             ]
         )
-    return ObjectTable(
-        headers=_STREAM_BUFFER_HEADERS,
-        rows=rows,
-        messages=messages,
-        elastic=("Name",),
+    return ObjectTable.from_specs(
+        STREAM_BUFFER_SPECS, rows, messages=messages, id_key="Addr"
     )

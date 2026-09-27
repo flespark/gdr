@@ -8,6 +8,14 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- Typed presentation contract for tooling: every list table declares its
+  columns (`ColumnSpec`), carries machine values beside the rendered text and
+  names its identity column, so a client can sort, right-align and key rows
+  without re-parsing `N/A`/`0x` strings. `gdr api capabilities` reports each
+  kind's columns and the configuration that would enable a missing one, and
+  `gdr api checks` reports the system verdicts as structured findings.
+- Detail blocks carry a `sections` view of their consistency verdicts with
+  per-row `ok`/`fail`/`skipped` severity; the flat text output is unchanged.
 - `gdr reset` and `gdr init --force` replace the active adapter without
   restarting GDB, so switching target or version no longer costs a session.
 - A versioned JSON API for tooling (the IDE plugin): `gdr api <verb>` prints

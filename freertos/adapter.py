@@ -10,6 +10,17 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos import heap as heap_module
+from freertos.columns import (
+    EVENT_GROUP_SPECS,
+    MUTEX_SPECS,
+    SEMAPHORE_SPECS,
+    STREAM_BUFFER_SPECS,
+    SUMMARY_SPECS,
+    TIMER_SPECS,
+    queue_specs,
+    task_column_flags,
+    task_specs,
+)
 from freertos.details import (
     checks_pairs,
     event_group_detail,
@@ -64,14 +75,26 @@ from freertos.timers import (
     timer_subsystem_ready,
 )
 from gdr.adapter_api import (
+    Capabilities,
+    Cell,
+    CheckFinding,
     HeapReport,
+    KindCapability,
     ObjectDetail,
     ObjectTable,
     RtosAdapter,
     SystemSummary,
+    address_cell,
+    check_findings,
+    count_cell,
+    number_cell,
+    raw_cell,
+    sections_from_pairs,
+    text_cell,
+    waiters_cell,
 )
 from gdr.derive import fill_watermark
-from gdr.formatting import format_address, format_optional_int
+from gdr.formatting import format_address
 from gdr.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     read_bytes,
@@ -499,6 +522,15 @@ def value_to_timer_object(
     return obj
 
 
+def _detail(pairs: list[tuple[str, str]], *, found: bool = True) -> ObjectDetail:
+    """Wrap a flat detail block, adding its grouped verdict rows.
+
+    ``pairs`` stays the complete flat view the text renderer prints, so the
+    section adds per-row severity without changing terminal output.
+    """
+    return ObjectDetail(pairs=pairs, found=found, sections=sections_from_pairs(pairs))
+
+
 class FreeRtosAdapter(RtosAdapter):
     """Expose FreeRTOS scheduler lists through the shared task contract."""
 
@@ -592,15 +624,10 @@ class FreeRtosAdapter(RtosAdapter):
                 "registry channel is disabled"
             )
         rows = [
-            [kind, str(count), sources]
+            [text_cell(kind), number_cell(count), text_cell(sources)]
             for kind, count, sources in self.object_summary_rows()
         ]
-        return ObjectTable(
-            headers=["Kind", "Count", "Sources"],
-            rows=rows,
-            messages=messages,
-            elastic=("Sources",),
-        )
+        return ObjectTable.from_specs(SUMMARY_SPECS, rows, messages=messages)
 
     def object_table(self, kind: str) -> ObjectTable | None:
         """Return the list table for one object kind, or ``None``.
@@ -669,47 +696,41 @@ class FreeRtosAdapter(RtosAdapter):
         like "not in a set" instead of "no sets in this build".
         """
         layout = self.layout
-        headers = [
-            "Name",
-            "Type",
-            "Items",
-            "Length",
-            "ItemSize",
-            "Free",
-            "SendWait",
-            "RecvWait",
-            "Locks",
-        ]
-        if layout.config.queue_sets:
-            headers.append("Set")
-        headers += ["Src", "Addr"]
-        rows = []
+        specs = queue_specs(layout.config.queue_sets)
+        rows: list[list[Cell]] = []
         for obj in objects:
             row = [
-                obj.name,
-                queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
-                format_optional_int(obj.count),
-                format_optional_int(obj.length),
-                format_optional_int(obj.item_size),
-                format_optional_int(obj.free),
-                waiter_summary(obj.send_waiters),
-                waiter_summary(obj.recv_waiters),
-                locks_cell(obj.rx_lock, obj.tx_lock),
+                text_cell(obj.name),
+                raw_cell(
+                    queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
+                    obj.type_code,
+                ),
+                number_cell(obj.count),
+                number_cell(obj.length),
+                number_cell(obj.item_size),
+                number_cell(obj.free),
+                waiters_cell(waiter_summary(obj.send_waiters), obj.send_waiters),
+                waiters_cell(waiter_summary(obj.recv_waiters), obj.recv_waiters),
+                text_cell(locks_cell(obj.rx_lock, obj.tx_lock)),
             ]
             if layout.config.queue_sets:
                 row.append(
-                    format_address(obj.set_container) if obj.set_container else "-"
+                    raw_cell(
+                        format_address(obj.set_container) if obj.set_container else "-",
+                        obj.set_container,
+                    )
                 )
             row += [
-                source_label(obj.source, obj.extra_sources),
-                format_address(obj.address),
+                text_cell(source_label(obj.source, obj.extra_sources)),
+                address_cell(obj.address),
             ]
             rows.append(row)
-        return ObjectTable(
-            headers=headers,
-            rows=rows,
+        return ObjectTable.from_specs(
+            specs,
+            rows,
             messages=self._table_messages(),
             elastic=("SendWait", "RecvWait", "Name"),
+            id_key="Addr",
         )
 
     def _semaphore_table(self, objects: list[FreeRtosQueueObject]) -> ObjectTable:
@@ -721,21 +742,25 @@ class FreeRtosAdapter(RtosAdapter):
         """
         rows = [
             [
-                obj.name,
-                queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
-                format_optional_int(obj.count),
-                format_optional_int(obj.length),
-                waiter_summary(obj.recv_waiters),
-                source_label(obj.source, obj.extra_sources),
-                format_address(obj.address),
+                text_cell(obj.name),
+                raw_cell(
+                    queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
+                    obj.type_code,
+                ),
+                number_cell(obj.count),
+                number_cell(obj.length),
+                waiters_cell(waiter_summary(obj.recv_waiters), obj.recv_waiters),
+                text_cell(source_label(obj.source, obj.extra_sources)),
+                address_cell(obj.address),
             ]
             for obj in objects
         ]
-        return ObjectTable(
-            headers=["Name", "Type", "Count", "Max", "Waiters", "Src", "Addr"],
-            rows=rows,
+        return ObjectTable.from_specs(
+            SEMAPHORE_SPECS,
+            rows,
             messages=self._table_messages(),
             elastic=("Waiters", "Name"),
+            id_key="Addr",
         )
 
     def _timer_table(self) -> ObjectTable:
@@ -748,28 +773,16 @@ class FreeRtosAdapter(RtosAdapter):
         would look like a real deadline.
         """
         layout = self.layout
-        headers = [
-            "Name",
-            "State",
-            "Mode",
-            "Period",
-            "Expiry",
-            "ExpiresIn",
-            "Callback",
-            "ID",
-            "Src",
-            "Addr",
-        ]
         if not layout.config.timers:
-            return ObjectTable(
-                headers=headers,
-                rows=[],
+            return ObjectTable.from_specs(
+                TIMER_SPECS,
+                [],
                 messages=["no software timers in this build (configUSE_TIMERS=0)"],
             )
         if not timer_subsystem_ready():
-            return ObjectTable(
-                headers=headers,
-                rows=[],
+            return ObjectTable.from_specs(
+                TIMER_SPECS,
+                [],
                 messages=[
                     "timer subsystem not initialised (pxCurrentTimerList == NULL)"
                 ],
@@ -800,18 +813,20 @@ class FreeRtosAdapter(RtosAdapter):
             in_overflow = timer_epoch(obj.container) == "overflow"
             rows.append(
                 [
-                    obj.name,
-                    state,
-                    mode_cell(obj.status),
-                    format_optional_int(obj.period),
-                    "N/A" if dormant else format_optional_int(obj.expiry),
-                    "N/A"
-                    if dormant
-                    else timer_expires_in(obj.expiry, tick, mask, in_overflow),
-                    callback_cell(obj.callback),
-                    id_cell(obj.id),
-                    source_label(obj.source, obj.extra_sources),
-                    format_address(obj.address),
+                    text_cell(obj.name),
+                    text_cell(state),
+                    text_cell(mode_cell(obj.status)),
+                    number_cell(obj.period),
+                    number_cell(None if dormant else obj.expiry),
+                    count_cell(
+                        "N/A"
+                        if dormant
+                        else timer_expires_in(obj.expiry, tick, mask, in_overflow)
+                    ),
+                    raw_cell(callback_cell(obj.callback), obj.callback),
+                    raw_cell(id_cell(obj.id), obj.id),
+                    text_cell(source_label(obj.source, obj.extra_sources)),
+                    address_cell(obj.address),
                 ]
             )
         messages = [f"Kernel tick: {tick if tick is not None else 'N/A'}"]
@@ -835,11 +850,12 @@ class FreeRtosAdapter(RtosAdapter):
             )
         if daemon_is_current(layout):
             messages.append(DAEMON_CURRENT_MESSAGE)
-        return ObjectTable(
-            headers=headers,
-            rows=rows,
+        return ObjectTable.from_specs(
+            TIMER_SPECS,
+            rows,
             messages=messages,
             elastic=("Callback", "Name"),
+            id_key="Addr",
         )
 
     def _mutex_table(self, objects: list[FreeRtosQueueObject]) -> ObjectTable:
@@ -850,31 +866,26 @@ class FreeRtosAdapter(RtosAdapter):
         """
         rows = [
             [
-                obj.name,
-                queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
-                held_cell(obj),
-                obj.holder or "-",
-                format_optional_int(obj.recursive_count),
-                waiter_summary(obj.recv_waiters),
-                source_label(obj.source, obj.extra_sources),
-                format_address(obj.address),
+                text_cell(obj.name),
+                raw_cell(
+                    queue_type_label(obj.kind, obj.type_code, obj.inferred_kind),
+                    obj.type_code,
+                ),
+                raw_cell(held_cell(obj), obj.count),
+                text_cell(obj.holder or "-"),
+                number_cell(obj.recursive_count),
+                waiters_cell(waiter_summary(obj.recv_waiters), obj.recv_waiters),
+                text_cell(source_label(obj.source, obj.extra_sources)),
+                address_cell(obj.address),
             ]
             for obj in objects
         ]
-        return ObjectTable(
-            headers=[
-                "Name",
-                "Type",
-                "Held",
-                "Owner",
-                "Recursive",
-                "Waiters",
-                "Src",
-                "Addr",
-            ],
-            rows=rows,
+        return ObjectTable.from_specs(
+            MUTEX_SPECS,
+            rows,
             messages=self._table_messages(),
             elastic=("Waiters", "Name"),
+            id_key="Addr",
         )
 
     def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
@@ -886,25 +897,25 @@ class FreeRtosAdapter(RtosAdapter):
             if value is None:
                 return ObjectDetail(found=False)
             task = value_to_task(value, *task_state(value, self.layout), self.layout)
-            return ObjectDetail(pairs=task_detail(task, self.layout, tcb_value=value))
+            return _detail(task_detail(task, self.layout, tcb_value=value))
         if kind == "timer":
             found, value = self._find_named_object(kind, name)
             if found is None or value is None:
                 return ObjectDetail(found=False)
             obj = value_to_timer_object(value, found, self.layout)
-            return ObjectDetail(pairs=timer_detail(obj, value, self.layout))
+            return _detail(timer_detail(obj, value, self.layout))
         if kind == "eventgroup":
             found, value = self._find_named_object(kind, name)
             if found is None or value is None:
                 return ObjectDetail(found=False)
             obj = value_to_event_group_object(value, found, self.layout)
-            return ObjectDetail(pairs=event_group_detail(obj, value, self.layout))
+            return _detail(event_group_detail(obj, value, self.layout))
         if kind == "streambuffer":
             found, value = self._find_named_object(kind, name)
             if found is None or value is None:
                 return ObjectDetail(found=False)
             obj = value_to_stream_buffer_object(value, found, self.layout)
-            return ObjectDetail(pairs=stream_buffer_detail(obj, value, self.layout))
+            return _detail(stream_buffer_detail(obj, value, self.layout))
         if kind not in _QUEUE_FAMILY_KINDS:
             return None
         found, value = self._find_named_object(kind, name)
@@ -931,7 +942,7 @@ class FreeRtosAdapter(RtosAdapter):
             pairs = semaphore_detail(obj, value, self.layout)
         else:
             pairs = mutex_detail(obj, value, self.layout)
-        return ObjectDetail(pairs=pairs)
+        return _detail(pairs)
 
     def _find_named_object(self, kind: str, name: str):
         """Return ``(DiscoveredObject, native value)`` for a kind's name.
@@ -954,71 +965,165 @@ class FreeRtosAdapter(RtosAdapter):
             yield value
 
     def task_table(self) -> ObjectTable:
-        fields = self.layout.structs["struct tskTaskControlBlock"].fields
-        show_base_priority = "base_priority" in fields
-        show_stack = "stack_end" in fields
-        show_runtime = "runtime_counter" in fields
-        show_smp = self.layout.config.smp
-        show_affinity = "core_affinity" in fields
-
-        headers = ["Name", "State", "Prio"]
-        if show_base_priority:
-            headers.append("BasePrio")
-        headers.append("SP")
-        if show_stack:
-            headers += ["Stack", "Used"]
-        if show_runtime:
-            headers.append("Runtime")
-        if show_smp:
-            headers.append("CPU")
-        if show_affinity:
-            headers.append("Affinity")
-        headers.append("Addr")
-
+        flags = task_column_flags(self.layout)
         tasks = list(iter_converted_tasks(self.layout))
         # Reason: HighWater is a capability column -- it appears only when at
         # least one task's stack was actually filled with the watermark byte;
-        # an all-unavailable column would be pure noise.
-        show_high_water = any(task.high_water_mark is not None for task in tasks)
-        if show_high_water:
-            # Reason: the row appends the HighWater cell right after the
-            # optional Stack/Used pair, i.e. after SP when stack bounds are
-            # unavailable (pxEndOfStack absent). The header has to be inserted
-            # at that exact position, otherwise every following column
-            # (Runtime/CPU/Affinity/Addr) renders under the wrong heading.
-            anchor = "Used" if "Used" in headers else "SP"
-            headers.insert(headers.index(anchor) + 1, "HighWater")
-
-        rows = []
+        # an all-unavailable column would be pure noise.  The spec order then
+        # places it after the optional Stack/Used pair on its own.
+        high_water = any(task.high_water_mark is not None for task in tasks)
+        specs = task_specs(
+            base_priority=flags["base_priority"],
+            stack=flags["stack"],
+            high_water=high_water,
+            runtime=flags["runtime"],
+            smp=flags["smp"],
+            affinity=flags["affinity"],
+        )
+        rows: list[list[Cell]] = []
         for task in tasks:
             row = [
-                task.name + (" *" if task.core is not None else ""),
-                task.state,
-                str(task.current_priority),
+                text_cell(task.name + (" *" if task.core is not None else "")),
+                text_cell(task.state),
+                number_cell(task.current_priority),
             ]
-            if show_base_priority:
-                row.append(str(task.base_priority))
-            row.append(format_address(task.top_of_stack))
-            if show_stack:
-                row += [
-                    format_optional_int(task.stack_size),
-                    format_optional_int(task.stack_used),
-                ]
-            if show_high_water:
-                row.append(
-                    str(task.high_water_mark)
-                    if task.high_water_mark is not None
-                    else "N/A"
-                )
-            if show_runtime:
-                row.append(format_optional_int(task.runtime_counter))
-            if show_smp:
-                row.append(format_optional_int(task.core))
-            if show_affinity:
-                row.append(format_optional_int(task.core_affinity))
-            row.append(format_address(task.address))
+            if flags["base_priority"]:
+                row.append(number_cell(task.base_priority))
+            row.append(address_cell(task.top_of_stack))
+            if flags["stack"]:
+                row += [number_cell(task.stack_size), number_cell(task.stack_used)]
+            if high_water:
+                row.append(number_cell(task.high_water_mark))
+            if flags["runtime"]:
+                row.append(number_cell(task.runtime_counter))
+            if flags["smp"]:
+                row.append(number_cell(task.core))
+            if flags["affinity"]:
+                row.append(number_cell(task.core_affinity))
+            row.append(address_cell(task.address))
             rows.append(row)
-        return ObjectTable(headers=headers, rows=rows, elastic=("Name",))
+        return ObjectTable.from_specs(specs, rows, elastic=("Name",), id_key="Addr")
+
+    def capabilities(self) -> Capabilities:
+        """Structured capability claims: kinds, gated columns and their reasons.
+
+        Each note names what would enable a missing column or channel, so a UI
+        can turn it into an actionable hint instead of an unexplained blank.
+        """
+        config = self.layout.config
+        flags = task_column_flags(self.layout)
+        task_columns = tuple(
+            spec.key
+            for spec in task_specs(
+                base_priority=flags["base_priority"],
+                stack=flags["stack"],
+                # Reason: the table adds HighWater whenever any task carries a
+                # watermark, which is independent of whether stack *bounds* are
+                # readable, so the claim must not be tied to pxEndOfStack.
+                high_water=True,
+                runtime=flags["runtime"],
+                smp=flags["smp"],
+                affinity=flags["affinity"],
+            )
+        )
+        queue_columns = tuple(spec.key for spec in queue_specs(config.queue_sets))
+        kinds = {
+            "task": KindCapability(
+                enumerable=True,
+                detail=True,
+                columns=task_columns,
+                note=self._task_note(flags),
+            ),
+            "queue": KindCapability(
+                enumerable=True,
+                detail=True,
+                columns=queue_columns,
+                note=self._queue_note(),
+            ),
+            "semaphore": KindCapability(
+                True, True, tuple(spec.key for spec in SEMAPHORE_SPECS), None
+            ),
+            "mutex": KindCapability(
+                True, True, tuple(spec.key for spec in MUTEX_SPECS), None
+            ),
+            "timer": KindCapability(
+                config.timers,
+                True,
+                tuple(spec.key for spec in TIMER_SPECS),
+                None
+                if config.timers
+                else "no software timers in this build (configUSE_TIMERS=0)",
+            ),
+            "eventgroup": KindCapability(
+                config.event_groups,
+                True,
+                tuple(spec.key for spec in EVENT_GROUP_SPECS),
+                None
+                if config.event_groups
+                else "no event groups in this build (configUSE_EVENT_GROUPS=0)",
+            ),
+            "streambuffer": KindCapability(
+                config.stream_buffers,
+                True,
+                tuple(spec.key for spec in STREAM_BUFFER_SPECS),
+                "stream buffers keep single task-handle waiters, not wait lists, "
+                "and a dynamic buffer with no global handle is not enumerable",
+            ),
+        }
+        return Capabilities(
+            kinds=kinds,
+            extra={
+                "smp": config.smp,
+                "cores": config.number_of_cores,
+                "tick_bits": config.tick_bits,
+                "queue_registry": bool(config.queue_registry),
+                "trace_facility": bool(config.trace_facility),
+                "heap_kind": config.heap_kind,
+            },
+        )
+
+    def _task_note(self, flags: dict[str, bool]) -> str | None:
+        """Why an optional task column is missing, if any is."""
+        gaps: list[str] = []
+        if not flags["smp"]:
+            gaps.append("CPU needs configNUMBER_OF_CORES > 1")
+        if not flags["runtime"]:
+            gaps.append("Runtime needs configGENERATE_RUN_TIME_STATS")
+        if not flags["stack"]:
+            gaps.append("Stack/Used need pxEndOfStack")
+        if not flags["base_priority"]:
+            gaps.append("BasePrio needs the kernel's uxBasePriority field")
+        if not gaps:
+            return (
+                "HighWater stays N/A unless the port prefilled the stack with "
+                "the watermark byte"
+            )
+        return "; ".join(gaps)
+
+    def _queue_note(self) -> str | None:
+        """Why the queue table is narrowed or inferred, if it is."""
+        config = self.layout.config
+        notes: list[str] = []
+        if not config.queue_sets:
+            notes.append("Set needs configUSE_QUEUE_SETS")
+        if not config.trace_facility:
+            notes.append(
+                "Type is inferred from pcHead without configUSE_TRACE_FACILITY"
+            )
+        if not config.queue_registry:
+            notes.append("the queue registry is disabled (configQUEUE_REGISTRY_SIZE=0)")
+        return "; ".join(notes) if notes else None
+
+    def diagnostics_report(self) -> list[CheckFinding]:
+        """The system checks ``frt system`` renders, structured for a client."""
+        try:
+            results = system_checks(self.layout)
+        except TARGET_ACCESS_ERRORS as exc:
+            # Reason: the checks are best-effort exactly like the system
+            # summary they mirror, so an unreadable target degrades to one
+            # skipped finding instead of failing the whole verb.
+            return [CheckFinding("SystemChecks", "skipped", str(exc), "system")]
+        return check_findings(results, scope="system")
 
     def heap_report(self) -> HeapReport:
         """One collected heap snapshot formatted for ``frt heap``.
