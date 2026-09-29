@@ -13,6 +13,9 @@ All notable changes to GDR are documented in this file.
   confidence of `exact`, `range` or `undetected`; `gdr init <rtos> auto` uses it
   only when a single exact answer exists. `$gdr_json` now exists from
   `source gdr.py`, so a client can ask before initializing.
+- A VSCode extension under `vscode/` consumes the JSON API: it loads GDR into
+  the session's own GDB, probes the target, initializes the adapter the user
+  confirms, and states precisely why a session cannot host GDR.
 - Typed presentation contract for tooling: every list table declares its
   columns (`ColumnSpec`), carries machine values beside the rendered text and
   names its identity column, so a client can sort, right-align and key rows

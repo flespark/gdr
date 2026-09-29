@@ -222,6 +222,30 @@ the two views honest:
   or a `*Check` key) into `ok`/`fail`/`skipped` severity. Grouping therefore
   adds severity without reordering or replacing terminal output.
 
+### The extension is a client of the envelope, not a layer
+
+The VSCode extension lives in `vscode/` and consumes the machine-readable
+surface described above. The dependency runs one way: the extension reads the
+envelope through `$gdr_json`, and nothing in `gdr/`, `rtthread/` or `freertos/`
+knows it exists. Three consequences are worth recording:
+
+- `vscode/` is never imported by the runtime, and the runtime must not grow a
+  plugin-specific branch: anything a view needs has to be a verb or an
+  adapter-owned metadata field first (that is what the cells,
+  capabilities and checks contracts are for).
+- The bundled runtime under `vscode/resources/gdr` is *generated* by
+  `vscode/scripts/vendor-gdr.sh` and is ignored by git and by the Python tooling,
+  so the repository never carries two runtime copies in version control and no
+  tool analyses the copy.
+- `src/runtime.ts` compares the bundle's envelope schema with the schema the
+  client was built for and refuses to run on a mismatch. That is the one failure
+  which would otherwise corrupt data instead of failing loudly.
+
+The extension's own closed loop follows the same rule as the Python lanes: it
+boots a real QEMU profile, loads a real fixture ELF, and drives GDR through the
+same expressions the extension issues, so a contract change on either side fails
+in a test rather than in a user's session.
+
 ### Exception guard for kernel data collection
 
 RTOS debugging routinely touches target memory through GDB, and any read can

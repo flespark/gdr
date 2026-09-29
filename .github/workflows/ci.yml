@@ -16,6 +16,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+
+  extension:
+    name: Extension (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    # Mirrors the CNB `extension` lane: regenerate the bundled runtime, verify
+    # the envelope-schema handshake, then type check and test with Node's native
+    # TypeScript stripping (the sources are not compiled for the tests).
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["24"]
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      # Actions are pinned to commit SHAs (see .github/dependabot.yml).
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+      - name: Install extension dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Vendor the runtime and verify the schema handshake
+        run: |
+          set -euo pipefail
+          npm run vendor
+          python3 ../ci/check-vendored-schema.py .
+          git check-ignore -q resources/gdr/VERSION
+      - name: Type check
+        run: npm run check-types
+      - name: Test
+        run: npm test
   validate:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
@@ -24,11 +60,14 @@ jobs:
       matrix:
         python: ["3.10", "3.14"]
     steps:
-      - uses: actions/checkout@v6.0.1
-      - uses: astral-sh/setup-uv@v10.0.0
+      # Actions are pinned to commit SHAs (see .github/dependabot.yml).
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: ${{ matrix.python }}
       - name: Install development dependencies

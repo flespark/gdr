@@ -50,6 +50,15 @@ freertos/              FreeRTOS adapter
   version.py           FreeRTOS version policy and target symbols
   commands.py          FreeRTOS command routing and completion
   help_docs.py         FreeRTOS command/output help metadata
+vscode/                VSCode extension: a client of GDR's JSON envelope
+  src/transport.ts     evaluate transport: $gdr_json, chunk reassembly, envelope
+  src/probe.ts         probe payload -> init decision (never guesses a version)
+  src/inject.ts        per-debug-adapter loader injection plan
+  src/session.ts       first-stop lifecycle: Python check, load, probe, init
+  src/runtime.ts       bundled runtime path + envelope-schema check
+  src/extension.ts     activation, launch-config provider, debug-tracker wiring
+  scripts/vendor-gdr.sh  generate resources/gdr from this repository's runtime
+  test/                node --test units and a real QEMU/GDB session check
 ```
 
 Key design principles (see `docs/architecture.md`):
@@ -89,6 +98,9 @@ All commands run via `uv run` (auto-activates the `.venv`):
 | `uv run ruff format --check .` | Verify formatting without writing |
 | `uv run pytest tests/unit --cov` | Run unit tests and enforce core coverage |
 | `uv run pytest tests/integration -v` | Run QEMU tests when fixtures exist |
+| `cd vscode && npm run vendor` | Refresh the extension's bundled GDR runtime |
+| `cd vscode && npm run check-types` | Type-check the extension |
+| `cd vscode && npm test` | Extension units + real-session check (skips without fixtures) |
 
 There is **no separate `black` tool**; `ruff format` is the drop-in
 replacement and the only formatter used.
@@ -257,6 +269,7 @@ that owns the fact:
 | `docs/architecture.md` | design readers | layering, key decisions, invariants, known constraints | trial-and-error history, fixture build details, per-lane evidence | module-table cells ≤1-3 sentences |
 | `CHANGELOG.md` | users | user-visible behaviour changes | fixture/CI/lane/variant internals, implementation narrative | one line per change, ≤4 lines each |
 | `ci/<rtos>/README.md` | lane maintainers | measured build facts, toolchains, cache, linker traps, unreachable variants | adapter design | none |
+| `vscode/README.md` | extension users and lane maintainers | build/test/vendor commands, supported adapters, known limits | GDR internals, envelope design (link to architecture.md) | short sections, no per-file prose |
 
 Rule of thumb: if a fact already exists in another file, add a link, never a
 rewrite.  Process history ("this used to…", "formerly unit-tested…")

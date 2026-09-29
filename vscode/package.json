@@ -1,0 +1,77 @@
+{
+  "name": "gdr-rtos-views",
+  "displayName": "GDR RTOS Views",
+  "description": "RTOS kernel state views for embedded debugging, driven by the GDR GDB helper",
+  "publisher": "flespark",
+  "version": "0.0.1",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "keywords": [
+    "gdb",
+    "rtos",
+    "rt-thread",
+    "freertos",
+    "embedded",
+    "debug"
+  ],
+  "extensionDependencies": [
+    "mcu-debug.debug-tracker-vscode"
+  ],
+  "activationEvents": [
+    "onDebugResolve:cortex-debug",
+    "onDebugResolve:mcu-debug",
+    "onDebugResolve:cppdbg",
+    "onDebugResolve:gdbtarget",
+    "onDebugResolve:probe-rs-debug",
+    "onDebugResolve:cspy"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "GDR RTOS Views",
+      "properties": {
+        "gdr.runtimePath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Directory holding `gdr.py` and the `gdr`/`rtthread`/`freertos` packages. Empty uses the copy bundled in this extension; set this to run the plugin against a development checkout."
+        },
+        "gdr.rtos": {
+          "type": "string",
+          "enum": [
+            "",
+            "rtthread",
+            "freertos"
+          ],
+          "default": "",
+          "description": "Adapter to initialize. Leave empty to use the probe result, or when the workspace has a single RTOS with an unambiguous version."
+        },
+        "gdr.version": {
+          "type": "string",
+          "default": "",
+          "description": "Exact RTOS version to initialize. Required together with gdr.rtos when the probe cannot read one."
+        },
+        "gdr.autoInit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Initialize the adapter automatically at the first stop when the probe is unambiguous, instead of asking."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vendor": "bash scripts/vendor-gdr.sh",
+    "check-types": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/*.test.ts test/integration/*.test.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.0"
+  }
+}

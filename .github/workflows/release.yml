@@ -13,9 +13,12 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.1
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           fetch-depth: 0
+          # Reason: this job publishes through `gh release create` with
+          # GH_TOKEN, so the checkout token is not needed in .git/config.
+          persist-credentials: false
       - name: Verify the calendar release tag
         env:
           TAG: ${{ github.ref_name }}

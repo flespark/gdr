@@ -49,5 +49,11 @@ tests/fixtures/**/rtthread.bin
 tmp/
 ref/
 
-# DtoD workflow (pi extension): run artifacts and local type-only dev deps
+# Local agent workspace: scratch files and runs (never committed)
 .pi/
+
+# Extension (vscode/): Node output and the generated GDR runtime copy
+node_modules/
+vscode/dist/
+vscode/resources/gdr/
+*.vsix

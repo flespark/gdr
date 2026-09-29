@@ -1,11 +1,26 @@
 version: 2
 updates:
+  # Reason: every workflow action is pinned to a commit SHA (an immutable
+  # reference), so Dependabot is what keeps those pins current instead of a
+  # floating tag that can change under us.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    # Reason: hold back a fresh release for a few days so a compromised or
+    # immediately yanked version does not walk straight into CI.
+    cooldown:
+      default-days: 30
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
 
+  # Kept from the previous configuration: the Python side of the repository.
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
