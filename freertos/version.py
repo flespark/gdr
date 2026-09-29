@@ -38,6 +38,15 @@ _VERSION_TRIPLET = (
     "tskKERNEL_VERSION_BUILD",
 )
 
+# Every source ``detect_target_version`` consults, in priority order.  The probe
+# reports them as the evidence when no version could be read, so the list stays
+# here rather than being re-spelled by a consumer.
+VERSION_SOURCES: tuple[str, ...] = (
+    *_VERSION_TRIPLET,
+    "tskKERNEL_VERSION_NUMBER",
+    "gdr_freertos_version_num",
+)
+
 
 def _range_text() -> str:
     return ", ".join(

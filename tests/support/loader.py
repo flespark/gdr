@@ -30,7 +30,7 @@ _RAW_BIN_BOOT_TARGETS = frozenset(
 
 
 def _env_str(env: Mapping[str, str], name: str, default: str) -> str:
-    # Reason: callers (and .pi/dtod/env.sh) export blank overrides to mean
+    # Reason: callers (and local env scripts) export blank overrides to mean
     # "use the profile default"; a raw ``env.get`` would return that "" and
     # ``shutil.which("")`` then fails the tool check with an empty name.
     return env.get(name) or default

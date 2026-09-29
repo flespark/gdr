@@ -8,6 +8,11 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- `gdr probe [--json]` reports which adapter a target matches with the evidence
+  behind the claim (matched symbols, version source, layout fingerprint) and a
+  confidence of `exact`, `range` or `undetected`; `gdr init <rtos> auto` uses it
+  only when a single exact answer exists. `$gdr_json` now exists from
+  `source gdr.py`, so a client can ask before initializing.
 - Typed presentation contract for tooling: every list table declares its
   columns (`ColumnSpec`), carries machine values beside the rendered text and
   names its identity column, so a client can sort, right-align and key rows

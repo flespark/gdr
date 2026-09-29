@@ -31,6 +31,7 @@ from gdr.constants import (
     GDR_API_SCHEMA_VERSION,
 )
 from gdr.formatting import format_optional_int
+from gdr.probe import ProbeCandidate, resolve_candidate
 
 # Transport thresholds live in gdr.constants; this module only consumes them.
 
@@ -205,6 +206,33 @@ def capabilities_to_dict(capabilities: Capabilities) -> dict[str, object]:
             for kind, claim in sorted(capabilities.kinds.items())
         },
         "extra": capabilities.extra,
+    }
+
+
+def probe_to_dict(candidates: Sequence[ProbeCandidate]) -> dict[str, object]:
+    """Serialize probe candidates plus the one safe to initialize from.
+
+    ``resolved`` is the single ``exact`` candidate, and ``None`` whenever the
+    evidence is ambiguous, missing or only a range: a client must treat that as
+    "ask the user", never as "take the first row".
+    """
+    resolved = resolve_candidate(candidates)
+    return {
+        "candidates": [
+            {
+                "rtos": candidate.rtos,
+                "version": candidate.version,
+                "confidence": candidate.confidence,
+                "evidence": list(candidate.evidence),
+                "detail": candidate.detail,
+            }
+            for candidate in candidates
+        ],
+        "resolved": (
+            {"rtos": resolved.rtos, "version": resolved.version}
+            if resolved is not None
+            else None
+        ),
     }
 
 

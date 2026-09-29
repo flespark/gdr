@@ -16,6 +16,7 @@ from gdr.adapter_api import (
     ObjectTable,
     SystemSummary,
 )
+from gdr.probe import ProbeCandidate
 from gdr.serialize import reassemble_chunks
 
 
@@ -230,24 +231,65 @@ def test_checks_verb_explains_an_adapter_without_system_checks(session):
     assert any("no system-level checks" in note for note in notes)
 
 
-def test_uninitialized_and_unknown_verb_are_structured(session):
+def test_uninitialized_and_unknown_verb_are_structured(session):  # noqa: ARG001
     """A plugin gets a code, never a GDB traceback.
 
     An unknown verb is diagnosed only when a session exists: before init the
     single actionable message is "initialize first", and checking the
     vocabulary would only add noise.
     """
-    unknown = api.api_call("probe")
+    unknown = api.api_call("bogus")
 
     assert _error(unknown)["code"] == "unknown_verb"
     message = _error(unknown)["message"]
     assert isinstance(message, str)
     assert "tasks" in message
 
-    del session
     adapter_api.reset()
 
     assert _error(api.api_call("tasks"))["code"] == "not_initialized"
+
+
+def test_probe_is_the_one_verb_that_answers_before_init(monkeypatch):
+    """A client's first question is which adapter to initialize.
+
+    ``probe`` therefore answers with no active session, and keeps the
+    ``not_initialized`` precedence for every other verb.
+    """
+    adapter_api.reset()
+    monkeypatch.setattr(
+        api,
+        "collect_candidates",
+        lambda: [
+            ProbeCandidate(
+                rtos="rtthread",
+                confidence="exact",
+                version="4.0.5",
+                evidence=("symbol: rt_thread_self",),
+            )
+        ],
+    )
+
+    envelope = api.api_call("probe")
+
+    assert envelope["ok"] is True
+    data = _data(envelope)
+    assert data["resolved"] == {"rtos": "rtthread", "version": "4.0.5"}
+    assert _dict_list(data["candidates"])[0]["confidence"] == "exact"
+
+
+def test_probe_reports_an_empty_target_as_a_capability_note(monkeypatch):
+    """Nothing detected is still an answer, with the reason spelled out."""
+    adapter_api.reset()
+    monkeypatch.setattr(api, "collect_candidates", list)
+
+    envelope = api.api_call("probe")
+
+    assert envelope["ok"] is True
+    assert _data(envelope)["candidates"] == []
+    assert _data(envelope)["resolved"] is None
+    notes = _strings(envelope["warnings"])
+    assert any("no supported RTOS" in note for note in notes)
 
 
 def test_adapter_exception_becomes_an_internal_error(session, monkeypatch):

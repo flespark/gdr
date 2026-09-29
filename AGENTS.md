@@ -247,7 +247,7 @@ toolchains. Start a Podman machine before running it.
 
 Each repository document serves one audience; a fact belongs in exactly one
 place and is linked from the others, never rephrased into each.  When you
-change behaviour (or the DtoD clerk writes up a phase), update the *one* file
+change behaviour (or the change gets written up), update the *one* file
 that owns the fact:
 
 | File | Audience | Owns | Must **not** carry | Granularity |
@@ -260,7 +260,7 @@ that owns the fact:
 
 Rule of thumb: if a fact already exists in another file, add a link, never a
 rewrite.  Process history ("this used to…", "formerly unit-tested…")
-belongs in commit messages and DtoD run artifacts, not in repository docs.
+belongs in commit messages and run artifacts, not in repository docs.
 
 ## Conventions
 

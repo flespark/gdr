@@ -33,7 +33,12 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import gdb_command_guard, info, warn  # noqa: E402
+from gdr.gdb_bridge import (  # noqa: E402
+    gdb_command_guard,
+    info,
+    print_table,
+    warn,
+)
 from gdr.help import (  # noqa: E402
     CommandHelp,
     HelpField,
@@ -57,7 +62,9 @@ def _root_help_tree() -> HelpTree:
             fields=(
                 HelpField("rtos", "rtthread/rtt or freertos/frt."),
                 HelpField(
-                    "version", "Exact supported kernel version declared by the user."
+                    "version",
+                    "Exact supported kernel version, or `auto` to use `gdr probe`'s \
+unambiguous result.",
                 ),
             ),
             tips=(
@@ -71,6 +78,21 @@ def _root_help_tree() -> HelpTree:
                 "The target ELF needs debug symbols; GDR never calls inferior functions.",
             ),
             action="init",
+            category="Available command",
+        ),
+        CommandHelp(
+            "probe",
+            "Report which RTOS adapter this target matches",
+            "Runs every adapter's presence probe and prints its evidence; the adapter is never selected for you.",
+            usage=("gdr probe",),
+            tips=(
+                "`gdr init <rtos> auto` uses this evidence when exactly one version is unambiguous.",
+                "A candidate without an exact version needs a manual choice; build with -g3 to export the version constants.",
+            ),
+            configuration=(
+                "Probing reads target symbols and DWARF only; it registers nothing and drives nothing.",
+            ),
+            action="probe",
             category="Available command",
         ),
         HelpTopic(
@@ -161,7 +183,7 @@ def _complete(text: str, word: str | None) -> list[str]:
         return prefix_candidates(
             word, [topic.name for topic in _root_help_tree().topics]
         )
-    return prefix_candidates(word, ["init", "reset", "api", "help"])
+    return prefix_candidates(word, ["init", "probe", "reset", "api", "help"])
 
 
 _GdbCommandBase = gdb.Command if gdb is not None else object
@@ -209,6 +231,9 @@ def _invoke_command(argument: str) -> None:
     if argv[0] == "api":
         _api_command(argv[1:])
         return
+    if argv[0] == "probe":
+        _probe_command(argv[1:])
+        return
     if argv[0] == "reset":
         _reset_command()
         return
@@ -235,6 +260,29 @@ def _init_command(rest: list[str]) -> None:
         warn("usage: gdr init <rtos> <version> [--force]")
         return
     rtos, version = positional[0].lower(), positional[1]
+    if version == "auto":
+        resolved = _resolve_auto(rtos)
+        if resolved is None:
+            message = (
+                "cannot resolve `auto`: run `gdr probe` for the evidence and "
+                "pass the version explicitly"
+            )
+            if json_mode:
+                _write_json(
+                    {
+                        "schema_version": GDR_API_SCHEMA_VERSION,
+                        "ok": False,
+                        "rtos": rtos,
+                        "version": None,
+                        "error": message,
+                    }
+                )
+            else:
+                warn(message)
+            return
+        version = resolved
+        if not json_mode:
+            info(f"resolved {rtos} version {version} from the probe")
     if is_initialized() and not force:
         message = "an RTOS adapter is already initialized; add --force to replace it"
         if json_mode:
@@ -329,6 +377,101 @@ def _api_command(argv: list[str]) -> None:
         print(document)
         return
     gdb.write(document + "\n")
+
+
+def _probe_command(argv: list[str]) -> None:
+    """``gdr probe [--json]``: report which adapter this target matches.
+
+    Reporting only -- the adapter is never selected here (see the architecture
+    decision on auto-detection).  ``--json`` is the machine channel a client
+    reads; the default is the same evidence as a human table.
+    """
+    from gdr.api import api_call
+
+    unknown = [token for token in argv if token != "--json"]
+    if unknown:
+        warn("usage: gdr probe [--json]")
+        return
+    envelope = api_call("probe")
+    if "--json" in argv:
+        _write_json(envelope)
+        return
+
+    data = envelope.get("data")
+    candidates = data.get("candidates", []) if isinstance(data, dict) else []
+    warnings = envelope.get("warnings")
+    if isinstance(warnings, list):
+        for note in warnings:
+            info(str(note))
+    if not candidates:
+        return
+    rows = [
+        [
+            str(candidate.get("rtos", "")),
+            str(candidate.get("version") or "N/A"),
+            str(candidate.get("confidence", "")),
+            "; ".join(str(item) for item in candidate.get("evidence", [])),
+        ]
+        for candidate in candidates
+        if isinstance(candidate, dict)
+    ]
+    print_table(
+        rows, ["RTOS", "Version", "Confidence", "Evidence"], elastic=("Evidence",)
+    )
+    resolved = data.get("resolved") if isinstance(data, dict) else None
+    if isinstance(resolved, dict):
+        info(
+            f"resolved: {resolved.get('rtos')} {resolved.get('version')} -- "
+            f"`gdr init {resolved.get('rtos')} {resolved.get('version')}`"
+        )
+    else:
+        warn("no unambiguous version; choose the RTOS and version manually")
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate.get("detail"):
+            info(f"{candidate.get('rtos')}: {candidate['detail']}")
+
+
+def _resolve_auto(rtos: str) -> str | None:
+    """The probed version for ``gdr init <rtos> auto``, or ``None``.
+
+    Only an unambiguous exact candidate resolves.  A range, an undetected
+    version or two matching adapters must reach the user as a question, with
+    the probe report carrying the evidence for their answer.
+    """
+    from gdr.probe import collect_candidates
+
+    aliases = {"rt-thread": "rtthread", "rtt": "rtthread", "frt": "freertos"}
+    wanted = aliases.get(rtos, rtos)
+    matches = [
+        candidate for candidate in collect_candidates() if candidate.rtos == wanted
+    ]
+    if len(matches) == 1 and matches[0].confidence == "exact" and matches[0].version:
+        return matches[0].version
+    return None
+
+
+def _register_probes() -> None:
+    """Register every adapter probe so ``gdr probe`` works before ``init``."""
+    from freertos.probe import probe as freertos_probe
+    from gdr.probe import register_probe
+    from rtthread.probe import probe as rtthread_probe
+
+    register_probe(rtthread_probe)
+    register_probe(freertos_probe)
+
+
+def _register_transport_functions() -> None:
+    """Register the data-channel functions before any adapter exists.
+
+    ``$gdr_json`` is how a client reads the probe that decides which adapter to
+    initialize, so it must exist from ``source gdr.py`` -- registering it in the
+    adapter setup would leave a client unable to ask its first question.  The
+    human convenience functions (which return target values and need an active
+    adapter) stay in the setup path.
+    """
+    from gdr.functions import register_api_functions
+
+    register_api_functions()
 
 
 def _reset_command() -> None:
@@ -512,6 +655,8 @@ def initialize() -> None:
         raise SystemExit(1)
 
     GdrCommand()
+    _register_probes()
+    _register_transport_functions()
     _register_session_events()
     args = _parse_args()
     rtos = args.get("rtos", "")

@@ -298,6 +298,113 @@ def test_init_force_resets_before_replacing(monkeypatch):
     assert calls == ["reset", "setup"]
 
 
+def test_probe_command_renders_the_evidence_table(monkeypatch):
+    """The human view lists each candidate's evidence and what resolved."""
+    entrypoint = _load_entrypoint()
+    tables: list[tuple[list[list[str]], list[str]]] = []
+    notes: list[str] = []
+    monkeypatch.setattr(entrypoint, "info", notes.append)
+    monkeypatch.setattr(entrypoint, "warn", notes.append)
+    monkeypatch.setattr(
+        entrypoint,
+        "print_table",
+        lambda rows, headers, **_kwargs: tables.append((rows, headers)),
+    )
+    monkeypatch.setattr(
+        "gdr.api.api_call",
+        lambda _verb, *_args: {
+            "ok": True,
+            "data": {
+                "candidates": [
+                    {
+                        "rtos": "rtthread",
+                        "version": "4.0.5",
+                        "confidence": "exact",
+                        "evidence": ["symbol: rt_thread_self"],
+                        "detail": "",
+                    }
+                ],
+                "resolved": {"rtos": "rtthread", "version": "4.0.5"},
+            },
+        },
+    )
+
+    entrypoint._probe_command([])
+
+    assert tables == [
+        (
+            [["rtthread", "4.0.5", "exact", "symbol: rt_thread_self"]],
+            ["RTOS", "Version", "Confidence", "Evidence"],
+        )
+    ]
+    assert any("resolved: rtthread 4.0.5" in note for note in notes)
+
+
+def test_probe_command_json_is_the_api_envelope(monkeypatch):
+    """``--json`` is the same payload a client gets from the verb."""
+    entrypoint = _load_entrypoint()
+    written: list[dict] = []
+    envelope = {"schema_version": 1, "ok": True, "data": {"candidates": []}}
+    monkeypatch.setattr(entrypoint, "_write_json", written.append)
+    monkeypatch.setattr(entrypoint, "info", lambda _message: None)
+    monkeypatch.setattr("gdr.api.api_call", lambda _verb, *_args: envelope)
+
+    entrypoint._probe_command(["--json"])
+
+    assert written == [envelope]
+
+    warnings: list[str] = []
+    monkeypatch.setattr(entrypoint, "warn", warnings.append)
+    entrypoint._probe_command(["surprise"])
+    assert warnings == ["usage: gdr probe [--json]"]
+
+
+def test_resolve_auto_accepts_only_one_exact_candidate(monkeypatch):
+    """``auto`` is not a guess: a range or an ambiguity must reach the user."""
+    from gdr.probe import ProbeCandidate
+
+    entrypoint = _load_entrypoint()
+    cases = {
+        "exact": [ProbeCandidate("rtthread", "exact", version="4.0.5")],
+        "range": [ProbeCandidate("rtthread", "range")],
+        "undetected": [ProbeCandidate("rtthread", "undetected")],
+        "ambiguous": [
+            ProbeCandidate("rtthread", "exact", version="4.0.5"),
+            ProbeCandidate("rtthread", "exact", version="4.1.1"),
+        ],
+        "other-adapter": [ProbeCandidate("freertos", "exact", version="10.3.1")],
+    }
+    for name, candidates in cases.items():
+        monkeypatch.setattr("gdr.probe.collect_candidates", lambda c=candidates: c)
+        resolved = entrypoint._resolve_auto("rtt")
+        expected = "4.0.5" if name == "exact" else None
+        assert resolved == expected, name
+
+
+def test_init_auto_resolves_or_reports_a_structured_failure(monkeypatch):
+    """``gdr init <rtos> auto`` either initializes or explains itself."""
+    entrypoint = _load_entrypoint()
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(entrypoint, "info", lambda _message: None)
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
+    monkeypatch.setattr(entrypoint, "_resolve_auto", lambda _rtos: "4.0.5")
+    monkeypatch.setattr(
+        entrypoint, "_setup_rtos", lambda rtos, version: calls.append((rtos, version))
+    )
+
+    entrypoint._init_command(["rtthread", "auto"])
+
+    assert calls == [("rtthread", "4.0.5")]
+
+    monkeypatch.setattr(entrypoint, "_resolve_auto", lambda _rtos: None)
+    warnings: list[str] = []
+    monkeypatch.setattr(entrypoint, "warn", warnings.append)
+    entrypoint._init_command(["rtthread", "auto"])
+
+    assert calls == [("rtthread", "4.0.5")]
+    assert any("cannot resolve" in note for note in warnings)
+
+
 def test_reset_command_clears_the_semantic_session(monkeypatch):
     """Reset unhooks printers, clears caches, then drops the session.
 

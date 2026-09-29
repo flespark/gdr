@@ -95,6 +95,53 @@ def test_capabilities_describe_this_build_configuration(gdb):
     assert ("CPU" in task_columns) is (_PROFILE.number_of_cores > 1)
 
 
+def test_probe_answers_before_initialization(gdb):
+    """The data channel must exist before an adapter does.
+
+    ``$gdr_json`` is how a client reads the probe that decides which adapter to
+    initialize, so registering it only inside the adapter setup would leave the
+    client unable to ask its first question. The session is reset and
+    re-initialized afterwards to leave the shared fixture as it was found.
+    """
+    gdb.run("gdr reset", timeout=20)
+    output = gdb.run_python(
+        """
+import gdb
+print("GDR_PREINIT", gdb.parse_and_eval('$gdr_json("probe")').string()[:200])
+""",
+        timeout=25,
+    )
+    assert 'GDR_PREINIT {"schema_version":1,' in output
+    assert '"rtos":"freertos"' in output
+
+    gdb.run(f"gdr init freertos {SPEC.version}", timeout=25)
+
+
+def test_probe_names_the_adapter_and_its_evidence(gdb):
+    """The probe reports FreeRTOS with the proof behind its claim.
+
+    A ``-g2`` fixture yields a layout-era range instead of a version, so an
+    exact version is only asserted when the build exports one.
+    """
+    envelope = _envelope_line(gdb.run("gdr api probe --json", timeout=25))
+    data = envelope["data"]
+
+    candidates = data["candidates"]
+    assert [item["rtos"] for item in candidates] == ["freertos"]
+    candidate = candidates[0]
+    assert candidate["evidence"]
+    assert any(
+        marker in " ".join(candidate["evidence"])
+        for marker in ("pxCurrentTCB", "uxCurrentNumberOfTasks")
+    )
+    if candidate["confidence"] == "exact":
+        assert candidate["version"] == SPEC.version
+        assert data["resolved"] == {"rtos": "freertos", "version": SPEC.version}
+    else:
+        assert candidate["confidence"] == "range"
+        assert data["resolved"] is None
+
+
 def test_checks_report_the_system_verdicts(gdb):
     """``gdr api checks`` carries the same conclusions ``frt system`` prints."""
     envelope = _envelope_line(gdb.run("gdr api checks --json", timeout=25))

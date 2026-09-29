@@ -54,6 +54,57 @@ def test_gdr_api_command_prints_a_versioned_envelope(gdb):
     assert len(data["rows"]) >= 1
 
 
+def test_probe_answers_before_initialization(gdb):
+    """The plugin's first question is answerable with no adapter selected.
+
+    ``probe`` is the one pre-init verb, so this deliberately resets the session
+    and re-initializes afterwards to leave the shared session as it found it.
+    """
+    gdb.run("gdr reset", timeout=20)
+    envelope = _envelope_line(gdb.run("gdr api probe --json", timeout=20))
+
+    assert envelope["ok"] is True
+    assert [item["rtos"] for item in envelope["data"]["candidates"]] == ["rtthread"]
+
+    # The plugin reads the probe through `$gdr_json`, so the data channel has to
+    # exist before any adapter is initialized -- not only after `gdr init`.
+    output = gdb.run_python(
+        """
+import gdb
+print("GDR_PREINIT", gdb.parse_and_eval('$gdr_json("probe")').string()[:20])
+""",
+        timeout=20,
+    )
+    assert 'GDR_PREINIT {"schema_version":1' in output
+
+    gdb.run(f"gdr init rtthread {SPEC.version}", timeout=25)
+
+
+def test_probe_reports_this_fixture_with_its_evidence(gdb):
+    """The probe names the adapter and shows the symbols it matched.
+
+    The fixture is built without ``-g3``, so an exact version is asserted only
+    when this build actually exports one; a wrong adapter, missing evidence or
+    a fabricated version still fails.
+    """
+    data = _envelope_line(gdb.run("gdr api probe --json", timeout=20))["data"]
+
+    candidates = data["candidates"]
+    assert [item["rtos"] for item in candidates] == ["rtthread"]
+    candidate = candidates[0]
+    assert candidate["confidence"] in {"exact", "range", "undetected"}
+    assert candidate["evidence"], "a candidate must carry its proof"
+    if candidate["confidence"] == "exact":
+        assert candidate["version"] == SPEC.version
+        assert data["resolved"] == {"rtos": "rtthread", "version": SPEC.version}
+    else:
+        assert data["resolved"] is None
+    assert any(
+        marker in " ".join(candidate["evidence"])
+        for marker in ("rt_thread_self", "rt_tick", "object_container")
+    )
+
+
 def test_tasks_envelope_carries_the_column_contract(gdb):
     """The envelope carries typed cells, aligned values and stable row ids.
 

@@ -29,6 +29,22 @@ if gdb is not None:
 else:
     _PROBE_ERRORS = (TypeError, ValueError, AttributeError)
 
+# Reason: ``gdr probe`` reports presence before any layout exists, so the marker
+# names stay here with the rest of the kernel symbol table instead of being
+# re-spelled by a consumer (the boundary test enforces one lookup table per
+# domain).
+PROBE_MARKERS: tuple[str, ...] = (
+    "pxCurrentTCB",
+    "pxCurrentTCBs",
+    "uxCurrentNumberOfTasks",
+    "xSchedulerRunning",
+)
+
+# The SMP-era TCB field and the multicore handle array that narrow the layout
+# era when the kernel's version macros are absent from the debug info.
+SMP_ERA_FIELD = "xTaskRunState"
+SMP_ERA_SYMBOL = "pxCurrentTCBs"
+
 
 @dataclass
 class FreeRtosConfig:

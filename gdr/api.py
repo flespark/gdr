@@ -39,6 +39,7 @@ from gdr.gdb_bridge import (
     propagate_exception,
     show_last_exception,
 )
+from gdr.probe import collect_candidates
 from gdr.serialize import (
     capabilities_to_dict,
     checks_to_dict,
@@ -47,6 +48,7 @@ from gdr.serialize import (
     object_detail_to_dict,
     object_table_to_dict,
     pack_envelope,
+    probe_to_dict,
     system_summary_to_dict,
     transport_plan,
 )
@@ -55,6 +57,7 @@ _generation = 0
 
 _VerbResult = tuple[object, list[str]]
 _VerbHandler = Callable[[RtosAdapter, Sequence[str]], _VerbResult]
+_PreInitVerbHandler = Callable[[Sequence[str]], _VerbResult]
 
 
 class ApiError(Exception):
@@ -181,6 +184,28 @@ def _snapshot_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     return data, warnings
 
 
+def _probe_payload(args: Sequence[str]) -> _VerbResult:
+    """The probe report, with no session needed.
+
+    Probing reads target symbols only, which is exactly why it is the one verb
+    an uninitialized session must still answer: a client's first question is
+    which adapter to initialize.
+    """
+    if args:
+        raise ApiError("bad_args", "probe takes no arguments")
+    candidates = collect_candidates()
+    warnings: list[str] = []
+    if not candidates:
+        warnings.append("no supported RTOS was detected on this target")
+    return probe_to_dict(candidates), warnings
+
+
+def _probe_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
+    """Serve the same probe report once a session exists."""
+    del adapter
+    return _probe_payload(args)
+
+
 _VERBS: dict[str, _VerbHandler] = {
     "tasks": _tasks_verb,
     "objects": _objects_verb,
@@ -190,8 +215,12 @@ _VERBS: dict[str, _VerbHandler] = {
     "heap": _heap_verb,
     "capabilities": _capabilities_verb,
     "checks": _checks_verb,
+    "probe": _probe_verb,
     "snapshot": _snapshot_verb,
 }
+
+# Verbs an uninitialized session can still answer (see _dispatch).
+_PRE_INIT_VERBS: dict[str, _PreInitVerbHandler] = {"probe": _probe_payload}
 
 
 def _error_envelope(code: str, message: str, elapsed_ms: float) -> dict[str, object]:
@@ -205,26 +234,33 @@ def _error_envelope(code: str, message: str, elapsed_ms: float) -> dict[str, obj
     )
 
 
+def _dispatch(
+    verb: str, adapter: RtosAdapter | None, args: Sequence[str]
+) -> _VerbResult:
+    """Resolve and run one verb, or raise the coded error for its failure.
+
+    An uninitialized session rejects every verb except the pre-init ones, so
+    ``not_initialized`` keeps its precedence over ``unknown_verb``: the first
+    actionable message a client needs is "initialize", not the vocabulary.
+    """
+    if adapter is None:
+        pre_init = _PRE_INIT_VERBS.get(verb)
+        if pre_init is None:
+            raise ApiError("not_initialized", "run `gdr init <rtos> <version>` first")
+        return pre_init(args)
+    handler = _VERBS.get(verb)
+    if handler is None:
+        available = ", ".join(sorted(_VERBS))
+        raise ApiError("unknown_verb", f"unknown verb {verb!r}; available: {available}")
+    return handler(adapter, args)
+
+
 def api_call(verb: str, *args: str) -> dict[str, object]:
     """Run one API verb and return its envelope (no GDB printing)."""
     start = time.monotonic()
     adapter = active()
-    if adapter is None:
-        return _error_envelope(
-            "not_initialized",
-            "run `gdr init <rtos> <version>` first",
-            _elapsed_ms(start),
-        )
-    handler = _VERBS.get(verb)
-    if handler is None:
-        available = ", ".join(sorted(_VERBS))
-        return _error_envelope(
-            "unknown_verb",
-            f"unknown verb {verb!r}; available: {available}",
-            _elapsed_ms(start),
-        )
     try:
-        data, warnings = handler(adapter, args)
+        data, warnings = _dispatch(verb, adapter, args)
     except ApiError as exc:
         return _error_envelope(exc.code, exc.message, _elapsed_ms(start))
     except TARGET_ACCESS_ERRORS as exc:

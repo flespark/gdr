@@ -16,7 +16,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import lookup_symbol, read_cstring, read_int
+from gdr.gdb_bridge import lookup_symbol, read_cstring, read_int, value_address
 from gdr.layout import (
     KernelLayout,
     ListHook,
@@ -333,7 +333,11 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
         if head is None:
             continue
         for timer in iter_list(head, hook):
-            seen.add(int(timer.address))
+            # Reason: ``Value.address`` is None for a non-lvalue, so the shared
+            # helper keeps a malformed iteration from raising mid-walk.
+            address = value_address(timer)
+            if address:
+                seen.add(address)
             yield timer
 
     # Reason: some RT-Thread 4.0.x builds register timers in the object
@@ -342,9 +346,20 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
     if timer_type is None:
         return
     for timer in iter_objects(timer_type, kl):
-        address = int(timer.address)
-        if address not in seen:
+        address = value_address(timer)
+        if address and address not in seen:
             yield timer
+
+
+# Reason: ``gdr probe`` runs before any adapter is initialized, so the markers
+# it checks live here with the scheduler and tick symbols this module already
+# owns rather than being re-spelled by a consumer (one lookup table per domain).
+PROBE_MARKERS: tuple[str, ...] = (
+    "rt_thread_self",
+    "rt_tick",
+    "_object_container",
+    "rt_object_container",
+)
 
 
 def get_tick() -> int | None:
