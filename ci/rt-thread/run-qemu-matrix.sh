@@ -21,6 +21,12 @@
 #   RT_THREAD_SOURCE_CACHE   bare clone used as a local fetch source
 #   RTOS_TOOLCHAIN_PATH      compiler bin directory (or XPACK_*_TOOLCHAIN_PATH)
 #   GDR_GDB                  GDB binary for the closed-loop tests
+#
+# Fixtures are built with -g3 and DWARF 4 so the kernel version macros land in
+# the macro debug section: that is what lets the lanes verify `gdr probe`'s
+# exact-version path for every supported version.  A cached fixture without the
+# .debug-macros marker is rejected instead of silently testing a lesser build.
+# Set GDR_RTTHREAD_G3=0 to build without the flag (then tighten nothing).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -123,6 +129,11 @@ build_fixture() {
         --out-bin "$build_dir/$bsp/rtthread.bin"
         --toolchain-prefix "$TOOLCHAIN_PREFIX"
     )
+    # Reason: the lanes need the version macros; GDR_RTTHREAD_G3=0 keeps the old
+    # behaviour available for bisecting a build problem.
+    if [[ "${GDR_RTTHREAD_G3:-1}" != "0" ]]; then
+        build_args+=(--g3)
+    fi
     if [[ -n "$TOOLCHAIN_PATH" ]]; then
         build_args+=(--toolchain-path "$TOOLCHAIN_PATH")
     fi
@@ -144,7 +155,10 @@ collect_fixture() {
     if [[ "$target" == "rv64" && -n "$firmware" ]]; then
         cp "$firmware" "$dst/rtthread.bin"
     fi
-    echo "[gdr-ci] fixture collected: $dst/rtthread.elf"
+    # Reason: the marker is what makes a cached fixture trustworthy for the
+    # lanes' exact-version assertions; see the cache check in main().
+    printf -- '-g3 -gdwarf-4\n' >"$dst/.debug-macros"
+    echo "[gdr-ci] fixture collected: $dst/rtthread.elf (debug macros on)"
 }
 
 # Parameterize pytest through the shared loader (tests.support.loader).
@@ -221,6 +235,10 @@ main() {
                 fixture_dir="$fixture_cache/$target/$version"
                 [[ -f "$fixture_dir/rtthread.elf" ]] ||
                     die "cached fixture missing: $fixture_dir/rtthread.elf"
+                [[ -f "$fixture_dir/.debug-macros" ]] ||
+                    die "cached fixture at $fixture_dir predates -g3; rebuild the" \
+                        "cache with RT_THREAD_FIXTURE_COLLECT_DIR (the lanes assert" \
+                        "exact version detection, which needs the macro section)"
                 if [[ "$target" == "rv64" ]]; then
                     [[ -f "$fixture_dir/rtthread.bin" ]] ||
                         die "cached RV64 firmware missing: $fixture_dir/rtthread.bin"

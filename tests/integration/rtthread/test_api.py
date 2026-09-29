@@ -92,13 +92,12 @@ def test_probe_reports_this_fixture_with_its_evidence(gdb):
     candidates = data["candidates"]
     assert [item["rtos"] for item in candidates] == ["rtthread"]
     candidate = candidates[0]
-    assert candidate["confidence"] in {"exact", "range", "undetected"}
+    # Every lane fixture is built with -g3, so the version must be readable: a
+    # range or "undetected" here means the macro section or its read regressed.
+    assert candidate["confidence"] == "exact", candidate
+    assert candidate["version"] == SPEC.version
+    assert data["resolved"] == {"rtos": "rtthread", "version": SPEC.version}
     assert candidate["evidence"], "a candidate must carry its proof"
-    if candidate["confidence"] == "exact":
-        assert candidate["version"] == SPEC.version
-        assert data["resolved"] == {"rtos": "rtthread", "version": SPEC.version}
-    else:
-        assert data["resolved"] is None
     assert any(
         marker in " ".join(candidate["evidence"])
         for marker in ("rt_thread_self", "rt_tick", "object_container")

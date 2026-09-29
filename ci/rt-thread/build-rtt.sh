@@ -18,6 +18,10 @@
 #   --out-bin PATH          destination for rtthread.bin (RV64)
 #   --toolchain-path DIR    directory containing the compiler binaries
 #   --toolchain-prefix STR  cross-compiler prefix
+#   --g3                    build with -g3 and DWARF 4 so the kernel version
+#                           macros land in the macro debug section (env:
+#                           GDR_RTTHREAD_G3=1); fixtures built this way let
+#                           `gdr probe` resolve an exact version.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -37,42 +41,42 @@ usage() {
 # Fill BSP_DIR / PATCH_SET / TOOLCHAIN_PREFIX from TARGET + REF when unset.
 resolve_target_defaults() {
     case "$TARGET" in
-        cortex-a9)
-            BSP_DIR="${BSP_DIR:-bsp/qemu-vexpress-a9}"
-            TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-arm-none-eabi-}"
-            case "$REF" in
-                v3.1.0|v3.1.1|v3.1.2|v3.1.3|v3.1.4) PATCH_SET="3.1.x" ;;
-                v3.1.5) PATCH_SET="3.1.5" ;;
-                v4.0.0|v4.0.1) PATCH_SET="4.0.0-4.0.1" ;;
-                v4.0.2|v4.0.3) PATCH_SET="${REF#v}" ;;
-                v4.0.4|v4.0.5) PATCH_SET="4.0.4-4.0.5" ;;
-                v4.1.0|v4.1.1|v4.1.0-beta|v4.1.1-beta|lts-v4.1.x|origin/lts-v4.1.x)
-                    PATCH_SET="4.1.x"
-                    ;;
-                *) die "no Cortex-A9 patch set for ref=$REF" ;;
-            esac
+    cortex-a9)
+        BSP_DIR="${BSP_DIR:-bsp/qemu-vexpress-a9}"
+        TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-arm-none-eabi-}"
+        case "$REF" in
+        v3.1.0 | v3.1.1 | v3.1.2 | v3.1.3 | v3.1.4) PATCH_SET="3.1.x" ;;
+        v3.1.5) PATCH_SET="3.1.5" ;;
+        v4.0.0 | v4.0.1) PATCH_SET="4.0.0-4.0.1" ;;
+        v4.0.2 | v4.0.3) PATCH_SET="${REF#v}" ;;
+        v4.0.4 | v4.0.5) PATCH_SET="4.0.4-4.0.5" ;;
+        v4.1.0 | v4.1.1 | v4.1.0-beta | v4.1.1-beta | lts-v4.1.x | origin/lts-v4.1.x)
+            PATCH_SET="4.1.x"
             ;;
-        rv64)
-            TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-riscv64-unknown-elf-}"
-            case "$REF" in
-                v4.0.4|v4.0.5)
-                    BSP_DIR="${BSP_DIR:-bsp/qemu-riscv-virt64}"
-                    PATCH_SET="4.0.4-4.0.5"
-                    ;;
-                v4.1.0)
-                    BSP_DIR="${BSP_DIR:-bsp/qemu-riscv-virt64}"
-                    PATCH_SET="4.1.0"
-                    ;;
-                v4.1.1)
-                    BSP_DIR="${BSP_DIR:-bsp/qemu-virt64-riscv}"
-                    PATCH_SET="4.1.1"
-                    ;;
-                *) die "RV64 QEMU BSP is available only for v4.0.4-v4.1.1" ;;
-            esac
+        *) die "no Cortex-A9 patch set for ref=$REF" ;;
+        esac
+        ;;
+    rv64)
+        TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-riscv64-unknown-elf-}"
+        case "$REF" in
+        v4.0.4 | v4.0.5)
+            BSP_DIR="${BSP_DIR:-bsp/qemu-riscv-virt64}"
+            PATCH_SET="4.0.4-4.0.5"
             ;;
-        *)
-            die "unknown target=$TARGET"
+        v4.1.0)
+            BSP_DIR="${BSP_DIR:-bsp/qemu-riscv-virt64}"
+            PATCH_SET="4.1.0"
             ;;
+        v4.1.1)
+            BSP_DIR="${BSP_DIR:-bsp/qemu-virt64-riscv}"
+            PATCH_SET="4.1.1"
+            ;;
+        *) die "RV64 QEMU BSP is available only for v4.0.4-v4.1.1" ;;
+        esac
+        ;;
+    *)
+        die "unknown target=$TARGET"
+        ;;
     esac
 }
 
@@ -87,7 +91,7 @@ setup_toolchain() {
     gcc="$TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}gcc"
     [[ -x "$gcc" ]] || die "expected compiler not found: $gcc"
     for tool in g++ ar objcopy objdump size; do
-        [[ -x "$TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}$tool" ]] || \
+        [[ -x "$TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}$tool" ]] ||
             die "expected tool not found: ${TOOLCHAIN_PREFIX}$tool"
     done
     if ! printf '#include <stdio.h>\n' | "$gcc" -E -x c - >/dev/null; then
@@ -105,12 +109,12 @@ collect_patch_dirs() {
     PATCH_DIRS+=("$PATCH_ROOT/$TARGET/$PATCH_SET")
     if [[ "$TARGET" == "cortex-a9" ]]; then
         case "$REF" in
-            v3.1.0|v3.1.1|v3.1.2)
-                PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.0-3.1.2")
-                ;;
-            v3.1.3|v3.1.4|v3.1.5)
-                PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.3-3.1.5")
-                ;;
+        v3.1.0 | v3.1.1 | v3.1.2)
+            PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.0-3.1.2")
+            ;;
+        v3.1.3 | v3.1.4 | v3.1.5)
+            PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.3-3.1.5")
+            ;;
         esac
         # Reason: v3.1.5 has a different main.c baseline, but still needs the
         # non-fixture compatibility patches shared by the full 3.1 series.
@@ -152,7 +156,7 @@ apply_patches() {
     [[ ${#patches[@]} -gt 0 ]] || die "no .patch files found"
     for patch in "${patches[@]}"; do
         name="$(basename "$patch")"
-        if [[ "$REF" == v3.1.5 && \
+        if [[ "$REF" == v3.1.5 &&
             "$patch" == "$PATCH_ROOT/cortex-a9/3.1.x/001-test-fixture-main.patch" ]]; then
             echo "  $name (replaced by the v3.1.5-specific fixture patch)"
             continue
@@ -161,7 +165,7 @@ apply_patches() {
             echo "  $name (skipped for $REF)"
             continue
         fi
-        if [[ "$REF" == lts-v4.1.x || "$REF" == origin/lts-v4.1.x ]] && \
+        if [[ "$REF" == lts-v4.1.x || "$REF" == origin/lts-v4.1.x ]] &&
             [[ "$name" == "004-scons-deque-list.patch" ]]; then
             echo "  $name (skipped for $REF)"
             continue
@@ -185,6 +189,38 @@ apply_patches() {
             die "patch $name did not apply cleanly"
         fi
     done
+}
+
+# Rewrite the BSP's debug flags so DWARF carries the kernel version macros.
+enable_debug_macros() {
+    local rtconfig="$BUILD_DIR/$BSP_DIR/rtconfig.py"
+    [[ -f "$rtconfig" ]] || die "no rtconfig.py at $rtconfig"
+    python3 - "$rtconfig" <<'PYMACRO'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+# Reason: the version macros live in the kernel headers, so version detection
+# needs -g3's macro section, and the BSP default (-gdwarf-2) cannot carry one.
+if "-g3" in text:
+    print("[gdr-ci] debug macros: already -g3")
+else:
+    # Reason: the BSPs spell their debug flags differently -- the ARM BSP uses
+    # "-g -gdwarf-2", the RISC-V ones "-ggdb" -- and version detection needs the
+    # macro section either way, so both forms are rewritten.
+    updated, count = text, 0
+    for pattern in (r"-g -gdwarf-2", r"-ggdb"):
+        updated, replaced = re.subn(pattern, "-g3 -gdwarf-4", updated)
+        count += replaced
+    if count == 0:
+        raise SystemExit(
+            "enable_debug_macros: no known debug flag form in " + str(path)
+        )
+    path.write_text(updated)
+    print("[gdr-ci] debug macros: %d flag group(s) set to -g3 -gdwarf-4" % count)
+PYMACRO
 }
 
 build_bsp() {
@@ -245,18 +281,58 @@ parse_args() {
     local -a leftover=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --target) TARGET="$2"; shift 2 ;;
-            --ref) REF="$2"; shift 2 ;;
-            --repo) REPO="$2"; shift 2 ;;
-            --bsp) BSP_DIR="$2"; shift 2 ;;
-            --patch-dir) PATCH_DIR="$2"; shift 2 ;;
-            --build-dir) BUILD_DIR="$2"; shift 2 ;;
-            --out-elf) OUT_ELF="$2"; shift 2 ;;
-            --out-bin) OUT_BIN="$2"; shift 2 ;;
-            --toolchain-path) TOOLCHAIN_PATH="$2"; shift 2 ;;
-            --toolchain-prefix) TOOLCHAIN_PREFIX="$2"; shift 2 ;;
-            -h|--help) usage; exit 0 ;;
-            *) leftover+=("$1"); shift ;;
+        --target)
+            TARGET="$2"
+            shift 2
+            ;;
+        --ref)
+            REF="$2"
+            shift 2
+            ;;
+        --repo)
+            REPO="$2"
+            shift 2
+            ;;
+        --bsp)
+            BSP_DIR="$2"
+            shift 2
+            ;;
+        --patch-dir)
+            PATCH_DIR="$2"
+            shift 2
+            ;;
+        --build-dir)
+            BUILD_DIR="$2"
+            shift 2
+            ;;
+        --out-elf)
+            OUT_ELF="$2"
+            shift 2
+            ;;
+        --out-bin)
+            OUT_BIN="$2"
+            shift 2
+            ;;
+        --toolchain-path)
+            TOOLCHAIN_PATH="$2"
+            shift 2
+            ;;
+        --toolchain-prefix)
+            TOOLCHAIN_PREFIX="$2"
+            shift 2
+            ;;
+        --g3)
+            G3=1
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            leftover+=("$1")
+            shift
+            ;;
         esac
     done
     if [[ ${#leftover[@]} -ne 0 ]]; then
@@ -276,6 +352,7 @@ main() {
     TOOLCHAIN_PATH=""
     TOOLCHAIN_PREFIX=""
     PATCH_SET=""
+    G3="${GDR_RTTHREAD_G3:-0}"
     local dir
     local -a PATCH_DIRS
 
@@ -290,6 +367,9 @@ main() {
     echo "[gdr-ci] target: $TARGET ($BSP_DIR)"
     echo "[gdr-ci] toolchain: $TOOLCHAIN_PATH/${TOOLCHAIN_PREFIX}gcc"
     echo "[gdr-ci] build dir: $BUILD_DIR"
+    if [[ "$G3" == 1 ]]; then
+        echo "[gdr-ci] debug macros: -g3 -gdwarf-4"
+    fi
     echo "[gdr-ci] patch dirs:"
     for dir in "${PATCH_DIRS[@]}"; do
         echo "  $dir"
@@ -297,6 +377,9 @@ main() {
 
     checkout_source
     apply_patches
+    if [[ "$G3" == 1 ]]; then
+        enable_debug_macros
+    fi
     build_bsp
 }
 

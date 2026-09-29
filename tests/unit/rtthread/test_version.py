@@ -38,6 +38,9 @@ def test_detect_target_version_uses_declared_packed_hex_encoding(monkeypatch):
         lambda name: 0x40005 if name == "RT_VER_NUM" else None,
     )
     monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(
+        version, "read_macro_int_in_source", lambda _name, _source: None
+    )
     monkeypatch.setattr(version, "read_int", lambda value: value)
 
     assert version.detect_target_version() == (4, 0, 5)
@@ -50,6 +53,9 @@ def test_detect_target_version_uses_macros_when_symbols_are_absent(monkeypatch):
         version,
         "read_macro_int",
         lambda name: 0x40005 if name == "RT_VER_NUM" else None,
+    )
+    monkeypatch.setattr(
+        version, "read_macro_int_in_source", lambda _name, _source: None
     )
     monkeypatch.setattr(version, "read_int", lambda value: value)
 

@@ -31,6 +31,13 @@ All notable changes to GDR are documented in this file.
   evaluate, with a chunked fallback for payloads larger than one result.
   `gdr init --json` reports the init outcome as one structured line.
 
+### Fixed
+
+- Version detection reads a kernel's version macros from the loaded image's
+  debug strings instead of GDB's compilation-unit scope, so it keeps working when
+  the build tree is gone (a flashed release image) or when the halted PC sits in
+  a unit that has not included the version header yet.
+
 ## [2026.03] - 2026-09-22
 
 ### Added

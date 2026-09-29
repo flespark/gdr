@@ -56,6 +56,13 @@ def _ensure_gdb() -> None:
         raise RuntimeError("not running inside GDB")
 
 
+# The GDB CLI verbs GDR issues through the single execution helper below.
+# Reason: every command is internally constructed from one of these verbs
+# plus identifiers, addresses or source paths GDB itself reported, so an
+# allowlist keeps a malformed name from becoming an arbitrary command.
+_ALLOWED_GDB_COMMANDS = frozenset({"info", "list", "set", "show"})
+
+
 def _gdb_execute(command: str) -> str:
     """Run one GDB console command and return its captured output.
 
@@ -67,9 +74,17 @@ def _gdb_execute(command: str) -> str:
     """
     if gdb is None:
         return ""
+    verb = command.strip().split(" ", 1)[0]
+    if verb not in _ALLOWED_GDB_COMMANDS:
+        err(f"refusing a GDB command outside the allowlist: {verb!r}")
+        return ""
     try:
+        # Reason: GDR's single GDB CLI choke point.  Every command is built from
+        # an allowlist of verbs plus identifiers, addresses and source paths GDB
+        # itself reported, so no query language is involved; the bare marker also
+        # covers analysers that report this call under a different rule id.
         # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
-        return gdb.execute(command, to_string=True)
+        return gdb.execute(command, to_string=True)  # nosemgrep
     except gdb.error:
         return ""
 
@@ -333,6 +348,42 @@ def read_macro_text(name: str) -> str | None:
     return None
 
 
+_elf_macro_cache: dict[str, dict[str, str]] = {}
+
+
+def loaded_object_path() -> str | None:
+    """Path of the loaded object file, or ``None`` when GDB has none."""
+    if gdb is None:
+        return None
+    try:
+        filename = getattr(gdb.current_progspace(), "filename", None)
+    except (gdb.error, AttributeError, RuntimeError):
+        return None
+    return filename if isinstance(filename, str) and filename else None
+
+
+def read_macro_int_from_elf(name: str) -> int | None:
+    """Read an integer macro from the loaded ELF's macro table, or ``None``.
+
+    The table is parsed once per session: the macro definitions of one image
+    cannot change while it stays loaded, and ``reset_loadable_ranges`` drops the
+    cache on a reconnect or a reflash.
+    """
+    from .dwarf_macro import macro_definitions_from_elf, parse_integer_literal
+
+    path = loaded_object_path()
+    if path is None:
+        return None
+    table = _elf_macro_cache.get(path)
+    if table is None:
+        table = macro_definitions_from_elf(path)
+        _elf_macro_cache[path] = table
+    text = table.get(name)
+    if text is None:
+        return None
+    return parse_integer_literal(text)
+
+
 def read_macro_text_in_source(name: str, source: str) -> str | None:
     """Read a macro after temporarily selecting a GDB source location.
 
@@ -496,15 +547,32 @@ def read_macro_int_in_source(name: str, source: str) -> int | None:
     value = read_macro_int(name)
     if value is not None:
         return value
+    # Reason: the loaded ELF's own macro table does not depend on the selected
+    # compilation unit nor on the build tree still existing at the path recorded
+    # in the DWARF, so it is tried before GDB's `list`-based CU switch -- which
+    # silently fails on an already-flashed image or a discarded build tree (see
+    # gdr.dwarf_macro).
+    from_elf = read_macro_int_from_elf(name)
+    if from_elf is not None:
+        return from_elf
     text = read_macro_text_in_source(name, source)
     if text is None:
         return None
+    # Reason: a C integer literal may carry a suffix (``3L``, ``8UL``), which
+    # ``int(text, 0)`` rejects; the macro text is a literal, not an expression.
+    match = _C_INTEGER_LITERAL_RE.match(text.strip())
+    if match is None:
+        return None
     try:
-        return int(text, 0)
+        return int(match.group("body"), 0)
     except ValueError:
         return None
 
 
+# C integer literal with an optional unsigned/long suffix (``3L``, ``8UL``).
+_C_INTEGER_LITERAL_RE = re.compile(
+    r"^(?P<body>0[xX][0-9a-fA-F]+|[0-9]+)(?P<suffix>[uUlL]*)$"
+)
 _SECTION_RANGE_RE = re.compile(r"0x([0-9a-fA-F]+)\s*-\s*0x([0-9a-fA-F]+)")
 _loadable_ranges_cache: tuple[tuple[int, int], ...] | None = None
 
@@ -541,6 +609,9 @@ def reset_loadable_ranges() -> None:
     """Clear the cached loadable-section map (reconnect / new image)."""
     global _loadable_ranges_cache
     _loadable_ranges_cache = None
+    # Reason: a new image means new macro definitions; the table is keyed by the
+    # objfile path, which a reflash may reuse.
+    _elf_macro_cache.clear()
 
 
 def array_item(value, index):
