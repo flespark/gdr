@@ -86,10 +86,16 @@ export function sourceCommand(runtimePath: string, fileName = 'gdr.py'): string 
  * The command that initializes one adapter.
  *
  * The version is always explicit: GDR does not auto-detect, and the plugin's
- * probe has already resolved it before anything is injected.
+ * probe has already resolved it before anything is injected. *allowUnverified*
+ * adds GDR's escape hatch, for the one case where the user asserted the
+ * adapter themselves because the target shows no RTOS symbol at all.
  */
-export function initCommand(init: { rtos: string; version: string }): string {
-	return `gdr init ${init.rtos} ${init.version}`;
+export function initCommand(
+	init: { rtos: string; version: string },
+	options: { allowUnverified?: boolean } = {}
+): string {
+	const flag = options.allowUnverified === true ? ' --allow-unverified' : '';
+	return `gdr init ${init.rtos} ${init.version}${flag}`;
 }
 
 /** Sibling of *loaderPath* where the gate records `present` or `absent`. */

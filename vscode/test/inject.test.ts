@@ -33,6 +33,15 @@ test('a path with spaces is the rest of the source line, not a quoted word', () 
 	assert.equal(sourceCommand('/opt/we"ird\\x'), 'source /opt/we"ird\\x/gdr.py');
 });
 
+test('only a user-asserted adapter carries the unverified escape hatch', () => {
+	assert.equal(
+		initCommand(INIT, { allowUnverified: true }),
+		'gdr init rtthread 4.0.5 --allow-unverified'
+	);
+	assert.equal(initCommand(INIT, { allowUnverified: false }), 'gdr init rtthread 4.0.5');
+	assert.equal(initCommand(INIT), 'gdr init rtthread 4.0.5');
+});
+
 test('the Python gate sources GDR only from the configured-with-Python branch', () => {
 	assert.equal(initCommand(INIT), 'gdr init rtthread 4.0.5');
 	const gate = pythonGateCommand('/opt/my gdr', LOADER, INIT);

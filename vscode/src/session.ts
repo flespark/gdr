@@ -223,18 +223,33 @@ export class GdrSession {
 			target = {
 				rtos: picked.option.rtos,
 				version: picked.option.version,
-				source: 'settings'
+				// Reason: the options came from the probe's evidence, so this is
+				// a confirmed probe answer, not a manual assertion. The
+				// distinction decides whether GDR's --allow-unverified escape
+				// hatch is passed below.
+				source: 'probe'
 			};
 		}
 		this.log(`initializing ${target.rtos} ${target.version} (${target.source})`);
-		await this.evaluate(initCommand({ rtos: target.rtos, version: target.version }), frameId, 'repl');
+		// Reason: a manual gdr.rtos/gdr.version is the user's own assertion about
+		// a target that may show no RTOS symbol at all (a modified or stripped
+		// kernel), so it carries GDR's --allow-unverified. A probe answer does
+		// not: GDR should refuse it if the target disagrees.
+		const command = initCommand(
+			{ rtos: target.rtos, version: target.version },
+			{ allowUnverified: target.source === 'settings' }
+		);
+		await this.evaluate(command, frameId, 'repl');
 		const envelope = await this.fetch('capabilities', [], frameId);
 		if (envelope === null || !envelope.ok) {
-			this.log(
-				`initialization of ${target.rtos} ${target.version} did not take effect` +
-					(envelope !== null ? ` (${describeFailure(envelope)})` : '') +
-					'; GDR\'s warning in the Debug Console names the reason'
-			);
+			const detail = envelope !== null ? ` (${describeFailure(envelope)})` : '';
+			this.state.errorMessage =
+				`initialization of ${target.rtos} ${target.version} did not take effect${detail}` +
+				"; GDR's reason is in the Debug Console" +
+				(target.source === 'settings'
+					? ''
+					: ', and setting gdr.rtos/gdr.version forces registration with --allow-unverified');
+			this.log(this.state.errorMessage);
 			return false;
 		}
 		this.state.initialized = { rtos: target.rtos, version: target.version };
