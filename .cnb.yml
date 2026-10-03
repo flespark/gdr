@@ -71,8 +71,12 @@
       cd vscode
       npm ci --no-audit --no-fund
   - name: vendor the runtime and verify the schema handshake
+    # Reason: CNB runs `script:` blocks with the image's POSIX shell (`sh`,
+    # dash on Debian), so only POSIX `set` flags are allowed: the bash-only
+    # pipeline-failure flag would abort the whole stage, and there is no
+    # pipeline here to guard. Fail-fast is `set -eu`.
     script: |
-      set -euo pipefail
+      set -eu
       cd vscode
       npm run vendor
       python3 ../ci/check-vendored-schema.py .
@@ -344,7 +348,7 @@ $:
           script: bash ci/create-release-archives.sh "$CNB_BRANCH"
         - name: publish CNB Release
           script: |
-            if [[ -z "${GDR_RELEASE_TOKEN:-}" ]]; then
+            if [ -z "${GDR_RELEASE_TOKEN:-}" ]; then
               echo "GDR_RELEASE_TOKEN must be provided by the" \
                 "imported CNB Secret repository file" >&2
               exit 1
