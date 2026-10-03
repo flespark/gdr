@@ -224,7 +224,8 @@ def test_rejected_reinit_is_structured_and_non_destructive(gdb):
 
     assert refusal["ok"] is False
     assert refusal["rtos"] == "rtthread"
-    assert "already initialized" in refusal["error"]
+    assert refusal["error"]["code"] == "already_initialized"
+    assert "already initialized" in refusal["error"]["message"]
 
     still_working = _envelope_line(gdb.run("gdr api tasks --json", timeout=20))
     assert still_working["ok"] is True

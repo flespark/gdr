@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 import rtthread.version as version
 from freertos.layout import FreeRtosConfig, FreeRtosLayout
 from gdr.layout import KernelLayout
+from gdr.version import TargetVerdict
 from rtthread.layout import RtConfig
 
 
@@ -37,7 +39,11 @@ def test_setup_rtthread_skips_an_existing_initialization(monkeypatch):
     warnings: list[str] = []
     version_checks: list[str] = []
     monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: True)
-    monkeypatch.setattr(version, "check_version", version_checks.append)
+    monkeypatch.setattr(
+        version,
+        "check_target",
+        lambda value, **_kwargs: version_checks.append(value),
+    )
     monkeypatch.setattr(entrypoint, "warn", warnings.append)
 
     entrypoint._setup_rtthread("4.1.1")
@@ -54,7 +60,11 @@ def test_setup_rtthread_passes_the_parsed_version_to_layout_builder(monkeypatch)
     entrypoint = _load_entrypoint()
     received: list[tuple[int, int, int]] = []
     monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
-    monkeypatch.setattr(version, "check_version", lambda _value: (3, 1, 3))
+    monkeypatch.setattr(
+        version,
+        "check_target",
+        lambda _value, **_kwargs: TargetVerdict(version=(3, 1, 3)),
+    )
     monkeypatch.setattr(entrypoint, "info", lambda _message: None)
     monkeypatch.setattr("rtthread.layout.detect_config", RtConfig)
     monkeypatch.setattr(
@@ -96,7 +106,11 @@ def test_setup_rtthread_commits_only_after_all_registration_steps(
         "gdr.adapter_api.register",
         lambda adapter, **_kwargs: registrations.append(adapter),
     )
-    monkeypatch.setattr(version, "check_version", lambda _value: (4, 0, 5))
+    monkeypatch.setattr(
+        version,
+        "check_target",
+        lambda _value, **_kwargs: TargetVerdict(version=(4, 0, 5)),
+    )
     monkeypatch.setattr(entrypoint, "info", lambda _message: None)
     monkeypatch.setattr("rtthread.layout.detect_config", RtConfig)
     monkeypatch.setattr(
@@ -138,7 +152,10 @@ def test_setup_freertos_activates_adapter_last(monkeypatch):
         "gdr.adapter_api.register",
         lambda selected, **_kwargs: events.append(("active", selected)),
     )
-    monkeypatch.setattr("freertos.version.check_version", lambda _value: (10, 3, 1))
+    monkeypatch.setattr(
+        "freertos.version.check_target",
+        lambda _value, **_kwargs: TargetVerdict(version=(10, 3, 1)),
+    )
     monkeypatch.setattr("freertos.layout.detect_config", FreeRtosConfig)
     monkeypatch.setattr(
         "freertos.layout.build_layout", lambda _config, _version: layout
@@ -180,7 +197,7 @@ def test_invoke_command_guards_setup_errors(monkeypatch):
 
     errors: list[str] = []
 
-    def _broken_setup(*_args):
+    def _broken_setup(*_args, **_kwargs):
         raise ValueError("broken layout probe")
 
     monkeypatch.setattr(entrypoint, "_setup_rtos", _broken_setup)
@@ -196,12 +213,73 @@ def test_invoke_command_passes_unsupported_rtos_to_setup(monkeypatch):
     entrypoint = _load_entrypoint()
     received: list[list[str]] = []
 
-    def _record(rtos: str, version: str):
+    def _record(rtos: str, version: str, **_kwargs):
         received.append([rtos, version])
 
     monkeypatch.setattr(entrypoint, "_setup_rtos", _record)
     entrypoint._invoke_command("init rtthread 4.0.5")
     assert received == [["rtthread", "4.0.5"]]
+
+
+def test_init_allow_unverified_reaches_the_target_check(monkeypatch):
+    """The escape hatch must travel from the flag into the adapter's verdict."""
+    entrypoint = _load_entrypoint()
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
+    monkeypatch.setattr(
+        entrypoint,
+        "_setup_rtos",
+        lambda rtos, version, **kwargs: seen.append(
+            {"rtos": rtos, "version": version, **kwargs}
+        ),
+    )
+
+    entrypoint._invoke_command("init rtthread 4.0.5 --allow-unverified")
+
+    assert seen == [{"rtos": "rtthread", "version": "4.0.5", "allow_unverified": True}]
+
+
+def test_init_json_reports_an_unverified_registration(monkeypatch, capsys):
+    """A client reads the verification state instead of parsing log lines."""
+    entrypoint = _load_entrypoint()
+    note = (
+        "no RT-Thread symbol matched; registration was forced with --allow-unverified"
+    )
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
+    monkeypatch.setattr(
+        entrypoint,
+        "_setup_rtos",
+        lambda *_args, **_kwargs: TargetVerdict(version=(4, 0, 5), note=note),
+    )
+
+    entrypoint._invoke_command("init rtthread 4.0.5 --allow-unverified --json")
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is True
+    assert document["verified"] is False
+    assert document["warning"] == note
+
+
+def test_init_json_reports_a_refusal_with_a_code(monkeypatch, capsys):
+    """A refused registration names the reason a client can act on."""
+    entrypoint = _load_entrypoint()
+    monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
+    monkeypatch.setattr(
+        entrypoint,
+        "_setup_rtos",
+        lambda *_args, **_kwargs: TargetVerdict(
+            code="no_target_evidence", message="no RT-Thread symbol matched"
+        ),
+    )
+
+    entrypoint._invoke_command("init rtthread 4.0.5 --json")
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is False
+    assert document["error"] == {
+        "code": "no_target_evidence",
+        "message": "no RT-Thread symbol matched",
+    }
 
 
 def test_root_help_supports_topics_and_completion(capsys):
@@ -269,10 +347,14 @@ def test_api_command_writes_a_json_file(monkeypatch, tmp_path):
 
 def test_init_json_reports_a_failed_setup(monkeypatch, capsys):
     """``gdr init --json`` is one structured line, not log scraping."""
-    import json
-
     entrypoint = _load_entrypoint()
-    monkeypatch.setattr(entrypoint, "_setup_rtos", lambda _rtos, _version: None)
+    monkeypatch.setattr(
+        entrypoint,
+        "_setup_rtos",
+        lambda *_args, **_kwargs: TargetVerdict(
+            code="no_target_evidence", message="no RT-Thread symbol matched"
+        ),
+    )
     monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
 
     entrypoint._init_command(["rtthread", "4.0.5", "--json"])
@@ -280,7 +362,7 @@ def test_init_json_reports_a_failed_setup(monkeypatch, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["ok"] is False
     assert result["rtos"] == "rtthread"
-    assert "error" in result
+    assert result["error"]["code"] == "no_target_evidence"
 
 
 def test_init_force_resets_before_replacing(monkeypatch):
@@ -289,7 +371,9 @@ def test_init_force_resets_before_replacing(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(entrypoint, "_reset_command", lambda: calls.append("reset"))
     monkeypatch.setattr(
-        entrypoint, "_setup_rtos", lambda _rtos, _version: calls.append("setup")
+        entrypoint,
+        "_setup_rtos",
+        lambda _rtos, _version, **_kwargs: calls.append("setup"),
     )
     monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: True)
 
@@ -389,7 +473,9 @@ def test_init_auto_resolves_or_reports_a_structured_failure(monkeypatch):
     monkeypatch.setattr("gdr.adapter_api.is_initialized", lambda: False)
     monkeypatch.setattr(entrypoint, "_resolve_auto", lambda _rtos: "4.0.5")
     monkeypatch.setattr(
-        entrypoint, "_setup_rtos", lambda rtos, version: calls.append((rtos, version))
+        entrypoint,
+        "_setup_rtos",
+        lambda rtos, version, **_kwargs: calls.append((rtos, version)),
     )
 
     entrypoint._init_command(["rtthread", "auto"])

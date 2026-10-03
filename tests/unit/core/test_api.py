@@ -219,6 +219,30 @@ def test_snapshot_no_heap_skips_the_heap_walk(session):
     assert "tasks" in data and "checks" in data
 
 
+def test_the_verification_note_rides_every_envelope(session):
+    """The one caveat a session can carry must survive into every answer."""
+    note = "target RT-Thread version not exported; the requested version is unverified"
+    adapter_api.reset()
+    adapter_api.register(
+        session, rtos="rtthread", version="4.0.5", verification_note=note
+    )
+
+    envelope = api.api_call("tasks")
+
+    warnings = envelope["warnings"]
+    assert isinstance(warnings, list)
+    assert warnings[0] == note, "the session caveat leads the warnings"
+    assert "scan note" in warnings, "the verb's own warnings still follow"
+
+
+def test_a_verified_session_adds_no_warning(session):  # noqa: ARG001
+    """The fixture registers without a note, so no caveat may appear."""
+    envelope = api.api_call("tasks")
+
+    warnings = _strings(envelope.get("warnings", []))
+    assert "unverified" not in " ".join(warnings)
+
+
 def test_snapshot_rejects_unknown_flags(session):  # noqa: ARG001
     snapshot = api.api_call("snapshot", "--no-stack-peak")
 

@@ -46,7 +46,12 @@ class StaticElfSession(GdbProcess):
             self.run("set architecture arm")
             self.run(f"file {self.elf_path}")
             self._source_gdr()
-            self.run(f"gdr init freertos {self.version}", timeout=20)
+            # Reason: these are hand-built images. The heap-only ELF carries the
+            # heap symbols a decoding test needs but no scheduler population,
+            # so the presence gate cannot confirm FreeRTOS there; the escape
+            # hatch is exactly what a deliberately partial image needs. The
+            # gate itself is covered by unit tests and the live QEMU lanes.
+            self.run(f"gdr init freertos {self.version} --allow-unverified", timeout=20)
         except (pexpect.EOF, pexpect.TIMEOUT) as exc:
             raise RuntimeError(
                 f"GDB failed while loading {self.elf_path}: {exc}"

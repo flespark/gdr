@@ -49,6 +49,7 @@ from gdr.help import (  # noqa: E402
     render_terminal,
 )
 from gdr.printers import register_printers  # noqa: E402
+from gdr.version import TargetVerdict  # noqa: E402
 
 
 def _root_help_tree() -> HelpTree:
@@ -58,7 +59,7 @@ def _root_help_tree() -> HelpTree:
             "init",
             "Initialize one RTOS adapter",
             "Selects an RTOS/version, probes configuration, builds layouts and registers commands, functions and pretty-printers.",
-            usage=("gdr init <rtos> <version> [--force]",),
+            usage=("gdr init <rtos> <version> [--force] [--allow-unverified]",),
             fields=(
                 HelpField("rtos", "rtthread/rtt or freertos/frt."),
                 HelpField(
@@ -70,6 +71,7 @@ unambiguous result.",
             tips=(
                 "Use `rtt help` or `frt help` after initialization.",
                 "`gdr init <rtos> <version> --force` replaces the active adapter without restarting GDB.",
+                "`--allow-unverified` registers even when no RTOS symbol matched the target (a modified or stripped kernel); the session then repeats the override in every API envelope.",
             ),
             configuration=(
                 "Kernel features are probed from symbols and DWARF; the RTOS itself is never auto-detected.",
@@ -244,9 +246,13 @@ def _invoke_command(argument: str) -> None:
 
 
 def _init_command(rest: list[str]) -> None:
-    """``gdr init <rtos> <version> [--force] [--json]``.
+    """``gdr init <rtos> <version> [--force] [--allow-unverified] [--json]``.
 
     ``--force`` replaces an already initialized adapter instead of refusing.
+    ``--allow-unverified`` registers even when no RTOS symbol matched the
+    target, for a deliberately modified or stripped kernel; the override is
+    recorded on the session and repeated in every later API envelope, so a
+    client shows it instead of silently trusting empty reads.
     ``--json`` is the machine channel a plugin uses to read one structured
     result instead of parsing log lines, so it is not advertised in help.
     """
@@ -254,64 +260,79 @@ def _init_command(rest: list[str]) -> None:
     from gdr.constants import GDR_API_SCHEMA_VERSION
 
     force = "--force" in rest
+    allow_unverified = "--allow-unverified" in rest
     json_mode = "--json" in rest
     positional = [token for token in rest if not token.startswith("--")]
     if len(positional) != 2:
-        warn("usage: gdr init <rtos> <version> [--force]")
+        warn("usage: gdr init <rtos> <version> [--force] [--allow-unverified]")
         return
     rtos, version = positional[0].lower(), positional[1]
     if version == "auto":
         resolved = _resolve_auto(rtos)
         if resolved is None:
-            message = (
+            _init_refusal(
+                json_mode,
+                rtos,
+                None,
+                "auto_unresolved",
                 "cannot resolve `auto`: run `gdr probe` for the evidence and "
-                "pass the version explicitly"
+                "pass the version explicitly",
             )
-            if json_mode:
-                _write_json(
-                    {
-                        "schema_version": GDR_API_SCHEMA_VERSION,
-                        "ok": False,
-                        "rtos": rtos,
-                        "version": None,
-                        "error": message,
-                    }
-                )
-            else:
-                warn(message)
             return
         version = resolved
         if not json_mode:
             info(f"resolved {rtos} version {version} from the probe")
     if is_initialized() and not force:
-        message = "an RTOS adapter is already initialized; add --force to replace it"
-        if json_mode:
-            _write_json(
-                {
-                    "schema_version": GDR_API_SCHEMA_VERSION,
-                    "ok": False,
-                    "rtos": rtos,
-                    "version": version,
-                    "error": message,
-                }
-            )
-        else:
-            warn(message)
+        _init_refusal(
+            json_mode,
+            rtos,
+            version,
+            "already_initialized",
+            "an RTOS adapter is already initialized; add --force to replace it",
+        )
         return
     if force and is_initialized():
         _reset_command()
-    _setup_rtos(rtos, version)
+    verdict = _setup_rtos(rtos, version, allow_unverified=allow_unverified)
     if not json_mode:
         return
     result: dict[str, object] = {
         "schema_version": GDR_API_SCHEMA_VERSION,
-        "ok": is_initialized(),
+        "ok": verdict.accepted,
         "rtos": rtos,
         "version": version,
+        "verified": verdict.accepted and verdict.note is None,
+        "markers": list(verdict.markers),
     }
-    if not is_initialized():
-        result["error"] = f"failed to initialize {rtos} {version}"
+    if verdict.note is not None:
+        result["warning"] = verdict.note
+    if not verdict.accepted:
+        result["error"] = {"code": verdict.code, "message": verdict.message}
     _write_json(result)
+
+
+def _init_refusal(
+    json_mode: bool, rtos: str, version: str | None, code: str, message: str
+) -> None:
+    """Report one refusal: a coded line in ``--json`` mode, else a warning.
+
+    The error object matches the API envelope's shape, so a client decodes one
+    error form across ``gdr init --json`` and ``$gdr_json``.
+    """
+    if not json_mode:
+        warn(message)
+        return
+    from gdr.constants import GDR_API_SCHEMA_VERSION
+
+    _write_json(
+        {
+            "schema_version": GDR_API_SCHEMA_VERSION,
+            "ok": False,
+            "rtos": rtos,
+            "version": version,
+            "error": {"code": code, "message": message},
+        }
+    )
 
 
 def _write_json(document: dict[str, object]) -> None:
@@ -551,30 +572,36 @@ def _register_session_events() -> None:
         return
 
 
-def _setup_rtthread(version: str) -> None:
+def _setup_rtthread(version: str, *, allow_unverified: bool = False) -> TargetVerdict:
     """Initialise RT-Thread support once for the current GDB session.
 
     Args:
         version: Full RT-Thread version string (e.g. ``"4.0.5"``).
+        allow_unverified: Register even when the target matched no RT-Thread
+            symbol (see ``rtthread.version.check_target``).
+
+    Returns:
+        The target verdict; ``accepted`` is false when nothing was registered.
     """
     from gdr.adapter_api import is_initialized, register
     from gdr.functions import register_api_functions, register_functions
     from rtthread.adapter import RtThreadAdapter
     from rtthread.commands import register_commands
     from rtthread.layout import build_layouts, detect_config
-    from rtthread.version import check_version
+    from rtthread.version import check_target
 
     if is_initialized():
-        warn(
+        message = (
             "RT-Thread support is already initialized; restart GDB before "
             "selecting a different target or version"
         )
-        return
+        warn(message)
+        return TargetVerdict(code="already_initialized", message=message)
 
-    target_version = check_version(version)
-    if target_version is None:
-        info(f"invalid RT-Thread version: {version!r}")
-        return
+    verdict = check_target(version, allow_unverified=allow_unverified)
+    if not verdict.accepted or verdict.version is None:
+        return verdict
+    target_version = verdict.version
     info(f"setting up RT-Thread v{version}...")
     cfg = detect_config()
     info(
@@ -590,31 +617,47 @@ def _setup_rtthread(version: str) -> None:
     register_functions()
     register_api_functions()
     register_commands()
-    register(adapter, rtos="rtthread", version=version)
+    register(
+        adapter,
+        rtos="rtthread",
+        version=version,
+        verification_note=verdict.note,
+    )
 
     info("RT-Thread support ready. Type 'rtt help' for commands.")
+    return verdict
 
 
-def _setup_freertos(version: str) -> None:
-    """Initialise FreeRTOS support for the current GDB target."""
+def _setup_freertos(version: str, *, allow_unverified: bool = False) -> TargetVerdict:
+    """Initialise FreeRTOS support for the current GDB target.
+
+    Args:
+        version: Full FreeRTOS version string.
+        allow_unverified: Register even when the target matched no FreeRTOS
+            symbol (see ``freertos.version.check_target``).
+
+    Returns:
+        The target verdict; ``accepted`` is false when nothing was registered.
+    """
     from freertos.adapter import FreeRtosAdapter
     from freertos.commands import register_commands
     from freertos.layout import build_layout, detect_config
-    from freertos.version import check_version
+    from freertos.version import check_target
     from gdr.adapter_api import is_initialized, register
     from gdr.functions import register_api_functions, register_functions
 
     if is_initialized():
-        warn(
+        message = (
             "an RTOS adapter is already initialized; restart GDB before "
             "selecting a different target or version"
         )
-        return
+        warn(message)
+        return TargetVerdict(code="already_initialized", message=message)
 
-    target_version = check_version(version)
-    if target_version is None:
-        info(f"invalid FreeRTOS version: {version!r}")
-        return
+    verdict = check_target(version, allow_unverified=allow_unverified)
+    if not verdict.accepted or verdict.version is None:
+        return verdict
+    target_version = verdict.version
     info(f"setting up FreeRTOS v{version}...")
     cfg = detect_config()
     info(
@@ -628,24 +671,40 @@ def _setup_freertos(version: str) -> None:
     register_functions()
     register_api_functions()
     register_commands()
-    register(adapter, rtos="freertos", version=version)
+    register(
+        adapter,
+        rtos="freertos",
+        version=version,
+        verification_note=verdict.note,
+    )
     info("FreeRTOS support ready. Type 'freertos help' (alias: frt) for commands.")
+    return verdict
 
 
-def _setup_rtos(rtos: str, version: str) -> None:
+def _setup_rtos(
+    rtos: str, version: str, *, allow_unverified: bool = False
+) -> TargetVerdict:
     """Dispatch to the appropriate RTOS setup function.
 
     Args:
         rtos: RTOS name (e.g. ``"rtthread"``).
         version: Full RTOS version string.
+        allow_unverified: Passed through to the adapter's target check.
+
+    Returns:
+        The selected adapter's target verdict; an unsupported name yields a
+        refusal verdict instead of raising, so callers can report one shape.
     """
     if rtos == "rtthread" or rtos == "rt-thread" or rtos == "rtt":
-        _setup_rtthread(version)
-    elif rtos == "freertos" or rtos == "frt":
-        _setup_freertos(version)
-    else:
-        warn(f"unsupported RTOS: {rtos!r}")
-        warn("currently supported: rtthread, freertos")
+        return _setup_rtthread(version, allow_unverified=allow_unverified)
+    if rtos == "freertos" or rtos == "frt":
+        return _setup_freertos(version, allow_unverified=allow_unverified)
+    warn(f"unsupported RTOS: {rtos!r}")
+    warn("currently supported: rtthread, freertos")
+    return TargetVerdict(
+        code="unsupported_rtos",
+        message=f"unsupported RTOS: {rtos!r}; currently supported: rtthread, freertos",
+    )
 
 
 def initialize() -> None:

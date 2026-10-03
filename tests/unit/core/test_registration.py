@@ -132,6 +132,24 @@ def test_adapter_api_rejects_replacing_the_active_adapter(monkeypatch):
     assert adapter_api.active() is first
 
 
+def test_session_identity_carries_the_verification_note(monkeypatch):
+    """A plugin cannot read init output, so the caveat lives on the session."""
+    monkeypatch.setattr(adapter_api, "_active", None)
+    adapter_api.register(
+        _Adapter(),
+        rtos="rtthread",
+        version="4.0.5",
+        verification_note="no RT-Thread symbol matched",
+    )
+
+    assert adapter_api.session_meta() == ("rtthread", "4.0.5")
+    assert adapter_api.verification_note() == "no RT-Thread symbol matched"
+
+    adapter_api.reset()
+
+    assert adapter_api.verification_note() is None, "reset must drop the caveat"
+
+
 def test_register_functions_resumes_after_a_partial_failure(monkeypatch):
     calls: list[str] = []
     task_array_attempts = 0

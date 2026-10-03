@@ -94,7 +94,7 @@ warning: target RT-Thread version not exported; cannot verify version
 
 | Command | Description |
 | --------- | ------------- |
-| `gdr init <rtos> <version> [--force]` | Initialize the selected RTOS adapter; `--force` replaces one without restarting GDB |
+| `gdr init <rtos> <version> [--force] [--allow-unverified]` | Initialize the selected RTOS adapter; `--force` replaces adapter without restarting GDB, and `--allow-unverified` registers even when the target matches no RTOS symbol (a modified or stripped kernel) |
 | `gdr reset` | Drop the active adapter and session caches |
 | `gdr help [topic]` | Show bootstrap or pretty-printer help |
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |

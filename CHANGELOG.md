@@ -19,6 +19,12 @@ All notable changes to GDR are documented in this file.
 - `gdr api snapshot --no-heap` drops the heap walk from a snapshot, so a
   client's stop-time refresh can skip the only full-memory traversal among the
   panel verbs.
+- `gdr init` refuses to register an adapter when the target matches no RTOS
+  symbol, instead of answering every later read with empty tables;
+  `gdr init <rtos> <version> --allow-unverified` overrides that for a kernel
+  whose symbols were deliberately modified or stripped. An unverified
+  registration is recorded on the session and repeated in every API envelope's
+  `warnings`, so a client shows the caveat rather than trusting the reads.
 - The extension gains an RTOS panel in the bottom panel area (one tab per debug
   session): task/object/heap/check cards rendered from the snapshot envelope,
   stop-driven refresh with a generation guard, configurable heap collection
@@ -44,6 +50,13 @@ All notable changes to GDR are documented in this file.
   one envelope and `$gdr_json` / `$gdr_json_chunk` return it through GDB
   evaluate, with a chunked fallback for payloads larger than one result.
   `gdr init --json` reports the init outcome as one structured line.
+
+### Changed
+
+- `gdr init --json` reports `verified` and `markers`, adds a `warning` when the
+  target could not confirm the adapter, and reports refusals as a coded
+  `error` object (the same shape the API envelope uses) instead of a bare
+  message string.
 
 ### Fixed
 

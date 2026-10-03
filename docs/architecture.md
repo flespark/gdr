@@ -270,6 +270,29 @@ URI protocol (`vscode://mcu-debug.memory-view?expr=<addr>`), the same channel
 cortex-debug uses; the viewer evaluates the bare address literal in the stopped
 session, never an inferior call.
 
+### One evidence ladder for `probe` and `init`
+
+`gdr probe` and `gdr init` must not disagree about a target, so they read the
+same evidence in the same order: the adapter's presence markers (`PROBE_MARKERS`
+in `rtthread/navigation.py` and `freertos/layout.py`, imported rather than
+copied), then the version constants. They differ only in what they do with a
+missing answer: `probe` reports `undetected` and leaves the decision to the
+user, while `init` refuses to register -- an adapter registered against a target
+with no matching symbol answers every read with empty tables, which looks like a
+broken kernel rather than a wrong adapter.
+
+Two deliberate asymmetries keep real workflows working:
+
+- **Markers present but no exported version** is *accepted* with a note: the
+  user asserted the version, which is exactly what the plugin's detection
+  wizard needs after an `undetected` probe.
+- **`--allow-unverified`** registers anyway, for a kernel whose symbols were
+  deliberately modified or stripped. The override is not silent: the verdict's
+  note is stored on the session (`adapter_api.register(verification_note=...)`)
+  and prepended to every later envelope's `warnings`, so a client repeats it on
+  every refresh instead of trusting the reads. That is why the note lives on the
+  session and not in `gdr init`'s output, which a plugin cannot read.
+
 ### Exception guard for kernel data collection
 
 RTOS debugging routinely touches target memory through GDB, and any read can

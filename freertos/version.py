@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import re
 
+from freertos.layout import PROBE_MARKERS
 from gdr.gdb_bridge import (
     lookup_symbol,
     read_int,
     read_macro_int,
     read_macro_text,
     read_macro_text_in_source,
+    symbol_exists,
     warn,
 )
 from gdr.version import (
+    TargetVerdict,
     Version,
     VersionRange,
     decode_version,
@@ -148,26 +151,56 @@ def detect_target_version() -> Version | None:
     return decode_version(numeric, ("decimal", "packed-hex"), SUPPORTED_RANGES)
 
 
-def check_version(value: str) -> Version | None:
-    """Validate the requested version against the target's exported one.
+def check_target(value: str, *, allow_unverified: bool = False) -> TargetVerdict:
+    """Decide whether *value* may register this adapter on this target.
 
-    Returns the parsed version, or ``None`` when validation fails. Invalid or
-    unsupported arguments already emit warnings; a declared/target mismatch
-    emits an error because it aborts adapter registration. The bootstrap uses
-    ``None`` instead of raising because ``SystemExit`` would kill GDB.
+    The presence markers are ``layout.PROBE_MARKERS``, the same table
+    ``gdr probe`` matches, so the probe and this gate cannot disagree about
+    what counts as evidence for "this target runs FreeRTOS".
+
+    Refused when the argument is invalid or unsupported, when the target
+    exports a different version, or when no marker matched at all -- the last
+    one keeps a symbol-less or wrong-target session from registering an adapter
+    whose every read would be empty. *allow_unverified* is the escape hatch for
+    a deliberately modified kernel, and it records the override as the verdict's
+    note rather than hiding it. Markers without an exported version are
+    *accepted* with a note: the user asserted the version, which is the flow the
+    plugin's detection wizard needs.
     """
     expected = validate_version(value)
     if expected is None:
-        return None
-    actual = detect_target_version()
-    if actual is None:
-        warn(
-            "target FreeRTOS version is not exported; requested version is not guessed"
+        return TargetVerdict(
+            code="unsupported_version",
+            message=f"invalid or unsupported FreeRTOS version: {value!r}",
         )
-    elif actual != expected:
-        warn(
+    markers = tuple(name for name in PROBE_MARKERS if symbol_exists(name))
+    actual = detect_target_version()
+    if actual is not None and actual != expected:
+        message = (
             f"FreeRTOS version mismatch: requested {value}, "
             f"but target exports {format_version(actual)}"
         )
-        return None
-    return expected
+        warn(message)
+        return TargetVerdict(code="version_mismatch", message=message)
+    if not markers:
+        if not allow_unverified:
+            message = (
+                "no FreeRTOS symbol matched on this target; load the image "
+                "first, or pass --allow-unverified to register anyway"
+            )
+            warn(message)
+            return TargetVerdict(code="no_target_evidence", message=message)
+        note = (
+            "no FreeRTOS symbol matched; registration was forced with "
+            "--allow-unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    if actual is None:
+        note = (
+            "target FreeRTOS version is not exported; the requested version is "
+            "unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    return TargetVerdict(version=expected, markers=markers)

@@ -131,12 +131,55 @@ def test_detect_version_returns_none_when_nothing_exported(monkeypatch):
     assert version.detect_target_version() is None
 
 
-def test_check_version_rejects_a_target_mismatch(monkeypatch):
-    """A mismatch aborts the init (None), never the GDB session."""
+def test_check_target_rejects_a_target_mismatch(monkeypatch):
+    """A mismatch refuses registration; the GDB session keeps running."""
     warnings: list[str] = []
     monkeypatch.setattr(version, "warn", warnings.append)
     monkeypatch.setattr(version, "detect_target_version", lambda: (10, 5, 0))
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
 
-    assert version.check_version("10.3.1") is None
+    verdict = version.check_target("10.3.1")
 
+    assert not verdict.accepted
+    assert verdict.code == "version_mismatch"
     assert "version mismatch" in warnings[-1]
+
+
+def test_check_target_refuses_a_target_without_any_marker(monkeypatch):
+    """No FreeRTOS symbol means no adapter: every read would come back empty."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("10.3.1")
+
+    assert not verdict.accepted
+    assert verdict.code == "no_target_evidence"
+    assert "--allow-unverified" in warnings[-1]
+
+
+def test_allow_unverified_keeps_the_escape_hatch_open(monkeypatch):
+    """A modified or stripped kernel must still be debuggable on request."""
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("10.3.1", allow_unverified=True)
+
+    assert verdict.accepted
+    assert verdict.version == (10, 3, 1)
+    assert verdict.note is not None and "--allow-unverified" in verdict.note
+
+
+def test_check_target_accepts_markers_without_an_exported_version(monkeypatch):
+    """The user asserts the version here; that is the plugin's confirm flow."""
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("10.3.1")
+
+    assert verdict.accepted
+    assert verdict.note is not None and "unverified" in verdict.note
+    assert verdict.markers == version.PROBE_MARKERS

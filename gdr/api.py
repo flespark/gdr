@@ -24,6 +24,7 @@ from gdr.adapter_api import (
     active,
     default_capabilities,
     session_meta,
+    verification_note,
 )
 from gdr.commands import (
     collect_heap_report,
@@ -301,12 +302,19 @@ def api_call(verb: str, *args: str) -> dict[str, object]:
             "internal", f"{type(exc).__name__}: {exc}", _elapsed_ms(start)
         )
     rtos, rtos_version = session_meta()
+    # Reason: a plugin cannot read `gdr init`'s console output, so the one
+    # caveat a session can carry -- the target could not confirm the adapter
+    # it was registered for -- rides every envelope instead of being lost
+    # with that command's output. A client renders it as a hint, so an
+    # unverified session is never silently trusted.
+    note = verification_note()
+    session_warnings = [note, *warnings] if note is not None else list(warnings)
     return pack_envelope(
         data,
         rtos=rtos,
         rtos_version=rtos_version,
         gdr_version=GDR_VERSION,
-        warnings=warnings,
+        warnings=session_warnings,
         generation=current_generation(),
         elapsed_ms=_elapsed_ms(start),
     )

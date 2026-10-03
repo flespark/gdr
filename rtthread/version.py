@@ -7,9 +7,11 @@ from gdr.gdb_bridge import (
     read_int,
     read_macro_int,
     read_macro_int_in_source,
+    symbol_exists,
     warn,
 )
 from gdr.version import (
+    TargetVerdict,
     Version,
     VersionEncoding,
     VersionRange,
@@ -18,6 +20,7 @@ from gdr.version import (
     parse_version,
     version_in_ranges,
 )
+from rtthread.navigation import PROBE_MARKERS
 
 SUPPORTED_RANGES: tuple[VersionRange, ...] = (
     ((3, 1, 0), (3, 1, 5)),
@@ -114,25 +117,57 @@ def detect_target_version() -> Version | None:
     return None
 
 
-def check_version(version: str) -> Version | None:
-    """Validate the requested version and compare with the target when known.
+def check_target(version: str, *, allow_unverified: bool = False) -> TargetVerdict:
+    """Decide whether *version* may register this adapter on this target.
 
-    ``None`` when the argument is invalid/unsupported or disagrees with the
-    target. Validation failures are already warned; a target mismatch is an
-    error because adapter registration is aborted. The bootstrap uses ``None``
-    instead of raising because ``SystemExit`` would kill GDB.
+    The presence markers are ``navigation.PROBE_MARKERS``, the same table
+    ``gdr probe`` matches, so the probe and this gate cannot disagree about
+    what counts as evidence for "this target runs RT-Thread".
+
+    Refused when the argument is invalid or unsupported, when the target
+    exports a different version, or when no marker matched at all. That last
+    refusal is what keeps a symbol-less or wrong-target session from
+    registering an adapter whose every read would be empty; *allow_unverified*
+    is the escape hatch for a deliberately modified kernel, and it records the
+    override as the verdict's note rather than hiding it.
+
+    A target that shows markers but exports no version constant is *accepted*
+    with a note: the user asserted the version, which is exactly the flow the
+    plugin's detection wizard needs.
     """
     expected = validate_version(version)
     if expected is None:
-        return None
+        return TargetVerdict(
+            code="unsupported_version",
+            message=f"invalid or unsupported RT-Thread version: {version!r}",
+        )
+    markers = tuple(name for name in PROBE_MARKERS if symbol_exists(name))
     detected = detect_target_version()
-    if detected is None:
-        warn("target RT-Thread version not exported; cannot verify version")
-        return expected
-    if detected != expected:
-        warn(
+    if detected is not None and detected != expected:
+        message = (
             f"RT-Thread version mismatch: requested {version}, "
             f"but target exports {format_version(detected)}"
         )
-        return None
-    return expected
+        warn(message)
+        return TargetVerdict(code="version_mismatch", message=message)
+    if not markers:
+        if not allow_unverified:
+            message = (
+                "no RT-Thread symbol matched on this target; load the image "
+                "first, or pass --allow-unverified to register anyway"
+            )
+            warn(message)
+            return TargetVerdict(code="no_target_evidence", message=message)
+        note = (
+            "no RT-Thread symbol matched; registration was forced with "
+            "--allow-unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    if detected is None:
+        note = (
+            "target RT-Thread version not exported; the requested version is unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    return TargetVerdict(version=expected, markers=markers)

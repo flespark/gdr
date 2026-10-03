@@ -90,7 +90,7 @@ warning: target RT-Thread version not exported; cannot verify version
 
 | 命令 | 说明 |
 | ------ | ------ |
-| `gdr init <rtos> <version> [--force]` | 初始化指定的 RTOS adapter；`--force` 无需重启 GDB 即可替换已有 adapter |
+| `gdr init <rtos> <version> [--force] [--allow-unverified]` | 初始化指定的 RTOS adapter；`--force` 无需重启 GDB 即可替换已有 adapter，`--allow-unverified` 在目标未匹配到任何 RTOS 符号（内核被修改或符号被裁剪）时仍注册 |
 | `gdr reset` | 清除当前 adapter 与会话缓存 |
 | `gdr help [topic]` | 查看初始化或 pretty-printer 帮助 |
 | `<rtos> help [topic]` | 浏览命令树；topic 包含字段说明、使用 tips、配置依赖与实现限制 |

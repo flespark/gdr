@@ -23,12 +23,18 @@ def test_validate_version_rejects_unverified_gaps(value, monkeypatch):
     assert version.validate_version(value) is None
 
 
-def test_check_version_returns_the_parsed_target_profile(monkeypatch):
-    """Bootstrap receives the parsed version needed by the layout factory."""
+def test_check_target_returns_the_parsed_target_profile(monkeypatch):
+    """Bootstrap receives the parsed version the layout factory needs."""
     monkeypatch.setattr(version, "detect_target_version", lambda: None)
     monkeypatch.setattr(version, "warn", lambda _message: None)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
 
-    assert version.check_version("3.1.3") == (3, 1, 3)
+    verdict = version.check_target("3.1.3")
+
+    assert verdict.accepted
+    assert verdict.version == (3, 1, 3)
+    assert verdict.note is not None, "an unexported version is recorded, not hidden"
+    assert verdict.markers == version.PROBE_MARKERS
 
 
 def test_detect_target_version_uses_declared_packed_hex_encoding(monkeypatch):
@@ -62,12 +68,53 @@ def test_detect_target_version_uses_macros_when_symbols_are_absent(monkeypatch):
     assert version.detect_target_version() == (4, 0, 5)
 
 
-def test_check_version_rejects_a_target_mismatch(monkeypatch):
-    """A mismatch aborts the init (None), never the GDB session."""
+def test_check_target_rejects_a_target_mismatch(monkeypatch):
+    """A mismatch refuses registration; the GDB session keeps running."""
     warnings: list[str] = []
     monkeypatch.setattr(version, "warn", warnings.append)
     monkeypatch.setattr(version, "detect_target_version", lambda: (4, 0, 5))
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
 
-    assert version.check_version("3.1.3") is None
+    verdict = version.check_target("3.1.3")
 
+    assert not verdict.accepted
+    assert verdict.code == "version_mismatch"
     assert "version mismatch" in warnings[-1]
+
+
+def test_check_target_refuses_a_target_without_any_marker(monkeypatch):
+    """No RT-Thread symbol means no adapter: every read would come back empty."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("4.0.5")
+
+    assert not verdict.accepted
+    assert verdict.code == "no_target_evidence"
+    assert "--allow-unverified" in warnings[-1]
+
+
+def test_allow_unverified_keeps_the_escape_hatch_open(monkeypatch):
+    """A modified or stripped kernel must still be debuggable on request."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("4.0.5", allow_unverified=True)
+
+    assert verdict.accepted
+    assert verdict.version == (4, 0, 5)
+    assert verdict.markers == ()
+    assert verdict.note is not None and "--allow-unverified" in verdict.note
+
+
+def test_check_target_rejects_an_unsupported_version_argument(monkeypatch):
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+
+    verdict = version.check_target("9.9.9")
+
+    assert not verdict.accepted
+    assert verdict.code == "unsupported_version"

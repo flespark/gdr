@@ -4,11 +4,38 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Literal
 
 Version = tuple[int, int, int]
 VersionRange = tuple[Version, Version]
 VersionEncoding = Literal["decimal", "packed-hex"]
+
+
+@dataclass(frozen=True)
+class TargetVerdict:
+    """What a target itself could confirm about a requested adapter version.
+
+    An accepted request carries ``version`` (the parsed profile a layout
+    factory needs) and, when the target could not confirm the request, a
+    ``note``. The note is recorded on the session and repeated in every later
+    envelope, because a plugin cannot read this command's console output.
+
+    A refusal carries ``code``/``message`` and no version: registration must
+    not happen. Both paths describe the *same* evidence ladder ``gdr probe``
+    reports, so the two entry points cannot disagree about a target.
+    """
+
+    version: Version | None = None
+    note: str | None = None
+    markers: tuple[str, ...] = ()
+    code: str | None = None
+    message: str | None = None
+
+    @property
+    def accepted(self) -> bool:
+        """Whether the request may register an adapter."""
+        return self.version is not None
 
 
 def parse_version(value: str) -> Version | None:

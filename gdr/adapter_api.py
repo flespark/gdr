@@ -427,6 +427,7 @@ class Capabilities:
 _active: RtosAdapter | None = None
 _active_rtos: str | None = None
 _active_version: str | None = None
+_active_verification_note: str | None = None
 
 
 def register(
@@ -434,6 +435,7 @@ def register(
     *,
     rtos: str | None = None,
     version: str | None = None,
+    verification_note: str | None = None,
 ) -> None:
     """Register one session adapter and reject replacement by another.
 
@@ -443,12 +445,18 @@ def register(
             rides in every API envelope so a plugin can show what the
             current session decodes without parsing init logs.  ``gdr reset``
             clears both.
+        verification_note: Why the target could not confirm this adapter, when
+            that happened. A plugin cannot read ``gdr init``'s console output,
+            so the note is kept on the session and repeated in every later
+            envelope's ``warnings`` (see ``gdr.api``); ``None`` means the
+            target confirmed the request.
     """
-    global _active, _active_rtos, _active_version
+    global _active, _active_rtos, _active_version, _active_verification_note
     if _active is None:
         _active = adapter
         _active_rtos = rtos
         _active_version = version
+        _active_verification_note = verification_note
     elif _active is not adapter:
         raise RuntimeError("an RTOS adapter is already initialized")
 
@@ -462,6 +470,17 @@ def session_meta() -> tuple[str | None, str | None]:
     return _active_rtos, _active_version
 
 
+def verification_note() -> str | None:
+    """Why the target could not confirm the registered adapter, if it could not.
+
+    ``None`` means the target's own evidence agreed with the request. The API
+    layer prepends this to every envelope's warnings, so a client shows the
+    same caveat the prompt warned about instead of silently trusting reads
+    that may not mean anything.
+    """
+    return _active_verification_note
+
+
 def is_initialized() -> bool:
     return _active is not None
 
@@ -473,10 +492,11 @@ def reset() -> None:
     caches (``RtosAdapter.reset``) and the bridge's loadable-ranges cache;
     this only resets the semantic session itself.
     """
-    global _active, _active_rtos, _active_version
+    global _active, _active_rtos, _active_version, _active_verification_note
     _active = None
     _active_rtos = None
     _active_version = None
+    _active_verification_note = None
 
 
 def default_capabilities(adapter: RtosAdapter) -> Capabilities:
