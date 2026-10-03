@@ -163,13 +163,29 @@ def _checks_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
 
 
 def _snapshot_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
-    """Every panel-facing verb in one envelope, one round trip."""
-    if args:
-        raise ApiError("bad_args", "snapshot takes no arguments")
+    """Every panel-facing verb in one envelope, one round trip.
+
+    ``--no-heap`` drops the heap section: the heap walk is the one full-memory
+    traversal among the panel verbs, so a stop-time refresh that only needs
+    tasks/objects/system can skip it (mirrors the cost-control switch the
+    plugin exposes; ``gdr api snapshot --no-heap`` is the same call).
+    """
+    no_heap = False
+    for arg in args:
+        if arg == "--no-heap":
+            no_heap = True
+        else:
+            raise ApiError(
+                "bad_args",
+                f"snapshot takes no arguments other than --no-heap (got {arg!r})",
+            )
     tasks, task_warnings = _tasks_verb(adapter, ())
     objects, object_warnings = _objects_verb(adapter, ())
     system, _system_warnings = _system_verb(adapter, ())
-    heap, heap_warnings = _heap_verb(adapter, ())
+    heap: object | None = None
+    heap_warnings: list[str] = []
+    if not no_heap:
+        heap, heap_warnings = _heap_verb(adapter, ())
     capabilities, _capability_warnings = _capabilities_verb(adapter, ())
     checks, check_warnings = _checks_verb(adapter, ())
     warnings = task_warnings + object_warnings + heap_warnings + check_warnings

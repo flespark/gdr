@@ -16,6 +16,9 @@ All notable changes to GDR are documented in this file.
 - A VSCode extension under `vscode/` consumes the JSON API: it loads GDR into
   the session's own GDB, probes the target, initializes the adapter the user
   confirms, and states precisely why a session cannot host GDR.
+- `gdr api snapshot --no-heap` drops the heap walk from a snapshot, so a
+  client's stop-time refresh can skip the only full-memory traversal among the
+  panel verbs.
 - Typed presentation contract for tooling: every list table declares its
   columns (`ColumnSpec`), carries machine values beside the rendered text and
   names its identity column, so a client can sort, right-align and key rows
@@ -33,6 +36,10 @@ All notable changes to GDR are documented in this file.
 
 ### Fixed
 
+- The VSCode extension checks Python before `source gdr.py` at launch. Without
+  Python the session still starts and the panel shows why. The first stop does
+  not check Python or source again. The source path is unquoted so GDB 16
+  accepts it.
 - Version detection reads a kernel's version macros from the loaded image's
   debug strings instead of GDB's compilation-unit scope, so it keeps working when
   the build tree is gone (a flashed release image) or when the halted PC sits in

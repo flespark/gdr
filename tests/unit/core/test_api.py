@@ -43,6 +43,7 @@ class _ApiAdapter:
     resets: int = 0
     boom: bool = False
     boom_exc: Exception | None = None
+    heap_boom: bool = False
 
     def task_table(self):
         if self.boom:
@@ -65,6 +66,8 @@ class _ApiAdapter:
         return self.summary
 
     def heap_report(self):
+        if self.heap_boom:
+            raise AssertionError("heap must not be collected")
         return self.report
 
     def find_task(self, name):  # noqa: ARG002
@@ -202,6 +205,26 @@ def test_system_heap_capabilities_and_snapshot_compose(session):
     assert isinstance(checks, dict)
     assert checks["counts"] == {"ok": 1}
     assert _dict_list(checks["findings"])[0]["name"] == "TaskCount"
+
+
+def test_snapshot_no_heap_skips_the_heap_walk(session):
+    """The cost switch must not even touch the heap collector."""
+    session.heap_boom = True
+
+    snapshot = api.api_call("snapshot", "--no-heap")
+
+    assert snapshot["ok"] is True
+    data = _data(snapshot)
+    assert data["heap"] is None
+    assert "tasks" in data and "checks" in data
+
+
+def test_snapshot_rejects_unknown_flags(session):  # noqa: ARG001
+    snapshot = api.api_call("snapshot", "--no-stack-peak")
+
+    assert snapshot["ok"] is False
+    assert snapshot["error"]["code"] == "bad_args"  # type: ignore[index]
+    assert "--no-heap" in snapshot["error"]["message"]  # type: ignore[index]
 
 
 def test_checks_verb_reports_findings_and_counts(session):
