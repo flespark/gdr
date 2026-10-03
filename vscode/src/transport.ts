@@ -37,6 +37,8 @@ export interface GdrEnvelope {
 	rtos_version?: string | null;
 	gdr_version?: string | null;
 	generation?: number;
+	/** Wall time of the verb on GDR's side; lets the UI self-throttle. */
+	elapsed_ms?: number;
 }
 
 export interface ChunkMeta {

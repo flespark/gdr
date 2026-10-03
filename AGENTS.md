@@ -56,8 +56,13 @@ vscode/                VSCode extension: a client of GDR's JSON envelope
   src/inject.ts        per-debug-adapter loader injection plan
   src/session.ts       first-stop lifecycle: Python check, load, probe, init
   src/runtime.ts       bundled runtime path + envelope-schema check
+  src/snapshot.ts      snapshot envelope types/parse, cost args, freshness guard
+  src/memoryNav.ts     address -> mcu-debug memory-view URI (pure)
+  src/panel.ts         panel controller: session tabs, stop-refresh, record, nav
+  src/webview/         host-rendered panel markup, webview client, style, state
   src/extension.ts     activation, launch-config provider, debug-tracker wiring
   scripts/vendor-gdr.sh  generate resources/gdr from this repository's runtime
+  media/               extension icons
   test/                node --test units and a real QEMU/GDB session check
 ```
 

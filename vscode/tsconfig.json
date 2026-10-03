@@ -11,6 +11,8 @@
     "noUnusedParameters": true,
     "noImplicitOverride": true,
     "exactOptionalPropertyTypes": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "outDir": "dist",
     "rootDir": "src",
     "types": [

@@ -152,13 +152,14 @@ export function decideInit(
 	};
 }
 
-/** The launch-configuration shape this cache key reads (no vscode import). */
+/** The launch-configuration shape this cache key reads. */
 export interface LaunchIdentity {
 	name?: string;
 	type?: string;
+	/** The ELF, as cppdbg/cppvsdbg spell it. */
 	program?: string;
+	/** The ELF, as cortex-debug spells it (launch and attach alike). */
 	executable?: string;
-	coreConfigs?: { programBinary?: string }[];
 }
 
 /**
@@ -172,10 +173,12 @@ export function cacheKey(identity: LaunchIdentity | undefined): string | null {
 	if (!identity) {
 		return null;
 	}
-	const program =
-		identity.executable ??
-		identity.program ??
-		identity.coreConfigs?.find((core) => typeof core.programBinary === 'string')?.programBinary;
+	// Reason: only the two spellings the supported adapters actually declare --
+	// `executable` for cortex-debug and `program` for cppdbg/cppvsdbg (verified
+	// against their published launch schemas). A third guess would silently
+	// never match, so an unknown key degrades to "no cache", which only costs a
+	// repeated probe, never a wrong answer.
+	const program = identity.executable ?? identity.program;
 	if (typeof program !== 'string' || program === '') {
 		return null;
 	}

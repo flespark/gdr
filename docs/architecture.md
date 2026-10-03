@@ -246,6 +246,30 @@ boots a real QEMU profile, loads a real fixture ELF, and drives GDR through the
 same expressions the extension issues, so a contract change on either side fails
 in a test rather than in a user's session.
 
+### The panel renders host-side and never decodes
+
+The panel (`vscode/src/panel.ts`) is a webview view that follows the tracker's
+stop events: every refresh asks one `snapshot` verb (chunked transport, with a
+file bypass via ``gdr api snapshot --json --out`` for very large sessions) and
+applies the answer only if its `generation` did not race a newer stop. The
+rendering lives in `vscode/src/webview/render.ts` as pure functions that turn an
+envelope into HTML host-side; the webview script only swaps the markup and posts
+clicks back, so the XSS boundary is a single audited `escapeHtml` seam instead
+of a DOM codebase inside the webview. Panel semantics derive only from the
+envelope's own fields: alignment from `ColumnSpec.align`, machine values from
+`value_rows`, waiter lists from `waiters` cells, capability gaps and warnings
+verbatim as hint bars. The one arithmetic the panel performs is a used/stack
+ratio bar against the adapter-provided numeric pair -- presentation, never
+kernel interpretation.
+
+Cost control rides the verb layer, not new surface: `snapshot` accepts
+`--no-heap` (skipping the only full-memory walk among panel verbs), and
+`gdr.refreshHeaps`/`gdr.refreshOnStop` say whether the panel asks for it and how
+often. Address cells navigate through the mcu-debug `memory-view` extension's
+URI protocol (`vscode://mcu-debug.memory-view?expr=<addr>`), the same channel
+cortex-debug uses; the viewer evaluates the bare address literal in the stopped
+session, never an inferior call.
+
 ### Exception guard for kernel data collection
 
 RTOS debugging routinely touches target memory through GDB, and any read can

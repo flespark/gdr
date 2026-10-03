@@ -1,0 +1,19 @@
+# What not to ship in the VSIX.
+#
+# The bundled GDR runtime and the compiled output are the payload; sources,
+# tests, tooling and git noise are not. `resources/gdr` is git-ignored but the
+# extension cannot run without it, so it is explicitly re-included below
+# (vsce honors .gitignore unless a .vscodeignore negation says otherwise).
+# The webview needs `src/webview/style.css`, so `src/` stays in the package.
+
+node_modules/**
+test/**
+scripts/**
+package-lock.json
+tsconfig.json
+tsconfig.test.json
+.gitignore
+**/*.map
+
+# The vendored runtime is generated (git-ignored); carry it anyway.
+!resources/gdr/**

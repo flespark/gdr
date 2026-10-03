@@ -16,13 +16,17 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 
 import { parseProbePayload } from '../../src/probe.ts';
+import { parseSnapshot, type PanelSnapshot } from '../../src/snapshot.ts';
+import { renderApp, snapshotHints } from '../../src/webview/render.ts';
 import {
+	describeFailure,
 	parseEnvelope,
 	reassembleChunks,
 	transportPlan,
@@ -191,6 +195,94 @@ function mustEnvelope(text: string): GdrEnvelope {
 }
 
 const reason = skipReason();
+
+function renderableSnapshot(envelope: GdrEnvelope): PanelSnapshot {
+	const data = must(parseSnapshot(envelope.data), 'a real snapshot must parse');
+	return {
+		rtos: envelope.rtos ?? null,
+		rtosVersion: envelope.rtos_version ?? null,
+		gdrVersion: envelope.gdr_version ?? null,
+		generation: envelope.generation ?? null,
+		elapsedMs: envelope.elapsed_ms ?? null,
+		collectedAt: Date.now(),
+		warnings: envelope.warnings ?? [],
+		noHeap: false,
+		data
+	};
+}
+
+/**
+ * A real RT-Thread snapshot rendered by the panel renderer.
+ *
+ * One batch GDB session loads the fixture, initializes the adapter, and asks
+ * the snapshot through GDR's file bypass (`--out`), which is the Phase 4
+ * mechanism for the very large payloads; the written envelope then goes
+ * through the real parsers and the real renderer. This is the closest a
+ * panel assertion gets without an Electron host: real task rows, real column
+ * alignment, real hint text.
+ */
+test('a real snapshot renders task rows, alignment and hints', { skip: reason }, async () => {
+	await withSession((port) => {
+		const outFile = path.join(os.tmpdir(), `gdr-snapshot-integration-${process.pid}.json`);
+		try {
+			const run = spawnSync(
+				GDB,
+				[
+					'--nx',
+					'--quiet',
+					'--batch',
+					'-ex',
+					`file ${ELF}`,
+					'-ex',
+					`target remote :${port}`,
+					'-ex',
+					`source ${GDR_ENTRY}`,
+					'-ex',
+					'gdr init rtthread 4.0.5',
+					'-ex',
+					`gdr api snapshot --json --out ${outFile}`,
+					'-ex',
+					'quit'
+				],
+				{ encoding: 'utf8' }
+			);
+			assert.equal(run.status, 0, `the snapshot batch failed: ${run.stderr}`);
+
+			const envelope = parseEnvelope(readFileSync(outFile, 'utf8'));
+			assert.ok(envelope, 'the file bypass must deliver one envelope');
+			assert.equal(envelope.ok, true, describeFailure(envelope));
+			const snapshot = renderableSnapshot(envelope);
+			assert.ok(snapshot.data.tasks, 'the snapshot carries a task table');
+			const tasks = snapshot.data.tasks;
+			assert.ok(tasks.rows.length > 0, 'the task table has rows');
+
+			const html = renderApp({
+				sessions: [{ id: 's0', name: 'cortex-a9', status: 'ok', message: null, snapshot }],
+				activeId: 's0'
+			});
+
+			// The first task's name (without the running-task asterisk) appears.
+			const firstName = tasks.rows[0][0].replace(/ \*$/, '');
+			assert.ok(html.includes(firstName), `task name ${firstName} must render`);
+			assert.ok(html.includes('gdr-right'), 'numeric columns are right-aligned');
+			assert.ok(html.includes('data-address='), 'address cells are navigable');
+			assert.ok(html.includes('gdr-table'), 'the table markup is present');
+
+			// Panel-visible messages: deduced either from hint bars or, when the
+			// kernel built clean, an explicit zero-length check.
+			const hints = snapshotHints(snapshot);
+			for (const hint of hints) {
+				assert.ok(html.includes(hint.text), `the hint ${hint.text} must be rendered`);
+			}
+		} finally {
+			try {
+				rmSync(outFile, { force: true });
+			} catch {
+				// A stray temp file is acceptable next to a failing assertion.
+			}
+		}
+	});
+});
 
 test('probe answers with real evidence before any adapter exists', { skip: reason }, async () => {
 	await withSession((port) => {

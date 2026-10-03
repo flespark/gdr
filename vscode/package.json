@@ -3,13 +3,15 @@
   "displayName": "GDR RTOS Views",
   "description": "RTOS kernel state views for embedded debugging, driven by the GDR GDB helper",
   "publisher": "flespark",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Debuggers"
+    "Debuggers",
+    "Visualization",
+    "RTOS"
   ],
   "keywords": [
     "gdb",
@@ -32,6 +34,52 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "gdr-rtos-views",
+          "title": "GDR RTOS Views",
+          "icon": "media/rtos.svg"
+        }
+      ]
+    },
+    "views": {
+      "gdr-rtos-views": [
+        {
+          "type": "webview",
+          "id": "gdrRtosViews.panel",
+          "name": "RTOS",
+          "when": "gdrRtosViews.active"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "gdrRtosViews.open",
+        "title": "GDR: Open RTOS Views",
+        "category": "GDR"
+      },
+      {
+        "command": "gdrRtosViews.refresh",
+        "title": "GDR: Refresh RTOS Views",
+        "category": "GDR",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gdrRtosViews.showStatus",
+        "title": "GDR: Show Adapter Status",
+        "category": "GDR"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "gdrRtosViews.refresh",
+          "when": "view == gdrRtosViews.panel",
+          "group": "navigation@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "GDR RTOS Views",
       "properties": {
@@ -59,6 +107,34 @@
           "type": "boolean",
           "default": true,
           "description": "Initialize the adapter automatically at the first stop when the probe is unambiguous, instead of asking."
+        },
+        "gdr.refreshOnStop": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh the RTOS panel at each stop; turn it off to only refresh on initialization or with the panel's refresh button."
+        },
+        "gdr.refreshHeaps": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include the heap snapshot in every refresh. The heap walk is the most expensive part; disable it when stops feel slow."
+        },
+        "gdr.recordSnapshotsDir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory to write one JSON envelope per applied refresh (for bug reports and offline inspection). Empty disables recording."
+        },
+        "gdr.snapshotTransport": {
+          "type": "string",
+          "enum": [
+            "evaluate",
+            "file"
+          ],
+          "enumDescriptions": [
+            "Read the envelope from DAP evaluate results (inline, or base64 frames when large). Works everywhere, including remote debug servers.",
+            "Ask GDB to write the envelope to a file and read it back; cheaper for very large snapshots, but the extension must be able to read the filesystem GDB writes to."
+          ],
+          "default": "evaluate",
+          "markdownDescription": "How the panel's snapshot crosses from GDB to the extension. `file` runs `gdr api snapshot --json --out <tmp>` and reads the file instead of the evaluate transport; it needs the filesystem GDB writes to be readable by the extension — true for a locally started GDB (whether gdbserver is local or remote) and for Remote-SSH/Dev Containers, where the extension runs beside GDB, but not for a GDB in a separate filesystem namespace (for example WSL)."
         }
       }
     }
@@ -67,11 +143,13 @@
     "vendor": "bash scripts/vendor-gdr.sh",
     "check-types": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test test/*.test.ts test/integration/*.test.ts",
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "package": "npm run vendor && npm run build && vsce package --out gdr-rtos-views.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.4.0",
     "typescript": "^5.7.0"
   }
 }

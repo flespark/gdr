@@ -150,15 +150,16 @@ test('a pinned RTOS without a version asks only about that adapter', () => {
 });
 
 test('the cache key follows the firmware path, not just the session name', () => {
-	const base = { type: 'cortex-debug', name: 'Debug', executable: '/tmp/a.elf' };
-
-	assert.equal(cacheKey(base), 'cortex-debug|Debug|/tmp/a.elf');
-	assert.equal(cacheKey({ type: 'cppdbg', name: 'D', program: '/tmp/b.elf' }), 'cppdbg|D|/tmp/b.elf');
+	// The two spellings the supported adapters declare.
 	assert.equal(
-		cacheKey({ type: 'probe-rs-debug', name: 'D', coreConfigs: [{ programBinary: '/tmp/c.elf' }] }),
-		'probe-rs-debug|D|/tmp/c.elf'
+		cacheKey({ type: 'cortex-debug', name: 'Debug', executable: '/tmp/a.elf' }),
+		'cortex-debug|Debug|/tmp/a.elf'
 	);
+	assert.equal(cacheKey({ type: 'cppdbg', name: 'D', program: '/tmp/b.elf' }), 'cppdbg|D|/tmp/b.elf');
+
+	// No readable firmware path means no cache, never a key on the name alone.
 	assert.equal(cacheKey({ type: 'cppdbg', name: 'D' }), null);
+	assert.equal(cacheKey({ type: 'cortex-debug', name: 'D', executable: '' }), null);
 	assert.equal(cacheKey(undefined), null);
 });
 

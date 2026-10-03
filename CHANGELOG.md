@@ -19,6 +19,17 @@ All notable changes to GDR are documented in this file.
 - `gdr api snapshot --no-heap` drops the heap walk from a snapshot, so a
   client's stop-time refresh can skip the only full-memory traversal among the
   panel verbs.
+- The extension gains an RTOS panel in the bottom panel area (one tab per debug
+  session): task/object/heap/check cards rendered from the snapshot envelope,
+  stop-driven refresh with a generation guard, configurable heap collection
+  (`gdr.refreshHeaps`), JSON snapshot recording for bug reports
+  (`gdr.recordSnapshotsDir`), a transport choice for very large payloads
+  (`gdr.snapshotTransport`), and address navigation into the mcu-debug memory
+  viewer.
+- The extension checks GDB's Python at launch instead of at the first stop: a
+  generated loader file records `present`/`absent`, so a GDB built without
+  Python no longer aborts the debug launch, and the panel names the `-py3`
+  binary to use instead.
 - Typed presentation contract for tooling: every list table declares its
   columns (`ColumnSpec`), carries machine values beside the rendered text and
   names its identity column, so a client can sort, right-align and key rows

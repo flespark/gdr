@@ -1,20 +1,30 @@
 /**
  * One debug session's GDR lifecycle.
  *
- * The plugin works only after the session starts: at the first stop it loads
- * the runtime, confirms the session's GDB has Python, asks GDR which adapter
- * this target is, initializes it, and only then has data to show. Every step
+ * Launch checks Python and loads GDR. A missing interpreter is recorded for
+ * the panel and does not abort the session. At the first stop this module
+ * asks GDR which adapter this target is, initializes it, and only then has
+ * data to show. It does not check Python or source GDR again. Every step
  * reports a precise reason on failure instead of leaving an empty panel.
  *
  * All target access happens inside the debugger's own GDB through DAP; this
  * module never reads or writes target memory itself.
  */
 
+/// <reference types="node" />
+// Reason: this subproject keeps its own node_modules, so an editor or `tsc`
+// invocation whose analysis root is the repository root would otherwise not
+// resolve the Node builtins this file uses.
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 import * as vscode from 'vscode';
 
-import { injectionPlan, initCommand } from './inject';
-import { cacheKey, decideInit, parseProbePayload, type GdrSettings, type InitDecision } from './probe';
-import { checkRuntime, locateRuntime, type RuntimeLocation } from './runtime';
+import { initCommand, launchLoaderPath, parsePythonResult, pythonResultPath, unsupportedReason } from './inject.ts';
+import { cacheKey, decideInit, parseProbePayload, type GdrSettings, type InitDecision } from './probe.ts';
+import { checkRuntime, locateRuntime, type RuntimeLocation } from './runtime.ts';
 import {
 	describeFailure,
 	evaluateExpression,
@@ -23,7 +33,17 @@ import {
 	reassembleChunks,
 	transportPlan,
 	type GdrEnvelope
-} from './transport';
+} from './transport.ts';
+
+/**
+ * Shown in the panel when launch finds a GDB built without Python.
+ *
+ * The launch script only records the result; this is the text the user sees.
+ */
+export const PYTHON_MISSING_MESSAGE =
+	'This GDB has no Python interpreter, so GDR cannot run in it. ' +
+	'xPack ships both variants: arm-none-eabi-gdb has no Python, arm-none-eabi-gdb-py3 does. ' +
+	"Point the launch configuration's gdbPath at the -py3 binary.";
 
 /** The subset of a DAP evaluate response this client reads. */
 interface EvaluateResponse {
@@ -32,23 +52,26 @@ interface EvaluateResponse {
 }
 
 export interface SessionState {
-	/** Whether the source/init commands have been issued for this session. */
-	loaded: boolean;
 	/** Whether the session's GDB has the Python interpreter GDR needs. */
 	python: boolean | null;
 	/** Adapter and version currently initialized, once known. */
 	initialized: { rtos: string; version: string } | null;
 	/** The detection decision last taken, for reporting. */
 	decision: InitDecision | null;
+	/** The first problem that stopped the lifecycle, for the panel. */
+	errorMessage: string | null;
 }
 
 export class GdrSession {
 	private readonly state: SessionState = {
-		loaded: false,
 		python: null,
 		initialized: null,
-		decision: null
+		decision: null,
+		errorMessage: null
 	};
+
+	private closed = false;
+	private launchPythonReady: Promise<boolean> | null = null;
 
 	constructor(
 		private readonly session: vscode.DebugSession,
@@ -68,64 +91,112 @@ export class GdrSession {
 		return this.state.initialized;
 	}
 
+	/** The first lifecycle failure, for the panel's status block. */
+	get errorMessage(): string | null {
+		return this.state.errorMessage;
+	}
+
 	/**
 	 * Run the lifecycle up to the point where data can be read.
 	 *
 	 * Returns `true` when the session is initialized and verbs will answer.
 	 */
 	async onFirstStop(frameId: number): Promise<boolean> {
-		const request = this.session.configuration.request === 'attach' ? 'attach' : 'launch';
-		const plan = injectionPlan(this.session.type, request, {
-			runtimePath: this.runtime.directory,
-			init: null
-		});
-		if (!plan.supported) {
-			this.log(plan.reason ?? 'this debug adapter cannot host GDR');
+		const reason = unsupportedReason(this.session.type);
+		if (reason !== null) {
+			this.state.errorMessage = reason;
+			this.log(this.state.errorMessage);
 			return false;
 		}
 		const problem = checkRuntime(this.runtime);
 		if (problem !== null) {
-			this.log(problem.message);
+			this.state.errorMessage = problem.message;
+			this.log(this.state.errorMessage);
 			return false;
 		}
-		if (!(await this.ensurePython(frameId))) {
+		if (!(await this.watchLaunchPython())) {
 			return false;
 		}
-		await this.ensureLoaded(frameId, plan.replCommands);
 		const decision = decideInit(await this.probe(frameId), this.settings, this.cache.read(this.key));
 		this.state.decision = decision;
 		return this.applyDecision(decision, frameId);
 	}
 
 	/**
-	 * GDR needs GDB's embedded Python; a GDB built without it cannot host the
-	 * helper at all, and the message names the fix rather than the symptom.
+	 * Wait until the launch-time Python check has recorded a result.
+	 *
+	 * `started` fires before the adapter runs the injected commands, so the
+	 * result file appears during launch. The same promise serves the panel
+	 * and the first stop.
 	 */
-	private async ensurePython(frameId: number): Promise<boolean> {
-		if (this.state.python !== null) {
-			return this.state.python;
+	watchLaunchPython(): Promise<boolean> {
+		if (this.launchPythonReady === null) {
+			this.launchPythonReady = this.pollLaunchPython();
 		}
-		const response = await this.evaluate('python print("gdr-python-ok")', frameId, 'repl');
-		this.state.python = response !== null;
-		if (!response) {
-			this.log(
-				'this GDB has no Python interpreter, so GDR cannot run in it. xPack ships ' +
-					'both variants: `arm-none-eabi-gdb` has no Python, `arm-none-eabi-gdb-py3` does. ' +
-					'Point the launch configuration (or the adapter\'s gdbPath setting) at the -py3 binary.'
-			);
-		}
-		return this.state.python;
+		return this.launchPythonReady;
 	}
 
-	/** Load GDR, unless the launch configuration already did it. */
-	private async ensureLoaded(frameId: number, replCommands: string[]): Promise<void> {
-		if (this.state.loaded) {
+	/**
+	 * Apply the result file the launch-time Python check wrote.
+	 *
+	 * Returns `true` once that result is known. A missing file means the
+	 * launch commands have not finished yet.
+	 */
+	private consumeLaunchPython(): boolean {
+		if (this.state.python !== null) {
+			return true;
+		}
+		const loader = launchLoaderPath(this.session.configuration);
+		if (loader === null) {
+			return false;
+		}
+		let text: string;
+		try {
+			text = fs.readFileSync(pythonResultPath(loader), 'utf8');
+		} catch {
+			return false;
+		}
+		const result = parsePythonResult(text);
+		if (result === null) {
+			return false;
+		}
+		this.state.python = result === 'present';
+		if (!this.state.python) {
+			this.state.errorMessage = PYTHON_MISSING_MESSAGE;
+			this.log(PYTHON_MISSING_MESSAGE);
+		}
+		return true;
+	}
+
+	private async pollLaunchPython(): Promise<boolean> {
+		const deadline = Date.now() + 180_000;
+		while (Date.now() < deadline && !this.closed) {
+			if (this.consumeLaunchPython()) {
+				return this.state.python === true;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+		if (!this.closed && this.state.errorMessage === null) {
+			this.state.errorMessage = 'GDR did not record a Python check at launch';
+			this.log(this.state.errorMessage);
+		}
+		return false;
+	}
+
+	/** Remove the launch-time loader and result once the session is gone. */
+	discardLaunchFiles(): void {
+		this.closed = true;
+		const loader = launchLoaderPath(this.session.configuration);
+		if (loader === null) {
 			return;
 		}
-		for (const command of replCommands) {
-			await this.evaluate(command, frameId, 'repl');
+		for (const file of [loader, pythonResultPath(loader)]) {
+			try {
+				fs.rmSync(file, { force: true });
+			} catch {
+				// A leftover temp file is minor next to a session that already ended.
+			}
 		}
-		this.state.loaded = true;
 	}
 
 	private async applyDecision(decision: InitDecision, frameId: number): Promise<boolean> {
@@ -221,6 +292,52 @@ export class GdrSession {
 	}
 
 	/**
+	 * Fetch a snapshot through GDR's file bypass.
+	 *
+	 * ``gdr api snapshot --json --out <path>`` writes one envelope to a file
+	 * where GDB runs; the chunked evaluate transport is then unnecessary for
+	 * very large sessions. The condition is not where gdbserver runs but
+	 * whether the extension reads the same filesystem as GDB: true for a
+	 * locally started GDB (the usual embedded setup, local or remote probe
+	 * server alike) and for Remote-SSH/Dev Containers, where the extension
+	 * host runs beside GDB; false for a GDB in a separate namespace (a WSL or
+	 * container GDB whose temp directory the extension cannot see). When
+	 * *recordDir* is set the file doubles as the record and stays; otherwise
+	 * it is removed after reading.
+	 */
+	async fetchSnapshotFile(
+		frameId: number,
+		args: string[],
+		recordDir: string
+	): Promise<GdrEnvelope | null> {
+		const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+		const directory = recordDir !== '' ? recordDir : os.tmpdir();
+		const file = path.join(directory, `gdr-snapshot-${stamp}-${this.session.id.slice(0, 8)}.json`);
+		try {
+			fs.mkdirSync(directory, { recursive: true });
+			await this.evaluate(`gdr api snapshot ${args.join(' ')} --json --out ${quotePath(file)}`, frameId, 'repl');
+			const envelope = parseEnvelope(fs.readFileSync(file, 'utf8'));
+			if (envelope === null) {
+				this.state.errorMessage = `the snapshot file ${file} did not contain an envelope`;
+				return null;
+			}
+			return envelope;
+		} catch (error) {
+			this.state.errorMessage = `the file bypass failed: ${String(error)}`;
+			return null;
+		} finally {
+			if (recordDir === '') {
+				try {
+					fs.rmSync(file, { force: true });
+				} catch {
+					// The record was already written or the read failed; a stray
+					// temp file is a minor cost next to losing the answer.
+				}
+			}
+		}
+	}
+
+	/**
 	 * Evaluate one expression in the session.
 	 *
 	 * A `repl` context runs a GDB console command (its output belongs to the
@@ -259,6 +376,11 @@ export class GdrSession {
 		// satisfies the launch-identity shape the cache key reads.
 		return cacheKey(this.session.configuration);
 	}
+}
+
+/** Quote one absolute path for a GDB console command. */
+function quotePath(filePath: string): string {
+	return `"${filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 /** Session-scoped answers, persisted per launch configuration. */

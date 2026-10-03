@@ -7,72 +7,153 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import {
 	alternateKeys,
 	injectionPlan,
 	initCommand,
-	quotePath,
+	parsePythonResult,
+	pythonGateCommand,
+	pythonResultPath,
 	setupCommands,
 	sourceCommand,
 	type SetupCommandEntry
 } from '../src/inject.ts';
 
 const INIT = { rtos: 'rtthread', version: '4.0.5' };
+const LOADER = '/tmp/gdr-load.gdb';
 
-test('a path with spaces or quotes survives the GDB source command', () => {
-	assert.equal(quotePath('/opt/my gdr'), '"/opt/my gdr"');
-	assert.equal(quotePath('/opt/we"ird\\x'), '"/opt/we\\"ird\\\\x"');
-	assert.equal(sourceCommand('/opt/gdr'), 'source "/opt/gdr/gdr.py"');
+test('a path with spaces is the rest of the source line, not a quoted word', () => {
+	assert.equal(sourceCommand('/opt/my gdr'), 'source /opt/my gdr/gdr.py');
+	assert.equal(sourceCommand('/opt/we"ird\\x'), 'source /opt/we"ird\\x/gdr.py');
 });
 
-test('initialization always names the version GDR was told to expect', () => {
+test('the Python gate sources GDR only from the configured-with-Python branch', () => {
 	assert.equal(initCommand(INIT), 'gdr init rtthread 4.0.5');
-	assert.deepEqual(setupCommands('/opt/gdr', INIT), [
-		'source "/opt/gdr/gdr.py"',
-		'gdr init rtthread 4.0.5'
-	]);
-	assert.deepEqual(setupCommands('/opt/gdr', null), ['source "/opt/gdr/gdr.py"']);
+	const gate = pythonGateCommand('/opt/my gdr', LOADER, INIT);
+	assert.match(gate, /^pipe show configuration \|/);
+	assert.match(gate, /--without-python\$/);
+	assert.match(gate, /'absent'/);
+	assert.match(gate, /set \$gdr_python = 0/);
+	assert.match(gate, /'present'/);
+	assert.match(gate, /source \/opt\/my gdr\/gdr\.py/);
+	assert.match(gate, /gdr init rtthread 4\.0\.5/);
+	assert.doesNotMatch(gate, /source "/);
+	assert.doesNotMatch(gate, /skipping load/);
+	assert.equal(parsePythonResult('absent\n'), 'absent');
+	assert.equal(parsePythonResult(' present '), 'present');
+	assert.equal(parsePythonResult(''), null);
+	assert.equal(pythonResultPath(LOADER), `${LOADER}.result`);
+	const plain = pythonGateCommand('/opt/gdr', LOADER, null);
+	assert.doesNotMatch(plain, /gdr init/);
+	assert.deepEqual(setupCommands('/opt/gdr', null, LOADER), [plain, `source ${LOADER}`]);
 });
 
-test('cortex-debug gets its command list on the launch path', () => {
-	const plan = injectionPlan('cortex-debug', 'launch', { runtimePath: '/opt/gdr', init: INIT });
+test('cortex-debug gets the gate and the loader on the launch path', () => {
+	const plan = injectionPlan('cortex-debug', 'launch', {
+		runtimePath: '/opt/gdr',
+		loaderPath: LOADER,
+		init: null
+	});
 
 	assert.equal(plan.supported, true);
-	assert.deepEqual(plan.entries, [
-		{
-			key: 'postLaunchCommands',
-			value: ['source "/opt/gdr/gdr.py"', 'gdr init rtthread 4.0.5']
-		}
-	]);
-	assert.deepEqual(plan.replCommands, plan.entries[0].value);
+	assert.equal(plan.entries[0].key, 'postLaunchCommands');
+	assert.deepEqual(plan.entries[0].value, setupCommands('/opt/gdr', null, LOADER));
 	assert.deepEqual(alternateKeys('cortex-debug'), ['postAttachCommands']);
 });
 
 test('an attach session uses the attach key when the adapter has one', () => {
-	const plan = injectionPlan('cortex-debug', 'attach', { runtimePath: '/opt/gdr', init: INIT });
+	const plan = injectionPlan('cortex-debug', 'attach', {
+		runtimePath: '/opt/gdr',
+		loaderPath: LOADER,
+		init: null
+	});
 
 	assert.equal(plan.entries[0].key, 'postAttachCommands');
 });
 
 test('an Eclipse-style adapter gets setup entries, not bare strings', () => {
-	const plan = injectionPlan('cppdbg', 'launch', { runtimePath: '/opt/gdr', init: INIT });
+	const plan = injectionPlan('cppdbg', 'launch', {
+		runtimePath: '/opt/gdr',
+		loaderPath: LOADER,
+		init: INIT
+	});
 	const entries = plan.entries[0].value as SetupCommandEntry[];
 
 	assert.equal(plan.entries[0].key, 'setupCommands');
 	assert.equal(entries.length, 2);
-	assert.equal(entries[0].text, 'source "/opt/gdr/gdr.py"');
+	assert.match(entries[0].description, /check Python/);
+	assert.match(entries[0].text, /gdr init rtthread 4\.0\.5/);
 	assert.equal(entries[0].ignoreFailures, false);
-	assert.match(entries[1].description, /GDR: gdr init rtthread 4\.0\.5/);
+	assert.equal(entries[1].text, `source ${LOADER}`);
+	assert.equal(entries[1].ignoreFailures, false);
 });
 
 test('an adapter without a GDB console is refused with the reason', () => {
-	const plan = injectionPlan('probe-rs-debug', 'launch', { runtimePath: '/opt/gdr', init: INIT });
+	const plan = injectionPlan('probe-rs-debug', 'launch', {
+		runtimePath: '/opt/gdr',
+		loaderPath: LOADER,
+		init: INIT
+	});
 
 	assert.equal(plan.supported, false);
 	assert.match(plan.reason ?? '', /GDB's Python/);
 	assert.deepEqual(plan.entries, []);
-	assert.deepEqual(plan.replCommands, []);
 	assert.deepEqual(alternateKeys('probe-rs-debug'), []);
+});
+
+function gdbOnPath(name: string): boolean {
+	return spawnSync(name, ['--version'], { encoding: 'utf8' }).status === 0;
+}
+
+/** Send console commands the way cortex-debug wraps `postLaunchCommands`. */
+function runConsole(gdb: string, commands: string[]): string {
+	const script = commands
+		.map((command) => `interpreter-exec console "${command.replaceAll('"', '\\"')}"`)
+		.concat('quit')
+		.join('\n');
+	const result = spawnSync(gdb, ['--nx', '--quiet', '-i=mi'], { input: script, encoding: 'utf8' });
+	return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+}
+
+test('the launch commands succeed with and without Python', (t) => {
+	const gdbs = ['gdb', 'arm-none-eabi-gdb'].filter(gdbOnPath);
+	if (gdbs.length === 0) {
+		t.skip('no gdb on PATH');
+		return;
+	}
+	const root = mkdtempSync(join(tmpdir(), 'gdr-gate-'));
+	const runtime = join(root, 'my gdr');
+	const marker = join(runtime, 'gdr.py');
+	const loader = join(root, 'load.gdb');
+	try {
+		mkdirSync(runtime, { recursive: true });
+		writeFileSync(marker, 'print("GDR_GATE_OK")\n', 'utf8');
+		for (const gdb of gdbs) {
+			const python = spawnSync(gdb, ['--nx', '--quiet', '--batch', '-ex', 'python print("gdr-python-ok")'], {
+				encoding: 'utf8'
+			});
+			const hasPython = python.status === 0 && `${python.stdout}${python.stderr}`.includes('gdr-python-ok');
+			const output = runConsole(gdb, setupCommands(runtime, null, loader));
+			assert.equal(output.includes('^error'), false, `${gdb} launch commands failed:\n${output}`);
+			const loaderText = readFileSync(loader, 'utf8');
+			const result = parsePythonResult(readFileSync(`${loader}.result`, 'utf8'));
+			if (hasPython) {
+				assert.equal(result, 'present');
+				assert.match(loaderText, /^source /);
+				assert.match(output, /GDR_GATE_OK/);
+			} else {
+				assert.equal(result, 'absent');
+				assert.match(loaderText, /set \$gdr_python = 0/);
+				assert.doesNotMatch(output, /GDR_GATE_OK/);
+			}
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
