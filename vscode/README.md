@@ -1,20 +1,7 @@
 # GDB RTOS Views (VSCode extension)
 
-An RTOS view for embedded debugging, driven by GDR(GDB enhance for RTOS) CLI.
+An RTOS view for embedded debugging, driven by [GDR (GDB enhance for RTOS)](https://github.com/flespark/gdr#readme) CLI.
 For discover task/timer/IPC status, resource usage, corruption and potential bug.
-
-## Co-work with CLI
-
-GDR collect debugged ELF and target info as JSON envelope, this extension renders
-what comes back. It does not decode kernel structures of its own, so a view can
-never disagree with what GDR CLI prints.
-
-## Stop snapshot
-
-GDR is never driven while the target runs, and this extension never reads or writes
-target memory itself, so target running always obeys firmware. GDR never call
-target inferior function, because inferior function drive target running again may
-over bug snapshot.
 
 ## How it works
 
@@ -23,6 +10,19 @@ over bug snapshot.
 2. **At the first stop** it asks which RTOS adapter this target is
    (`$gdr_json("probe")`) and initializes it.
 3. **From then on** views read the same verbs the prompt does.
+
+### Co-work with CLI
+
+GDR collect debugged ELF and target info as JSON envelope, this extension renders
+what comes back. It does not decode kernel structures of its own, so a view can
+never disagree with what GDR CLI prints.
+
+### Stop snapshot
+
+GDR is never driven while the target runs, and this extension never reads or writes
+target memory itself, so target running always obeys firmware. GDR never call
+target inferior function, because inferior function drive target running again may
+over bug snapshot.
 
 ## Supported debug adapters
 
@@ -118,6 +118,19 @@ npm run build         # emit dist/extension.js
 `resources/gdr` is generated and ignored by git; `src/runtime.ts` refuses to
 run when the bundled manifest's envelope schema differs from the schema this
 client was built for, so an old extension never mis-renders a newer GDR.
+
+## Shipping
+
+`npm run package` produces `gdb-rtos-views.vsix` (the vendored GDR runtime and
+the compiled client included). CI builds the same VSIX on every push and keeps
+it as a build artifact / commit attachment **for verification only**: a
+maintainer compares it with a local build and then publishes to the Marketplace
+by hand. CI never publishes, because Marketplace versions are immutable and the
+credentials would be a leak in the open-lane config.
+
+The byte-for-byte check that the VSIX carries the GDR runtime it claims is
+`ci/check-vendored-schema.py`, which also enforces the version rule
+(`GDR x.y` ships as extension `x.y.0`).
 
 ## Known limits
 

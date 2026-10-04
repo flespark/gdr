@@ -52,6 +52,18 @@ jobs:
         run: npm run check-types
       - name: Test
         run: npm test
+      - name: Package the VSIX
+        # Reason: a release-grade `.vsix` must be reproducible from a clean
+        # tree (`npm ci` + vendored runtime + `vsce package`); the artifact is
+        # for manual verification and manual publishing, never auto-release --
+        # CI holds no marketplace credentials.
+        run: npx vsce package --no-dependencies --out gdb-rtos-views.vsix
+      - name: Upload the VSIX as a build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: gdb-rtos-views-vsix
+          path: vscode/gdb-rtos-views.vsix
+          if-no-files-found: error
   validate:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest

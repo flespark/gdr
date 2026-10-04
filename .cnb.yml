@@ -88,6 +88,18 @@
     script: cd vscode && npm run check-types
   - name: unit tests
     script: cd vscode && npm test
+  - name: package the VSIX and attach it to this commit
+    # Reason: a release-grade `.vsix` must be reproducible from a clean tree:
+    # `npm ci` + vendored runtime + `vsce package`, and the artifact goes out as
+    # a commit attachment for manual verification and manual marketplace
+    # upload -- CI holds no publishing credentials.
+    script: |
+      set -eu
+      cd vscode
+      npx vsce package --no-dependencies --out gdb-rtos-views.vsix
+      cd ..
+      mkdir -p /tmp/gdr-artifacts
+      cp vscode/gdb-rtos-views.vsix /tmp/gdr-artifacts/
 
 .extension: &extension
   name: extension
@@ -262,6 +274,13 @@ main: # branch: main
     - <<: *validate-py314
 
     - <<: *extension
+
+    # The extension lane's VSIX: built in the extension stages, attached here so
+    # a maintainer can verify it and publish manually (no auto-release).
+    - name: attach VSIX artifact
+      image: cnbcool/attachments:latest
+      settings:
+        attachments: "/tmp/gdr-artifacts/gdb-rtos-views.vsix"
 
     # `docker.build` cache tags are content hashes under `dockerfile-caches`.
     # Publish stable aliases separately so the two large CI images have clear

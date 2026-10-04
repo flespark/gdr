@@ -24,3 +24,16 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+
+  # The extension's own dependencies (vsce, typescript, @types/*) under vscode/.
+  - package-ecosystem: npm
+    directory: /vscode
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
