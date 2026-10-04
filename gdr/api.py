@@ -325,6 +325,23 @@ def envelope_json(verb: str, *args: str) -> str:
     return json.dumps(api_call(verb, *args), default=str, separators=(",", ":"))
 
 
+def dump_response(path: str, verb: str, *args: str) -> int:
+    """Write one envelope to *path* and return its byte count, or -1.
+
+    The plugin's file transport calls this through ``$gdr_dump`` instead of
+    typing a console command: a convenience function's scalar result survives
+    every adapter's ``evaluate`` rendering, while a command typed at the GDB
+    console does not reach GDB through all of them.
+    """
+    payload = envelope_json(verb, *args)
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+    except OSError:
+        return -1
+    return len(payload.encode("utf-8"))
+
+
 def transport_response(verb: str, *args: str) -> str:
     """One ``$gdr_json`` result: inline payload or the chunked meta frame.
 

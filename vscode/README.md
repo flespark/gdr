@@ -63,13 +63,13 @@ for bug reports and offline inspection.
 
 | Setting | Meaning |
 | --- | --- |
-| `gdr.runtimePath` | Directory holding `gdr.py` and the packages. Empty uses the bundled copy; set it to run against a development checkout. |
+| `gdr.runtimePath` | GDR CLI entry directory holding `gdr.py`. Empty uses the bundled copy; set it to run against a development checkout. |
 | `gdr.rtos` / `gdr.version` | Initialize exactly this adapter and version, overriding the probe. A manual setting is treated as the user's assertion: it registers with GDR's `--allow-unverified`, so a modified or stripped kernel still works, and the panel then shows a hint saying the target could not confirm it. |
 | `gdr.autoInit` | Initialize automatically when the probe is unambiguous (default). Turn it off to always be asked. |
 | `gdr.refreshOnStop` | Refresh the panel at each stop (default on). Turn off to refresh only on initialization or with the panel's refresh button. |
 | `gdr.refreshHeaps` | Include the heap snapshot in every refresh (default on). The heap walk is the most expensive part; turn off when stops feel slow. |
 | `gdr.recordSnapshotsDir` | Directory to save snapshot JSON files on each refresh (for offline inspection and bug reports). Empty disables recording (default). |
-| `gdr.snapshotTransport` | `evaluate` (default) transfers snapshots via DAP evaluate; `file` writes snapshots to disk and reads them back (faster for large snapshots, but requires GDB and VS Code to share a filesystem). |
+| `gdr.snapshotTransport` | Transport method for snapshots from GDB to the extension: `evaluate` (default) transfers data in memory via DAP; `file` passes data via temporary files (faster for large snapshots, but requires GDB and VS Code to share a filesystem). GDR switches to `file` by itself when the adapter's `evaluate` cannot carry a payload (cortex-debug renders a returned string as its element count, so every Cortex-Debug session uses the file route). |
 
 The probe answers with its evidence and its confidence (`exact`, `range`,
 `undetected`); the extension initializes automatically only for an

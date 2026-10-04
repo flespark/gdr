@@ -8,7 +8,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.adapter_api import active
-from gdr.api import chunk_response, transport_response
+from gdr.api import chunk_response, dump_response, transport_response
 from gdr.gdb_bridge import gdb_function_guard, make_pointer_array, read_cstring
 
 _registered_functions: set[str] = set()
@@ -108,6 +108,25 @@ if gdb is not None:
                 chunk_response(chunk_index, read_cstring(verb) or "", *args)
             )
 
+    class GdrDumpFunction(gdb.Function):
+        """Write one GDR API envelope to a file.
+
+        Usage: ``p $gdr_dump("/tmp/gdr-probe.json", "probe")``. Returns the
+        number of bytes written, or -1 when the file could not be written: a
+        scalar result is what a plugin's file transport needs, because a plugin
+        that cannot carry a string through ``evaluate`` can still read a file.
+        """
+
+        def __init__(self) -> None:
+            super().__init__("gdr_dump")
+
+        @gdb_function_guard
+        def invoke(self, path, verb, *rest):
+            args = [read_cstring(arg) or "" for arg in rest]
+            return gdb.Value(
+                dump_response(read_cstring(path) or "", read_cstring(verb) or "", *args)
+            )
+
 
 def register_functions() -> None:
     """Register generic function names, resuming after a partial failure."""
@@ -137,6 +156,7 @@ def register_api_functions() -> None:
     functions = (
         ("gdr_json", GdrJsonFunction),
         ("gdr_json_chunk", GdrJsonChunkFunction),
+        ("gdr_dump", GdrDumpFunction),
     )
     for name, function_type in functions:
         if name in _registered_api_functions:

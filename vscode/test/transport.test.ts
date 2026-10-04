@@ -7,7 +7,18 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
-import { chunkExpression, describeFailure, evaluateExpression, parseChunkMeta, parseEnvelope, reassembleChunks, transportPlan } from '../src/transport.ts';
+import {
+	chunkExpression,
+	describeFailure,
+	dumpExpression,
+	evaluateExpression,
+	isArraySummary,
+	parseChunkMeta,
+	parseDumpSize,
+	parseEnvelope,
+	reassembleChunks,
+	transportPlan
+} from '../src/transport.ts';
 
 /**
  * Narrow a value the parser may refuse.
@@ -100,4 +111,39 @@ test('an inline envelope and garbage are classified apart', () => {
 	assert.deepEqual(transportPlan(inline), { kind: 'inline', payload: inline });
 	assert.equal(transportPlan('<gdb truncated this>').kind, 'invalid');
 	assert.equal(parseChunkMeta(inline), null);
+});
+
+test('recognizes the MI array summary an evaluate cannot carry', () => {
+	assert.equal(isArraySummary('[405]'), true);
+	assert.equal(isArraySummary(' [-1] '), true);
+	assert.equal(isArraySummary('[0]'), true);
+});
+
+test('leaves real payloads to the transport plan', () => {
+	assert.equal(isArraySummary('{"schema_version":1,"ok":true}'), false);
+	assert.equal(isArraySummary('{"kind":"chunks","total":2}'), false);
+	assert.equal(isArraySummary('[1,2]'), false);
+	assert.equal(isArraySummary('[]'), false);
+	assert.equal(isArraySummary(''), false);
+});
+
+test('spells the dump expression the file route evaluates', () => {
+	assert.equal(
+		dumpExpression('/tmp/gdr-probe.json', 'probe'),
+		'$gdr_dump("/tmp/gdr-probe.json", "probe")'
+	);
+	assert.equal(
+		dumpExpression('/tmp/x.json', 'objects', 'sem'),
+		'$gdr_dump("/tmp/x.json", "objects", "sem")'
+	);
+});
+
+test('reads the byte count a dump answered with', () => {
+	assert.equal(parseDumpSize('405'), 405);
+	assert.equal(parseDumpSize(' 405\n'), 405);
+	assert.equal(parseDumpSize('0x195'), 405);
+	assert.equal(parseDumpSize('-1'), -1);
+	assert.equal(parseDumpSize('[405]'), null);
+	assert.equal(parseDumpSize('void'), null);
+	assert.equal(parseDumpSize(''), null);
 });

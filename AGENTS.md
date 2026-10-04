@@ -22,7 +22,7 @@ gdr/                   RTOS-agnostic core
   help.py              structured help schema + terminal/Markdown renderers
   adapter_api.py       adapter protocol, tables, details and active session
   commands.py          shared collectors plus their guarded text renderers
-  functions.py         convenience functions incl. the $gdr_json transport
+  functions.py         convenience functions incl. the $gdr_json and $gdr_dump transports
   serialize.py         pure API envelope and chunked evaluate transport
   api.py               neutral verb layer over the active adapter
   derive.py            RTOS-neutral derived-value helpers (wrap-safe expiry,

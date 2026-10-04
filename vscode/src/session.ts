@@ -27,8 +27,11 @@ import { cacheKey, decideInit, parseProbePayload, type GdrSettings, type InitDec
 import { checkRuntime, locateRuntime, type RuntimeLocation } from './runtime.ts';
 import {
 	describeFailure,
+	dumpExpression,
 	evaluateExpression,
 	chunkExpression,
+	isArraySummary,
+	parseDumpSize,
 	parseEnvelope,
 	reassembleChunks,
 	transportPlan,
@@ -72,6 +75,8 @@ export class GdrSession {
 
 	private closed = false;
 	private launchPythonReady: Promise<boolean> | null = null;
+	/** Set once `evaluate` proved unable to carry a string (see `fetch`). */
+	private fileRoute = false;
 
 	constructor(
 		private readonly session: vscode.DebugSession,
@@ -275,9 +280,20 @@ export class GdrSession {
 	 * Fetch one verb's envelope.
 	 *
 	 * A large payload arrives as chunk frames from one frozen snapshot; they are
-	 * reassembled and checksum-verified before anything is parsed.
+	 * reassembled and checksum-verified before anything is parsed. An adapter
+	 * whose `evaluate` answers with the MI summary of the returned `char[N]`
+	 * (`[405]`) cannot carry a string at all, so such a payload switches the
+	 * session to GDR's file route for every later verb.
 	 */
-	async fetch(verb: string, args: string[], frameId: number): Promise<GdrEnvelope | null> {
+	async fetch(
+		verb: string,
+		args: string[],
+		frameId: number,
+		record?: { dir: string }
+	): Promise<GdrEnvelope | null> {
+		if (this.fileRoute) {
+			return this.fetchViaFile(verb, args, frameId, record?.dir ?? '', false);
+		}
 		const first = await this.evaluate(evaluateExpression(verb, ...args), frameId, 'watch');
 		if (first === null) {
 			return null;
@@ -287,6 +303,19 @@ export class GdrSession {
 			return parseEnvelope(plan.payload);
 		}
 		if (plan.kind === 'invalid') {
+			if (isArraySummary(plan.payload)) {
+				// Reason: cortex-debug answers `evaluate` through an MI varobj, whose
+				// value for a `char[N]` is only the element count (`[405]`), so the
+				// string never reaches the extension. GDR can write the same envelope
+				// to a file instead -- that is a capability of the adapter, not a user
+				// preference, which is why this switches on its own.
+				this.log(
+					`${verb}: evaluate cannot carry a string, ` +
+						'reading GDR payloads from files instead'
+				);
+				this.fileRoute = true;
+				return this.fetchViaFile(verb, args, frameId, record?.dir ?? '', false);
+			}
 			this.log(`GDR sent an unrecognized payload for ${verb}: ${plan.payload.slice(0, 120)}`);
 			return null;
 		}
@@ -309,7 +338,7 @@ export class GdrSession {
 	/**
 	 * Fetch a snapshot through GDR's file bypass.
 	 *
-	 * ``gdr api snapshot --json --out <path>`` writes one envelope to a file
+	 * ``$gdr_dump(path, "snapshot")`` writes one envelope to a file
 	 * where GDB runs; the chunked evaluate transport is then unnecessary for
 	 * very large sessions. The condition is not where gdbserver runs but
 	 * whether the extension reads the same filesystem as GDB: true for a
@@ -325,15 +354,43 @@ export class GdrSession {
 		args: string[],
 		recordDir: string
 	): Promise<GdrEnvelope | null> {
+		return this.fetchViaFile('snapshot', args, frameId, recordDir, recordDir !== '');
+	}
+
+	/**
+	 * Read one verb's envelope through a file GDB writes.
+	 *
+	 * ``$gdr_dump(path, verb)`` writes the envelope where GDB runs and answers
+	 * with its byte count, so the payload never has to survive an adapter's
+	 * value rendering (see `fetch`) and the caller learns from a scalar -- not
+	 * from a missing file -- whether the write was accepted. When *keep* is
+	 * false the file is removed after reading.
+	 */
+	private async fetchViaFile(
+		verb: string,
+		args: string[],
+		frameId: number,
+		recordDir: string,
+		keep: boolean
+	): Promise<GdrEnvelope | null> {
 		const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 		const directory = recordDir !== '' ? recordDir : os.tmpdir();
-		const file = path.join(directory, `gdr-snapshot-${stamp}-${this.session.id.slice(0, 8)}.json`);
+		const file = path.join(directory, `gdr-${verb}-${stamp}-${this.session.id.slice(0, 8)}.json`);
 		try {
 			fs.mkdirSync(directory, { recursive: true });
-			await this.evaluate(`gdr api snapshot ${args.join(' ')} --json --out ${quotePath(file)}`, frameId, 'repl');
+			const answer = await this.evaluate(dumpExpression(file, verb, ...args), frameId, 'watch');
+			const written = answer === null ? null : parseDumpSize(answer);
+			if (written === null || written < 0) {
+				this.state.errorMessage =
+					written === null
+						? `GDR did not answer $gdr_dump for ${verb}: ${answer ?? 'no result'}`
+						: `GDR could not write the ${verb} file (${written})`;
+				this.log(this.state.errorMessage);
+				return null;
+			}
 			const envelope = parseEnvelope(fs.readFileSync(file, 'utf8'));
 			if (envelope === null) {
-				this.state.errorMessage = `the snapshot file ${file} did not contain an envelope`;
+				this.state.errorMessage = `the ${verb} file ${file} did not contain an envelope`;
 				return null;
 			}
 			return envelope;
@@ -341,7 +398,7 @@ export class GdrSession {
 			this.state.errorMessage = `the file bypass failed: ${String(error)}`;
 			return null;
 		} finally {
-			if (recordDir === '') {
+			if (!keep) {
 				try {
 					fs.rmSync(file, { force: true });
 				} catch {
@@ -391,11 +448,6 @@ export class GdrSession {
 		// satisfies the launch-identity shape the cache key reads.
 		return cacheKey(this.session.configuration);
 	}
-}
-
-/** Quote one absolute path for a GDB console command. */
-function quotePath(filePath: string): string {
-	return `"${filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 /** Session-scoped answers, persisted per launch configuration. */

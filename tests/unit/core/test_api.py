@@ -463,3 +463,30 @@ def test_bad_verb_arguments_are_coded(session):  # noqa: ARG001
     """Argument mistakes are envelope errors, not Python exceptions."""
     assert _error(api.api_call("tasks", "extra"))["code"] == "bad_args"
     assert _error(api.api_call("detail", "queue"))["code"] == "bad_args"
+
+
+def test_dump_response_writes_the_envelope_and_reports_its_size(session, tmp_path):
+    """The file transport's writer answers with the size the plugin checks.
+
+    ``$gdr_dump`` is evaluated in a watch context, where only a scalar survives
+    the adapter's value rendering, so the byte count is what proves the write
+    happened; the file itself is read next.
+    """
+    session.table = ObjectTable(headers=["Name"], rows=[["worker1"]])
+    target = tmp_path / "gdr-tasks.json"
+
+    written = api.dump_response(str(target), "tasks")
+
+    payload = target.read_text(encoding="utf-8")
+    assert written == len(payload.encode("utf-8"))
+    document = json.loads(payload)
+    assert document["ok"] is True
+    assert isinstance(document["schema_version"], int)
+
+
+def test_dump_response_reports_an_unwritable_path(session, tmp_path):
+    """An unwritable path is a value the caller reports, not an exception."""
+    del session
+    missing = tmp_path / "nope" / "gdr.json"
+
+    assert api.dump_response(str(missing), "tasks") == -1

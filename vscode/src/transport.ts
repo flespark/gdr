@@ -60,6 +60,30 @@ export function chunkExpression(index: number, verb: string, ...args: string[]):
 }
 
 /**
+ * A `$gdr_dump(path, verb, ...)` expression: write one envelope to a file.
+ *
+ * The expression is evaluated in a watch context, where an adapter renders a
+ * scalar result faithfully (see :func:`isArraySummary` for why a string may
+ * not survive), so the answer is the byte count the caller compares against
+ * the file it reads next.
+ */
+export function dumpExpression(path: string, verb: string, ...args: string[]): string {
+	return `$gdr_dump(${[path, verb, ...args].map(gdbString).join(', ')})`;
+}
+
+/**
+ * Read the byte count `$gdr_dump` answered with, or `null` for a value that is
+ * not a number at all (an adapter that rendered it as something else).
+ */
+export function parseDumpSize(text: string): number | null {
+	const trimmed = text.trim();
+	if (!/^-?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(trimmed)) {
+		return null;
+	}
+	return Number.parseInt(trimmed, trimmed.includes('0x') ? 16 : 10);
+}
+
+/**
  * Quote one argument for GDB's expression parser.
  *
  * GDR reads these with `read_cstring`, so a quote or backslash inside a name
@@ -166,6 +190,18 @@ export type TransportPlan =
 	| { kind: 'inline'; payload: string }
 	| { kind: 'chunked'; meta: ChunkMeta }
 	| { kind: 'invalid'; payload: string };
+
+/**
+ * True when `evaluate` answered with the MI summary of an array.
+ *
+ * cortex-debug resolves an `evaluate` through an MI variable object, whose
+ * value for the `char[N]` a GDB convenience function returns is only the
+ * element count (`[405]`) -- the string itself never leaves GDB, so the caller
+ * must read the payload another way instead of parsing that summary.
+ */
+export function isArraySummary(payload: string): boolean {
+	return /^\[-?\d+\]$/.test(payload.trim());
+}
 
 /** Classify one `$gdr_json` result: an inline envelope or a chunked transfer. */
 export function transportPlan(text: string): TransportPlan {

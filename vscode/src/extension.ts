@@ -23,6 +23,11 @@ import { injectionPlan } from './inject.ts';
 import { RtosViewsPanel, type SnapshotFetcher } from './panel.ts';
 import { GdrCache, GdrSession, runtimeFor } from './session.ts';
 import { costArgs, parseSnapshotTransport, type CostOptions } from './snapshot.ts';
+import {
+	resolveEventSession,
+	resolveTrackerApi,
+	type TrackerHandle
+} from './tracker.ts';
 import type { GdrSettings } from './probe.ts';
 
 /** Adapters whose launch configuration this extension appends the loader to. */
@@ -34,11 +39,6 @@ const SUPPORTED_TYPES = [
 	'stlinkgdbtarget',
 	'jlinkgdbtarget'
 ];
-
-/** Minimal shape of the `debug-tracker-vscode` API this extension consumes. */
-interface DebugTrackerApi {
-	getTrackerExtension(name: string): Promise<TrackerSubscription | Error>;
-}
 
 /** A granted tracker subscription; the tracker answers with a string on refusal. */
 interface TrackerGrant {
@@ -57,7 +57,7 @@ interface TrackerRequest {
 	};
 }
 
-interface TrackerSubscription {
+interface TrackerSubscription extends TrackerHandle<TrackerEvent> {
 	subscribe(request: TrackerRequest): TrackerGrant | string;
 }
 
@@ -101,6 +101,27 @@ export function activate(context: vscode.ExtensionContext): void {
 	const cache = new GdrCache(context.workspaceState);
 	const sessions = new Map<string, GdrSession>();
 
+	// Reason: the tracker addresses sessions by id and attaches the session
+	// object to only some payloads (its `notifyCurrentStatus`), so the extension
+	// keeps its own id -> session map for the stop events that carry an id only.
+	const liveSessions = new Map<string, vscode.DebugSession>();
+	context.subscriptions.push(
+		vscode.debug.onDidStartDebugSession((session) => {
+			liveSessions.set(session.id, session);
+		}),
+		vscode.debug.onDidTerminateDebugSession((session) => {
+			liveSessions.delete(session.id);
+		})
+	);
+	const sessionById = (id: string): vscode.DebugSession | undefined => {
+		const known = liveSessions.get(id);
+		if (known !== undefined) {
+			return known;
+		}
+		const active = vscode.debug.activeDebugSession;
+		return active !== undefined && active.id === id ? active : undefined;
+	};
+
 	const config = (): vscode.WorkspaceConfiguration => vscode.workspace.getConfiguration('gdr');
 
 	const costOptions = (): CostOptions => ({ noHeap: config().get<boolean>('refreshHeaps', true) === false });
@@ -128,7 +149,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (parseSnapshotTransport(config().get<unknown>('snapshotTransport')) === 'file') {
 			return gs.fetchSnapshotFile(frameId, args, recordDir());
 		}
-		return gs.fetch('snapshot', args, frameId);
+		return gs.fetch('snapshot', args, frameId, { dir: recordDir() });
 	};
 
 	const panel = new RtosViewsPanel({
@@ -216,6 +237,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		config,
 		sessions,
 		sessionFor,
+		sessionById,
 		log
 	});
 }
@@ -233,24 +255,40 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 		log('debug-tracker-vscode is not installed; stop events will not reach GDR');
 		return;
 	}
-	const api = (await extension.activate()) as DebugTrackerApi;
-	const tracker = await api.getTrackerExtension('gdr-rtos-views');
-	if (tracker instanceof Error) {
-		log(`debug tracker refused the subscription: ${tracker.message}`);
-		return;
-	}
-	tracker.subscribe({
-		version: 1,
-		body: {
-			debuggers: SUPPORTED_TYPES,
-			wantCurrentStatus: true,
-			notifyAllEvents: false,
-			debugLevel: 0,
-			handler: (event: TrackerEvent) => {
-				void handleTrackerEvent(event, deps);
-			}
+	// Reason: a tracker whose exports do not match what this client expects used
+	// to throw out of activation, which the host reports as a failed activation
+	// and leaves the panel and the output channel missing entirely. Sampling the
+	// API defensively keeps a protocol mismatch a logged degradation instead.
+	try {
+		const activated: unknown = await extension.activate();
+		const tracker = await resolveTrackerApi<TrackerSubscription>(activated);
+		if (tracker instanceof Error) {
+			log(`debug tracker unavailable: ${tracker.message}`);
+			return;
 		}
-	});
+		const grant = tracker.subscribe({
+			version: 1,
+			body: {
+				debuggers: SUPPORTED_TYPES,
+				wantCurrentStatus: true,
+				notifyAllEvents: false,
+				debugLevel: 0,
+				handler: (event: TrackerEvent) => {
+					void handleTrackerEvent(event, deps);
+				}
+			}
+		});
+		// Reason: the tracker answers a refusal with a string instead of throwing
+		// (`Unknown version`, `No handler specified`, ...), so an unchecked return
+		// would report success for a subscription that delivers nothing.
+		if (typeof grant === 'string') {
+			log(`debug tracker refused the subscription: ${grant}`);
+			return;
+		}
+		log('stop events follow debug-tracker-vscode');
+	} catch (error) {
+		log(`debug tracker subscription failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 	void context;
 }
 
@@ -262,13 +300,19 @@ interface TrackerDeps {
 	config: () => vscode.WorkspaceConfiguration;
 	/** Create or reuse the session object for a tracker-reported session. */
 	sessionFor: (session: vscode.DebugSession) => GdrSession;
+	/** Resolve a live debug session from the id a tracker payload carries. */
+	sessionById: (id: string) => vscode.DebugSession | undefined;
 	log: (message: string) => void;
 }
 
 async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promise<void> {
 	const { sessions, panel, config, sessionFor } = deps;
-	const session = event.session;
-	if (!session) {
+	const session = resolveEventSession(event, deps.sessionById);
+	if (session === undefined) {
+		// Reason: the tracker's payloads carry the session object only on its
+		// current-status events, so a stop event is attributed through its id and
+		// dropped (with a trace) when no live session owns that id.
+		deps.log(`tracker: ignored '${event.event}' (no live session yet)`);
 		return;
 	}
 	switch (event.event) {

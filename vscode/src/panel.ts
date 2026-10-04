@@ -240,7 +240,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		entry.inFlight = true;
 		entry.refreshSeq += 1;
 		const seq = entry.refreshSeq;
-		this.options.log(`panel: refresh ${entry.state.name} (gen ${entry.lastGeneration ?? '-'})`);
+		this.options.log(`panel: refresh ${entry.state.name} (generation ${entry.lastGeneration ?? '-'})`);
 		try {
 			const envelope = await this.options.fetchSnapshot(sessionId, frameId);
 			if (envelope === null) {
