@@ -1,6 +1,0 @@
-<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <!-- RTOS panel icon: three stacked depth planes, like kernel object layers.
-       Monochrome on purpose: VS Code tints activity-bar icons via mask. -->
-  <path fill="#000000" fill-rule="evenodd"
-    d="M4 3h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm1 2v2h14V5H5Zm-1 5h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Zm1 2v2h14v-2H5Zm-1 5h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Zm1 2v2h14v-2H5Z" />
-</svg>

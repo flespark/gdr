@@ -5,7 +5,9 @@
 ``vscode/resources/gdr`` and stamps it with the GDR version and the envelope
 schema.  The extension parses that envelope, so both numbers must match the
 sources they came from: a bundle built from another revision would make the
-client mis-render data instead of failing loudly.
+client mis-render data instead of failing loudly.  The extension's own version
+tracks the runtime's year.serial release for the same reason: a bug report that
+names one version must identify both halves.
 
 Usage::
 
@@ -36,6 +38,16 @@ def _read_schema(constants_source: str) -> int | None:
         return int(match.group(1))
     except ValueError:
         return None
+
+
+def _read_extension_version(manifest_path: Path) -> str | None:
+    """The extension's own version, which tracks the runtime's year.serial."""
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    version = document.get("version")
+    return version if isinstance(version, str) else None
 
 
 def main(argv: list[str]) -> int:
@@ -73,12 +85,24 @@ def main(argv: list[str]) -> int:
         mismatches.append(
             f"schema {manifest.get('schema_version')} != runtime {schema}"
         )
+    extension_version = _read_extension_version(vscode_dir / "package.json")
+    if extension_version is None:
+        mismatches.append("package.json declares no version")
+    elif extension_version != version and not extension_version.startswith(
+        f"{version}."
+    ):
+        mismatches.append(
+            f"extension version {extension_version} does not track runtime {version}"
+        )
     if mismatches:
         for mismatch in mismatches:
             print(f"check-vendored-schema: {mismatch}", file=sys.stderr)
         return 1
 
-    print(f"check-vendored-schema: ok (GDR {version}, schema {schema})")
+    print(
+        f"check-vendored-schema: ok (GDR {version}, schema {schema}, "
+        f"extension {extension_version})"
+    )
     return 0
 
 

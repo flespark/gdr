@@ -92,7 +92,7 @@ interface TrackerEvent {
 let sessionFactory: ((session: vscode.DebugSession, frameId: number) => Promise<boolean>) | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-	const output = vscode.window.createOutputChannel('GDR RTOS Views');
+	const output = vscode.window.createOutputChannel('GDB RTOS Views');
 	context.subscriptions.push(output);
 	const log = (message: string): void => {
 		output.appendLine(`[gdr] ${message}`);

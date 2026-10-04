@@ -22,7 +22,7 @@ test('resolves through DebugTrackerFactory and passes the client name', async ()
 	};
 	const resolved = await resolveTrackerApi(factory);
 	assert.equal(resolved, instance);
-	assert.deepEqual(seen, ['gdr-rtos-views']);
+	assert.deepEqual(seen, ['gdb-rtos-views']);
 });
 
 test('passes a factory refusal through as the error', async () => {

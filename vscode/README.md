@@ -1,4 +1,4 @@
-# GDR RTOS Views (VSCode extension)
+# GDB RTOS Views (VSCode extension)
 
 An RTOS view for embedded debugging, driven by GDR(GDB enhance for RTOS) CLI.
 For discover task/timer/IPC status, resource usage, corruption and potential bug.
@@ -36,6 +36,25 @@ The session's GDB must have Python. xPack ships both variants:
 `arm-none-eabi-gdb` has none, `arm-none-eabi-gdb-py3` does — point the adapter's
 `gdbPath` (or `gdr.runtimePath`'s sibling setting on the adapter) at the `-py3`
 binary. The extension says this explicitly instead of showing an empty panel.
+
+## Why the tracker extension
+
+`mcu-debug.debug-tracker-vscode` is a declared `extensionDependencies` entry,
+because VS Code's own debug API exposes neither the adapter's stopped/running
+events nor the stack frame it stopped in. The plugin subscribes to the tracker's
+v1 API for exactly four things:
+
+- `started` — the session gets its tab before GDR has answered anything;
+- `first-stack-trace` — the stop, carrying the frame id every `evaluate` read
+  needs, which is what makes the panel refresh per stop instead of per poll;
+- `running` — the snapshot on screen is marked stale instead of refreshed;
+- `terminated` — the launch's temporary scripts are removed, the tab closes.
+
+Every other event the tracker sends (`capabilities`, `protocol-event`,
+`initializing`) is ignored. GDR itself is never driven while the target runs, so
+a tracker that is missing or answers with a shape this client does not know
+degrades to a logged "initialized, no data" panel rather than reading a moving
+target.
 
 ## The RTOS panel
 
@@ -77,6 +96,15 @@ unambiguous exact result, and otherwise asks — with the evidence attached. A
 resolved answer is cached per launch configuration, so a reflash in place does
 not ask again.
 
+## Versioning
+
+The extension version tracks GDR's own year.serial release (the `__version__` in
+`gdr/__init__.py`), with the semver patch left free for extension-only fixes:
+GDR `2026.3` ships as extension `2026.3.0`, and a packaging or UI fix may
+publish `2026.3.1` against the same runtime. `ci/check-vendored-schema.py` fails
+when the two disagree, so a bundle never claims a runtime it was not built
+from.
+
 ## Development
 
 ```bash
@@ -97,9 +125,11 @@ client was built for, so an old extension never mis-renders a newer GDR.
   host); the renderer is pure and is asserted against a *real* QEMU snapshot in
   the integration lane, so the markup and the data it renders are both tested
   on real targets.
-- `gdr.snapshotTransport: "file"` needs the extension to read the filesystem GDB
-  writes to; a GDB in a separate filesystem namespace (for example WSL) must use
-  the default `evaluate` transport.
+- The file route needs the extension to read the filesystem GDB writes to. GDR
+  picks that route by itself when `evaluate` cannot carry a payload (every
+  Cortex-Debug session, see the `gdr.snapshotTransport` row above), so a GDB in
+  a separate filesystem namespace (for example WSL) cannot use Cortex-Debug at
+  all; the panel reports the failed bypass instead of showing nothing.
 - The probe reads versions from DWARF. A build without `-g3` exports no version
   macro, so the extension asks the user instead of guessing.
 - GDR's console warnings (a rejected version, an unsupported RTOS) appear in the

@@ -101,7 +101,7 @@ export function resolveEventSession<S>(
  */
 export async function resolveTrackerApi<T extends TrackerHandle = TrackerHandle>(
 	activated: unknown,
-	clientName = 'gdr-rtos-views'
+	clientName = 'gdb-rtos-views'
 ): Promise<T | Error> {
 	if (isTrackerHandle(activated)) {
 		// SAFETY: the predicate checked the one member callers use; `T` is the
