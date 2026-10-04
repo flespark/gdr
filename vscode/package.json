@@ -38,7 +38,8 @@
       "panel": [
         {
           "id": "gdb-rtos-views",
-          "title": "GDB RTOS Views"
+          "title": "GDB RTOS Views",
+          "icon": "media/trend.svg"
         }
       ]
     },

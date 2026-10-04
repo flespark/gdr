@@ -62,10 +62,13 @@ export function parseProbePayload(data: unknown): ProbePayload | null {
 		});
 	}
 	const resolvedRaw = data.resolved;
-	const resolved =
-		isRecord(resolvedRaw) && typeof resolvedRaw.rtos === 'string'
-			? { rtos: resolvedRaw.rtos, version: typeof resolvedRaw.version === 'string' ? resolvedRaw.version : null }
-			: null;
+	let resolved: { rtos: string; version: string | null } | null = null;
+	if (isRecord(resolvedRaw) && typeof resolvedRaw.rtos === 'string') {
+		resolved = {
+			rtos: resolvedRaw.rtos,
+			version: typeof resolvedRaw.version === 'string' ? resolvedRaw.version : null
+		};
+	}
 	return { candidates, resolved };
 }
 
@@ -78,9 +81,17 @@ export function evidenceLines(payload: ProbePayload): string[] {
 
 /** Candidates that carry a concrete version, in payload order. */
 function versionedOptions(payload: ProbePayload, rtos?: string): { rtos: string; version: string }[] {
-	return payload.candidates
-		.filter((candidate) => candidate.version !== null && (rtos === undefined || candidate.rtos === rtos))
-		.map((candidate) => ({ rtos: candidate.rtos, version: candidate.version as string }));
+	const options: { rtos: string; version: string }[] = [];
+	for (const candidate of payload.candidates) {
+		if (candidate.version === null) {
+			continue;
+		}
+		if (rtos !== undefined && candidate.rtos !== rtos) {
+			continue;
+		}
+		options.push({ rtos: candidate.rtos, version: candidate.version });
+	}
+	return options;
 }
 
 /**

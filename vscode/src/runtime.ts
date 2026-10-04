@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
-import { GDR_SCHEMA_VERSION } from './transport';
+import { GDR_SCHEMA_VERSION } from './transport.ts';
 
 /** `resources/gdr/VERSION`, written by `scripts/vendor-gdr.sh`. */
 export interface RuntimeManifest {

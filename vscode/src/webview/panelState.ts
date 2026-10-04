@@ -6,7 +6,7 @@
  * refresh is purely host-side state churn.
  */
 
-import type { PanelSnapshot } from '../snapshot';
+import type { PanelSnapshot } from '../snapshot.ts';
 
 export type SessionStatus = 'waiting' | 'running' | 'ok' | 'error';
 

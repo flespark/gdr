@@ -367,6 +367,11 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			}
 			return;
 		}
+		default:
+			// Reason: `event.event` is optional and the tracker also emits names
+			// that carry no panel state (`capabilities`, `protocol-event`), so a
+			// payload with nothing to update is a no-op, not an error.
+			return;
 	}
 }
 

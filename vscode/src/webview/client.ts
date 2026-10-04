@@ -29,6 +29,14 @@ if (root === null) {
 }
 
 window.addEventListener('message', (event: MessageEvent) => {
+	// Reason: the host is the only legitimate sender. VS Code relays it through
+	// the parent frame that shares this webview's origin, so the VS Code team's
+	// own guidance for webviews is an exact origin match (`e.origin ===
+	// window.origin`); a foreign frame that got a handle on this window must
+	// not be allowed to replace the panel's markup.
+	if (event.origin !== window.origin) {
+		return;
+	}
 	const message: unknown = event.data;
 	if (typeof message !== 'object' || message === null) {
 		return;

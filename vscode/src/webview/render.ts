@@ -148,7 +148,10 @@ export function snapshotHints(snapshot: PanelSnapshot): { text: string; kind: st
 	const capabilities = snapshot.data.capabilities;
 	if (capabilities !== null) {
 		for (const [kind, claim] of Object.entries(capabilities.kinds)) {
-			const gap = claim.note !== '' ? claim.note : claim.enumerable ? '' : claim.detail;
+			let gap = claim.note;
+			if (gap === '' && !claim.enumerable) {
+				gap = claim.detail;
+			}
 			if (gap !== '') {
 				hints.push({ text: `${kind}: ${gap}`, kind: 'warn' });
 			}
