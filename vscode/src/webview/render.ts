@@ -11,7 +11,7 @@
 import { escapeHtml } from './html.ts';
 
 import type { PanelState } from './panelState.ts';
-import type { ColumnSpec, ObjectTableData, PanelSnapshot } from '../snapshot.ts';
+import type { ColumnSpec, ObjectTableData, PanelSnapshot, SourceRef } from '../snapshot.ts';
 import type { CheckFinding } from '../snapshot.ts';
 
 /** A reference to the address cell anchor the webview turns into navigation. */
@@ -41,11 +41,14 @@ export function renderApp(state: PanelState): string {
 
 	const active = state.sessions.find((session) => session.id === state.activeId) ?? null;
 	const body = active === null ? renderEmpty() : renderSession(active);
+	// Reason: the client keeps the body's scroll position across a refresh, but
+	// only for the session it was showing; the tag tells it which one that is.
+	const session = active === null ? '' : ` data-session="${escapeHtml(active.id)}"`;
 
 	return (
 		`<div class="gdr-panel">` +
 		`<nav class="gdr-tabs">${tabs}</nav>` +
-		`<main class="gdr-body">${body}</main>` +
+		`<main class="gdr-body"${session}>${body}</main>` +
 		`</div>`
 	);
 }
@@ -197,13 +200,39 @@ function renderSystem(pairs: string[][]): string {
 // Tables (tasks, objects, heap free list)
 // ---------------------------------------------------------------------------
 
+/** The stack size a usage column is a fraction of. */
+const STACK_COLUMN = 'Stack';
+/** Usage columns drawn as a fraction of the stack: current use and high water. */
+const STACK_FRACTION_COLUMNS = ['Used', 'HighWater'];
+
+/**
+ * A ` class="…"` attribute for the non-empty class names, or nothing.
+ *
+ * Merges alignment and bar classes into one attribute, so a right-aligned bar
+ * column does not end up with two `class` attributes on one tag.
+ */
+function classAttr(classes: string[]): string {
+	const names = classes.filter((name) => name !== '');
+	return names.length > 0 ? ` class="${names.join(' ')}"` : '';
+}
+
+/** Whether a column is drawn as a stack fraction (needs the stack column too). */
+function isStackFraction(table: ObjectTableData, index: number): boolean {
+	return (
+		STACK_FRACTION_COLUMNS.includes(table.headers[index] ?? '') &&
+		table.headers.includes(STACK_COLUMN)
+	);
+}
+
 function renderTableCard(title: string, table: ObjectTableData): string {
 	const head = table.headers
 		.map((header, index) => {
 			const spec = table.columns?.[index];
 			const doc = spec?.doc !== undefined && spec.doc !== '' ? ` title="${escapeHtml(spec.doc)}"` : '';
-			const align = spec?.align === 'right' ? ' class="gdr-right"' : '';
-			return `<th${align}${doc}>${escapeHtml(header)}</th>`;
+			// Reason: every header reads left-aligned, whatever its column's data
+			// alignment; only the data cells below are right-aligned.
+			const bar = isStackFraction(table, index) ? 'gdr-bar-cell' : '';
+			return `<th${classAttr([bar])}${doc}>${escapeHtml(header)}</th>`;
 		})
 		.join('');
 	const body = renderTableRows(table);
@@ -218,28 +247,36 @@ function renderTableCard(title: string, table: ObjectTableData): string {
 }
 
 function renderTableRows(table: ObjectTableData): string {
-	const usedIndex = table.headers.indexOf('Used');
-	const stackIndex = table.headers.indexOf('Stack');
-	const percent = usedIndex >= 0 && stackIndex >= 0;
+	const stackIndex = table.headers.indexOf(STACK_COLUMN);
 	return table.rows
 		.map((row, rowIndex) => {
 			const values = table.value_rows?.[rowIndex] ?? [];
+			const sources = table.source_rows?.[rowIndex] ?? [];
 			const cells = row
 				.map((text, columnIndex): string => {
 					const spec: ColumnSpec | undefined = table.columns?.[columnIndex];
-					const align = spec?.align === 'right' ? ' class="gdr-right"' : '';
+					const align = spec?.align === 'right' ? 'gdr-right' : '';
 					if (spec?.kind === 'addr' && values[columnIndex] !== undefined) {
-						return `<td${align} class="gdr-addr">${renderAddress(text)}</td>`;
+						return `<td${classAttr([align, 'gdr-addr'])}>${renderAddress(text)}</td>`;
 					}
 					if (spec?.kind === 'waiters') {
-						return `<td${align} class="gdr-waiters">${renderWaiters(text, values[columnIndex])}</td>`;
+						return `<td${classAttr([align, 'gdr-waiters'])}>${renderWaiters(text, values[columnIndex])}</td>`;
 					}
-					if (percent && columnIndex === usedIndex && spec?.kind === 'int') {
-						const used = numeric(values[usedIndex]);
-						const stack = numeric(values[stackIndex]);
-						return `<td${align} class="gdr-used">${escapeHtml(text)}${renderPercentBar(used, stack)}</td>`;
+					const source = sources[columnIndex];
+					if (source !== undefined && source !== null) {
+						return `<td${classAttr([align])}>${renderSourceLink(text, source)}</td>`;
 					}
-					return `<td${align}>${escapeHtml(text)}</td>`;
+					if (stackIndex >= 0 && isStackFraction(table, columnIndex)) {
+						const percent = stackPercent(numeric(values[columnIndex]), numeric(values[stackIndex]));
+						if (percent !== null) {
+							// Reason: the bar is a background class picked here, not an inline
+							// style: the panel's CSP refuses style attributes outright.
+							const hot = percent >= 90 ? 'gdr-pct-hot' : '';
+							const cls = classAttr([align, 'gdr-bar-cell', `gdr-pct-${percent}`, hot]);
+							return `<td${cls} title="${percent}% of the stack">${escapeHtml(text)}</td>`;
+						}
+					}
+					return `<td${classAttr([align])}>${escapeHtml(text)}</td>`;
 				})
 				.join('');
 			return `<tr data-id="${escapeHtml(String(table.ids?.[rowIndex] ?? ''))}">${cells}</tr>`;
@@ -272,19 +309,28 @@ export function renderWaiters(text: string, value: unknown): string {
 }
 
 /**
- * A used/stack ratio as a bar, purely presentational.
+ * A usage value as a whole percent of its stack, clamped to 0..100.
  *
- * The columns are the adapter's own numeric pairs; the division is display
- * arithmetic only, never a kernel read.
+ * Presentation arithmetic only (the same ratio the stack column implies);
+ * `null` when either side is missing or the stack is empty.
  */
-export function renderPercentBar(used: number | null, stack: number | null): string {
+export function stackPercent(used: number | null, stack: number | null): number | null {
 	if (used === null || stack === null || stack <= 0) {
-		return '';
+		return null;
 	}
-	const percent = Math.min(100, Math.round((used / stack) * 100));
-	const cls = percent >= 90 ? 'gdr-bar-fill gdr-bar-hot' : 'gdr-bar-fill';
-	return `<span class="gdr-bar" title="${percent}% used">` +
-		`<span class="${cls}" style="width:${percent}%"></span></span>`;
+	return Math.max(0, Math.min(100, Math.round((used / stack) * 100)));
+}
+
+/**
+ * A symbol cell whose code has a known source line: a link the webview turns
+ * into an "open this line" request. The text stays the symbol the table shows.
+ */
+export function renderSourceLink(text: string, source: SourceRef): string {
+	const where = `${source.file}:${source.line}`;
+	return (
+		`<a href="#" class="gdr-source" data-source-file="${escapeHtml(source.file)}" ` +
+		`data-source-line="${source.line}" title="${escapeHtml(where)}">${escapeHtml(text)}</a>`
+	);
 }
 
 function numeric(value: unknown): number | null {
@@ -312,7 +358,7 @@ function renderHeap(snapshot: PanelSnapshot): string {
 				`<span class="gdr-sys-value">${escapeHtml(value)}</span>`
 		)
 		.join('');
-	const table = heap.table !== null ? renderTableCard('Free blocks', heap.table) : '';
+	const table = heap.table !== null ? renderTableCard(heap.tableTitle, heap.table) : '';
 	return `<section class="gdr-card"><h2>Heap</h2><dl class="gdr-system">${pairs}</dl>${table}</section>`;
 }
 

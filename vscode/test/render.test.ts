@@ -10,9 +10,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { PanelSnapshot, SnapshotData } from '../src/snapshot.ts';
+import type { ObjectTableData, PanelSnapshot, SnapshotData } from '../src/snapshot.ts';
 import type { PanelState } from '../src/webview/panelState.ts';
-import { renderApp, renderAddress, renderPercentBar, renderWaiters, snapshotHints } from '../src/webview/render.ts';
+import {
+	renderApp,
+	renderAddress,
+	renderSourceLink,
+	renderWaiters,
+	snapshotHints,
+	stackPercent
+} from '../src/webview/render.ts';
 
 function panelSnapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
 	const data: SnapshotData = {
@@ -46,7 +53,7 @@ function panelSnapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
 				['Current task', 'main']
 			]
 		},
-		heap: { pairs: [['Algorithm', 'small']], messages: [], table: null },
+		heap: { pairs: [['Algorithm', 'small']], messages: [], table: null, tableTitle: '' },
 		capabilities: {
 			kinds: {
 				queue: { enumerable: false, detail: 'needs configQUEUE_REGISTRY_SIZE', columns: [], note: '' },
@@ -98,7 +105,8 @@ test('the tab strip lists every session with its status dot', () => {
 
 test('numeric columns render right-aligned and the identity column carries its id', () => {
 	const html = renderApp(state());
-	assert.ok(html.includes('<th class="gdr-right">Prio</th>'));
+	assert.ok(html.includes('<th>Prio</th>'), 'headers are left-aligned');
+	assert.ok(!html.includes('<th class="gdr-right">'), 'no header takes the data alignment');
 	assert.ok(html.includes('<td class="gdr-right">10</td>'));
 	assert.ok(html.includes('data-id="0x20001234"'));
 });
@@ -109,11 +117,24 @@ test('address cells become navigation anchors with the raw address', () => {
 	assert.ok(html.includes('data-address="0x20001568"'));
 });
 
-test('used-by-stack cells render a percentage bar', () => {
+test('used-by-stack cells render a percentage bar as a background class', () => {
 	const html = renderApp(state());
-	assert.ok(html.includes('class="gdr-bar" title="25% used"'));
-	assert.ok(html.includes('style="width:25%"'));
-	assert.ok(html.includes('gdr-bar-hot'), 'a 95%-used stack is flagged hot');
+	assert.ok(html.includes('class="gdr-right gdr-bar-cell gdr-pct-25" title="25% of the stack">512</td>'));
+	assert.ok(
+		html.includes('class="gdr-right gdr-bar-cell gdr-pct-95 gdr-pct-hot" title="95% of the stack">3900</td>'),
+		'a 95%-used stack is flagged hot'
+	);
+});
+
+test('the panel never emits an inline style, which its CSP would refuse', () => {
+	// Reason: the webview allows styles only from its own stylesheet, so an
+	// inline `style=` attribute is dropped silently and the bar never shows.
+	assert.ok(!/\sstyle=/.test(renderApp(state())));
+});
+
+test('the body names its session so a refresh can keep the scroll position', () => {
+	const html = renderApp(state());
+	assert.ok(html.includes('<main class="gdr-body" data-session="s1">'));
 });
 
 test('a waiter list with several names folds into a disclosure', () => {
@@ -160,6 +181,24 @@ test('the heap card explains a cost-switched-off heap', () => {
 	assert.ok(html.includes('hidden by the heap cost switch'));
 });
 
+test('the heap table is titled by what it lists', () => {
+	// Reason: the same panel shows free-list blocks (FreeRTOS) and used
+	// blocks per thread (RT-Thread); one hard-coded title would mislabel one.
+	const snapshot: PanelSnapshot = panelSnapshot();
+	snapshot.data.heap = {
+		pairs: [['Algorithm', 'small_mem']],
+		messages: [],
+		table: { headers: ['Thread', 'Blocks', 'Bytes'], rows: [['main', '2', '128']], messages: [], elastic: ['Thread'] },
+		tableTitle: 'Heap used by thread'
+	};
+	const html = renderApp({
+		sessions: [{ id: 's1', name: 'firmware', status: 'ok', message: null, snapshot }],
+		activeId: 's1'
+	});
+	assert.ok(html.includes('Heap used by thread'));
+	assert.ok(!html.includes('Free blocks'));
+});
+
 test('a running target keeps the snapshot under a stale banner', () => {
 	const html = renderApp({
 		sessions: [{ id: 's1', name: 'firmware', status: 'running', message: null, snapshot: panelSnapshot() }],
@@ -191,10 +230,64 @@ test('adversarial task names cannot inject markup', () => {
 	assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
 });
 
-test('the percent bar refuses a missing or empty stack', () => {
-	assert.equal(renderPercentBar(512, null), '');
-	assert.equal(renderPercentBar(null, 2048), '');
-	assert.equal(renderPercentBar(10, 0), '');
+test('the stack percentage refuses a missing or empty stack and clamps to 0..100', () => {
+	assert.equal(stackPercent(512, null), null);
+	assert.equal(stackPercent(null, 2048), null);
+	assert.equal(stackPercent(10, 0), null);
+	assert.equal(stackPercent(512, 2048), 25);
+	assert.equal(stackPercent(4096, 2048), 100);
+	assert.equal(stackPercent(-4, 2048), 0);
+});
+
+/** The app rendered with one replaced tasks table, everything else as in state(). */
+function stateWithTasks(tasks: ObjectTableData): PanelState {
+	const snapshot = panelSnapshot();
+	snapshot.data.tasks = tasks;
+	return {
+		sessions: [{ id: 's1', name: 'firmware', status: 'ok', message: null, snapshot }],
+		activeId: 's1'
+	};
+}
+
+test('the high-water column shares the stack bar', () => {
+	const html = renderApp(
+		stateWithTasks({
+			headers: ['Name', 'Stack', 'Used', 'HighWater'],
+			rows: [['worker', '4096', '1024', '3072']],
+			messages: [],
+			elastic: ['Name'],
+			value_rows: [['worker', 4096, 1024, 3072]]
+		})
+	);
+	assert.ok(html.includes('<th class="gdr-bar-cell">HighWater</th>'), 'the widened header');
+	assert.ok(html.includes('class="gdr-bar-cell gdr-pct-25" title="25% of the stack">1024</td>'));
+	assert.ok(html.includes('class="gdr-bar-cell gdr-pct-75" title="75% of the stack">3072</td>'));
+});
+
+test('a task entry with a known source renders as a link to that line', () => {
+	const html = renderApp(
+		stateWithTasks({
+			headers: ['Name', 'Entry'],
+			rows: [['tshell', '<finsh_thread_entry>']],
+			messages: [],
+			elastic: ['Name'],
+			value_rows: [['tshell', 0x600bcc00]],
+			source_rows: [[null, { file: '/src/shell "x".c', line: 1700 }]]
+		})
+	);
+	assert.ok(
+		html.includes(
+			'<a href="#" class="gdr-source" data-source-file="/src/shell &quot;x&quot;.c" ' +
+				'data-source-line="1700" title="/src/shell &quot;x&quot;.c:1700">' +
+				'&lt;finsh_thread_entry&gt;</a>'
+		)
+	);
+});
+
+test('a source link escapes its file path and keeps the symbol text', () => {
+	const html = renderSourceLink('<main>', { file: '/a<b>.c', line: 3 });
+	assert.ok(html.includes('data-source-file="/a&lt;b&gt;.c"'));
+	assert.ok(html.endsWith('>&lt;main&gt;</a>'));
 });
 
 test('renderAddress escapes the address text', () => {

@@ -230,9 +230,14 @@ body {
 	font-weight: 500;
 }
 
-.gdr-right,
-.gdr-table th.gdr-right {
+.gdr-right {
 	text-align: right;
+}
+
+/* Reason: a rule between columns makes wide tables readable across the gap. */
+.gdr-table th + th,
+.gdr-table td + td {
+	border-left: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
 }
 
 .gdr-addr a {
@@ -245,26 +250,140 @@ body {
 	text-decoration: underline;
 }
 
-/* --- percent bar ------------------------------------------------------- */
+/* --- stack usage bars -------------------------------------------------- */
 
-.gdr-bar {
-	display: block;
-	height: 3px;
-	margin-top: 2px;
-	background: var(--vscode-progressBar-background, rgba(128, 128, 128, 0.25));
-	border-radius: 2px;
-	overflow: hidden;
+/*
+ * A used or high-water cell paints its share of the stack as its background,
+ * the same gradient the rtos-views plugin draws. The host picks one class per
+ * whole percent (`gdr-pct-N`): a class, never an inline style, because the panel's
+ * Content-Security-Policy refuses style attributes.
+ */
+
+:root {
+	--gdr-bar-color: color-mix(in srgb, var(--vscode-charts-blue, #0078d4) 35%, transparent);
 }
 
-.gdr-bar-fill {
-	display: block;
-	height: 100%;
-	background: var(--vscode-charts-green, #4ca34c);
+.gdr-bar-cell {
+	/* Reason: a bar needs room to read; these two columns start wide enough for one. */
+	min-width: 12ch;
 }
 
-.gdr-bar-hot {
-	background: var(--vscode-charts-red, #d14d4d);
+.gdr-bar-cell.gdr-pct-hot {
+	--gdr-bar-color: color-mix(in srgb, var(--vscode-charts-red, #d14d4d) 45%, transparent);
 }
+
+.gdr-pct-0 { background: linear-gradient(to right, var(--gdr-bar-color) 0%, transparent 0%); }
+.gdr-pct-1 { background: linear-gradient(to right, var(--gdr-bar-color) 1%, transparent 1%); }
+.gdr-pct-2 { background: linear-gradient(to right, var(--gdr-bar-color) 2%, transparent 2%); }
+.gdr-pct-3 { background: linear-gradient(to right, var(--gdr-bar-color) 3%, transparent 3%); }
+.gdr-pct-4 { background: linear-gradient(to right, var(--gdr-bar-color) 4%, transparent 4%); }
+.gdr-pct-5 { background: linear-gradient(to right, var(--gdr-bar-color) 5%, transparent 5%); }
+.gdr-pct-6 { background: linear-gradient(to right, var(--gdr-bar-color) 6%, transparent 6%); }
+.gdr-pct-7 { background: linear-gradient(to right, var(--gdr-bar-color) 7%, transparent 7%); }
+.gdr-pct-8 { background: linear-gradient(to right, var(--gdr-bar-color) 8%, transparent 8%); }
+.gdr-pct-9 { background: linear-gradient(to right, var(--gdr-bar-color) 9%, transparent 9%); }
+.gdr-pct-10 { background: linear-gradient(to right, var(--gdr-bar-color) 10%, transparent 10%); }
+.gdr-pct-11 { background: linear-gradient(to right, var(--gdr-bar-color) 11%, transparent 11%); }
+.gdr-pct-12 { background: linear-gradient(to right, var(--gdr-bar-color) 12%, transparent 12%); }
+.gdr-pct-13 { background: linear-gradient(to right, var(--gdr-bar-color) 13%, transparent 13%); }
+.gdr-pct-14 { background: linear-gradient(to right, var(--gdr-bar-color) 14%, transparent 14%); }
+.gdr-pct-15 { background: linear-gradient(to right, var(--gdr-bar-color) 15%, transparent 15%); }
+.gdr-pct-16 { background: linear-gradient(to right, var(--gdr-bar-color) 16%, transparent 16%); }
+.gdr-pct-17 { background: linear-gradient(to right, var(--gdr-bar-color) 17%, transparent 17%); }
+.gdr-pct-18 { background: linear-gradient(to right, var(--gdr-bar-color) 18%, transparent 18%); }
+.gdr-pct-19 { background: linear-gradient(to right, var(--gdr-bar-color) 19%, transparent 19%); }
+.gdr-pct-20 { background: linear-gradient(to right, var(--gdr-bar-color) 20%, transparent 20%); }
+.gdr-pct-21 { background: linear-gradient(to right, var(--gdr-bar-color) 21%, transparent 21%); }
+.gdr-pct-22 { background: linear-gradient(to right, var(--gdr-bar-color) 22%, transparent 22%); }
+.gdr-pct-23 { background: linear-gradient(to right, var(--gdr-bar-color) 23%, transparent 23%); }
+.gdr-pct-24 { background: linear-gradient(to right, var(--gdr-bar-color) 24%, transparent 24%); }
+.gdr-pct-25 { background: linear-gradient(to right, var(--gdr-bar-color) 25%, transparent 25%); }
+.gdr-pct-26 { background: linear-gradient(to right, var(--gdr-bar-color) 26%, transparent 26%); }
+.gdr-pct-27 { background: linear-gradient(to right, var(--gdr-bar-color) 27%, transparent 27%); }
+.gdr-pct-28 { background: linear-gradient(to right, var(--gdr-bar-color) 28%, transparent 28%); }
+.gdr-pct-29 { background: linear-gradient(to right, var(--gdr-bar-color) 29%, transparent 29%); }
+.gdr-pct-30 { background: linear-gradient(to right, var(--gdr-bar-color) 30%, transparent 30%); }
+.gdr-pct-31 { background: linear-gradient(to right, var(--gdr-bar-color) 31%, transparent 31%); }
+.gdr-pct-32 { background: linear-gradient(to right, var(--gdr-bar-color) 32%, transparent 32%); }
+.gdr-pct-33 { background: linear-gradient(to right, var(--gdr-bar-color) 33%, transparent 33%); }
+.gdr-pct-34 { background: linear-gradient(to right, var(--gdr-bar-color) 34%, transparent 34%); }
+.gdr-pct-35 { background: linear-gradient(to right, var(--gdr-bar-color) 35%, transparent 35%); }
+.gdr-pct-36 { background: linear-gradient(to right, var(--gdr-bar-color) 36%, transparent 36%); }
+.gdr-pct-37 { background: linear-gradient(to right, var(--gdr-bar-color) 37%, transparent 37%); }
+.gdr-pct-38 { background: linear-gradient(to right, var(--gdr-bar-color) 38%, transparent 38%); }
+.gdr-pct-39 { background: linear-gradient(to right, var(--gdr-bar-color) 39%, transparent 39%); }
+.gdr-pct-40 { background: linear-gradient(to right, var(--gdr-bar-color) 40%, transparent 40%); }
+.gdr-pct-41 { background: linear-gradient(to right, var(--gdr-bar-color) 41%, transparent 41%); }
+.gdr-pct-42 { background: linear-gradient(to right, var(--gdr-bar-color) 42%, transparent 42%); }
+.gdr-pct-43 { background: linear-gradient(to right, var(--gdr-bar-color) 43%, transparent 43%); }
+.gdr-pct-44 { background: linear-gradient(to right, var(--gdr-bar-color) 44%, transparent 44%); }
+.gdr-pct-45 { background: linear-gradient(to right, var(--gdr-bar-color) 45%, transparent 45%); }
+.gdr-pct-46 { background: linear-gradient(to right, var(--gdr-bar-color) 46%, transparent 46%); }
+.gdr-pct-47 { background: linear-gradient(to right, var(--gdr-bar-color) 47%, transparent 47%); }
+.gdr-pct-48 { background: linear-gradient(to right, var(--gdr-bar-color) 48%, transparent 48%); }
+.gdr-pct-49 { background: linear-gradient(to right, var(--gdr-bar-color) 49%, transparent 49%); }
+.gdr-pct-50 { background: linear-gradient(to right, var(--gdr-bar-color) 50%, transparent 50%); }
+.gdr-pct-51 { background: linear-gradient(to right, var(--gdr-bar-color) 51%, transparent 51%); }
+.gdr-pct-52 { background: linear-gradient(to right, var(--gdr-bar-color) 52%, transparent 52%); }
+.gdr-pct-53 { background: linear-gradient(to right, var(--gdr-bar-color) 53%, transparent 53%); }
+.gdr-pct-54 { background: linear-gradient(to right, var(--gdr-bar-color) 54%, transparent 54%); }
+.gdr-pct-55 { background: linear-gradient(to right, var(--gdr-bar-color) 55%, transparent 55%); }
+.gdr-pct-56 { background: linear-gradient(to right, var(--gdr-bar-color) 56%, transparent 56%); }
+.gdr-pct-57 { background: linear-gradient(to right, var(--gdr-bar-color) 57%, transparent 57%); }
+.gdr-pct-58 { background: linear-gradient(to right, var(--gdr-bar-color) 58%, transparent 58%); }
+.gdr-pct-59 { background: linear-gradient(to right, var(--gdr-bar-color) 59%, transparent 59%); }
+.gdr-pct-60 { background: linear-gradient(to right, var(--gdr-bar-color) 60%, transparent 60%); }
+.gdr-pct-61 { background: linear-gradient(to right, var(--gdr-bar-color) 61%, transparent 61%); }
+.gdr-pct-62 { background: linear-gradient(to right, var(--gdr-bar-color) 62%, transparent 62%); }
+.gdr-pct-63 { background: linear-gradient(to right, var(--gdr-bar-color) 63%, transparent 63%); }
+.gdr-pct-64 { background: linear-gradient(to right, var(--gdr-bar-color) 64%, transparent 64%); }
+.gdr-pct-65 { background: linear-gradient(to right, var(--gdr-bar-color) 65%, transparent 65%); }
+.gdr-pct-66 { background: linear-gradient(to right, var(--gdr-bar-color) 66%, transparent 66%); }
+.gdr-pct-67 { background: linear-gradient(to right, var(--gdr-bar-color) 67%, transparent 67%); }
+.gdr-pct-68 { background: linear-gradient(to right, var(--gdr-bar-color) 68%, transparent 68%); }
+.gdr-pct-69 { background: linear-gradient(to right, var(--gdr-bar-color) 69%, transparent 69%); }
+.gdr-pct-70 { background: linear-gradient(to right, var(--gdr-bar-color) 70%, transparent 70%); }
+.gdr-pct-71 { background: linear-gradient(to right, var(--gdr-bar-color) 71%, transparent 71%); }
+.gdr-pct-72 { background: linear-gradient(to right, var(--gdr-bar-color) 72%, transparent 72%); }
+.gdr-pct-73 { background: linear-gradient(to right, var(--gdr-bar-color) 73%, transparent 73%); }
+.gdr-pct-74 { background: linear-gradient(to right, var(--gdr-bar-color) 74%, transparent 74%); }
+.gdr-pct-75 { background: linear-gradient(to right, var(--gdr-bar-color) 75%, transparent 75%); }
+.gdr-pct-76 { background: linear-gradient(to right, var(--gdr-bar-color) 76%, transparent 76%); }
+.gdr-pct-77 { background: linear-gradient(to right, var(--gdr-bar-color) 77%, transparent 77%); }
+.gdr-pct-78 { background: linear-gradient(to right, var(--gdr-bar-color) 78%, transparent 78%); }
+.gdr-pct-79 { background: linear-gradient(to right, var(--gdr-bar-color) 79%, transparent 79%); }
+.gdr-pct-80 { background: linear-gradient(to right, var(--gdr-bar-color) 80%, transparent 80%); }
+.gdr-pct-81 { background: linear-gradient(to right, var(--gdr-bar-color) 81%, transparent 81%); }
+.gdr-pct-82 { background: linear-gradient(to right, var(--gdr-bar-color) 82%, transparent 82%); }
+.gdr-pct-83 { background: linear-gradient(to right, var(--gdr-bar-color) 83%, transparent 83%); }
+.gdr-pct-84 { background: linear-gradient(to right, var(--gdr-bar-color) 84%, transparent 84%); }
+.gdr-pct-85 { background: linear-gradient(to right, var(--gdr-bar-color) 85%, transparent 85%); }
+.gdr-pct-86 { background: linear-gradient(to right, var(--gdr-bar-color) 86%, transparent 86%); }
+.gdr-pct-87 { background: linear-gradient(to right, var(--gdr-bar-color) 87%, transparent 87%); }
+.gdr-pct-88 { background: linear-gradient(to right, var(--gdr-bar-color) 88%, transparent 88%); }
+.gdr-pct-89 { background: linear-gradient(to right, var(--gdr-bar-color) 89%, transparent 89%); }
+.gdr-pct-90 { background: linear-gradient(to right, var(--gdr-bar-color) 90%, transparent 90%); }
+.gdr-pct-91 { background: linear-gradient(to right, var(--gdr-bar-color) 91%, transparent 91%); }
+.gdr-pct-92 { background: linear-gradient(to right, var(--gdr-bar-color) 92%, transparent 92%); }
+.gdr-pct-93 { background: linear-gradient(to right, var(--gdr-bar-color) 93%, transparent 93%); }
+.gdr-pct-94 { background: linear-gradient(to right, var(--gdr-bar-color) 94%, transparent 94%); }
+.gdr-pct-95 { background: linear-gradient(to right, var(--gdr-bar-color) 95%, transparent 95%); }
+.gdr-pct-96 { background: linear-gradient(to right, var(--gdr-bar-color) 96%, transparent 96%); }
+.gdr-pct-97 { background: linear-gradient(to right, var(--gdr-bar-color) 97%, transparent 97%); }
+.gdr-pct-98 { background: linear-gradient(to right, var(--gdr-bar-color) 98%, transparent 98%); }
+.gdr-pct-99 { background: linear-gradient(to right, var(--gdr-bar-color) 99%, transparent 99%); }
+.gdr-pct-100 { background: linear-gradient(to right, var(--gdr-bar-color) 100%, transparent 100%); }
+
+.gdr-source {
+	color: var(--gdr-accent);
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.gdr-source:hover {
+	text-decoration: underline;
+}
+
 
 /* --- waiters ----------------------------------------------------------- */
 

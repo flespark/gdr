@@ -26,6 +26,7 @@ import {
 	memoryViewUri
 } from './memoryNav.ts';
 import { renderApp, renderShell, type ShellArgs } from './webview/render.ts';
+import { decodeWebviewMessage } from './webview/messages.ts';
 import type { PanelSessionState, SessionStatus } from './webview/panelState.ts';
 
 /** How long a burst of stops must settle before one refresh runs. */
@@ -54,21 +55,6 @@ interface SessionEntry {
 	inFlight: boolean;
 	pending: boolean;
 	debounce: NodeJS.Timeout | null;
-}
-
-/** A message the webview can send, decoded at the I/O boundary. */
-type WebviewMessage = { type: 'openMemory'; address: string; sessionId?: string };
-
-function decodeWebviewMessage(value: unknown): WebviewMessage | null {
-	if (typeof value !== 'object' || value === null) {
-		return null;
-	}
-	const payload = value as Record<string, unknown>;
-	if (payload.type !== 'openMemory' || typeof payload.address !== 'string') {
-		return null;
-	}
-	const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : undefined;
-	return { type: 'openMemory', address: payload.address, ...(sessionId !== undefined ? { sessionId } : {}) };
 }
 
 export class RtosViewsPanel implements vscode.WebviewViewProvider {
@@ -339,8 +325,31 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 
 	private handleMessage(message: unknown): void {
 		const decoded = decodeWebviewMessage(message);
-		if (decoded !== null) {
+		if (decoded === null) {
+			return;
+		}
+		if (decoded.type === 'openMemory') {
 			void this.openMemory(decoded.address, decoded.sessionId);
+		} else {
+			void this.openSource(decoded.file, decoded.line);
+		}
+	}
+
+	// -- source navigation -------------------------------------------------
+
+	/** Open the file a task entry starts in, with the caret on its line. */
+	private async openSource(file: string, line: number): Promise<void> {
+		const position = new vscode.Position(line - 1, 0);
+		try {
+			const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+			await vscode.window.showTextDocument(document, {
+				selection: new vscode.Range(position, position)
+			});
+		} catch (error) {
+			this.options.log(`panel: could not open ${file}:${line}: ${String(error)}`);
+			void vscode.window.showInformationMessage(
+				`GDR: could not open ${file}:${line}; check that the source is on this machine`
+			);
 		}
 	}
 

@@ -261,7 +261,9 @@ envelope's own fields: alignment from `ColumnSpec.align`, machine values from
 `value_rows`, waiter lists from `waiters` cells, capability gaps and warnings
 verbatim as hint bars. The one arithmetic the panel performs is a used/stack
 ratio bar against the adapter-provided numeric pair -- presentation, never
-kernel interpretation.
+kernel interpretation. The bar is a background class (`gdr-pct-N`) chosen by
+the host, not an inline `style`: the panel's Content-Security-Policy allows
+styles only from its own stylesheet and silently refuses style attributes.
 
 Cost control rides the verb layer, not new surface: `snapshot` accepts
 `--no-heap` (skipping the only full-memory walk among panel verbs), and
@@ -269,7 +271,11 @@ Cost control rides the verb layer, not new surface: `snapshot` accepts
 often. Address cells navigate through the mcu-debug `memory-view` extension's
 URI protocol (`vscode://mcu-debug.memory-view?expr=<addr>`), the same channel
 cortex-debug uses; the viewer evaluates the bare address literal in the stopped
-session, never an inferior call.
+session, never an inferior call. A symbol cell that GDR resolves to a source
+line (`source_rows`, from `gdb.find_pc_line`, which reads only the debug line
+table) opens that file at that line on click; the host accepts only absolute
+paths, and the webview's client stays import-free so a refresh can restore the
+scroll position of the session still shown.
 
 ### One evidence ladder for `probe` and `init`
 

@@ -23,6 +23,12 @@ export interface ColumnSpec {
 	doc: string;
 }
 
+/** Where a cell's code lives, when GDR could resolve it to a source line. */
+export interface SourceRef {
+	file: string;
+	line: number;
+}
+
 export interface ObjectTableData {
 	headers: string[];
 	rows: string[][];
@@ -32,6 +38,8 @@ export interface ObjectTableData {
 	columns?: ColumnSpec[];
 	/** Machine values beside the rendered text; mirrors `rows` exactly. */
 	value_rows?: unknown[][];
+	/** Source locations beside the rendered text; `null` where none is known. */
+	source_rows?: (SourceRef | null)[][];
 	/** Stable row identities (the `id_key` column's raw value). */
 	ids?: string[];
 }
@@ -64,6 +72,8 @@ export interface HeapData {
 	pairs: string[][];
 	messages: string[];
 	table: ObjectTableData | null;
+	/** What the table lists, e.g. free blocks or used blocks by thread. */
+	tableTitle: string;
 }
 
 export interface SystemData {
@@ -160,6 +170,16 @@ function parseColumnSpecs(value: unknown): ColumnSpec[] | undefined {
 	return specs.length > 0 ? specs : undefined;
 }
 
+function parseSourceRef(value: unknown): SourceRef | null {
+	if (!isRecord(value) || typeof value.file !== 'string') {
+		return null;
+	}
+	if (typeof value.line !== 'number' || !Number.isInteger(value.line) || value.line < 1) {
+		return null;
+	}
+	return { file: value.file, line: value.line };
+}
+
 function parseTable(value: unknown): ObjectTableData | null {
 	if (!isRecord(value) || !Array.isArray(value.headers) || !Array.isArray(value.rows)) {
 		return null;
@@ -179,6 +199,11 @@ function parseTable(value: unknown): ObjectTableData | null {
 	}
 	if (Array.isArray(value.value_rows)) {
 		table.value_rows = value.value_rows.map((row) => (Array.isArray(row) ? row : []));
+	}
+	if (Array.isArray(value.source_rows)) {
+		table.source_rows = value.source_rows.map((row) =>
+			Array.isArray(row) ? row.map(parseSourceRef) : []
+		);
 	}
 	if (Array.isArray(value.ids)) {
 		table.ids = asStringList(value.ids);
@@ -275,7 +300,8 @@ function parseHeap(value: unknown): HeapData | null {
 	return {
 		pairs: asStrings(value.pairs),
 		messages: asStringList(value.messages),
-		table: parseTable(value.table)
+		table: parseTable(value.table),
+		tableTitle: typeof value.table_title === 'string' ? value.table_title : 'Heap blocks'
 	};
 }
 

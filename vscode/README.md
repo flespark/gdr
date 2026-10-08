@@ -1,28 +1,81 @@
 # GDB RTOS Views (VSCode extension)
 
-An RTOS view for embedded debugging, driven by [GDR (GDB enhance for RTOS)](https://github.com/flespark/gdr#readme) CLI.
+An RTOS view for embedded debugging, driven by [GDR (GDB enhance for RTOS)](https://github.com/flespark) CLI.
 For discover task/timer/IPC status, resource usage, corruption and potential bug.
 
 ## How it works
 
+### Layers
+
+Four layers sit between the panel and the target. Each one does one job, and
+only GDR knows anything about the RTOS:
+
+```mermaid
+flowchart TB
+    ext["VS Code panel (this extension)<br/>session lifecycle, transport, rendering"]
+    da["Debug Adapter<br/>cortex-debug, cppdbg, gdbtarget, ..."]
+    subgraph gdbproc["GDB"]
+        gdb["GDB<br/>symbols, DWARF, memory, run/halt"]
+        gdr["GDR (gdr.py, embedded Python)<br/>RTOS decoding, checks, envelope"]
+        gdb <-->|"Python API"| gdr
+    end
+    target["Target<br/>halted while anything is read"]
+
+    ext -->|"DAP evaluate request"| da
+    da -.->|"JSON envelope (text or file)"| ext
+    da <-->|"GDB/MI"| gdb
+    gdb <-->|"remote protocol (OpenOCD, J-Link, pyOCD, QEMU gdbstub, ...)"| target
+```
+
+- **GDB** is the debugger itself. It owns the connection to the target, the
+  ELF symbols and DWARF types, memory reads, and run/halt control. It also
+  hosts the Python interpreter that GDR runs in, which is why the session's
+  GDB must be built with Python.
+- **The debug adapter** is the extension you already debug with (see
+  [Supported debug adapters](#supported-debug-adapters)). It starts GDB,
+  translates VS Code's Debug Adapter Protocol (DAP) into GDB/MI commands, and
+  drives continue/step/breakpoints. This extension does not replace it. It
+  only adds the GDR loader to the adapter's launch-time command hooks, and it
+  asks questions through the adapter's DAP `evaluate` request, the same path
+  a watch expression takes. The adapter's stop and run events reach the
+  extension through the [tracker extension](#why-the-tracker-extension).
+- **GDR** could be used as a independent CLI (`source gdr.py` at the GDB
+  prompt). It is the only layer that understands kernel structures: it walks
+  the RTOS's task lists, objects and heap through GDB, checks them for
+  consistency, and returns the result as a versioned JSON envelope through
+  the `$gdr_json` convenience function. The text commands and the envelope are
+  built from the same collectors, so a view can never disagree with what a
+  command such as `rtt threads` prints at the GDB prompt.
+- **This extension** is a client of that envelope. It runs the session
+  lifecycle (check Python, load GDR, probe, initialize), carries the envelope
+  back (inline `evaluate` results reassembled from chunks, or a temporary file
+  when the adapter cannot return the payload), refuses a bundled runtime
+  whose envelope schema it was not built for, and renders the result in the
+  panel. It decodes no kernel structure and reads no target memory of its
+  own; everything it shows comes from a field GDR returned.
+
+### Session lifecycle
+
 1. **At launch** it checks that GDB has Python, then `source`s the bundled
    `gdr.py`. Without Python the session still starts, and the panel shows why.
-2. **At the first stop** it asks which RTOS adapter this target is
-   (`$gdr_json("probe")`) and initializes it.
-3. **From then on** views read the same verbs the prompt does.
-
-### Co-work with CLI
-
-GDR collect debugged ELF and target info as JSON envelope, this extension renders
-what comes back. It does not decode kernel structures of its own, so a view can
-never disagree with what GDR CLI prints.
+2. **At the first stop** it asks GDR which RTOS and version this target is
+   (`$gdr_json("probe")`) and initializes that adapter.
+3. **At every later stop** the panel asks for one snapshot, which runs the
+   same collectors as the commands at the GDB prompt.
 
 ### Stop snapshot
 
-GDR is never driven while the target runs, and this extension never reads or writes
-target memory itself, so target running always obeys firmware. GDR never call
-target inferior function, because inferior function drive target running again may
-over bug snapshot.
+Nothing is read while the target runs: GDR answers only at a stop, and the
+extension marks the snapshot on screen as stale as soon as the target
+resumes. Neither GDR nor the extension writes target memory or calls a
+function in the firmware (a GDB inferior call), because an inferior call
+resumes the target and could change the very state the snapshot is meant to
+capture. Running the target stays entirely under the firmware's and your
+control.
+
+## Supported RTOS
+
+See [GDR readme](https://github.com/flespark/gdr#readme)
 
 ## Supported debug adapters
 

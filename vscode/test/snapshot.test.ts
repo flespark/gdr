@@ -39,7 +39,7 @@ function snapshotPayload(): unknown {
 		tasks: TABLE,
 		objects: { headers: ['Kind', 'Count'], rows: [['semaphore', '3']], messages: [], elastic: [] },
 		system: { pairs: [['Kernel version', '4.0.5'], ['Current task', 'main']] },
-		heap: { pairs: [['Algorithm', 'small']], messages: [], table: null },
+		heap: { pairs: [['Algorithm', 'small']], messages: [], table: null, tableTitle: '' },
 		capabilities: {
 			kinds: {
 				semaphore: {
@@ -66,6 +66,28 @@ test('a snapshot parse keeps the machine values and stable ids', () => {
 	assert.deepEqual(data.system?.pairs[0], ['Kernel version', '4.0.5']);
 	assert.equal(data.capabilities?.kinds.queue.detail, 'needs configQUEUE_REGISTRY_SIZE');
 	assert.equal(data.checks?.counts.ok, 1);
+});
+
+test('a source location parses only with a file and a whole line number', () => {
+	const data = parseSnapshot({
+		tasks: {
+			headers: ['Name', 'Entry'],
+			rows: [
+				['tshell', '<finsh_thread_entry>'],
+				['worker', '<worker_entry>']
+			],
+			messages: [],
+			elastic: [],
+			source_rows: [
+				[null, { file: '/src/shell.c', line: 1700 }],
+				[null, { file: '/src/worker.c', line: 1.5 }]
+			]
+		}
+	});
+	assert.deepEqual(data?.tasks?.source_rows, [
+		[null, { file: '/src/shell.c', line: 1700 }],
+		[null, null]
+	]);
 });
 
 test('a non-snapshot envelope payload parses as null', () => {
