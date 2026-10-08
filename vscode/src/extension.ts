@@ -113,6 +113,12 @@ export function activate(context: vscode.ExtensionContext): void {
 			liveSessions.delete(session.id);
 		})
 	);
+	// Reason: onDidStartDebugSession is not guaranteed to fire before the adapter's
+	// first tracker events, so any payload that carries the session object also
+	// registers it; a later id-only stop event then still resolves.
+	const rememberSession = (session: vscode.DebugSession): void => {
+		liveSessions.set(session.id, session);
+	};
 	const sessionById = (id: string): vscode.DebugSession | undefined => {
 		const known = liveSessions.get(id);
 		if (known !== undefined) {
@@ -238,6 +244,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		sessions,
 		sessionFor,
 		sessionById,
+		rememberSession,
 		log
 	});
 }
@@ -274,7 +281,11 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 				notifyAllEvents: false,
 				debugLevel: 0,
 				handler: (event: TrackerEvent) => {
-					void handleTrackerEvent(event, deps);
+					// Reason: a rejection here would only reach the Extension Host console,
+					// so the output channel would show a stall with no cause.
+					handleTrackerEvent(event, deps).catch((error: unknown) => {
+						log(`tracker: '${event.event}' failed: ${error instanceof Error ? error.message : String(error)}`);
+					});
 				}
 			}
 		});
@@ -302,11 +313,16 @@ interface TrackerDeps {
 	sessionFor: (session: vscode.DebugSession) => GdrSession;
 	/** Resolve a live debug session from the id a tracker payload carries. */
 	sessionById: (id: string) => vscode.DebugSession | undefined;
+	/** Record a session object a tracker payload carried, for later id-only events. */
+	rememberSession: (session: vscode.DebugSession) => void;
 	log: (message: string) => void;
 }
 
 async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promise<void> {
 	const { sessions, panel, config, sessionFor } = deps;
+	if (event.session !== undefined) {
+		deps.rememberSession(event.session);
+	}
 	const session = resolveEventSession(event, deps.sessionById);
 	if (session === undefined) {
 		// Reason: the tracker's payloads carry the session object only on its

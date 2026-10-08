@@ -22,7 +22,14 @@ import * as path from 'node:path';
 
 import * as vscode from 'vscode';
 
-import { initCommand, launchLoaderPath, parsePythonResult, pythonResultPath, unsupportedReason } from './inject.ts';
+import {
+	consoleCommand,
+	initCommand,
+	launchLoaderPath,
+	parsePythonResult,
+	pythonResultPath,
+	unsupportedReason
+} from './inject.ts';
 import { cacheKey, decideInit, parseProbePayload, type GdrSettings, type InitDecision } from './probe.ts';
 import { checkRuntime, locateRuntime, type RuntimeLocation } from './runtime.ts';
 import {
@@ -136,7 +143,17 @@ export class GdrSession {
 	 */
 	watchLaunchPython(): Promise<boolean> {
 		if (this.launchPythonReady === null) {
-			this.launchPythonReady = this.pollLaunchPython();
+			const loader = launchLoaderPath(this.session.configuration);
+			if (loader === null) {
+				// Reason: without the loader path no result file can ever be read, so
+				// waiting would only hide the missing injection behind a 3-minute stall.
+				this.state.errorMessage =
+					'this launch configuration carries no GDR loader path, so GDR was not injected into it';
+				this.log(this.state.errorMessage);
+				this.launchPythonReady = Promise.resolve(false);
+			} else {
+				this.launchPythonReady = this.pollLaunchPython();
+			}
 		}
 		return this.launchPythonReady;
 	}
@@ -244,7 +261,7 @@ export class GdrSession {
 			{ rtos: target.rtos, version: target.version },
 			{ allowUnverified: target.source === 'settings' }
 		);
-		await this.evaluate(command, frameId, 'repl');
+		await this.evaluate(consoleCommand(this.session.type, command), frameId, 'repl');
 		const envelope = await this.fetch('capabilities', [], frameId);
 		if (envelope === null || !envelope.ok) {
 			const detail = envelope !== null ? ` (${describeFailure(envelope)})` : '';

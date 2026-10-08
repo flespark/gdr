@@ -15,6 +15,7 @@ import { test } from 'node:test';
 
 import {
 	alternateKeys,
+	consoleCommand,
 	injectionPlan,
 	initCommand,
 	parsePythonResult,
@@ -84,6 +85,11 @@ test('an attach session uses the attach key when the adapter has one', () => {
 	});
 
 	assert.equal(plan.entries[0].key, 'postAttachCommands');
+});
+
+test('cppdbg runs a console command behind -exec; cortex-debug takes it bare', () => {
+	assert.equal(consoleCommand('cppdbg', 'gdr init rtthread 4.0.5'), '-exec gdr init rtthread 4.0.5');
+	assert.equal(consoleCommand('cortex-debug', 'gdr init rtthread 4.0.5'), 'gdr init rtthread 4.0.5');
 });
 
 test('an Eclipse-style adapter gets setup entries, not bare strings', () => {

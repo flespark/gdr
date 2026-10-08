@@ -28,7 +28,7 @@ over bug snapshot.
 
 | Adapter | Loader injection | Notes |
 | --- | --- | --- |
-| `cortex-debug`, `mcu-debug` | `postLaunchCommands` / `postAttachCommands` | the reference setup |
+| `cortex-debug` | `postLaunchCommands` / `postAttachCommands` | the reference setup |
 | `cppdbg`, `gdbtarget`, `stlinkgdbtarget`, `jlinkgdbtarget` | `setupCommands` | needs a GDB-backed `MIMode` |
 | anything else | — | refused with a reason: GDR runs inside GDB's Python, so an adapter without a GDB console cannot host it |
 
@@ -113,6 +113,7 @@ npm run vendor        # generate resources/gdr from this repository's runtime
 npm run check-types
 npm test              # units, plus a real QEMU/GDB session check when fixtures exist
 npm run build         # emit dist/extension.js
+npm run package       # vendor + build + gdb-rtos-views.vsix (installable)
 ```
 
 `resources/gdr` is generated and ignored by git; `src/runtime.ts` refuses to

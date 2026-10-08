@@ -170,6 +170,23 @@ export function setupCommands(
 	return [pythonGateCommand(runtimePath, loaderPath, init), sourceFile(loaderPath)];
 }
 
+/**
+ * Adapters whose Debug Console (the `repl` evaluate) runs a GDB CLI command only
+ * behind an `-exec` prefix. Without it the text is evaluated as an expression.
+ */
+const EXEC_PREFIXED_CONSOLE = new Set<string>(['cppdbg']);
+
+/**
+ * Spell *command* so the adapter's `repl` evaluate runs it as a GDB command.
+ *
+ * Reason: cppdbg's changelog documents `-exec` as the way a GDB command reaches
+ * the console; plain `gdr init ...` is evaluated as an expression, and the
+ * launch then reports `not_initialized` with no error on the extension side.
+ */
+export function consoleCommand(debugType: string, command: string): string {
+	return EXEC_PREFIXED_CONSOLE.has(debugType) ? `-exec ${command}` : command;
+}
+
 /** Why *debugType* cannot host GDR, or `null` when it can. */
 export function unsupportedReason(debugType: string): string | null {
 	if (GDB_ADAPTERS[debugType] !== undefined) {
