@@ -57,9 +57,15 @@ All notable changes to GDR are documented in this file.
   target could not confirm the adapter, and reports refusals as a coded
   `error` object (the same shape the API envelope uses) instead of a bare
   message string.
+- Memory sizes are unified to bytes: key/value sizes print with a `B` suffix,
+  and table columns state bytes in their descriptions rather than in headers.
 
 ### Fixed
 
+- RT-Thread heap walk counts used blocks by their full span, matching the
+  kernel counters, so `HeapAccounting` no longer reports a false mismatch.
+  `rtt heap` Holes states its sizes in bytes; the panel's heap table is titled
+  by what it lists ("Heap used by thread" or "Free list").
 - The VSCode extension checks Python before `source gdr.py` at launch. Without
   Python the session still starts and the panel shows why. The first stop does
   not check Python or source again. The source path is unquoted so GDB 16

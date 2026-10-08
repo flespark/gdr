@@ -86,11 +86,11 @@ if [[ -n "${FREERTOS_FIXTURE_CACHE:-}" ]]; then
     )
 fi
 
-# Reuse a prebuilt image when GDR_CI_SKIP_BUILD is set: the xPack toolchains
+# Reuse a prebuilt image when GDR_SKIP_DOCKER_BUILD is set: the xPack toolchains
 # (roughly 300MB each) download slowly, and an uncommitted Dockerfile change
 # invalidates the build cache and forces a redownload.
-if [[ -n "${GDR_CI_SKIP_BUILD:-}" ]] && podman image exists "$IMAGE_TAG"; then
-    echo "[gdr-ci] reusing existing image $IMAGE_TAG (GDR_CI_SKIP_BUILD)"
+if [[ -n "${GDR_SKIP_DOCKER_BUILD:-}" ]] && podman image exists "$IMAGE_TAG"; then
+    echo "[gdr-ci] reusing existing image $IMAGE_TAG (GDR_SKIP_DOCKER_BUILD)"
 else
     # Seed ci/gdr-xpack with pre-downloaded archives (host-side cache, faster
     # than the VM's GitHub download). The Dockerfile falls back to curl for
@@ -130,8 +130,16 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
         if [[ "$lanes" == *all* || "$lanes" == *freertos* ]]; then
             # Reason: the FreeRTOS lane installs freshly built fixtures into
             # its cache root, so it must target a container-writable
-            # directory -- the host FREERTOS_FIXTURE_CACHE is mounted.
+            # directory -- the host FREERTOS_FIXTURE_CACHE is mounted read-only.
+            # Seed the writable copy from the host cache so fixtures that are
+            # still current are reused instead of rebuilt; cp -a keeps the
+            # mtimes the runner compares against the fixture sources.
+            seed="${FREERTOS_FIXTURE_CACHE:-}"
             export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
+            if [[ -n "$seed" && -d "$seed" ]]; then
+                mkdir -p "$FREERTOS_FIXTURE_CACHE"
+                cp -a "$seed/." "$FREERTOS_FIXTURE_CACHE/"
+            fi
             # config axis: 10.3.1 representative cell (the 14-variant matrix
             # runs in CI on the same board).
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \

@@ -39,7 +39,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 ("SP", "Current stack pointer."),
                 (
                     "Stack/Used/HighWater",
-                    "Stack capacity, current use and maximum observed use.",
+                    "Stack capacity, current use and maximum observed use, in bytes.",
                 ),
                 ("Entry", "Symbolized entry function or address."),
                 ("CPU/Bind", "Current/bound CPU when SMP fields exist."),
@@ -68,7 +68,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 ),
                 (
                     "SP/Stack/StackSize/Used/HighWater",
-                    "Stack geometry and watermark-derived usage.",
+                    "Stack geometry and watermark-derived usage; sizes in bytes.",
                 ),
                 ("Entry", "Symbolized entry function or address."),
                 ("Error/RemainingTick", "Kernel error and remaining time slice."),
@@ -151,13 +151,19 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
             usage=("rtt heap",),
             fields=_fields(
                 ("Algorithm", "Detected small_mem, memheap, slab, or none allocator."),
-                ("Used/Total/Maximum", "Kernel heap counters when exported."),
+                (
+                    "UsedSize/TotalSize/MaxUsed",
+                    "Kernel heap counters in bytes when exported.",
+                ),
                 ("Status", "good, corrupt, overrun or capability state."),
                 ("Blocks", "Used/free/total block counts from a bounded walk."),
-                ("Holes", "Free-hole count and size summary."),
+                (
+                    "Holes",
+                    "Free-block count, then the largest and three smallest payload sizes in bytes.",
+                ),
                 (
                     "Thread occupancy",
-                    "MEMTRACE owner count and optional Thread/Blocks/Bytes table.",
+                    "MEMTRACE owner count and optional Thread/Blocks/Bytes (header included) table.",
                 ),
             ),
             tips=(
@@ -413,7 +419,7 @@ def _mempool_list() -> CommandHelp:
         "Lists block geometry, free/used counts and blocked allocators.",
         usage=("rtt mempools",),
         fields=_fields(
-            ("Name/BlockSize", "Pool identity and block bytes."),
+            ("Name/BlockSize", "Pool identity and block size in bytes."),
             ("Total/Free/Used", "Block counts."),
             _WAITERS,
             _ADDR,

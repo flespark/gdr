@@ -35,7 +35,7 @@ from freertos.timers import (
     timer_list_label,
 )
 from gdr.derive import waiter_cell
-from gdr.formatting import format_address, format_optional_int
+from gdr.formatting import format_address, format_optional_bytes, format_optional_int
 from gdr.gdb_bridge import (
     lookup_symbol,
     read_int,
@@ -122,8 +122,8 @@ def task_detail(
         pairs.append(("BasePriority", format_optional_int(task.base_priority)))
     pairs.append(("SP", format_address(task.top_of_stack)))
     pairs.append(("Stack", format_address(task.stack_base)))
-    pairs.append(("StackSize", format_optional_int(task.stack_size)))
-    pairs.append(("Used", format_optional_int(task.stack_used)))
+    pairs.append(("StackSize", format_optional_bytes(task.stack_size)))
+    pairs.append(("Used", format_optional_bytes(task.stack_used)))
     if task.stack_size is not None or task.high_water_mark is not None:
         # Reason: HighWater does not depend on the stack size -- the default
         # build has no pxEndOfStack, so StackSize/Used stay N/A while the 0xa5
@@ -132,9 +132,7 @@ def task_detail(
         pairs.append(
             (
                 "HighWater",
-                str(task.high_water_mark)
-                if task.high_water_mark is not None
-                else "N/A",
+                format_optional_bytes(task.high_water_mark),
             )
         )
     if "mutexes_held" in fields:

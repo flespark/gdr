@@ -185,7 +185,7 @@ def test_high_water_scan_reports_untouched_fill_bytes(snapshot_session):
     """
     detail = snapshot_session.run("freertos task idle0", timeout=20)
     pairs = _pairs(detail)
-    assert pairs["HighWater"] == "48", detail
+    assert pairs["HighWater"] == "48 B", detail
 
 
 def test_overflow_timer_expires_in_uses_next_epoch(snapshot_session):
@@ -234,11 +234,11 @@ def test_heap_cross_check_reports_three_numbers(snapshot_session):
     FreeSize must keep the kernel counter untouched by the walks.
     """
     output = snapshot_session.run("freertos heap", timeout=20)
-    assert "CrossCheck: mismatch: free-list 16 vs linear 48 vs counter 64" in output, (
-        output
-    )
+    assert (
+        "CrossCheck: mismatch: free-list 16 B vs linear 48 B vs counter 64 B" in output
+    ), output
     pairs = _pairs(output)
-    assert pairs["FreeSize"] == "64", output
+    assert pairs["FreeSize"] == "64 B", output
     # The block table comes from the linear walk: both blocks, both free.
     assert "linear walk: 2 block(s), 2 free in 1 hole(s)" in output, output
 
@@ -248,11 +248,11 @@ def test_system_reports_corrupt_heap_status(snapshot_session):
     output = snapshot_session.run("freertos system", timeout=20)
     assert "Heap status: corrupt" in output, output
     assert (
-        "Check[HeapCrossCheck]: mismatch: free-list 16 vs linear 48 vs counter 64"
+        "Check[HeapCrossCheck]: mismatch: free-list 16 B vs linear 48 B vs counter 64 B"
         in output
     ), output
     # The rest of the system stays consistent on the snapshot.
-    assert "Task count (kernel): 9" in output, output
+    assert "Task number (kernel): 9" in output, output
     assert "Scheduler state: running" in output, output
 
 

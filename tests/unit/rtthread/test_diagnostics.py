@@ -341,8 +341,16 @@ def test_small_mem_chain_walk_counts_blocks_and_holes(monkeypatch):
     assert walk.hole_sizes == [64]
     assert walk.corrupt is False
     assert walk.truncated is False
-    assert walk.used_bytes == 144
-    assert walk.total_bytes == 256
+    # Reason: used/occupancy bytes are full block spans (header included) and
+    # total is the kernel's mem_size_aligned, which excludes the end sentinel's
+    # header. Chain spans therefore add to total + header; each free block's
+    # span is its payload plus one header.
+    assert walk.used_bytes == 176
+    assert walk.total_bytes == 240
+    header = 16
+    assert walk.used_bytes + sum(walk.hole_sizes) + header * walk.free_blocks == (
+        walk.total_bytes + header
+    )
 
 
 def test_small_mem_chain_walk_uses_pool_ptr_lsb_for_41(monkeypatch):
@@ -409,8 +417,8 @@ def test_small_mem_chain_walk_aggregates_memtrace_occupancy(monkeypatch):
 
     assert walk is not None
     assert walk.occupancy == [
-        ("main", 2, 96),
-        ("worker1", 1, 112),
+        ("main", 2, 128),
+        ("worker1", 1, 128),
     ]
 
 
@@ -448,7 +456,7 @@ def test_small_mem_chain_walk_reads_memtrace_name_as_four_bytes(monkeypatch):
 
     assert walk is not None
     assert widths == [detail._MEMTRACE_NAME_WIDTH]
-    assert walk.occupancy == [("main", 1, 240)]
+    assert walk.occupancy == [("main", 1, 256)]
 
 
 def test_small_mem_chain_walk_omits_occupancy_without_memtrace(monkeypatch):

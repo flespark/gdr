@@ -135,7 +135,8 @@ def test_diagnostics_report_cross_checks_the_snapshot_counters(monkeypatch):
     )
     mismatch = adapter.diagnostics_report()
     assert mismatch[1].verdict == "fail"
-    assert "6/9" in mismatch[1].detail and "5/9" in mismatch[1].detail
+    assert "used 6 B of 9 B" in mismatch[1].detail
+    assert "walk used 5 B" in mismatch[1].detail
 
     monkeypatch.setattr(
         adapter,

@@ -288,6 +288,25 @@ def lookup_symbol_at(addr: int) -> str | None:
     return symbol.replace(" + ", "+").replace(" - ", "-")
 
 
+def source_location_at(addr: int) -> tuple[str, int] | None:
+    """Return ``(fullname, line)`` of the source line that starts at ``addr``.
+
+    Reads only the debug line table through ``gdb.find_pc_line``, never the
+    target memory, so it is safe on a halted target. ``None`` when the address
+    carries no line info. An ARM Thumb function pointer has bit 0 set, but the
+    line table is keyed on the even instruction address, so that bit is
+    cleared first.
+    """
+    _ensure_gdb()
+    try:
+        sal = gdb.find_pc_line(addr & ~1)
+    except gdb.error:
+        return None
+    if sal.symtab is None or sal.line <= 0:
+        return None
+    return sal.symtab.fullname(), int(sal.line)
+
+
 def format_code_address(address: int | None) -> str:
     """Render a target code address as ``<symbol+offset>`` or hex.
 

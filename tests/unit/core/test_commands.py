@@ -121,7 +121,7 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
         [
             ("Kernel version", "10.3.1"),
             ("Current task", "worker"),
-            ("Task count", "3"),
+            ("Task number", "3"),
             ("Tick count", "123"),
             ("Scheduler state", "running"),
             ("Ready", "2"),
@@ -152,8 +152,8 @@ def test_system_renders_heap_allocator_from_snapshot_fields(monkeypatch):
 
     by_label = dict(written[-1])
     assert by_label["Heap allocator"] == "small_mem"
-    assert by_label["Heap used"] == "4096"
-    assert by_label["Heap total"] == "65536"
+    assert by_label["Heap used"] == "4096 B"
+    assert by_label["Heap total"] == "65536 B"
     assert by_label["Heap status"] == "good"
 
 
@@ -173,7 +173,7 @@ def test_system_renders_partial_heap_counters_as_na(monkeypatch):
     by_label = dict(written[-1])
     assert by_label["Heap allocator"] == "small_mem"
     assert by_label["Heap used"] == "N/A"
-    assert by_label["Heap total"] == "65536"
+    assert by_label["Heap total"] == "65536 B"
     assert by_label["Heap status"] == "good"
 
     adapter.summary = SystemSummary(
@@ -182,7 +182,7 @@ def test_system_renders_partial_heap_counters_as_na(monkeypatch):
     written.clear()
     commands.render_system()
     by_label = dict(written[-1])
-    assert by_label["Heap used"] == "0"
+    assert by_label["Heap used"] == "0 B"
     assert by_label["Heap total"] == "N/A"
 
 
@@ -203,8 +203,8 @@ def test_system_renders_heap_status(monkeypatch):
     commands.render_system()
     by_label = dict(written[-1])
     assert by_label["Heap allocator"] == "small_mem"
-    assert by_label["Heap used"] == "160"
-    assert by_label["Heap total"] == "256"
+    assert by_label["Heap used"] == "160 B"
+    assert by_label["Heap total"] == "256 B"
     assert by_label["Heap status"] == "corrupt"
     assert "Heap source" not in by_label
 

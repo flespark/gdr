@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from gdr.formatting import format_optional_int
+from gdr.formatting import format_optional_bytes, format_optional_int
 
 try:
     import gdb
@@ -52,6 +52,7 @@ from gdr.gdb_bridge import (
     read_bytes,
     read_cstring,
     read_int,
+    source_location_at,
     value_address,
 )
 from gdr.layout import KernelLayout, read_field
@@ -445,16 +446,19 @@ def _heap_detail_from_walk(
 
 
 def _holes_line(sizes: list[int]) -> str:
-    """Format the ``rtt heap`` Holes line from free-block/free-run sizes.
+    """Format the ``rtt heap`` Holes line from free-block payload sizes.
 
-    ``N free, largest: X, smallest: A, B, C`` where ``smallest`` lists the three
-    smallest holes ascending (only the existing sizes when fewer), and ``0 free``
-    when the heap has no free block.
+    ``N free; largest X B; smallest (up to 3): A B, B B, C B``: the three
+    smallest holes ascending (only the existing ones when fewer), every size in
+    bytes of allocatable payload. ``0 free`` when the heap has no free block.
     """
     if not sizes:
         return "0 free"
-    smallest = ", ".join(str(size) for size in sorted(sizes)[:3])
-    return f"{len(sizes)} free, largest: {max(sizes)}, smallest: {smallest}"
+    smallest = ", ".join(format_optional_bytes(size) for size in sorted(sizes)[:3])
+    return (
+        f"{len(sizes)} free; largest {format_optional_bytes(max(sizes))}; "
+        f"smallest (up to 3): {smallest}"
+    )
 
 
 def _cpu_or_none(raw: int | None, cpu_count: int | None) -> int | None:
@@ -483,7 +487,7 @@ def _heap_accounting_finding(info: HeapInfo) -> CheckFinding:
     used, total = info.used, info.total
     if used is not None and total is not None and used > total:
         return CheckFinding(
-            "HeapAccounting", "fail", f"used {used} exceeds total {total}", "system"
+            "HeapAccounting", "fail", f"used {used} B exceeds total {total} B", "system"
         )
     walk = info.walk
     if walk is None or walk.used_bytes is None or walk.total_bytes is None:
@@ -499,7 +503,8 @@ def _heap_accounting_finding(info: HeapInfo) -> CheckFinding:
     return CheckFinding(
         "HeapAccounting",
         "fail",
-        f"snapshot {used}/{total} != walk {walk.used_bytes}/{walk.total_bytes}",
+        f"snapshot used {used} B of {total} B != walk used {walk.used_bytes} B "
+        f"of {walk.total_bytes} B",
         "system",
     )
 
@@ -1140,6 +1145,7 @@ class RtThreadAdapter(RtosAdapter):
         rows: list[list[Cell]] = []
         for thread, state, current_core in self._task_views():
             symbol = lookup_symbol_at(thread.entry) if thread.entry else None
+            source = source_location_at(thread.entry) if thread.entry else None
             row = [
                 text_cell(thread.name + (" *" if current_core is not None else "")),
                 text_cell(state),
@@ -1149,7 +1155,7 @@ class RtThreadAdapter(RtosAdapter):
                 number_cell(thread.stack_size or None),
                 number_cell(thread.stack_used),
                 number_cell(thread.max_stack_used),
-                symbol_cell(thread.entry, symbol),
+                symbol_cell(thread.entry, symbol, source),
             ]
             if smp:
                 row += [
@@ -1251,9 +1257,9 @@ class RtThreadAdapter(RtosAdapter):
         heap = info if info is not None else self.heap_info()
         pairs = [
             ("Algorithm", heap.algorithm),
-            ("TotalSize", format_optional_int(heap.total)),
-            ("UsedSize", format_optional_int(heap.used)),
-            ("MaxUsed", format_optional_int(heap.max_used)),
+            ("TotalSize", format_optional_bytes(heap.total)),
+            ("UsedSize", format_optional_bytes(heap.used)),
+            ("MaxUsed", format_optional_bytes(heap.max_used)),
             ("MemTrace", "enabled" if self._memtrace_enabled() else "N/A"),
         ]
         if heap.from_walk:
@@ -1342,7 +1348,7 @@ class RtThreadAdapter(RtosAdapter):
             if occupancy:
                 pairs.append(("Thread occupancy", f"{len(occupancy)} threads"))
                 table = ObjectTable(
-                    headers=["Thread", "Blocks", "Bytes"],
+                    headers=["Thread", "Blocks", "Bytes (header included)"],
                     rows=occupancy,
                     elastic=("Thread",),
                 )
@@ -1353,4 +1359,8 @@ class RtThreadAdapter(RtosAdapter):
             pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
             pairs.append(("Thread occupancy", "N/A"))
             table = None
-        return HeapReport(pairs=pairs, table=table)
+        return HeapReport(
+            pairs=pairs,
+            table=table,
+            table_title="Heap used by thread",
+        )

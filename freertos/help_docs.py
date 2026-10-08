@@ -79,7 +79,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 ),
                 (
                     "SP/Stack/StackSize/Used/HighWater",
-                    "Stack geometry and watermark data.",
+                    "Stack geometry and watermark data, sizes in bytes.",
                 ),
                 ("WakeTick/BlockedOn", "Blocking deadline and host when available."),
                 ("Notify[n]", "Notification value and state for each configured slot."),
@@ -163,7 +163,10 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             usage=("frt heap",),
             fields=_fields(
                 ("Algorithm", "heap_1..heap_5, heap_3, or none."),
-                ("TotalSize/FreeSize/MinEver", "Kernel size and free-space counters."),
+                (
+                    "TotalSize/FreeSize/MinEver",
+                    "Kernel size and free-space counters, in bytes.",
+                ),
                 ("Allocs/Frees", "Successful allocation/free counters when exported."),
                 ("Protector", "Heap-protector canary state when enabled."),
                 ("Blocks/Holes", "Bounded walk counts and fragmentation."),
@@ -472,7 +475,7 @@ def _stream_list_help() -> CommandHelp:
             ("Name/Type", "Name and stream/message/batching classification."),
             (
                 "Bytes/Space/Capacity/Trigger",
-                "Derived ring occupancy and trigger level.",
+                "Derived ring occupancy and trigger level, in bytes.",
             ),
             ("NextMsg", "Next message length for message buffers."),
             ("RecvWait/SendWait", "Single waiting task handles."),
@@ -500,8 +503,14 @@ def _stream_detail_help() -> CommandHelp:
         "Shows ring geometry, trigger semantics, waiters, message-prefix assumptions and bounds checks.",
         usage=("frt streambuffer <name-or-address>",),
         fields=_fields(
-            ("Type/Capacity/Bytes/Space", "Classification and ring geometry."),
-            ("Trigger/TriggerMet", "Trigger level and current comparison result."),
+            (
+                "Type/Capacity/Bytes/Space",
+                "Classification and ring geometry, in bytes.",
+            ),
+            (
+                "Trigger/TriggerMet",
+                "Trigger level in bytes and current comparison result.",
+            ),
             ("NextMsg/MsgLenBytes", "Message length and assumed prefix width."),
             ("RecvWait/SendWait", "Single blocked reader/writer."),
             ("NotificationIndex", "Notification slot or version-gated N/A."),

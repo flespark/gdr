@@ -1005,6 +1005,44 @@ def test_type_field_names_reads_member_names():
     assert bridge.type_field_names(_FakeDwarfType()) == frozenset()
 
 
+class _PcLineGdb:
+    """GDB stand-in whose line-table lookup returns a canned location."""
+
+    error = RuntimeError
+
+    def __init__(self, sal):
+        self.sal = sal
+        self.queries: list[int] = []
+
+    def find_pc_line(self, addr):
+        self.queries.append(addr)
+        return self.sal
+
+
+def test_source_location_at_clears_the_thumb_bit(monkeypatch):
+    """A Thumb entry pointer resolves through its even instruction address."""
+    symtab = types.SimpleNamespace(fullname=lambda: "/src/shell.c")
+    fake = _PcLineGdb(types.SimpleNamespace(symtab=symtab, line=1700))
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.source_location_at(0x600BCC01) == ("/src/shell.c", 1700)
+    assert fake.queries == [0x600BCC00]
+
+
+def test_source_location_at_is_none_without_line_info(monkeypatch):
+    """No symtab, or a zero line, means there is no source to open."""
+    monkeypatch.setattr(
+        bridge, "gdb", _PcLineGdb(types.SimpleNamespace(symtab=None, line=0))
+    )
+    assert bridge.source_location_at(0x1000) is None
+
+    symtab = types.SimpleNamespace(fullname=lambda: "/src/shell.c")
+    monkeypatch.setattr(
+        bridge, "gdb", _PcLineGdb(types.SimpleNamespace(symtab=symtab, line=0))
+    )
+    assert bridge.source_location_at(0x1000) is None
+
+
 def test_target_access_errors_excludes_keyerror():
     """A layout dict miss (a real bug) must bubble to the guard, not degrade."""
     assert KeyError not in bridge.TARGET_ACCESS_ERRORS

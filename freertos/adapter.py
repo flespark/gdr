@@ -578,7 +578,7 @@ class FreeRtosAdapter(RtosAdapter):
     def object_summary_rows(self) -> list[tuple[str, int, str]]:
         """Return ``(kind, count, "source=count ...")`` rows for each kind.
 
-        The task count comes from the scheduler-list snapshot (authoritative:
+        The task number comes from the scheduler-list snapshot (authoritative:
         it covers dynamically created tasks too); other kinds count the
         discovery channels' deduplicated results from one shared scan, so
         the waiter channel runs once for the whole summary instead of once
@@ -1141,10 +1141,17 @@ class FreeRtosAdapter(RtosAdapter):
             )
         elif algorithm == "none":
             messages.append("no FreeRTOS heap allocator is linked (no pvPortMalloc)")
+        # Reason: the linear walk lists allocated blocks too, so only the
+        # free-list fallback is a list of free blocks.
+        linear = snap.linear
+        table_title = (
+            "Heap blocks" if linear is not None and linear.blocks else "Free list"
+        )
         return HeapReport(
             pairs=heap_module.heap_pairs(snap),
             table=table,
             messages=messages,
+            table_title=table_title,
         )
 
     def system_summary(self) -> SystemSummary:
@@ -1222,7 +1229,7 @@ class FreeRtosAdapter(RtosAdapter):
             # healthy kernel and diverge on a corrupt one (the TaskCount
             # check compares them), so the rows must not read as duplicates.
             task_count_label=(
-                "Task count (kernel)" if total is not None else "Task count (walked)"
+                "Task number (kernel)" if total is not None else "Task number (walked)"
             ),
             tick_count=system_value("tick", self.layout),
             scheduler_state=(

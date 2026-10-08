@@ -57,11 +57,15 @@ def task_specs(
     specs.append(ColumnSpec("SP", kind="addr", doc="top of stack"))
     if stack:
         specs += [
-            ColumnSpec("Stack", kind="int", align="right"),
-            ColumnSpec("Used", kind="int", align="right"),
+            ColumnSpec("Stack", kind="int", align="right", doc="stack size in bytes"),
+            ColumnSpec("Used", kind="int", align="right", doc="stack bytes in use"),
         ]
     if high_water:
-        specs.append(ColumnSpec("HighWater", kind="int", align="right"))
+        specs.append(
+            ColumnSpec(
+                "HighWater", kind="int", align="right", doc="peak stack bytes in use"
+            )
+        )
     if runtime:
         specs.append(ColumnSpec("Runtime", kind="int", align="right"))
     if smp:
@@ -150,13 +154,13 @@ EVENT_GROUP_SPECS = (
 
 HEAP_LINEAR_SPECS = (
     ColumnSpec("Address", kind="addr"),
-    ColumnSpec("Size", kind="int", align="right"),
+    ColumnSpec("Size", kind="int", align="right", doc="block size in bytes"),
     ColumnSpec("State", kind="enum", doc="allocated vs free"),
 )
 
 HEAP_FREE_LIST_SPECS = (
     ColumnSpec("Address", kind="addr"),
-    ColumnSpec("Size", kind="int", align="right"),
+    ColumnSpec("Size", kind="int", align="right", doc="block size in bytes"),
     ColumnSpec("Next", kind="addr", elastic=True, doc="next free block, '-' at end"),
 )
 
@@ -164,10 +168,10 @@ HEAP_FREE_LIST_SPECS = (
 STREAM_BUFFER_SPECS = (
     ColumnSpec("Name", elastic=True),
     ColumnSpec("Type", doc="byte stream vs message buffer"),
-    ColumnSpec("Bytes", kind="int", align="right"),
-    ColumnSpec("Space", kind="int", align="right"),
-    ColumnSpec("Capacity", kind="int", align="right"),
-    ColumnSpec("Trigger", kind="int", align="right"),
+    ColumnSpec("Bytes", kind="int", align="right", doc="bytes stored"),
+    ColumnSpec("Space", kind="int", align="right", doc="free bytes"),
+    ColumnSpec("Capacity", kind="int", align="right", doc="buffer size in bytes"),
+    ColumnSpec("Trigger", kind="int", align="right", doc="trigger level in bytes"),
     ColumnSpec("NextMsg", kind="hex", doc="message length prefix, 'N/A' for streams"),
     ColumnSpec("RecvWait", doc="single receiving task handle"),
     ColumnSpec("SendWait", doc="single sending task handle"),

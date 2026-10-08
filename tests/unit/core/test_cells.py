@@ -177,6 +177,33 @@ def test_serialized_table_carries_columns_values_kind_and_ids():
     assert _dict_list(rendered["columns"])[1]["kind"] == "addr"
 
 
+def test_symbol_cell_source_makes_a_located_table_only_when_present():
+    """Only tables with a located cell carry ``source_rows``; others stay as before."""
+    located = ObjectTable.from_specs(
+        (ColumnSpec("Name"), ColumnSpec("Entry", kind="symbol")),
+        [[text_cell("tshell"), symbol_cell(0x100, "main", ("/src/shell.c", 12))]],
+    )
+    assert located.source_rows == [[None, ("/src/shell.c", 12)]]
+
+    plain = ObjectTable.from_specs(
+        (ColumnSpec("Name"), ColumnSpec("Entry", kind="symbol")),
+        [[text_cell("tshell"), symbol_cell(0x100, "main")]],
+    )
+    assert plain.source_rows is None
+
+
+def test_serialized_table_carries_source_rows_as_file_and_line():
+    """The envelope names each located cell's file and line, or null."""
+    table = ObjectTable.from_specs(
+        (ColumnSpec("Name"), ColumnSpec("Entry", kind="symbol")),
+        [[text_cell("tshell"), symbol_cell(0x100, "main", ("/src/shell.c", 12))]],
+    )
+
+    rendered = object_table_to_dict(table, kind="task")
+
+    assert rendered["source_rows"] == [[None, {"file": "/src/shell.c", "line": 12}]]
+
+
 def test_serialized_detail_keeps_flat_pairs_and_adds_severity():
     """pairs stays the text contract; sections adds the grouped verdicts."""
     pairs = [("Name", "worker1"), ("OffsetCheck", "ok")]

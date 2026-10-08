@@ -213,7 +213,7 @@ def test_system_summary_uses_one_scheduler_snapshot(monkeypatch):
     assert traversals == 1
     assert summary.current_task == "task-running"
     assert summary.task_count == 2
-    assert summary.task_count_label == "Task count (kernel)"
+    assert summary.task_count_label == "Task number (kernel)"
     assert summary.object_counts == {"task (walked)": 2}
     assert summary.heap_allocator is None
     assert summary.heap_status is None
@@ -346,7 +346,16 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
         (
             FreeRtosConfig(stack_end_field="pxEndOfStack"),
             {"high_water_mark": 64},
-            ["Name", "State", "Prio", "SP", "Stack", "Used", "HighWater", "Addr"],
+            [
+                "Name",
+                "State",
+                "Prio",
+                "SP",
+                "Stack",
+                "Used",
+                "HighWater",
+                "Addr",
+            ],
         ),
         (
             FreeRtosConfig(

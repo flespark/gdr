@@ -31,6 +31,34 @@ def _type_info(code: int, struct_name: str, name: str, *, enabled: bool = True):
     )
 
 
+def test_task_table_entry_cell_carries_the_entry_source(monkeypatch):
+    """The Entry cell names the source line its thread entry starts at."""
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+    thread = adapter_module.Thread(name="tshell", entry=0x600BCC00)
+    monkeypatch.setattr(adapter_module, "get_current_thread", lambda: None)
+    monkeypatch.setattr(adapter_module, "value_address", lambda _value: 0x1234)
+    monkeypatch.setattr(
+        adapter_module, "iter_threads", lambda _layout: iter([object()])
+    )
+    monkeypatch.setattr(
+        adapter, "_task_view", lambda _value, _cur: (thread, "Ready", None)
+    )
+    monkeypatch.setattr(
+        adapter_module, "lookup_symbol_at", lambda _addr: "finsh_thread_entry"
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "source_location_at",
+        lambda addr: ("/src/shell.c", 1700) if addr == 0x600BCC00 else None,
+    )
+
+    table = adapter.task_table()
+
+    assert table.rows[0][table.headers.index("Entry")] == "<finsh_thread_entry>"
+    assert table.source_rows is not None
+    assert table.source_rows[0][table.headers.index("Entry")] == ("/src/shell.c", 1700)
+
+
 def test_task_table_reads_current_task_once(monkeypatch):
     """RT-Thread does not re-read the current task for every rendered row."""
     current_reads = 0
@@ -872,11 +900,13 @@ def test_system_summary_reports_overrun_when_used_exceeds_total(monkeypatch):
 
 
 def test_holes_line_formats_free_blocks():
-    """The Holes line follows ``N free, largest, three smallest`` exactly."""
+    """The Holes line is ``N free; largest X B; smallest (up to 3): ...`` in bytes."""
     assert adapter_module._holes_line([2048, 4, 16, 16]) == (
-        "4 free, largest: 2048, smallest: 4, 16, 16"
+        "4 free; largest 2048 B; smallest (up to 3): 4 B, 16 B, 16 B"
     )
-    assert adapter_module._holes_line([64]) == "1 free, largest: 64, smallest: 64"
+    assert adapter_module._holes_line([64]) == (
+        "1 free; largest 64 B; smallest (up to 3): 64 B"
+    )
     assert adapter_module._holes_line([]) == "0 free"
 
 
@@ -925,7 +955,7 @@ def test_heap_basic_pairs_report_enabled_memtrace(monkeypatch):
     pairs = dict(adapter.heap_basic_pairs())
 
     assert pairs["MemTrace"] == "enabled"
-    assert pairs["TotalSize"] == "100"
+    assert pairs["TotalSize"] == "100 B"
     assert pairs["UsedSize"] == "N/A"
     assert "Source" not in pairs
 
@@ -959,9 +989,9 @@ def test_heap_basic_pairs_fall_back_to_a_closed_walk(monkeypatch):
 
     pairs = dict(adapter.heap_basic_pairs())
 
-    assert pairs["TotalSize"] == "256"
-    assert pairs["UsedSize"] == "160"
-    assert pairs["MaxUsed"] == "200"
+    assert pairs["TotalSize"] == "256 B"
+    assert pairs["UsedSize"] == "160 B"
+    assert pairs["MaxUsed"] == "200 B"
     assert pairs["Source"] == "walk"
 
 
@@ -1033,13 +1063,14 @@ def test_heap_report_walks_the_heap_once(monkeypatch):
     by_label = dict(report.pairs)
 
     assert walks["count"] == 1
-    assert by_label["TotalSize"] == "256"
-    assert by_label["UsedSize"] == "160"
+    assert by_label["TotalSize"] == "256 B"
+    assert by_label["UsedSize"] == "160 B"
     assert by_label["Source"] == "walk"
     assert by_label["Blocks"] == "2 used, 1 free, 3 total"
     assert by_label["Thread occupancy"] == "1 threads"
     assert report.table is not None
     assert report.table.rows == [["main", "2", "160"]]
+    assert report.table_title == "Heap used by thread"
 
 
 def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):
@@ -1071,7 +1102,7 @@ def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):
     assert result.status == "good"
     assert result.pairs == [
         ("Blocks", "12 used, 5 free, 17 total"),
-        ("Holes", "5 free, largest: 2048, smallest: 4, 8, 16"),
+        ("Holes", "5 free; largest 2048 B; smallest (up to 3): 4 B, 8 B, 16 B"),
     ]
     assert result.occupancy == [
         ["main", "8", "4096"],

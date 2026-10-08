@@ -25,7 +25,7 @@ class SystemSummary:
     # source (a kernel counter vs a scheduler-list walk). Whether both
     # sources exist is adapter-specific, so the neutral default stays
     # unqualified.
-    task_count_label: str = "Task count"
+    task_count_label: str = "Task number"
     tick_count: int | None = None
     scheduler_state: str = "N/A"
     state_counts: dict[str, int] = field(default_factory=dict)
@@ -73,11 +73,14 @@ class Cell:
     ``value`` is ``None`` for columns whose text already is the value (names,
     states, labels).  Numeric, address, waiter and symbol columns carry their
     machine form, so a plugin can sort, right-align, draw a percentage bar or
-    open the memory view without re-parsing a rendered string.
+    open the memory view without re-parsing a rendered string.  ``source`` is
+    the ``(fullname, line)`` of the code a symbol cell names, when it has line
+    info, so a plugin can open the source without resolving it itself.
     """
 
     text: str
     value: object = None
+    source: tuple[str, int] | None = None
 
 
 def text_cell(value: str) -> Cell:
@@ -100,9 +103,17 @@ def address_cell(value: int | None) -> Cell:
     return Cell(text=format_address(value), value=value)
 
 
-def symbol_cell(address: int | None, symbol: str | None = None) -> Cell:
+def symbol_cell(
+    address: int | None,
+    symbol: str | None = None,
+    source: tuple[str, int] | None = None,
+) -> Cell:
     """A symbol-or-address column; the value stays the raw address."""
-    return Cell(text=format_symbol_or_address(address, symbol), value=address)
+    return Cell(
+        text=format_symbol_or_address(address, symbol),
+        value=address,
+        source=source,
+    )
 
 
 def waiters_cell(text: str, names: Sequence[str] | None = None) -> Cell:
@@ -146,6 +157,9 @@ class ObjectTable:
     elastic: tuple[str, ...] = ()
     column_specs: tuple[ColumnSpec, ...] = ()
     value_rows: list[list[object]] | None = None
+    # Per-cell ``(fullname, line)`` source locations mirroring ``rows``; None
+    # when no cell in the table has one, so most tables stay unchanged.
+    source_rows: list[list[tuple[str, int] | None]] | None = None
     # Column whose value is the row's stable object identity (usually
     # ``Addr``); the serializer turns it into row ``ids`` a UI can key on
     # across refreshes.  Empty means the table has no stable identity.
@@ -162,6 +176,8 @@ class ObjectTable:
         for row, values in zip(self.rows, self.value_rows, strict=True):
             if len(values) != len(row):
                 raise RuntimeError("ObjectTable value_rows must mirror row width")
+        if self.source_rows is not None and len(self.source_rows) != len(self.rows):
+            raise RuntimeError("ObjectTable source_rows must mirror rows")
 
     @classmethod
     def from_specs(
@@ -225,7 +241,9 @@ class ObjectTable:
                 )
         rows: list[list[str]] = []
         values: list[list[object]] = []
+        sources: list[list[tuple[str, int] | None]] = []
         typed = False
+        located = False
         for cell_row in cell_rows:
             if len(cell_row) != len(headers):
                 raise RuntimeError(
@@ -233,7 +251,9 @@ class ObjectTable:
                 )
             rows.append([cell.text for cell in cell_row])
             values.append([cell.value for cell in cell_row])
+            sources.append([cell.source for cell in cell_row])
             typed = typed or any(cell.value is not None for cell in cell_row)
+            located = located or any(cell.source is not None for cell in cell_row)
         return cls(
             headers=list(headers),
             rows=rows,
@@ -241,6 +261,7 @@ class ObjectTable:
             elastic=tuple(elastic),
             column_specs=tuple(column_specs),
             value_rows=values if typed else None,
+            source_rows=sources if located else None,
             id_key=id_key,
         )
 
@@ -388,12 +409,15 @@ class HeapReport:
     the optional block/occupancy table, and ``messages`` capability notes
     (heap_3 wraps malloc, no allocator, ...) printed above the table.  Both
     adapters return this shape so the core owns a single ``render_heap``
-    for the RTOS heap command.
+    for the RTOS heap command.  ``table_title`` names what the table lists
+    (e.g. free blocks vs. used blocks per thread) so one label never has to
+    stand for two different tables.
     """
 
     pairs: list[tuple[str, str]] = field(default_factory=list)
     table: ObjectTable | None = None
     messages: list[str] = field(default_factory=list)
+    table_title: str = ""
 
 
 @dataclass

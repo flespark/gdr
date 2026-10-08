@@ -644,7 +644,9 @@ def test_cross_validate_ok_and_mismatch():
     free_list.free_bytes = 80
     linear.free_bytes = 90
     verdict = heap.cross_validate(free_list, linear, 100, geom)
-    assert verdict.startswith("mismatch: free-list 80 vs linear 90 vs counter 100")
+    assert verdict.startswith(
+        "mismatch: free-list 80 B vs linear 90 B vs counter 100 B"
+    )
 
     # address-set disagreement surfaces too.
     free_list, linear = _consistent_walks()
@@ -803,7 +805,7 @@ def test_uninitialised_heap_short_circuits(monkeypatch, kind, symbols, version):
     assert pairs["Blocks"] == "N/A"
     assert pairs["Holes"] == "N/A"
     if kind == 2:
-        assert pairs["FreeSize"] == "49144"  # static initializer
+        assert pairs["FreeSize"] == "49144 B"  # static initializer
 
 
 # ---------------------------------------------------------------------------

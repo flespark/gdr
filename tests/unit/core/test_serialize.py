@@ -153,6 +153,7 @@ def test_heap_report_serializes_a_missing_table_as_null():
         "pairs": [["Algorithm", "none"]],
         "messages": ["no heap"],
         "table": None,
+        "table_title": "",
     }
 
 

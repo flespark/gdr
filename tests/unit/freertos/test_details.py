@@ -226,4 +226,4 @@ def test_task_detail_shows_high_water_without_a_known_stack_size(monkeypatch):
     pairs = dict(details_module.task_detail(task, _full_layout()))
 
     assert pairs["StackSize"] == "N/A"
-    assert pairs["HighWater"] == "105"
+    assert pairs["HighWater"] == "105 B"

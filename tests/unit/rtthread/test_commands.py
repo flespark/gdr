@@ -316,7 +316,7 @@ class _FakeHeapAdapter(commands.RtThreadAdapter):
             if detail.occupancy:
                 pairs.append(("Thread occupancy", f"{len(detail.occupancy)} threads"))
                 table = ObjectTable(
-                    headers=["Thread", "Blocks", "Bytes"],
+                    headers=["Thread", "Blocks", "Bytes (header included)"],
                     rows=detail.occupancy,
                     elastic=("Thread",),
                 )
@@ -352,7 +352,7 @@ def test_render_heap_prints_basics_and_occupancy_table(monkeypatch):
     assert detail["Holes"] == "5 free, largest: 2048, smallest: 4, 8, 16"
     assert detail["Thread occupancy"] == "2 threads"
     assert report.table is not None
-    assert report.table.headers == ["Thread", "Blocks", "Bytes"]
+    assert report.table.headers == ["Thread", "Blocks", "Bytes (header included)"]
     assert report.table.rows == [["main", "8", "4096"], ["worker1", "4", "1024"]]
 
 

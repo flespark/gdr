@@ -22,7 +22,10 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
-from gdr.formatting import format_optional_int, format_symbol_or_address
+from gdr.formatting import (
+    format_optional_bytes,
+    format_symbol_or_address,
+)
 from gdr.gdb_bridge import (
     arch_or_default,
     lookup_symbol,
@@ -127,9 +130,9 @@ def thread_detail(thread: Thread) -> list[tuple[str, str]]:
         ("BasePriority", str(thread.init_priority)),
         ("SP", hex(thread.sp)),
         ("Stack", hex(thread.stack_addr)),
-        ("StackSize", str(thread.stack_size)),
-        ("Used", format_optional_int(thread.stack_used)),
-        ("HighWater", format_optional_int(thread.max_stack_used)),
+        ("StackSize", format_optional_bytes(thread.stack_size)),
+        ("Used", format_optional_bytes(thread.stack_used)),
+        ("HighWater", format_optional_bytes(thread.max_stack_used)),
         ("Entry", _symbol_or_hex(thread.entry)),
         # Error/remaining tick stay in detail; they must not widen the shared
         # task table.
@@ -376,9 +379,13 @@ _MEMTRACE_NAME_WIDTH = 4
 class HeapWalk:
     """Bounded system-heap block walk result for ``rtt heap`` diagnostics.
 
-    ``used_bytes`` / ``total_bytes`` are set only when the walk closed without
-    truncation or corruption, so they are exact chain accounting rather than
-    an estimate. Slab page walks leave them unset.
+    All sizes are bytes. ``used_bytes`` / ``total_bytes`` follow the kernel's
+    snapshot counters: a used block counts its full span including its header,
+    and ``total_bytes`` is the arena capacity without the end sentinel. They are
+    set only when the walk closed without truncation or corruption. ``occupancy``
+    byte counts use the same span, so they sum to ``used_bytes``. ``hole_sizes``
+    are the usable payload bytes of each free block. Slab page walks leave the
+    byte counts unset.
     """
 
     used_blocks: int
@@ -521,11 +528,16 @@ def _walk_small_mem_chain(
         if next_off is None or next_off <= offset or heap_ptr + next_off > heap_end:
             corrupt = True
             break
+        # Reason: the kernel's ``used_mem`` counts each used block's full span,
+        # header included (mem.c ``used_mem += size + SIZEOF_STRUCT_MEM``), so
+        # the walk counts the same span to be comparable with the snapshot.
+        # Holes stay payload-only: that is the allocatable size of a free block.
         size = next_off - offset - header_size
+        span = next_off - offset
         items += 1
         if is_used:
             used += 1
-            used_bytes += max(size, 0)
+            used_bytes += span
             if memtrace:
                 owner = _read_name_at(
                     addr,
@@ -537,17 +549,19 @@ def _walk_small_mem_chain(
                 )
                 if owner:
                     owner_blocks[owner] = owner_blocks.get(owner, 0) + 1
-                    owner_bytes[owner] = owner_bytes.get(owner, 0) + max(size, 0)
+                    owner_bytes[owner] = owner_bytes.get(owner, 0) + span
         else:
             holes.append(max(size, 0))
         addr = heap_ptr + next_off
     if items == 0:
         return None
+    # Reason: ``heap_end`` is the end sentinel, which the kernel's ``total``
+    # excludes (mem.c: ``mem_size_aligned`` is ``heap_end - heap_ptr - header``).
     exact_used, exact_total = _exact_byte_counts(
         truncated=truncated,
         corrupt=corrupt,
         used_bytes=used_bytes,
-        total_bytes=heap_end - heap_ptr,
+        total_bytes=heap_end - heap_ptr - header_size,
     )
     return HeapWalk(
         used_blocks=used,

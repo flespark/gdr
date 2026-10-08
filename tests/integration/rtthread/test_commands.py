@@ -197,7 +197,7 @@ def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
     pairs = _detail_pairs(output)
     for label in (
         "Kernel version",
-        "Task count",
+        "Task number",
         "Tick count",
         "semaphore",
         "timer",
@@ -211,9 +211,12 @@ def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
     # QEMU fixtures are small_mem-as-heap: used/total are integers and the
     # allocator name is the probed algorithm, not ``unavailable``.
     assert pairs["Heap allocator"] == "small_mem", output
-    assert pairs["Heap used"].isdecimal(), output
-    assert pairs["Heap total"].isdecimal(), output
-    assert int(pairs["Heap used"]) <= int(pairs["Heap total"]), output
+    # Memory amounts are byte counts printed as ``<n> B``.
+    assert pairs["Heap used"].removesuffix(" B").isdecimal(), output
+    assert pairs["Heap total"].removesuffix(" B").isdecimal(), output
+    assert int(pairs["Heap used"].removesuffix(" B")) <= int(
+        pairs["Heap total"].removesuffix(" B")
+    ), output
     assert pairs["Heap status"] in {"good", "corrupt", "overrun"}, output
 
 
@@ -232,9 +235,11 @@ def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
         assert label in output, output
     pairs = _detail_pairs(output)
     assert pairs["Algorithm"] == "small_mem", output
-    assert pairs["TotalSize"].isdecimal(), output
-    assert pairs["UsedSize"].isdecimal(), output
-    assert pairs["MaxUsed"].isdecimal() or pairs["MaxUsed"] == "N/A", output
+    assert pairs["TotalSize"].removesuffix(" B").isdecimal(), output
+    assert pairs["UsedSize"].removesuffix(" B").isdecimal(), output
+    assert (
+        pairs["MaxUsed"].removesuffix(" B").isdecimal() or pairs["MaxUsed"] == "N/A"
+    ), output
 
     # Blocks reports a used/free/total summary from the halted block chain.
     blocks = pairs["Blocks"]
@@ -242,9 +247,9 @@ def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
 
     # Holes follows the exact free-block line shape.
     holes = pairs["Holes"]
-    assert holes == "0 free" or re.match(r"\d+ free, largest: \d+, smallest:", holes), (
-        output
-    )
+    assert holes == "0 free" or re.match(
+        r"\d+ free; largest \d+ B; smallest \(up to 3\): \d+ B", holes
+    ), output
 
     # MEMTRACE is enabled on the QEMU fixtures; occupancy is either the N/A
     # degrade line or a per-thread table that lists allocating thread names.
@@ -252,7 +257,7 @@ def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
         assert "Thread occupancy: N/A" in pairs, output
     else:
         assert "Thread occupancy" in pairs, output
-        for header in ("Thread", "Blocks", "Bytes"):
+        for header in ("Thread", "Blocks", "Bytes (header included)"):
             assert header in output, output
 
 
@@ -479,7 +484,16 @@ def test_rtt_tables_keep_column_set_at_80_columns(gdb):
             ("rtt semaphores", ("Name", "Value", "Policy", "Waiters", "Addr")),
             (
                 "rtt threads",
-                ("Name", "State", "Prio", "BasePrio", "SP", "Stack", "Entry", "Addr"),
+                (
+                    "Name",
+                    "State",
+                    "Prio",
+                    "BasePrio",
+                    "SP",
+                    "Stack",
+                    "Entry",
+                    "Addr",
+                ),
             ),
             (
                 "rtt mutexes",

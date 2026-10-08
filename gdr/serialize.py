@@ -30,7 +30,7 @@ from gdr.constants import (
     GDR_API_INLINE_LIMIT,
     GDR_API_SCHEMA_VERSION,
 )
-from gdr.formatting import format_optional_int
+from gdr.formatting import format_optional_bytes
 from gdr.probe import ProbeCandidate, resolve_candidate
 
 # Transport thresholds live in gdr.constants; this module only consumes them.
@@ -115,7 +115,18 @@ def object_table_to_dict(
         if table.id_key in table.headers:
             index = table.headers.index(table.id_key)
             result["ids"] = [row[index] for row in table.value_rows]
+    if table.source_rows is not None:
+        result["source_rows"] = [
+            [_source_to_dict(source) for source in row] for row in table.source_rows
+        ]
     return result
+
+
+def _source_to_dict(source: tuple[str, int] | None) -> dict[str, object] | None:
+    """Serialize one cell's source location as ``{"file", "line"}``, or null."""
+    if source is None:
+        return None
+    return {"file": source[0], "line": source[1]}
 
 
 def object_detail_to_dict(detail: ObjectDetail) -> dict[str, object]:
@@ -168,8 +179,8 @@ def system_summary_pairs(summary: SystemSummary) -> list[tuple[str, str]]:
     )
     pairs.append(("Heap allocator", summary.heap_allocator or "N/A"))
     if summary.heap_used is not None or summary.heap_total is not None:
-        pairs.append(("Heap used", format_optional_int(summary.heap_used)))
-        pairs.append(("Heap total", format_optional_int(summary.heap_total)))
+        pairs.append(("Heap used", format_optional_bytes(summary.heap_used)))
+        pairs.append(("Heap total", format_optional_bytes(summary.heap_total)))
     if summary.heap_status is not None:
         pairs.append(("Heap status", summary.heap_status))
     pairs.extend(summary.extra_pairs)
@@ -190,6 +201,7 @@ def heap_report_to_dict(report: HeapReport) -> dict[str, object]:
         "pairs": [[key, value] for key, value in report.pairs],
         "messages": list(report.messages),
         "table": table,
+        "table_title": report.table_title,
     }
 
 

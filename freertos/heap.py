@@ -30,6 +30,7 @@ from freertos.columns import HEAP_FREE_LIST_SPECS, HEAP_LINEAR_SPECS
 from freertos.layout import FreeRtosLayout
 from gdr.adapter_api import ObjectTable, address_cell, number_cell, raw_cell
 from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
+from gdr.formatting import format_optional_bytes
 from gdr.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     _gdb_execute,
@@ -739,8 +740,8 @@ def cross_validate(
     if free_list.free_bytes != linear.free_bytes or free_bytes != free_list.free_bytes:
         return (
             "mismatch: free-list "
-            f"{free_list.free_bytes} vs linear {linear.free_bytes} "
-            f"vs counter {free_bytes}"
+            f"{free_list.free_bytes} B vs linear {linear.free_bytes} B "
+            f"vs counter {free_bytes} B"
         )
     if free_list.free_blocks != linear.free_blocks:
         return (
@@ -889,9 +890,9 @@ def heap_pairs(snap: HeapSnapshot) -> list[tuple[str, str]]:
         algorithm = "heap_1 (bump pointer)"
     pairs: list[tuple[str, str]] = [
         ("Algorithm", algorithm),
-        ("TotalSize", _num(snap.total)),
-        ("FreeSize", _num(snap.free)),
-        ("MinEver", _num(snap.min_ever)),
+        ("TotalSize", format_optional_bytes(snap.total)),
+        ("FreeSize", format_optional_bytes(snap.free)),
+        ("MinEver", format_optional_bytes(snap.min_ever)),
         ("Allocs", _num(snap.allocs)),
         ("Frees", _num(snap.frees)),
         ("Protector", _protector_cell(geom)),

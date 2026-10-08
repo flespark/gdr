@@ -887,16 +887,16 @@ print(f"size_t={size_t} stack={stack_t} tick={tick_t}")
     for key in ("TotalSize", "FreeSize"):
         value = pairs[key]
         assert value != "unavailable"
-        assert 0 <= int(value) < (1 << 63), output
+        assert 0 <= int(value.removesuffix(" B")) < (1 << 63), output
 
     system = gdb_session.run("freertos system", timeout=20)
     spairs = _detail_pairs(system)
-    used = int(spairs["Heap used"])
-    total = int(spairs["Heap total"])
+    used = int(spairs["Heap used"].removesuffix(" B"))
+    total = int(spairs["Heap total"].removesuffix(" B"))
     # Free size comes from the heap command (the system summary has no
     # separate free-size key): used + free == total is the 64-bit
     # mask-arithmetic sanity check.
-    free = int(pairs["FreeSize"])
+    free = int(pairs["FreeSize"].removesuffix(" B"))
     assert used + free == total, system
     assert 0 <= used < (1 << 63), system
 

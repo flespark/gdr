@@ -198,10 +198,11 @@ registration still refuses a second active adapter.
 The envelope carries more than rendered text, and one construction path keeps
 the two views honest:
 
-- **Cells.** A row is built from `Cell(text, value)` objects (`text_cell`,
-  `number_cell`, `address_cell`, `symbol_cell`, `waiters_cell`, `count_cell`,
-  `raw_cell`), and `ObjectTable.from_specs` / `from_cells` derives `rows` and
-  `value_rows` from the same cells. A column therefore cannot be typed into the
+- **Cells.** A row is built from `Cell(text, value, source)` objects
+  (`text_cell`, `number_cell`, `address_cell`, `symbol_cell`, `waiters_cell`,
+  `count_cell`, `raw_cell`), and `ObjectTable.from_specs` / `from_cells` derives
+  `rows`, `value_rows` and, when a cell names code, `source_rows` from the same
+  cells. A column therefore cannot be typed into the
   wrong position, and a text-only table still serializes exactly as it did
   before typing existed.
 - **Columns.** Each adapter declares its columns once in `<rtos>/columns.py`
@@ -406,6 +407,29 @@ This mirrors the field taxonomy described earlier in this document: the list
 column set is stable, and deep or verbose state is reached through the detail
 command or raw `gdb.Value` inspection rather than by widening the default
 table.
+
+### Memory sizes are bytes; the docs declare the unit, not the headers
+
+Every memory size GDR prints is a byte count. Key/value pairs state the unit in
+the value (`<n> B`, from `format_optional_bytes`). Table headers stay plain
+names (`Stack`, `Used`, `HighWater`, `Size`, `BlockSize`, `Bytes`, `Space`,
+`Capacity`, `Trigger`): once the convention is documented, a unit suffix in the
+header only repeats it. Each byte column carries a `doc` that says bytes, and
+the `rtt`/`frt` help text lists the unit. The occupancy table's
+`Bytes (header included)` is the one header that qualifies its meaning, since
+its spans include block headers. Counts (blocks, threads, objects, a mempool's
+Total/Free/Used) stay unitless. The panel's stack bar applies wherever a
+`Stack` column sits beside `Used` and `HighWater`, so renaming those columns
+also updates `vscode/src/webview/render.ts`. A heap table's title comes from the
+adapter (`HeapReport.table_title`), so one label never names two different
+tables.
+
+RT-Thread small_mem accounting uses block spans, header included: each used
+block contributes its full span to `used_bytes`, and `total_bytes` is the
+kernel's `mem_size_aligned`, which excludes the end sentinel's header. On a
+consistent chain `used_bytes + sum(hole_sizes) + header * free_blocks ==
+total_bytes + header`, which is why `HeapAccounting` compares the walk with the
+kernel counters.
 
 ## Runtime data flows
 

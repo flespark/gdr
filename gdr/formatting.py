@@ -18,6 +18,15 @@ def format_optional_int(value: int | None) -> str:
     return str(value) if value is not None else "N/A"
 
 
+def format_optional_bytes(value: int | None) -> str:
+    """Render an optional memory amount with its unit: ``<n> B`` or ``N/A``.
+
+    Every memory size GDR prints goes through this, so the unit is never
+    implied by the label alone.
+    """
+    return f"{value} B" if value is not None else "N/A"
+
+
 def format_address(address: int | None) -> str:
     """Render a non-zero address in hexadecimal, or ``N/A``."""
     return hex(address) if address else "N/A"

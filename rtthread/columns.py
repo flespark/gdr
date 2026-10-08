@@ -70,7 +70,7 @@ MSGQUEUE_SPECS = (
 
 MEMPOOL_SPECS = (
     ColumnSpec("Name", elastic=True, doc="object name"),
-    ColumnSpec("BlockSize", kind="int", align="right", doc="block bytes"),
+    ColumnSpec("BlockSize", kind="int", align="right", doc="block size in bytes"),
     ColumnSpec("Total", kind="int", align="right", doc="block count"),
     ColumnSpec("Free", kind="int", align="right"),
     ColumnSpec("Used", kind="int", align="right"),
@@ -118,9 +118,11 @@ def task_specs(smp: bool) -> tuple[ColumnSpec, ...]:
         ColumnSpec("Prio", kind="int", align="right"),
         ColumnSpec("BasePrio", kind="int", align="right"),
         ColumnSpec("SP", kind="addr", doc="stack pointer"),
-        ColumnSpec("Stack", kind="int", align="right"),
-        ColumnSpec("Used", kind="int", align="right"),
-        ColumnSpec("HighWater", kind="int", align="right"),
+        ColumnSpec("Stack", kind="int", align="right", doc="stack size in bytes"),
+        ColumnSpec("Used", kind="int", align="right", doc="stack bytes in use"),
+        ColumnSpec(
+            "HighWater", kind="int", align="right", doc="peak stack bytes in use"
+        ),
         ColumnSpec("Entry", kind="symbol", elastic=True),
     ]
     if smp:
