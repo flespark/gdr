@@ -176,6 +176,38 @@ def _print_usage(path: tuple[str, ...] = ()) -> None:
     print(render_terminal(_root_help_tree(), path))
 
 
+def _report_unknown_command(token: str) -> None:
+    """Report an unrecognized ``gdr`` subcommand without blaming initialization.
+
+    Reason: every unknown word used to print the ``gdr init`` usage, so a user who
+    spelled a kernel object as a ``gdr`` subcommand (``gdr heap``) read the message
+    as "this session is not initialized" and went looking in the wrong place, while
+    the session was in fact initialized and the command was simply not GDR's.
+    Kernel state is listed by the RTOS command tree, which is a different GDB
+    command, and a documented ``gdr`` topic is not a command at all.
+    """
+    from gdr.adapter_api import session_meta
+
+    documented = {topic.name for topic in _root_help_tree().topics}
+    if token.lower() in documented:
+        warn(f"'{token}' is a help topic, not a command; run 'gdr help {token}'")
+        return
+    commands = "init, probe, reset, api, help"
+    rtos, _version = session_meta()
+    if rtos is None:
+        warn(
+            f"unknown command '{token}'; gdr takes {commands} -- kernel state is "
+            f"listed by the RTOS command tree, so initialize an adapter with "
+            f"'gdr init <rtos> <version>' and then run '<rtos> {token}'"
+        )
+        return
+    warn(
+        f"unknown command '{token}'; gdr takes {commands} -- kernel state is "
+        f"listed by the active RTOS command tree, so try '{rtos} {token}' "
+        f"or '{rtos} help'"
+    )
+
+
 def _complete(text: str, word: str | None) -> list[str]:
     """Tab-complete bootstrap subcommands and structured help topics."""
     from gdr.commands import prefix_candidates
@@ -240,7 +272,7 @@ def _invoke_command(argument: str) -> None:
         _reset_command()
         return
     if argv[0] != "init":
-        warn("usage: gdr init <rtos> <version> (run 'gdr help' for help)")
+        _report_unknown_command(argv[0])
         return
     _init_command(argv[1:])
 

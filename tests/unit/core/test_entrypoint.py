@@ -315,14 +315,57 @@ def test_root_help_supports_topics_and_completion(capsys):
     assert "init" in entrypoint._complete("help ", None)
 
 
-def test_invalid_root_command_prints_only_one_usage_warning(monkeypatch, capsys):
+def test_a_documented_topic_is_reported_as_a_topic_not_a_command(monkeypatch, capsys):
+    """A ``gdr help`` topic run as a subcommand names the way to open it."""
     entrypoint = _load_entrypoint()
     warnings: list[str] = []
     monkeypatch.setattr(entrypoint, "warn", warnings.append)
 
     entrypoint._invoke_command("pretty-printers timer")
 
-    assert warnings == ["usage: gdr init <rtos> <version> (run 'gdr help' for help)"]
+    assert warnings == [
+        "'pretty-printers' is a help topic, not a command; "
+        "run 'gdr help pretty-printers'"
+    ]
+    assert capsys.readouterr().out == ""
+
+
+def test_unknown_command_points_at_the_rtos_tree_when_an_adapter_is_active(
+    monkeypatch, capsys
+):
+    """``gdr heap`` must not read as "not initialized" in an initialized session.
+
+    Reason: a kernel object spelled as a ``gdr`` subcommand used to print the
+    ``gdr init`` usage, which sent the user looking for an initialization problem
+    that did not exist; kernel state belongs to the RTOS command tree.
+    """
+    entrypoint = _load_entrypoint()
+    warnings: list[str] = []
+    monkeypatch.setattr(entrypoint, "warn", warnings.append)
+    monkeypatch.setattr("gdr.adapter_api.session_meta", lambda: ("freertos", "11.1.0"))
+
+    entrypoint._invoke_command("heap -h")
+
+    assert len(warnings) == 1
+    assert "unknown command 'heap'" in warnings[0]
+    assert "'freertos heap'" in warnings[0]
+    assert "gdr init" not in warnings[0]
+    assert capsys.readouterr().out == ""
+
+
+def test_unknown_command_before_init_says_to_initialize_first(monkeypatch, capsys):
+    """With no adapter registered the message says how to get one."""
+    entrypoint = _load_entrypoint()
+    warnings: list[str] = []
+    monkeypatch.setattr(entrypoint, "warn", warnings.append)
+    monkeypatch.setattr("gdr.adapter_api.session_meta", lambda: (None, None))
+
+    entrypoint._invoke_command("heap")
+
+    assert len(warnings) == 1
+    assert "unknown command 'heap'" in warnings[0]
+    assert "gdr init <rtos> <version>" in warnings[0]
+    assert "<rtos> heap" in warnings[0]
     assert capsys.readouterr().out == ""
 
 
