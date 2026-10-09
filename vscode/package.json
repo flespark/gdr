@@ -29,6 +29,8 @@
     "onDebugResolve:mcu-debug",
     "onDebugResolve:cppdbg",
     "onDebugResolve:gdbtarget",
+    "onDebugResolve:stlinkgdbtarget",
+    "onDebugResolve:jlinkgdbtarget",
     "onDebugResolve:probe-rs-debug",
     "onDebugResolve:cspy"
   ],

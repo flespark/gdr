@@ -16,13 +16,18 @@ import { test } from 'node:test';
 import {
 	alternateKeys,
 	consoleCommand,
+	gdbPathKey,
 	injectionPlan,
 	initCommand,
 	parsePythonResult,
 	pythonGateCommand,
+	pythonMissingMessage,
 	pythonResultPath,
+	REFUSED_DEBUG_TYPES,
 	setupCommands,
 	sourceCommand,
+	supportedDebugTypes,
+	watchExpression,
 	type SetupCommandEntry
 } from '../src/inject.ts';
 
@@ -90,6 +95,69 @@ test('an attach session uses the attach key when the adapter has one', () => {
 test('cppdbg runs a console command behind -exec; cortex-debug takes it bare', () => {
 	assert.equal(consoleCommand('cppdbg', 'gdr init rtthread 4.0.5'), '-exec gdr init rtthread 4.0.5');
 	assert.equal(consoleCommand('cortex-debug', 'gdr init rtthread 4.0.5'), 'gdr init rtthread 4.0.5');
+});
+
+test('the cdt-gdb adapters take a console command behind > and nothing else does', () => {
+	assert.equal(consoleCommand('gdbtarget', 'gdr init rtthread 4.0.5'), '>gdr init rtthread 4.0.5');
+	assert.equal(consoleCommand('stlinkgdbtarget', 'gdr init rtthread 4.0.5'), '>gdr init rtthread 4.0.5');
+	assert.equal(consoleCommand('cortex-debug', 'gdr init rtthread 4.0.5'), 'gdr init rtthread 4.0.5');
+});
+
+test('a cdt-gdb adapter gets init commands, which it runs after connecting', () => {
+	for (const type of ['gdbtarget', 'stlinkgdbtarget']) {
+		const plan = injectionPlan(type, 'launch', {
+			runtimePath: '/opt/gdr',
+			loaderPath: LOADER,
+			init: INIT
+		});
+
+		assert.equal(plan.supported, true, type);
+		assert.equal(plan.entries[0].key, 'initCommands', type);
+		// Reason: these adapters read a plain string array, not the Eclipse-style
+		// `{description, text, ignoreFailures}` objects cppdbg takes.
+		assert.deepEqual(plan.entries[0].value, setupCommands('/opt/gdr', INIT, LOADER), type);
+		assert.deepEqual(alternateKeys(type), [], type);
+	}
+});
+
+test('jlinkgdbtarget keeps the key its source has not been checked against', () => {
+	const plan = injectionPlan('jlinkgdbtarget', 'launch', {
+		runtimePath: '/opt/gdr',
+		loaderPath: LOADER,
+		init: null
+	});
+
+	assert.equal(plan.entries[0].key, 'setupCommands');
+});
+
+test('a cdt-gdb expression escapes its quotes for MI, the others are left alone', () => {
+	const expression = '$gdr_json("probe")';
+	assert.equal(watchExpression('stlinkgdbtarget', expression), '$gdr_json(\\"probe\\")');
+	assert.equal(watchExpression('gdbtarget', expression), '$gdr_json(\\"probe\\")');
+	assert.equal(watchExpression('cortex-debug', expression), expression);
+	assert.equal(watchExpression('cppdbg', expression), expression);
+	// An expression with nothing to escape is unchanged for every adapter.
+	assert.equal(watchExpression('stlinkgdbtarget', '1+1'), '1+1');
+});
+
+test('the Python hint names the attribute each adapter actually reads', () => {
+	assert.equal(gdbPathKey('cortex-debug'), 'gdbPath');
+	assert.equal(gdbPathKey('mcu-debug'), 'gdbPath');
+	assert.equal(gdbPathKey('cppdbg'), 'miDebuggerPath');
+	assert.equal(gdbPathKey('gdbtarget'), 'gdb');
+	assert.equal(gdbPathKey('stlinkgdbtarget'), 'gdb');
+	assert.match(pythonMissingMessage('cppdbg'), /miDebuggerPath/);
+	assert.doesNotMatch(pythonMissingMessage('cppdbg'), /gdbPath/);
+	assert.match(pythonMissingMessage('stlinkgdbtarget'), /gdb/);
+	assert.match(pythonMissingMessage('cortex-debug'), /gdbPath/);
+});
+
+test('the supported and refused type lists stay disjoint', () => {
+	const supported = supportedDebugTypes();
+	assert.ok(supported.includes('stlinkgdbtarget'));
+	for (const refused of REFUSED_DEBUG_TYPES) {
+		assert.equal(supported.includes(refused), false, refused);
+	}
 });
 
 test('an Eclipse-style adapter gets setup entries, not bare strings', () => {

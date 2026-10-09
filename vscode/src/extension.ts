@@ -19,7 +19,12 @@ import * as path from 'node:path';
 
 import * as vscode from 'vscode';
 
-import { injectionPlan } from './inject.ts';
+import {
+	injectionPlan,
+	supportedDebugTypes,
+	trackedDebugTypes,
+	unsupportedReason
+} from './inject.ts';
 import { RtosViewsPanel, type SnapshotFetcher } from './panel.ts';
 import { GdrCache, GdrSession, runtimeFor } from './session.ts';
 import { costArgs, parseSnapshotTransport, type CostOptions } from './snapshot.ts';
@@ -30,15 +35,15 @@ import {
 } from './tracker.ts';
 import type { GdrSettings } from './probe.ts';
 
-/** Adapters whose launch configuration this extension appends the loader to. */
-const SUPPORTED_TYPES = [
-	'cortex-debug',
-	'mcu-debug',
-	'cppdbg',
-	'gdbtarget',
-	'stlinkgdbtarget',
-	'jlinkgdbtarget'
-];
+/**
+ * The debug types the tracker is asked about.
+ *
+ * `inject.ts` is the one source for which sessions GDR drives: the injection
+ * plan and this subscription can never disagree about them. The union also
+ * carries the types GDR cannot host, so those sessions reach the panel and are
+ * told why instead of never being seen at all.
+ */
+const TRACKED_TYPES = trackedDebugTypes();
 
 /** A granted tracker subscription; the tracker answers with a string on refusal. */
 interface TrackerGrant {
@@ -188,7 +193,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.debug.registerDebugConfigurationProvider('*', {
 			resolveDebugConfiguration: (folder, config) => {
-				if (!SUPPORTED_TYPES.includes(config.type)) {
+				if (!supportedDebugTypes().includes(config.type)) {
 					return config;
 				}
 				const runtime = runtimeFor(context.extensionUri, vscode.workspace.getConfiguration('gdr').get<string>('runtimePath', ''));
@@ -276,7 +281,7 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 		const grant = tracker.subscribe({
 			version: 1,
 			body: {
-				debuggers: SUPPORTED_TYPES,
+				debuggers: TRACKED_TYPES,
 				wantCurrentStatus: true,
 				notifyAllEvents: false,
 				debugLevel: 0,
@@ -338,6 +343,16 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			sessions.delete(session.id);
 			return;
 		case 'started': {
+			// Reason: a session GDR cannot host gets a tab that says why. Without
+			// this the types are never subscribed to and the user sees nothing at
+			// all, which the README used to promise was a refusal with a reason.
+			const refused = unsupportedReason(session.type);
+			if (refused !== null) {
+				panel.sessionStarted(session.id, session.name);
+				panel.sessionFailed(session.id, refused);
+				deps.log(`${session.type}: ${refused}`);
+				return;
+			}
 			panel.sessionStarted(session.id, session.name);
 			const gs = sessionFor(session);
 			void gs.watchLaunchPython().then((ok) => {
@@ -359,6 +374,11 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 		case 'first-stack-trace': {
 			const frameId = event.stackTrace?.body?.stackFrames?.[0]?.id;
 			if (typeof frameId !== 'number') {
+				return;
+			}
+			// Reason: a refused session has no loader and no GDR to initialize;
+			// the panel already carries its reason from `started`.
+			if (unsupportedReason(session.type) !== null) {
 				return;
 			}
 			const gs = sessionFor(session);

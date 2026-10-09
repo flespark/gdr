@@ -63,7 +63,7 @@ vscode/                VSCode extension: a client of GDR's JSON envelope
   src/extension.ts     activation, launch-config provider, debug-tracker wiring
   scripts/vendor-gdr.sh  generate resources/gdr from this repository's runtime
   media/               extension icons
-  test/                node --test units and a real QEMU/GDB session check
+  test/                node --test units, adapter-contract consistency, and a real QEMU/GDB session check
 ```
 
 Key design principles (see `docs/architecture.md`):

@@ -27,8 +27,10 @@ import {
 	initCommand,
 	launchLoaderPath,
 	parsePythonResult,
+	pythonMissingMessage,
 	pythonResultPath,
-	unsupportedReason
+	unsupportedReason,
+	watchExpression
 } from './inject.ts';
 import { cacheKey, decideInit, parseProbePayload, type GdrSettings, type InitDecision } from './probe.ts';
 import { checkRuntime, locateRuntime, type RuntimeLocation } from './runtime.ts';
@@ -44,16 +46,6 @@ import {
 	transportPlan,
 	type GdrEnvelope
 } from './transport.ts';
-
-/**
- * Shown in the panel when launch finds a GDB built without Python.
- *
- * The launch script only records the result; this is the text the user sees.
- */
-export const PYTHON_MISSING_MESSAGE =
-	'This GDB has no Python interpreter, so GDR cannot run in it. ' +
-	'xPack ships both variants: arm-none-eabi-gdb has no Python, arm-none-eabi-gdb-py3 does. ' +
-	"Point the launch configuration's gdbPath at the -py3 binary.";
 
 /** The subset of a DAP evaluate response this client reads. */
 interface EvaluateResponse {
@@ -184,8 +176,9 @@ export class GdrSession {
 		}
 		this.state.python = result === 'present';
 		if (!this.state.python) {
-			this.state.errorMessage = PYTHON_MISSING_MESSAGE;
-			this.log(PYTHON_MISSING_MESSAGE);
+			const message = pythonMissingMessage(this.session.type);
+			this.state.errorMessage = message;
+			this.log(message);
 		}
 		return true;
 	}
@@ -429,9 +422,11 @@ export class GdrSession {
 	/**
 	 * Evaluate one expression in the session.
 	 *
-	 * A `repl` context runs a GDB console command (its output belongs to the
-	 * Debug Console); any other context returns the value, which is how GDR's
-	 * `$gdr_json` payload reaches the plugin.
+	 * A `repl` context runs a GDB console command spelled by `consoleCommand`
+	 * (its output belongs to the Debug Console); any other context returns the
+	 * value, which is how GDR's `$gdr_json` payload reaches the plugin. A value
+	 * expression is spelled by `watchExpression` first, because each adapter
+	 * quotes or prefixes differently.
 	 */
 	private async evaluate(
 		expression: string,
@@ -440,7 +435,7 @@ export class GdrSession {
 	): Promise<string | null> {
 		try {
 			const response = await this.session.customRequest('evaluate', {
-				expression,
+				expression: context === 'watch' ? watchExpression(this.session.type, expression) : expression,
 				frameId,
 				context
 			});

@@ -38,7 +38,7 @@ flowchart TB
   only adds the GDR loader to the adapter's launch-time command hooks, and it
   asks questions through the adapter's DAP `evaluate` request, the same path
   a watch expression takes. The adapter's stop and run events reach the
-  extension through the [tracker extension](#why-the-tracker-extension).
+  extension through the [tracker extension](#why-the-tracker-extension-depends).
 - **GDR** could be used as a independent CLI (`source gdr.py` at the GDB
   prompt). It is the only layer that understands kernel structures: it walks
   the RTOS's task lists, objects and heap through GDB, checks them for
@@ -79,18 +79,27 @@ See [GDR readme](https://github.com/flespark/gdr#readme)
 
 ## Supported debug adapters
 
-| Adapter | Loader injection | Notes |
-| --- | --- | --- |
-| `cortex-debug` | `postLaunchCommands` / `postAttachCommands` | the reference setup |
-| `cppdbg`, `gdbtarget`, `stlinkgdbtarget`, `jlinkgdbtarget` | `setupCommands` | needs a GDB-backed `MIMode` |
-| anything else | — | refused with a reason: GDR runs inside GDB's Python, so an adapter without a GDB console cannot host it |
+GDR is loaded into the session's own GDB through the launch key that adapter
+actually reads, so the key is listed per adapter rather than assumed.
+
+| Adapter | Loader injection | GDB binary setting | Verification |
+| --- | --- | --- | --- |
+| `cortex-debug` | `postLaunchCommands` / `postAttachCommands` | `gdbPath` | verified on real targets |
+| `cppdbg` | `setupCommands` (Eclipse-style entries) | `miDebuggerPath` | verified on real targets |
+| `stlinkgdbtarget` (STM32Cube ST-LINK GDB Server) | `initCommands` | `gdb` | extension path and adapter contract verified in VS Code against a QEMU target; ST's device lookup, ST-LINK_gdbserver and a real probe are not exercised |
+| `gdbtarget` | `initCommands` | `gdb` | mapped from the adapter's own documentation, not yet exercised |
+| `jlinkgdbtarget` | `setupCommands` | `gdb` | not verified |
+| `probe-rs-debug`, `cspy` | — | — | refused in the panel: no GDB console to host GDR. Use a GDB-backed adapter against the same target's GDB server |
+
+A session GDR cannot host still gets a tab stating that reason, instead of
+failing later with an empty panel.
 
 The session's GDB must have Python. xPack ships both variants:
 `arm-none-eabi-gdb` has none, `arm-none-eabi-gdb-py3` does — point the adapter's
-`gdbPath` (or `gdr.runtimePath`'s sibling setting on the adapter) at the `-py3`
-binary. The extension says this explicitly instead of showing an empty panel.
+GDB setting (the third column above) at the `-py3` binary. The extension names
+the setting to use instead of showing an empty panel.
 
-## Why the tracker extension
+## Why the tracker extension depends
 
 `mcu-debug.debug-tracker-vscode` is a declared `extensionDependencies` entry,
 because VS Code's own debug API exposes neither the adapter's stopped/running
@@ -141,7 +150,7 @@ for bug reports and offline inspection.
 | `gdr.refreshOnStop` | Refresh the panel at each stop (default on). Turn off to refresh only on initialization or with the panel's refresh button. |
 | `gdr.refreshHeaps` | Include the heap snapshot in every refresh (default on). The heap walk is the most expensive part; turn off when stops feel slow. |
 | `gdr.recordSnapshotsDir` | Directory to save snapshot JSON files on each refresh (for offline inspection and bug reports). Empty disables recording (default). |
-| `gdr.snapshotTransport` | Transport method for snapshots from GDB to the extension: `evaluate` (default) transfers data in memory via DAP; `file` passes data via temporary files (faster for large snapshots, but requires GDB and VS Code to share a filesystem). GDR switches to `file` by itself when the adapter's `evaluate` cannot carry a payload (cortex-debug renders a returned string as its element count, so every Cortex-Debug session uses the file route). |
+| `gdr.snapshotTransport` | Transport method for snapshots from GDB to the extension: `evaluate` (default) transfers data in memory via DAP; `file` passes data via temporary files (faster for large snapshots, but requires GDB and VS Code to share a filesystem). GDR switches to `file` by itself when the adapter's `evaluate` cannot carry a payload (cortex-debug and the cdt-gdb family, ST-LINK included, render a returned string as its element count, so those sessions use the file route). |
 
 The probe answers with its evidence and its confidence (`exact`, `range`,
 `undetected`); the extension initializes automatically only for an
@@ -194,7 +203,7 @@ The byte-for-byte check that the VSIX carries the GDR runtime it claims is
   on real targets.
 - The file route needs the extension to read the filesystem GDB writes to. GDR
   picks that route by itself when `evaluate` cannot carry a payload (every
-  Cortex-Debug session, see the `gdr.snapshotTransport` row above), so a GDB in
+  Cortex-Debug or ST-LINK session, see the `gdr.snapshotTransport` row above), so a GDB in
   a separate filesystem namespace (for example WSL) cannot use Cortex-Debug at
   all; the panel reports the failed bypass instead of showing nothing.
 - The probe reads versions from DWARF. A build without `-g3` exports no version

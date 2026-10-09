@@ -35,15 +35,50 @@ export interface InjectionPlan {
 	entries: InjectEntry[];
 }
 
-/** Adapters that own a GDB process, and the key their launch config uses. */
+/**
+ * Adapters that own a GDB process, and the launch key that takes extra GDB commands.
+ *
+ * Every key was read from that adapter's own `package.json`. cppdbg reads
+ * `setupCommands`; cortex-debug reads `postLaunchCommands`. The cdt-gdb family
+ * (`gdbtarget` and STM32Cube's `stlinkgdbtarget`) reads `initCommands` and has no
+ * `setupCommands` at all, so a `setupCommands` entry there is silently ignored and
+ * GDR never loads. `initCommands` runs after the target is connected and before
+ * any image load.
+ */
 const GDB_ADAPTERS: Record<string, string> = {
 	'cortex-debug': 'postLaunchCommands',
 	'mcu-debug': 'postLaunchCommands',
 	cppdbg: 'setupCommands',
-	gdbtarget: 'setupCommands',
-	stlinkgdbtarget: 'setupCommands',
+	gdbtarget: 'initCommands',
+	stlinkgdbtarget: 'initCommands',
+	// Reason: this adapter's launch keys are not verified against its source.
 	jlinkgdbtarget: 'setupCommands'
 };
+
+/**
+ * Types that cannot host GDR because their debug console is not GDB.
+ *
+ * probe-rs-debug is a native DAP whose REPL answers a fixed command set (`bt`,
+ * `break`, `p`, `dump`, ...) and rejects everything else as an unknown command;
+ * cspy drives C-SPY through its own backend and exposes no GDB. They are named
+ * here so a session of that type reports why instead of staying silent.
+ */
+export const REFUSED_DEBUG_TYPES: readonly string[] = ['probe-rs-debug', 'cspy'];
+
+/** Every adapter type this extension injects GDR into. */
+export function supportedDebugTypes(): string[] {
+	return Object.keys(GDB_ADAPTERS);
+}
+
+/**
+ * Every debug type the tracker subscribes to.
+ *
+ * The supported types plus the refused ones, so a session GDR cannot host still
+ * reaches the panel and reports why instead of never being seen at all.
+ */
+export function trackedDebugTypes(): string[] {
+	return [...supportedDebugTypes(), ...REFUSED_DEBUG_TYPES];
+}
 
 /** Adapters whose *attach* path uses a different key than their launch path. */
 const GDB_ATTACH_KEYS: Record<string, string> = {
@@ -171,20 +206,71 @@ export function setupCommands(
 }
 
 /**
- * Adapters whose Debug Console (the `repl` evaluate) runs a GDB CLI command only
- * behind an `-exec` prefix. Without it the text is evaluated as an expression.
+ * The prefix each adapter's Debug Console (the `repl` evaluate) needs before a
+ * GDB CLI command. Without it the text is evaluated as an expression.
+ *
+ * Reason: cppdbg documents `-exec` for that (plain `gdr init ...` would be
+ * evaluated as an expression and never run). The cdt-gdb family (`gdbtarget`,
+ * `stlinkgdbtarget`) takes `>` on the same line instead, and rejects a bare
+ * command with `Error: could not evaluate expression`.
  */
-const EXEC_PREFIXED_CONSOLE = new Set<string>(['cppdbg']);
+const CONSOLE_PREFIX = new Map<string, string>([
+	['cppdbg', '-exec '],
+	['gdbtarget', '>'],
+	['stlinkgdbtarget', '>']
+]);
 
 /**
  * Spell *command* so the adapter's `repl` evaluate runs it as a GDB command.
  *
- * Reason: cppdbg's changelog documents `-exec` as the way a GDB command reaches
- * the console; plain `gdr init ...` is evaluated as an expression, and the
- * launch then reports `not_initialized` with no error on the extension side.
+ * Adapters with no prefix run a bare command line; see `CONSOLE_PREFIX` for the
+ * ones that need a marker.
  */
 export function consoleCommand(debugType: string, command: string): string {
-	return EXEC_PREFIXED_CONSOLE.has(debugType) ? `-exec ${command}` : command;
+	return `${CONSOLE_PREFIX.get(debugType) ?? ''}${command}`;
+}
+
+/**
+ * Spell *expression* so the adapter's `evaluate` reaches GDB for a variable.
+ *
+ * Reason: a cdt-gdb adapter interpolates the expression into an MI c-string
+ * without escaping it (`quote(expression)`), so a `$gdr_json("probe")` with its
+ * own quotes arrives as `"$gdr_json("probe")"` and GDB answers `Problem parsing
+ * arguments`. Writing the quotes as `\"` lets MI's own unescaping restore them.
+ * Adapters that already escape (cortex-debug, cppdbg) must be left alone.
+ */
+export function watchExpression(debugType: string, expression: string): string {
+	if (debugType !== 'gdbtarget' && debugType !== 'stlinkgdbtarget') {
+		return expression;
+	}
+	return expression.replaceAll('"', '\\"');
+}
+
+/**
+ * The launch attribute naming *debugType*'s GDB executable.
+ *
+ * Read from each adapter's own `package.json`; the extension names this key when
+ * it has to tell the user which binary to point at a Python-enabled GDB.
+ */
+export function gdbPathKey(debugType: string): string {
+	switch (debugType) {
+		case 'cppdbg':
+			return 'miDebuggerPath';
+		case 'cortex-debug':
+		case 'mcu-debug':
+			return 'gdbPath';
+		default:
+			return 'gdb';
+	}
+}
+
+/** What to tell the user when the session's GDB has no Python interpreter. */
+export function pythonMissingMessage(debugType: string): string {
+	return (
+		'This GDB has no Python interpreter, so GDR cannot run in it. ' +
+		'xPack ships both variants: arm-none-eabi-gdb has no Python, arm-none-eabi-gdb-py3 does. ' +
+		`Point the launch configuration's ${gdbPathKey(debugType)} at the -py3 binary.`
+	);
 }
 
 /** Why *debugType* cannot host GDR, or `null` when it can. */
@@ -194,7 +280,8 @@ export function unsupportedReason(debugType: string): string | null {
 	}
 	return (
 		`${debugType} does not expose a GDB console; GDR runs inside GDB's Python ` +
-		`interpreter, so this adapter cannot host it`
+		`interpreter, so this adapter cannot host it. Use a GDB-backed adapter for ` +
+		`the same target to get the panel.`
 	);
 }
 
