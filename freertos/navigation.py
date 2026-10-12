@@ -1433,5 +1433,7 @@ def iter_queue_items(
         # kernel wraps with >=), so the slot right before pcTail is the
         # last usable one and pcTail is never read as item storage.
         pos = pc_head + ((pc_read + (index + 1) * item_size - pc_head) % span)
-        payload = read_bytes(pos, min(item_size, max_payload))
+        payload = (
+            read_bytes(pos, min(item_size, max_payload)) if max_payload > 0 else None
+        )
         yield index, pos, payload

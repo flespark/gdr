@@ -8,6 +8,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from freertos.adapter import FreeRtosAdapter, iter_task_names
+from freertos.checks import render_checks
 from freertos.help_docs import build_help_tree
 from freertos.navigation import discover
 from gdr.adapter_api import active
@@ -15,6 +16,7 @@ from gdr.commands import (
     CommandTreeSpec,
     complete_command_tree,
     render_heap,
+    render_heap_dump,
     render_object_detail,
     render_objects,
     render_system,
@@ -76,7 +78,11 @@ def _invoke_command(argument: str) -> None:
         print(render_terminal(tree, path))
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
-    if len(args) >= 2 and command in _SINGULAR_COMMANDS:
+    if command == "checks":
+        render_checks(args[1:])
+    elif command == "heap" and len(args) in (2, 3) and args[1].lower() == "dump":
+        render_heap_dump("freertos", args[2] if len(args) == 3 else "")
+    elif len(args) >= 2 and command in _SINGULAR_COMMANDS:
         # Reason: FreeRTOS object names may contain spaces -- the timer daemon
         # task is literally "Tmr Svc" (timers.c configTIMER_SERVICE_TASK_NAME)
         # and pcTaskName is free text -- so the name is everything after the

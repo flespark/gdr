@@ -411,8 +411,8 @@ def test_queue_items_follow_fifo_order_and_wrap(monkeypatch):
     assert read_sites == [0x2000, 0x2004, 0x2008]
 
 
-def test_queue_item_payload_truncates_at_64_bytes(monkeypatch):
-    """Item payloads longer than 64 bytes render truncated with a marker."""
+def test_queue_item_only_reports_address_without_reading_payload(monkeypatch):
+    """Payload bytes belong to the memory viewer, not command output."""
     layout = build_layout(FreeRtosConfig(), (10, 3, 1))
     paths = {
         ("pcHead",): 0x2000,
@@ -425,7 +425,11 @@ def test_queue_item_payload_truncates_at_64_bytes(monkeypatch):
     }
     _patch_reads(monkeypatch, navigation, paths)
     _patch_reads(monkeypatch, diagnostics, paths)
-    monkeypatch.setattr(navigation, "read_bytes", lambda _a, size: b"\xab" * size)
+
+    def unexpected_payload_read(*_args):
+        raise AssertionError("queue presentation must not read payload bytes")
+
+    monkeypatch.setattr(navigation, "read_bytes", unexpected_payload_read)
     obj = FreeRtosQueueObject(
         name="big",
         address=0x2000,
@@ -440,10 +444,7 @@ def test_queue_item_payload_truncates_at_64_bytes(monkeypatch):
     pairs = details_module.queue_detail(obj, object(), layout)
     item = next((value for key, value in pairs if key.startswith("Item[")), None)
 
-    assert item is not None
-    assert item.startswith("@0x2000: ")
-    assert item.count("ab") == 64  # only the first 64 bytes are rendered
-    assert item.endswith("…(+64 bytes)")
+    assert item == "0x2000"
 
 
 # ---------------------------------------------------------------------------
@@ -927,7 +928,7 @@ def test_checks_pairs_summarises_a_healthy_object():
         [("Count", "ok"), ("Storage", "ok"), ("WritePtr", "ok")]
     )
 
-    assert pairs == [("Checks", "ok (3 verified)")]
+    assert pairs == []
 
 
 def test_checks_pairs_counts_inapplicable_checks_without_naming_them():
@@ -940,7 +941,7 @@ def test_checks_pairs_counts_inapplicable_checks_without_naming_them():
         ]
     )
 
-    assert pairs == [("Checks", "ok (1 verified, 2 n/a)")]
+    assert pairs == []
 
 
 def test_checks_pairs_promotes_failures_to_their_own_row():
@@ -954,8 +955,7 @@ def test_checks_pairs_promotes_failures_to_their_own_row():
     )
 
     assert pairs == [
-        ("Checks", "1 failed (1 verified, 1 n/a)"),
-        ("Check[MutexAccounting]", "0 + holder(False) != 1 accounting"),
+        ("Check[MutexAccounting]", "fail: 0 + holder(False) != 1 accounting"),
     ]
 
 
@@ -966,7 +966,6 @@ def test_checks_pairs_reports_unreadable_separately_from_inapplicable():
     )
 
     assert pairs == [
-        ("Checks", "ok (0 verified, 1 n/a)"),
         ("Check[Count]", "skipped: unreadable"),
     ]
 
@@ -993,13 +992,11 @@ def test_checks_pairs_keeps_verdict_row_shape():
         ]
     )
 
-    assert pairs[0][0] == "Checks"
-    assert pairs[0][1].startswith("1 failed")
-    assert "1 verified" in pairs[0][1]
-    assert "2 n/a" in pairs[0][1]
-    assert pairs[1] == ("Check[ListIndex]", "pxIndex 0x4 != &xListEnd 0x8")
-    assert pairs[2] == ("Check[ItemOwner]", "skipped: unreadable")
-    assert len(pairs) == 3
+    assert pairs == [
+        ("Check[ListIndex]", "fail: pxIndex 0x4 != &xListEnd 0x8"),
+        ("Check[ListIntegrity]", "skipped: traversal bound reached"),
+        ("Check[ItemOwner]", "skipped: unreadable"),
+    ]
 
 
 def test_object_detail_redirects_when_the_name_is_another_kind(monkeypatch):

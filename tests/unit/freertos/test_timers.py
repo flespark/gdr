@@ -253,6 +253,11 @@ def _table_cells(monkeypatch, found, by_address, tick=1000, daemon=False):
     monkeypatch.setattr(adapter_module, "system_value", lambda _key, _layout: tick)
     monkeypatch.setattr(adapter_module, "daemon_is_current", lambda _l: daemon)
     monkeypatch.setattr(timers, "lookup_symbol_at", lambda _addr: "gdr_timer_callback")
+    monkeypatch.setattr(
+        adapter_module, "lookup_symbol_at", lambda _addr: "gdr_timer_callback"
+    )
+    monkeypatch.setattr(adapter_module, "source_location_at", lambda _addr: None)
+    monkeypatch.setattr(adapter_module, "source_definition_at", lambda _addr: None)
     _wire_timer_lists(monkeypatch, 0x3000, 0x3100, list1_addr=0x3000, list2_addr=0x3100)
     return adapter_module.FreeRtosAdapter(layout)._timer_table()
 
@@ -706,7 +711,8 @@ def test_timer_detail_key_contract_and_commands_section(monkeypatch):
         "OwnerCheck",
         "Src",
     ]
-    assert "Checks" in keys
+    assert "Checks" not in keys
+    assert "Check[TimerQueueItemSize]" in keys
     assert "Commands" in keys
     pairs_by_key = dict(pairs)
     assert pairs_by_key["State"] == "active"

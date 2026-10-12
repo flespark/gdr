@@ -362,6 +362,54 @@ PROBE_MARKERS: tuple[str, ...] = (
 )
 
 
+# Reason: RT-Thread names its per-CPU table differently across ports and
+# releases; the tick and the interrupt nest read the same candidate list.
+_CPU_TABLE_SYMBOLS: tuple[str, ...] = ("_cpus", "rt_cpus", "rt_cpu_table", "_rt_cpus")
+
+
+def read_irq_nest() -> int | None:
+    """Interrupt nesting depth of the selected CPU, or ``None`` when unreadable.
+
+    UP kernels keep ``rt_interrupt_nest`` as a global; SMP kernels keep it in
+    the selected CPU's ``struct rt_cpu.irq_nest``.
+    """
+    if gdb is None:
+        return None
+    nest = lookup_symbol("rt_interrupt_nest")
+    if nest is not None:
+        return read_int(nest)
+    for symbol in _CPU_TABLE_SYMBOLS:
+        cpu = _cpu_from_table(lookup_symbol(symbol), _selected_cpu_id())
+        if cpu is None:
+            continue
+        try:
+            return read_int(cpu["irq_nest"])
+        except (gdb.error, gdb.MemoryError, TypeError, ValueError):
+            return None
+    return None
+
+
+def read_scheduler_lock_nest(current: gdb.Value | None) -> int | None:
+    """Scheduler lock nesting depth, or ``None`` when no counter is readable.
+
+    UP kernels (3.1.x and some 4.0.x) keep ``rt_scheduler_lock_nest`` as a
+    global. SMP kernels keep it per thread, so the field is read from the
+    current thread by name: a missing field (a layout without the counter)
+    raises inside GDB and yields ``None`` rather than a guessed zero.
+    """
+    if gdb is None:
+        return None
+    nest = lookup_symbol("rt_scheduler_lock_nest")
+    if nest is not None:
+        return read_int(nest)
+    if current is None:
+        return None
+    try:
+        return read_int(current["scheduler_lock_nest"])
+    except (gdb.error, gdb.MemoryError, TypeError, ValueError):
+        return None
+
+
 def get_tick() -> int | None:
     """Read the current RT-Thread kernel tick without resuming the inferior."""
     tick = lookup_symbol("rt_tick")
@@ -373,7 +421,7 @@ def get_tick() -> int | None:
 
     # Reason: SMP builds alias rt_tick to rt_cpu_index(0)->tick; the UP
     # symbol is absent, so read CPU0's tick field from the per-CPU table.
-    for symbol in ("_cpus", "rt_cpus", "rt_cpu_table", "_rt_cpus"):
+    for symbol in _CPU_TABLE_SYMBOLS:
         cpu = _cpu_from_table(lookup_symbol(symbol), 0)
         if cpu is None:
             continue

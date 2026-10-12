@@ -92,10 +92,12 @@ warning: target RT-Thread version not exported; cannot verify version
 | ------ | ------ |
 | `gdr init <rtos> <version> [--force] [--allow-unverified]` | 初始化指定的 RTOS adapter；`--force` 无需重启 GDB 即可替换已有 adapter，`--allow-unverified` 在目标未匹配到任何 RTOS 符号（内核被修改或符号被裁剪）时仍注册 |
 | `gdr reset` | 清除当前 adapter 与会话缓存 |
+| `frt checks [scope] [name]` | 显式运行完整一致性检查（见 `frt help checks`）；普通视图仅显示具体问题 |
 | `gdr help [topic]` | 查看初始化或 pretty-printer 帮助 |
 | `<rtos> help [topic]` | 浏览命令树；topic 包含字段说明、使用 tips、配置依赖与实现限制 |
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |
-| `<rtos> <object> <name>` | 以纵向 `Key: Value` 显示单个对象的详情（如 `rtt semaphore my_sem`） |
+| `<rtos> <object> <name>` | 以合并表显示同类对象的全部详情，命名对象的行前带 `*` 和一个空格（如 `rtt semaphore my_sem`） |
+| `<rtos> heap dump [path]` | 绘制堆占用位图，iTerm2 或 Kitty 中内联显示，否则写入 PNG（默认 `gdr-heap-<rtos>-gen<N>.png`） |
 
 ## 便捷函数
 

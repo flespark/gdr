@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from gdr.constants import GDR_API_SCHEMA_VERSION
 from tests.support.loader import load_integration_spec
 
 SPEC = load_integration_spec()
@@ -44,7 +45,7 @@ def test_gdr_api_command_prints_a_versioned_envelope(gdb):
     """``gdr api tasks --json`` is one parseable line naming the session."""
     envelope = _envelope_line(gdb.run("gdr api tasks --json", timeout=20))
 
-    assert envelope["schema_version"] == 1
+    assert envelope["schema_version"] == GDR_API_SCHEMA_VERSION
     assert envelope["ok"] is True
     assert envelope["rtos"] == "rtthread"
     assert envelope["rtos_version"] == SPEC.version
@@ -61,23 +62,26 @@ def test_probe_answers_before_initialization(gdb):
     and re-initializes afterwards to leave the shared session as it found it.
     """
     gdb.run("gdr reset", timeout=20)
-    envelope = _envelope_line(gdb.run("gdr api probe --json", timeout=20))
+    try:
+        envelope = _envelope_line(gdb.run("gdr api probe --json", timeout=20))
 
-    assert envelope["ok"] is True
-    assert [item["rtos"] for item in envelope["data"]["candidates"]] == ["rtthread"]
+        assert envelope["ok"] is True
+        assert [item["rtos"] for item in envelope["data"]["candidates"]] == ["rtthread"]
 
-    # The plugin reads the probe through `$gdr_json`, so the data channel has to
-    # exist before any adapter is initialized -- not only after `gdr init`.
-    output = gdb.run_python(
-        """
+        # The plugin reads the probe through `$gdr_json`, so the data channel has
+        # to exist before any adapter is initialized -- not only after `gdr init`.
+        output = gdb.run_python(
+            """
 import gdb
 print("GDR_PREINIT", gdb.parse_and_eval('$gdr_json("probe")').string()[:20])
 """,
-        timeout=20,
-    )
-    assert 'GDR_PREINIT {"schema_version":1' in output
-
-    gdb.run(f"gdr init rtthread {SPEC.version}", timeout=25)
+            timeout=20,
+        )
+        assert f'GDR_PREINIT {{"schema_version":{GDR_API_SCHEMA_VERSION}' in output
+    finally:
+        # Reason: a failed assertion must not leave the shared session reset, or
+        # every later test in this module runs against no adapter at all.
+        gdb.run(f"gdr init rtthread {SPEC.version}", timeout=25)
 
 
 def test_probe_reports_this_fixture_with_its_evidence(gdb):
@@ -115,7 +119,7 @@ def test_tasks_envelope_carries_the_column_contract(gdb):
     assert data["kind"] == "task"
     columns = {column["key"]: column for column in data["columns"]}
     assert list(columns) == data["headers"]
-    assert columns["Addr"]["kind"] == "addr"
+    assert columns["TCB"]["kind"] == "addr"
     assert columns["Prio"]["kind"] == "int"
     assert columns["Prio"]["align"] == "right"
 
@@ -124,7 +128,7 @@ def test_tasks_envelope_carries_the_column_contract(gdb):
     assert all(len(row) == len(data["headers"]) for row in value_rows)
     assert len(data["ids"]) == len(data["rows"])
 
-    address_index = data["headers"].index("Addr")
+    address_index = data["headers"].index("TCB")
     priority_index = data["headers"].index("Prio")
     for text_row, value_row, row_id in zip(
         data["rows"], value_rows, data["ids"], strict=True
@@ -209,7 +213,7 @@ print(
         timeout=25,
     )
 
-    assert f"{_PROBE} True rtthread 1" in output
+    assert f"{_PROBE} True rtthread {GDR_API_SCHEMA_VERSION}" in output
 
 
 def test_rejected_reinit_is_structured_and_non_destructive(gdb):

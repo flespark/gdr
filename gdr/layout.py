@@ -376,6 +376,15 @@ def iter_list(
             node_int = int(node)
             if node_int == head_int:
                 return
+            if node_int == 0:
+                # Reason: before kernel startup a list head can still be zero;
+                # GDB lazily dereferences container_of(NULL - offset), so the
+                # invalid value otherwise escapes this generator's error guard.
+                warn(
+                    "list traversal stopped at NULL node "
+                    "(list not initialized or corrupted)"
+                )
+                return
             if node_int in seen_addrs:
                 warn(
                     f"list traversal stopped at repeated node {node_int:#x} "

@@ -5,6 +5,7 @@ from __future__ import annotations
 from gdr.help import (
     CommandHelp,
     HelpField,
+    HelpTopic,
     HelpTree,
     functions_topic,
     pretty_printer_topic,
@@ -17,10 +18,45 @@ def _fields(*items: tuple[str, str]) -> tuple[HelpField, ...]:
 
 
 _ADDR = ("Addr", "Target address of the kernel object.")
+_TCB = ("TCB", "Thread control block address; the row identity.")
 _WAITERS = ("Waiters", "Blocked tasks as `count@names`; N/A means no list exists.")
 _SNAPSHOT_LIMIT = (
     "The target stays halted and GDR never calls inferior code; values are one "
     "bounded snapshot and may capture an in-progress kernel transition."
+)
+
+
+_HEAP_DUMP = HelpTopic(
+    name="dump",
+    summary="Draw the heap occupancy bitmap",
+    description=(
+        "Draws every heap block as a coloured cell: grey for free, one colour per "
+        "owning thread (MEMTRACE), a neutral blue when owners are unknown. Inline in "
+        "iTerm2 or Kitty; otherwise written to a PNG file."
+    ),
+    usage=("rtt heap dump [path]",),
+    fields=_fields(
+        (
+            "Cells",
+            "The arena split evenly into a fixed grid, row by row; a block paints every cell it touches.",
+        ),
+        (
+            "Owner colours",
+            "Assigned by allocated bytes, largest first; the summary lists owner totals.",
+        ),
+        (
+            "File",
+            "Default gdr-heap-rtthread-gen<N>.png in the working directory, or the given path.",
+        ),
+    ),
+    tips=(
+        "GDR_HEAP_IMAGE=iterm|kitty|file overrides terminal detection.",
+        "The panel's heap card draws the same bitmap with a hover readout.",
+    ),
+    configuration=(
+        "Inline output needs TERM_PROGRAM=iTerm.app or KITTY_WINDOW_ID; VS Code's debug console shows text only and falls back to a file.",
+    ),
+    limitations=(_SNAPSHOT_LIMIT,),
 )
 
 
@@ -36,6 +72,10 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 ("Name", "Thread name; '*' marks a currently running thread."),
                 ("State", "Decoded scheduler state."),
                 ("Prio/BasePrio", "Current and initial priority."),
+                (
+                    "PC",
+                    "Last PC as <symbol+offset>, the running PC or the return address on the saved switch frame; a source link when the line resolves. N/A when the frame cannot be proven.",
+                ),
                 ("SP", "Current stack pointer."),
                 (
                     "Stack/Used/HighWater",
@@ -43,10 +83,10 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 ),
                 ("Entry", "Symbolized entry function or address."),
                 ("CPU/Bind", "Current/bound CPU when SMP fields exist."),
-                _ADDR,
+                _TCB,
             ),
             tips=(
-                "Use `rtt thread <name>` for error, remaining tick and SMP details.",
+                "Use `rtt thread <name>` for the merged detail table of every thread.",
                 'Use `p $gdr_task("<name>")` for native rt_thread inspection.',
             ),
             configuration=("CPU and Bind appear only in an RT_USING_SMP layout.",),
@@ -58,7 +98,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
         CommandHelp(
             "thread",
             "Show one thread in detail",
-            "Displays identity, scheduling, stack, entry function, error/tick state and CPU placement for one thread.",
+            "Prints the detail of every thread as one table, with the named thread's row marked '* '. Columns carry identity, scheduling, stack, entry, error/tick state and CPU placement.",
             usage=("rtt thread <name>",),
             fields=_fields(
                 ("Name/Address/Type", "Thread identity and native object type."),
@@ -119,14 +159,13 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
         CommandHelp(
             "system",
             "Show kernel, scheduler, object and heap summary",
-            "Combines kernel version, current thread, tick/state counts, object counts and system-heap status.",
+            "Combines current thread, tick/state counts, object counts and system-heap status.",
             usage=("rtt system",),
             fields=_fields(
-                ("Kernel version", "Declared RT-Thread version."),
                 ("Current task", "Current thread or per-core current threads."),
                 (
                     "Task/Tick/Scheduler",
-                    "Registry count, tick count and scheduler state.",
+                    "Registry count, tick count and scheduler state: Unlocked, Locked (nest N), or In ISR (nest N). The row is omitted when no lock or interrupt counter is readable.",
                 ),
                 ("Object counts", "Enabled registry-backed object totals."),
                 (
@@ -147,8 +186,9 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
         CommandHelp(
             "heap",
             "Inspect the RT-Thread system heap",
-            "Reports allocator counters, a bounded block walk, fragmentation and optional MEMTRACE owner occupancy.",
-            usage=("rtt heap",),
+            "Reports allocator counters and a bounded block walk. Owner-level occupancy is drawn by `rtt heap dump`.",
+            usage=("rtt heap", "rtt heap dump [path]"),
+            children=(_HEAP_DUMP,),
             fields=_fields(
                 ("Algorithm", "Detected small_mem, memheap, slab, or none allocator."),
                 (
@@ -157,14 +197,6 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 ),
                 ("Status", "good, corrupt, overrun or capability state."),
                 ("Blocks", "Used/free/total block counts from a bounded walk."),
-                (
-                    "Holes",
-                    "Free-block count, then the largest and three smallest payload sizes in bytes.",
-                ),
-                (
-                    "Thread occupancy",
-                    "MEMTRACE owner count and optional Thread/Blocks/Bytes (header included) table.",
-                ),
             ),
             tips=(
                 "A corrupt/overrun status should be investigated before resuming the target.",
@@ -172,7 +204,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
             ),
             configuration=(
                 "Shape depends on the detected small_mem, memheap or slab implementation.",
-                "Per-thread occupancy requires RT_USING_MEMTRACE owner fields.",
+                "Heap-dump owner colours require RT_USING_MEMTRACE owner fields.",
             ),
             limitations=(
                 "Owner attribution is N/A without MEMTRACE and may be truncated by the kernel's short owner-name field.",
@@ -459,11 +491,14 @@ def _timer_list() -> CommandHelp:
     return CommandHelp(
         "timers",
         "List kernel timers",
-        "Lists active state, mode/type, deadline, callback and wrap-safe time remaining.",
+        "Lists active state, reload mode, deadline, callback and wrap-safe time remaining.",
         usage=("rtt timers",),
         fields=_fields(
             ("Name/State", "Timer identity and active state."),
-            ("Mode/Type", "Periodic/one-shot and soft/hard classification."),
+            (
+                "Mode/TimerType",
+                "Periodic/one-shot reload mode and soft/hard execution context.",
+            ),
             ("InitTick/TimeoutTick/ExpiresIn", "Period/deadline and wrap-safe delta."),
             ("Callback", "Symbolized callback or address."),
             _ADDR,

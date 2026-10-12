@@ -54,6 +54,13 @@ def task_specs(
     ]
     if base_priority:
         specs.append(ColumnSpec("BasePrio", kind="int", align="right"))
+    specs.append(
+        ColumnSpec(
+            "PC",
+            kind="pc",
+            doc="last PC: the return address on the saved switch frame; N/A when unproven",
+        )
+    )
     specs.append(ColumnSpec("SP", kind="addr", doc="top of stack"))
     if stack:
         specs += [
@@ -63,7 +70,10 @@ def task_specs(
     if high_water:
         specs.append(
             ColumnSpec(
-                "HighWater", kind="int", align="right", doc="peak stack bytes in use"
+                "HighWater",
+                kind="int",
+                align="right",
+                doc="historical maximum stack bytes used, from fill watermark; includes initial context writes",
             )
         )
     if runtime:
@@ -72,7 +82,7 @@ def task_specs(
         specs.append(ColumnSpec("CPU", kind="int", align="right"))
     if affinity:
         specs.append(ColumnSpec("Affinity", kind="hex"))
-    specs.append(ColumnSpec("Addr", kind="addr"))
+    specs.append(ColumnSpec("TCB", kind="addr", doc="task control block address"))
     return tuple(specs)
 
 
@@ -124,7 +134,7 @@ MUTEX_SPECS = (
     ColumnSpec("Name", elastic=True),
     ColumnSpec("Type", kind="enum"),
     ColumnSpec("Held", kind="enum", doc="'yes' when taken; value is the count"),
-    ColumnSpec("Owner", doc="holder task, '-' when free"),
+    ColumnSpec("Owner", kind="symbol", doc="holder task address, '-' when free"),
     ColumnSpec("Recursive", kind="int", align="right", doc="nested take count"),
     ColumnSpec("Waiters", kind="waiters", elastic=True),
     ColumnSpec("Src"),
@@ -139,7 +149,7 @@ TIMER_SPECS = (
     ColumnSpec("Expiry", kind="int", align="right", doc="absolute tick"),
     ColumnSpec("ExpiresIn", kind="int", align="right", doc="wrap-safe ticks left"),
     ColumnSpec("Callback", kind="symbol", elastic=True),
-    ColumnSpec("ID", kind="hex", doc="pvTimerID, '-' when NULL"),
+    ColumnSpec("ID", kind="symbol", doc="pvTimerID, '-' when NULL"),
     ColumnSpec("Src"),
     ColumnSpec("Addr", kind="addr"),
 )

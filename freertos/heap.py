@@ -734,30 +734,46 @@ def cross_validate(
     if free_list is None or linear is None or free_bytes is None:
         return "unavailable: free list, linear walk or counter unavailable"
     if free_list.corrupt or linear.corrupt:
-        return "unavailable: corrupt walk"
+        reasons = [
+            f"{label}: {walk.corrupt_reason or 'corrupt chain'}"
+            for label, walk in (("free-list", free_list), ("linear", linear))
+            if walk.corrupt
+        ]
+        return "unavailable: corrupt walk; " + "; ".join(reasons)
     if free_list.truncated or linear.truncated:
-        return "unavailable: truncated walk"
+        return "unavailable: truncated walk; traversal bound reached"
+    free_list_addresses = {block.address for block in free_list.blocks}
+    linear_free_addresses = {
+        block.address for block in linear.blocks if not block.allocated
+    }
+    location = ""
+    if geom.allocated_bitmask and free_list_addresses != linear_free_addresses:
+        # Reason: report the concrete missing/unexpected block headers, not
+        # just equal-length address-set counts. Bound output on corrupt heaps.
+        def addresses(items: set[int]) -> str:
+            ordered = sorted(items)
+            text = ", ".join(f"{address:#x}" for address in ordered[:8]) or "none"
+            return text + (f" (+{len(ordered) - 8} more)" if len(ordered) > 8 else "")
+
+        location = (
+            "; free-block addresses differ: missing from free-list="
+            + addresses(linear_free_addresses - free_list_addresses)
+            + "; unexpected on free-list="
+            + addresses(free_list_addresses - linear_free_addresses)
+        )
     if free_list.free_bytes != linear.free_bytes or free_bytes != free_list.free_bytes:
         return (
             "mismatch: free-list "
             f"{free_list.free_bytes} B vs linear {linear.free_bytes} B "
-            f"vs counter {free_bytes} B"
+            f"vs counter {free_bytes} B (xFreeBytesRemaining){location}"
         )
     if free_list.free_blocks != linear.free_blocks:
         return (
             "mismatch: free-block count free-list "
-            f"{free_list.free_blocks} vs linear {linear.free_blocks}"
+            f"{free_list.free_blocks} vs linear {linear.free_blocks}{location}"
         )
-    if geom.allocated_bitmask:
-        free_list_addresses = {block.address for block in free_list.blocks}
-        linear_free_addresses = {
-            block.address for block in linear.blocks if not block.allocated
-        }
-        if free_list_addresses != linear_free_addresses:
-            return (
-                "mismatch: free-block addresses differ (free-list "
-                f"{len(free_list_addresses)} vs linear {len(linear_free_addresses)})"
-            )
+    if location:
+        return "mismatch: " + location.removeprefix("; ")
     return "ok"
 
 
@@ -877,10 +893,10 @@ def _protector_cell(geom: HeapGeometry) -> str:
 
 
 def heap_pairs(snap: HeapSnapshot) -> list[tuple[str, str]]:
-    """Render the ``frt heap`` vertical pairs with the stable 10-key order.
+    """Render nine stable summary keys followed by any cross-check problem.
 
-    The key order is fixed for every kind so columns never drift between
-    variants; kinds without a symbol keep the key and write ``unavailable``.
+    Kinds without a counter keep its key and render ``N/A``. Successful
+    cross-checks are available only through the explicit checks surface.
     """
     geom = snap.geometry
     algorithm = geom.algorithm
@@ -893,8 +909,8 @@ def heap_pairs(snap: HeapSnapshot) -> list[tuple[str, str]]:
         ("TotalSize", format_optional_bytes(snap.total)),
         ("FreeSize", format_optional_bytes(snap.free)),
         ("MinEver", format_optional_bytes(snap.min_ever)),
-        ("Allocs", _num(snap.allocs)),
-        ("Frees", _num(snap.frees)),
+        ("Allocated", _num(snap.allocs)),
+        ("Freed", _num(snap.frees)),
         ("Protector", _protector_cell(geom)),
     ]
     if geom.kind in (2, 4, 5):
@@ -911,7 +927,16 @@ def heap_pairs(snap: HeapSnapshot) -> list[tuple[str, str]]:
         pairs += [("Blocks", blocks), ("Holes", holes)]
     else:
         pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
-    pairs.append(("CrossCheck", snap.cross_check))
+    # Reason: normal refreshes show evidence/problems, not an always-ok
+    # column. ``frt checks heap`` is the explicit complete verdict surface.
+    if snap.cross_check != "ok":
+        verdict = snap.cross_check
+        evidence = (
+            f"skipped: {verdict.removeprefix('unavailable: ')}"
+            if verdict.startswith("unavailable")
+            else f"fail: {verdict}"
+        )
+        pairs.append(("Check[HeapCrossCheck]", evidence))
     return pairs
 
 

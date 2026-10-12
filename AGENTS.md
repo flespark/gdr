@@ -27,6 +27,9 @@ gdr/                   RTOS-agnostic core
   api.py               neutral verb layer over the active adapter
   derive.py            RTOS-neutral derived-value helpers (wrap-safe expiry,
                        fill-byte watermark, waiter cell) shared by adapters
+  heapmap.py           heap-dump block layout -> grid, owner palette, PNG and
+                       iTerm2/Kitty inline frames (pure; no GDB import)
+  bitmapfont.py        dependency-free lettering and colour swatches for PNG legends
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            RT-Thread ABI field descriptions + build_layouts(config)
                        + detect_config() (symbol-presence probing)
@@ -34,6 +37,10 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   navigation.py        RT-Thread symbols, object navigation, and heap snapshot
   adapter.py           intermediate models, value converters, summaries and tables
   diagnostics.py       bounded raw-memory walks (IPC, heap) and consistency diagnostics
+  stackpc.py           last PC of a thread from its saved switch frame (pure; the
+                       per-release slot table and the BL/JAL/entry/code checks)
+  heapviews.py         heap snapshot record, the Blocks line and heap verdicts
+  tableviews.py        typed detail-table navigation, waiter and mailbox slot cells
   version.py           RT-Thread version policy and target symbols
   commands.py          RT-Thread command routing and completion
   help_docs.py         RT-Thread command/output help metadata
@@ -45,9 +52,11 @@ freertos/              FreeRTOS adapter
                        per-object-kind decode (timer daemon queue, event-group bits,
                        stream-buffer geometry, system-heap snapshot)
   adapter.py           task/object models, conversion, list tables, summaries
+  tableviews.py        merged detail tables with timer, waiter and queue-item navigation
   details.py / diagnostics.py
                        vertical detail builders and bounded raw-memory consistency checks
   version.py           FreeRTOS version policy and target symbols
+  checks.py            explicit per-scope consistency checks with object addresses and evidence
   commands.py          FreeRTOS command routing and completion
   help_docs.py         FreeRTOS command/output help metadata
 vscode/                VSCode extension: a client of GDR's JSON envelope

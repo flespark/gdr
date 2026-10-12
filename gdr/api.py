@@ -27,6 +27,7 @@ from gdr.adapter_api import (
     verification_note,
 )
 from gdr.commands import (
+    collect_detail_table,
     collect_heap_report,
     collect_object_detail,
     collect_object_listing,
@@ -45,6 +46,7 @@ from gdr.serialize import (
     capabilities_to_dict,
     checks_to_dict,
     chunk_payload,
+    heap_map_to_dict,
     heap_report_to_dict,
     object_detail_to_dict,
     object_table_to_dict,
@@ -126,6 +128,34 @@ def _detail_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     return object_detail_to_dict(detail), []
 
 
+def _table_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
+    """Every object of one kind as a merged detail table (one row each)."""
+    if len(args) != 1:
+        raise ApiError("bad_args", "table requires <kind>")
+    table = collect_detail_table(adapter, args[0])
+    if table is None:
+        raise ApiError(
+            "kind_not_enumerable",
+            f"object kind {args[0]!r} has no merged detail table",
+        )
+    return object_table_to_dict(table, kind=args[0].strip().lower()), list(
+        table.messages
+    )
+
+
+def _heap_dump_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
+    """The heap block layout and palette ``<rtos> heap dump`` draws."""
+    if args:
+        raise ApiError("bad_args", "heap-dump takes no arguments")
+    heap = adapter.heap_map()
+    if heap is None:
+        raise ApiError(
+            "no_heap",
+            "no heap block chain to draw (no heap, or the chain is not resolvable)",
+        )
+    return heap_map_to_dict(heap), list(heap.messages)
+
+
 def _system_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     if args:
         raise ApiError("bad_args", "system takes no arguments")
@@ -163,22 +193,43 @@ def _checks_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     return checks_to_dict(findings), []
 
 
+_SNAPSHOT_FLAGS = ("--no-heap", "--no-details")
+
+
+def _detail_tables(adapter: RtosAdapter) -> dict[str, object]:
+    """One merged detail table per enumerable kind except tasks (their table is ``tasks``)."""
+    tables: dict[str, object] = {}
+    for kind in sorted(adapter.object_counts()):
+        if kind == "task":
+            continue
+        table = adapter.detail_table(kind)
+        if table is not None:
+            tables[kind] = object_table_to_dict(table, kind=kind)
+    return tables
+
+
 def _snapshot_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     """Every panel-facing verb in one envelope, one round trip.
 
     ``--no-heap`` drops the heap section: the heap walk is the one full-memory
     traversal among the panel verbs, so a stop-time refresh that only needs
-    tasks/objects/system can skip it (mirrors the cost-control switch the
-    plugin exposes; ``gdr api snapshot --no-heap`` is the same call).
+    tasks/objects/system can skip it. ``--no-details`` drops the per-kind
+    detail tables, the other per-object cost (mailbox, message queue and pool
+    walk their entries). The panel's cost switches map onto these flags.
+    Diagnostics ride inside the table they belong to, so the snapshot carries
+    no separate checks section.
     """
     no_heap = False
+    no_details = False
     for arg in args:
         if arg == "--no-heap":
             no_heap = True
+        elif arg == "--no-details":
+            no_details = True
         else:
             raise ApiError(
                 "bad_args",
-                f"snapshot takes no arguments other than --no-heap (got {arg!r})",
+                f"snapshot takes only {', '.join(_SNAPSHOT_FLAGS)} (got {arg!r})",
             )
     tasks, task_warnings = _tasks_verb(adapter, ())
     objects, object_warnings = _objects_verb(adapter, ())
@@ -188,15 +239,23 @@ def _snapshot_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     if not no_heap:
         heap, heap_warnings = _heap_verb(adapter, ())
     capabilities, _capability_warnings = _capabilities_verb(adapter, ())
-    checks, check_warnings = _checks_verb(adapter, ())
-    warnings = task_warnings + object_warnings + heap_warnings + check_warnings
+    tables: dict[str, object] | None = None
+    if not no_details:
+        tables = _detail_tables(adapter)
+    warnings = task_warnings + object_warnings + heap_warnings
+    build_hints: list[str] = []
+    for payload in (tasks, capabilities):
+        if isinstance(payload, dict):
+            build_hints.extend(payload.get("build_hints", []))
     data = {
         "tasks": tasks,
         "objects": objects,
         "system": system,
         "heap": heap,
         "capabilities": capabilities,
-        "checks": checks,
+        "tables": tables,
+        # Reason: general messages and version notes are not build advice.
+        "build_hints": list(dict.fromkeys(build_hints)),
     }
     return data, warnings
 
@@ -232,6 +291,8 @@ _VERBS: dict[str, _VerbHandler] = {
     "heap": _heap_verb,
     "capabilities": _capabilities_verb,
     "checks": _checks_verb,
+    "table": _table_verb,
+    "heap-dump": _heap_dump_verb,
     "probe": _probe_verb,
     "snapshot": _snapshot_verb,
 }

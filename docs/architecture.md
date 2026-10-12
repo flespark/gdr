@@ -52,6 +52,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `navigation.py` | RT-Thread object navigation: registry/current-thread/tick entry symbols, type codes, timer traversal, and the halted system-heap snapshot. Returns raw `gdb.Value` objects using the layouts supplied by `layout.py`. |
 | `adapter.py` | RT-Thread intermediate object models, `gdb.Value` conversion, adapter-owned task/object tables, detail dispatch and system summaries. These models are presentation inputs, not ABI layout descriptions. |
 | `diagnostics.py` | Consumes adapter intermediate models for detail rendering and performs bounded raw mailbox/message-queue/mempool and system-heap walks and consistency diagnostics. |
+| `tableviews.py` | Preserves timer callback/parameter source navigation, waiter entry links and mailbox slot addresses in merged detail tables; vertical CLI details remain available. |
 | `version.py` | RT-Thread support ranges, exported target symbols, encoding order and RT-Thread-specific diagnostics. |
 | `commands.py` / `help_docs.py` | The `rtthread` / `rtt` router and its structured help tree. `rtt help <topic>` renders command fields, tips, configuration dependencies and implementation limits; printer subtopics are derived from active layout metadata. |
 
@@ -69,7 +70,9 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `adapter.py` | Task/queue/timer/event/stream models, value conversion, list tables, summaries, and the `RtosAdapter` protocol surface. |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
 | `commands.py` / `help_docs.py` | The `freertos` / `frt` router and structured help tree for the 7 plural lists, 7 singular details, `system`/`objects`/`heap`, aliases, functions and layout-derived pretty-printers. `frt help <topic>` is rendered from metadata shared with the Markdown exporter rather than assembled output strings. |
-| `details.py` | Vertical detail builders for tasks and the queue/timer/event-group/stream-buffer families. |
+| `checks.py` | On-demand `frt checks [scope] [name]` reports every invariant with verdict, object address and concrete evidence; normal views retain only problems. |
+| `details.py` | Vertical detail builders for tasks and the queue/timer/event-group/stream-buffer families; queue entries expose FIFO storage addresses without reading payload bytes. |
+| `tableviews.py` | Merges the same detail builders into typed object tables, retaining timer callback/ID navigation, waiter names and queue item addresses. |
 | `diagnostics.py` | Bounded raw list walks and consistency checks (list/task/system/queue/timer/event), each reporting `ok`/`fail`/`skipped` — never a clean short walk on corruption or truncation. |
 
 ## Key decisions
@@ -222,6 +225,16 @@ the two views honest:
   which classifies the two documented verdict forms (a verdict-prefixed value,
   or a `*Check` key) into `ok`/`fail`/`skipped` severity. Grouping therefore
   adds severity without reordering or replacing terminal output.
+- **Schema 2.** A `ColumnSpec` carries `group` (`basic` for a property, `diag`
+  for a verdict column), which the panel's checkbox children read. A located
+  `source_rows` cell carries both `file` (GDB's resolved path) and `name` (the path
+  as the debug information recorded it), because a build directory may be absent
+  on the machine that opens it. `snapshot` no longer carries `checks`: the verdicts
+  ride in their table (the heap `sections`, the diagnostic columns). `gdr api
+  checks` stays a verb. Two verbs are new: `table <kind>` returns every object of
+  a kind as one merged detail table (`ObjectTable` rows, columns as the union of
+  the properties, repeating entries collapsed into one column), and `heap-dump`
+  returns the block layout with its palette.
 
 ### The extension is a client of the envelope, not a layer
 
@@ -276,6 +289,60 @@ line (`source_rows`, from `gdb.find_pc_line`, which reads only the debug line
 table) opens that file at that line on click; the host accepts only absolute
 paths, and the webview's client stays import-free so a refresh can restore the
 scroll position of the session still shown.
+
+### A thread's last PC is proven, never guessed
+
+`struct rt_thread` holds no program counter, so the panel's PC column is read
+from the thread's saved switch frame. `rt_hw_context_switch_exit` restores the
+return address from one fixed slot, `thread->sp + offset`, and the same path
+serves cooperative and interrupt-driven switches. The offset differs by port and
+release (cortex-a9 3.1.x: 60; 4.x: 68; RISC-V 4.x: 0 with an 8-byte slot), so the
+table in `rtthread/stackpc.py` is keyed by version and pointer width, and a release
+it does not list gets no PC at all. A decoded value must then pass one of three
+proofs: it equals the thread's entry (the thread never ran); the instruction before
+it is a call to `rt_hw_context_switch` (a cooperative switch); or it names a
+symbolised code address (an interrupt frame has no call site to check). A thread
+running on another CPU has a stale frame and reports no PC. Anything unproven
+renders `N/A`; the column is never filled with a plausible-looking address.
+
+### A FreeRTOS task's last PC is keyed by port, not by version
+
+A FreeRTOS TCB keeps `pxTopOfStack` but no PC, so the PC column is read from the
+saved context frame the port pushed. The slot is fixed per port, and the ports
+disagree: Cortex-M3 keeps the PC 56 bytes above `pxTopOfStack`, while Cortex-M33
+(its PendSV also saves `PSPLIM`, `CONTROL` and `EXC_RETURN`) keeps it 24 bytes
+below. Both use `PendSV_Handler`, so the symbol cannot tell them apart and a
+version number would not either. `freertos/stackpc.py` therefore decides the port
+from evidence: `xPortStartFirstTask` means RISC-V; `PendSV_Handler` plus the ARM
+build attribute `Tag_CPU_name` (`7-M` or `8-M.MAIN`, read from the image's
+`.ARM.attributes` section) means Cortex-M3 or M33. Anything undecided reads `N/A`.
+
+A decoded value must pass a proof. On Cortex-M a switched frame is admitted when
+the PC names code and the xPSR word beside it has the Thumb bit set, which a
+hardware frame always has. RISC-V has no such bit and relies on the symbol alone.
+A never-started task has no run-time proof here: the TCB keeps no entry function,
+and the fixture-only entry table used during verification has no counterpart in
+firmware. Such a task reads `N/A`, which is deliberate. The port symbols live in
+`freertos/layout.py`, beside `PROBE_MARKERS`, because the boundary rule keeps symbol
+spellings out of the task-table consumers.
+
+### The heap map is one grid shared by the PNG and canvas
+
+`gdr/heapmap.py` computes address-ordered, size-weighted cell runs, reserving at
+least one 6×6-pixel cell per block before distributing the remaining cells by
+largest remainder. Tiny blocks therefore remain visible; this minimum distorts
+relative area slightly, so hover and legend sizes always report the original
+bytes. Adaptive rectangular dimensions use every cell: no trailing area is
+painted outside the arena. Genuine unreadable gaps are explicit unknown runs,
+never free memory. The additive `heap-dump.grid` field carries dimensions, scale
+and block-index runs, so the PNG, canvas and hover consume one mapping rather
+than independently rounding addresses.
+
+The PNG is encoded with `zlib`; `gdr/bitmapfont.py` adds owner/free/N/A colour
+swatches and aggregate byte totals below the map without runtime dependencies.
+Unsupported name glyphs are losslessly escaped. Palette colours are shared with
+the canvas. Used blocks without recorded owners read `owner:N/A`; incomplete
+walks retain an explicit legend warning.
 
 ### One evidence ladder for `probe` and `init`
 
@@ -491,7 +558,7 @@ for typedef-spelled kernel objects (Task/List/Queue). The queue family adds
 ground-truth assertions against the objects the fixture creates: the queue
 lengths and item counts, the blocked sender/receiver names in `SendWait`/
 `RecvWait`, the semaphore count/max, the mutex `Held`/`Owner`/`Recursive`
-cells (including a two-level recursive take), the FIFO `Item[0]` byte dump,
+cells (including a two-level recursive take), the FIFO `Item[0]` storage address,
 the absence of any owner field in a semaphore detail, the `Set` column
 appearing only on the queue-set variant, and the `?` inference marker on the
 trace-off variant.
@@ -645,8 +712,8 @@ The historical `base` combination remains: single-core / Cortex-M3 / heap_4
 / trace_facility=on / FreeRTOS 10.3.1 / `configENABLE_BACKWARD_COMPATIBILITY=1`
 (member name `pvContainer`) / no `pxEndOfStack` / scalar `ucNotifyState` /
 no runtime statistics / `configMAX_PRIORITIES=6` / stack grows down. Default
-builds still use `pvContainer`; without `pxEndOfStack`, `Stack`/`Used` stay
-N/A and HighWater scans `[pxStack, pxTopOfStack)`.
+builds still use `pvContainer`; without `pxEndOfStack`, `Stack`/`Used`/`HighWater`
+are unavailable because the saved SP does not retain stack capacity.
 
 **Not covered by any current fixture (documented, unit-tested only):**
 
@@ -685,13 +752,17 @@ on the initial stack frame and is overwritten on first context switch. This is
 a fundamental difference from RT-Thread's `rt_thread.entry`, which persists in
 the TCB. The `frt help` output documents this limitation.
 
-**High-water mark semantics.** The `HighWater` column reports bytes of stack
-never overwritten, the same unit as `Stack`/`Used`. The scan itself is
-word-granular (`uxTaskGetStackHighWaterMark` also counts `StackType_t` words;
-GDR converts at the model boundary). `unavailable` means either the stack
-was never filled with `0xa5` or the distinction between "unfilled" and
-"completely exhausted" cannot be made without an independent evidence source.
-The scan window is `[pxStack, pxTopOfStack)` (no `pxEndOfStack` required).
+**High-water mark semantics.** `HighWater` matches RT-Thread: historical maximum
+stack bytes used, derived as `max(Used, recorded usable span - untouched fill)`.
+FreeRTOS's native API instead returns remaining words; GDR converts and subtracts
+at the model boundary, then includes the current saved-SP footprint because
+reserved context slots may still contain `0xa5`. `pxEndOfStack` is inclusive of one `StackType_t`;
+`Stack` and `Used` use that same upper bound, excluding alignment-discarded
+allocation padding. Missing bounds, partial reads, or ambiguous unfilled/exhausted
+stacks yield no value, never a fabricated total. Initial context reservations
+count before scheduler startup, ensuring `Used <= HighWater <= Stack` whenever
+all are available. A halted snapshot cannot recover historical reservations
+that left no write trace or distinguish a write equal to the fill byte.
 
 **Queue `type` field is gated by `trace_facility`.** The `ucQueueType` member
 only exists under `configUSE_TRACE_FACILITY == 1`. Layout summary fields that
@@ -703,19 +774,21 @@ the member is absent.
 attributable.** A `BlockLink_t` is exactly `{pxNextFreeBlock, xBlockSize}`
 (heap_4.c) with no owner member; `frt heap` therefore never offers a thread-occupancy
 breakdown, and `frt help` documents this instead of faking a column. `frt heap`
-renders the `Algorithm/TotalSize/FreeSize/MinEver/Allocs/Frees/Protector/Blocks/
-Holes/CrossCheck` ten-key order on every kind, writing `unavailable` for keys the
-kind has no symbol for, so the column never drifts between variants.
+renders the `Algorithm/TotalSize/FreeSize/MinEver/Allocated/Freed/Protector/Blocks/
+Holes` properties, using `N/A` for unavailable facts. `Allocated`/`Freed` are
+cumulative successful operation counts, not bytes or live block counts.
+`Check[HeapCrossCheck]` appears only for disagreements or incomplete walks;
+`frt checks heap` includes successful verdicts.
 
 **heap_5 without `configENABLE_HEAP_PROTECTOR` has no linear-walk bounds.**
 The kernel exports no region bases without the protector (`pucHeapLowAddress`/
 `pucHeapHighAddress` only exist then, heap_5.c), the intermediate region-markers
 can be unlinked by forward coalescing, and the region table is a function-local
 array — so `frt heap` skips the linear walk, renders `Blocks` from the free-list
-walk only and reports `CrossCheck: unavailable: heap_5 region bases unknown`.
+walk only and reports `Check[HeapCrossCheck]: skipped: heap_5 region bases unknown`.
 With the protector a single-region heap can be walked from its base to `pxEnd`;
 the `heap-5-protector` variant (heap_5 + `configENABLE_HEAP_PROTECTOR`, one
-region) is the live fixture for that branch: the linear walk runs, `CrossCheck`
+region) is the live fixture for that branch: the linear walk runs, the cross-check
 passes and the region extremes become the true `TotalSize` (a multi-region
 extent would span gaps, so the total is only set when the walk reaches `pxEnd`
 -- the single-region witness).
@@ -730,7 +803,7 @@ head therefore silently drops every block below it while the cross-check — whi
 compares only free bytes and free-block addresses, all at or above the head —
 still reports `ok`. GDR walks from the kernel's own `pucAlignedHeap`
 (`align_up(&ucHeap, portBYTE_ALIGNMENT)`); when the `ucHeap` symbol cannot be
-resolved the walk is skipped (`Holes`/`CrossCheck` become `unavailable`) rather
+resolved the walk is skipped (`Holes` is `N/A` and `Check[HeapCrossCheck]` explains why) rather
 than truncated from the head. Live evidence on `mps2-an385/10.3.1/base`: the
 aligned base is 13792 bytes below `xStart.pxNextFreeBlock`, and the walk from the
 base covers 57 blocks (56 allocated, 1 free) up to `pxEnd`, summing to exactly
@@ -782,15 +855,18 @@ limitation, so a count is never mistaken for a complete inventory:
 unregistered dynamic objects without a global handle (and stopped or expired
 timers) are simply not reachable from any channel.
 
-The consistency checks stay exhaustive but their *rendering* is split by what
-the reader can act on: the `Checks` row carries a verdict plus counts
-(`ok (4 verified, 2 n/a)`), a check that is inapplicable by structure (a mutex
-has no storage pointers) is counted rather than named, and only failures or
-unreadable fields get their own `Check[<name>]` row. Enumerating every skip
-inline produced a 150-column value that buried the one line worth reading.
-`frt system` reaches the same rendering through `SystemSummary.extra_pairs`,
-an adapter-owned list of vertical rows the neutral renderer appends verbatim,
-so the RTOS-specific verdict strings never enter `gdr/`.
+Automatic views show only named failures and incomplete reads/walks, retaining
+`fail:`/`skipped:` prefixes so merged diagnostic columns preserve severity.
+`frt checks [scope] [name]` is the explicit exhaustive surface (passes and
+structural skips included), with object addresses and observed pointer ranges,
+fields or block locations. Checks never drive the target; an interrupted kernel
+update can be transient. `frt system` uses `SystemSummary.extra_pairs` without
+introducing RTOS semantics into the core. NextUnblockTime is skipped before
+scheduler startup and while suspended; an earlier cached deadline is legitimate
+after event unblocking, while a later cache reports the delayed item and wake tick.
+Heap mismatches name differing free blocks and `xFreeBytesRemaining`; corrupt
+walks retain their exact stop reason. No healthy-view aggregate counts claim that
+an unperformed check passed.
 
 A singular detail command refuses a kind it can prove wrong: resolving a name
 or address stamps the *requested* kind on whatever it found, so a wrong

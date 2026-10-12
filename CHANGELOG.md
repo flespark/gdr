@@ -50,6 +50,9 @@ All notable changes to GDR are documented in this file.
   one envelope and `$gdr_json` / `$gdr_json_chunk` return it through GDB
   evaluate, with a chunked fallback for payloads larger than one result.
   `gdr init --json` reports the init outcome as one structured line.
+- `<rtos> heap dump [path]` draws the heap occupancy bitmap: grey for free
+  blocks and one colour per owner. Inline in iTerm2 or Kitty; otherwise a PNG
+  (`gdr-heap-<rtos>-gen<N>.png`).
 
 ### Changed
 
@@ -57,11 +60,33 @@ All notable changes to GDR are documented in this file.
   target could not confirm the adapter, and reports refusals as a coded
   `error` object (the same shape the API envelope uses) instead of a bare
   message string.
+- FreeRTOS `HighWater` now matches RT-Thread's historical maximum used bytes,
+  not remaining bytes; unavailable without retained stack bounds and prefill.
+- FreeRTOS normal views show concrete check problems instead of verified/n/a
+  counts; `frt checks [scope] [name]` exposes all verdicts with object addresses.
 - Memory sizes are unified to bytes: key/value sizes print with a `B` suffix,
   and table columns state bytes in their descriptions rather than in headers.
+- Kernel version is omitted from `rtt system`.
+- `rtt heap` drops the Holes line and the per-thread occupancy table; its
+  verdicts move into the table as diagnostic columns. `gdr api checks` stays.
+- `rtt <kind> <name>` prints every object of the kind as one merged table, with
+  the named object's row marked with `*` and a space, instead of one vertical block.
+- The task table's `Addr` column is now `TCB`, the thread control block address.
+  It is the row identity, last in the table. A new `PC` column after `BasePrio`
+  shows the thread's last PC, proven from its saved switch frame or `N/A`.
 
 ### Fixed
 
+- FreeRTOS stack size/usage include the final recorded StackType_t; HighWater
+  includes saved-SP reservations so it never falls below Used, even when initial
+  context slots retain their fill bytes.
+- Redundant RT-Thread object Type and timer KernelTick columns are omitted from
+  merged tables; meaningful timer classes and FreeRTOS subtypes remain available.
+- Snapshots taken at an RT-Thread reset-vector stop no longer fail on NULL
+  timer-list links; startup lists stop safely instead of producing fake objects
+  at wrapped addresses. Normal collection works after kernel startup.
+- Heap maps preserve every block at a minimum of 6×6 pixels without trailing
+  background; exported PNGs include owner/free colour legends and byte totals.
 - RT-Thread heap walk counts used blocks by their full span, matching the
   kernel counters, so `HeapAccounting` no longer reports a false mismatch.
   `rtt heap` Holes states its sizes in bytes; the panel's heap table is titled
@@ -74,6 +99,9 @@ All notable changes to GDR are documented in this file.
   debug strings instead of GDB's compilation-unit scope, so it keeps working when
   the build tree is gone (a flashed release image) or when the halted PC sits in
   a unit that has not included the version header yet.
+- RT-Thread `Scheduler state` reads the scheduler lock and interrupt nest
+  counters: `Unlocked`, `Locked (nest N)`, or `In ISR (nest N)`. It was always
+  `N/A`; the row is omitted when no counter can be read.
 
 ## [2026.03] - 2026-09-22
 

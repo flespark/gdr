@@ -38,6 +38,8 @@ from freertos.diagnostics import system_checks
 from freertos.events import event_group_table, value_to_event_group_object
 from freertos.layout import (
     OBJECT_KIND_ORDER,
+    PORT_PENDSV_SYMBOL,
+    PORT_RISCV_SYMBOL,
     STRUCT_BY_KIND,
     FreeRtosLayout,
     queue_type_label,
@@ -57,6 +59,13 @@ from freertos.navigation import (
     system_value,
     task_name_at,
     task_state,
+)
+from freertos.stackpc import (
+    PORT_LAYOUTS,
+    Port,
+    cpu_name_from_attributes,
+    decode_saved_pc,
+    port_of,
 )
 from freertos.streams import (
     stream_buffer_table,
@@ -78,6 +87,8 @@ from gdr.adapter_api import (
     Capabilities,
     Cell,
     CheckFinding,
+    HeapMap,
+    HeapMapBlock,
     HeapReport,
     KindCapability,
     ObjectDetail,
@@ -90,16 +101,23 @@ from gdr.adapter_api import (
     number_cell,
     raw_cell,
     sections_from_pairs,
+    symbol_cell,
     text_cell,
     waiters_cell,
 )
 from gdr.derive import fill_watermark
+from gdr.dwarf_macro import section_payloads
 from gdr.formatting import format_address
 from gdr.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
+    arch_or_default,
+    lookup_symbol_at,
     read_bytes,
     read_cstring,
     read_int,
+    source_definition_at,
+    source_location_at,
+    symbol_exists,
     value_address,
 )
 from gdr.layout import read_field, value_at
@@ -117,7 +135,7 @@ class FreeRtosTask:
     stack_end: int = 0
     stack_size: int | None = None
     stack_used: int | None = None
-    # Bytes of untouched 0xa5 fill; the scan itself is word-granular.
+    # Historical maximum used bytes: recorded span minus untouched fill.
     high_water_mark: int | None = None
     runtime_counter: int | None = None
     core: int | None = None
@@ -222,39 +240,26 @@ def value_to_task(
     top = read_int(read_field(value, sl, "top_of_stack")) or 0
     base = read_int(read_field(value, sl, "stack_base")) or 0
     end = read_int(read_field(value, sl, "stack_end")) or 0
-    size = end - base if end and base and end >= base else None
-    # Reason: pxEndOfStack only exists under configRECORD_STACK_HIGH_ADDRESS
-    # or grow-up ports (tasks.c:403), and is absent from the default
-    # downward-growing build. Watermark counting only needs a window that
-    # covers the used region: [pxStack, pxTopOfStack] always contains the
-    # untouched 0xa5 run, because the deepest historical use point is <= the
-    # currently saved SP. When stack_end is present it is the stricter upper
-    # bound; otherwise pxTopOfStack stands in.
-    water_base = base
-    water_end = end if (end and end >= base) else top
-    # Reason: a corrupt TCB can report pxTopOfStack below pxStack; a negative
-    # size would reach gdb's read_memory as an unsigned conversion and raise
-    # OverflowError (not a MemoryError/gdb.error read_bytes degrades from),
-    # aborting the whole table instead of one unavailable cell.
-    water_size = (
-        water_end - water_base
-        if water_end and water_base and water_end > water_base
-        else None
-    )
-    high = None
     word_bytes = _stack_type_size(layout)
-    if water_size is not None and water_base:
-        # Reason: when the whole window is untouched fill (all 0xa5) the count
-        # reports the full window's word count. That is intentionally
-        # conservative -- it never overstates free stack beyond what is visible
-        # in the startup window -- which is exactly the direction a debugger
-        # must prefer over a fabricated larger number.
-        raw = read_bytes(water_base, water_size)
-        # Reason: the scan is word-granular (the kernel's fill and
-        # uxTaskGetStackHighWaterMark both count StackType_t words), but the
-        # model carries bytes so Stack/Used/HighWater render in one unit.
-        high_words = _high_water_mark(raw, word_bytes)
-        high = high_words * word_bytes if high_words is not None else None
+    # Reason: pxEndOfStack points at the highest usable StackType_t, not
+    # one-past-end. Alignment may have discarded allocation padding above it;
+    # report the recorded usable span, never guess the original stack depth.
+    upper = end + word_bytes if end and base and end >= base else None
+    size = upper - base if upper is not None else None
+    used = upper - top if upper is not None and base <= top <= upper else None
+    high = None
+    # Reason: FreeRTOS's native watermark is remaining words. Matching
+    # RT-Thread requires total - untouched bytes; saved SP cannot replace the
+    # missing total because initial context slots may still contain fill.
+    if size is not None and used is not None:
+        raw = read_bytes(base, size)
+        if raw is not None and len(raw) == size:
+            free_words = _high_water_mark(raw, word_bytes)
+            if free_words is not None:
+                # Reason: initial context registers can reserve stack slots
+                # without replacing 0xa5. The saved SP still proves those
+                # bytes are occupied; historical usage cannot be below Used.
+                high = max(used, size - free_words * word_bytes)
     state_item = read_field(value, sl, "state_list_item")
     wake_tick = None
     if state_item is not None:
@@ -271,7 +276,7 @@ def value_to_task(
         stack_base=base,
         stack_end=end,
         stack_size=size,
-        stack_used=(end - top if end and top and end >= top else None),
+        stack_used=used,
         high_water_mark=high,
         runtime_counter=read_int(read_field(value, sl, "runtime_counter")),
         core=core,
@@ -531,11 +536,83 @@ def _detail(pairs: list[tuple[str, str]], *, found: bool = True) -> ObjectDetail
     return ObjectDetail(pairs=pairs, found=found, sections=sections_from_pairs(pairs))
 
 
+def _arm_cpu_name() -> str | None:
+    """The ARM ``Tag_CPU_name`` of the loaded image, or None when unreadable.
+
+    Read from the ELF on disk (GDB does not expose section bytes). A missing or
+    unreadable file is an undecided port, never an error.
+    """
+    if gdb is None:
+        return None
+    try:
+        path = gdb.current_progspace().filename
+        if not path:
+            return None
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except (OSError, gdb.error):
+        return None
+    blob = section_payloads(data, (".ARM.attributes",)).get(".ARM.attributes", b"")
+    return cpu_name_from_attributes(blob)
+
+
 class FreeRtosAdapter(RtosAdapter):
     """Expose FreeRTOS scheduler lists through the shared task contract."""
 
     def __init__(self, layout: FreeRtosLayout) -> None:
         self.layout = layout
+        # Reason: the port is decided once per session from the image; a per-row
+        # decision would re-read the ELF for every task.
+        self._port_cache: tuple[bool, Port | None] | None = None
+
+    def _port(self) -> Port | None:
+        """The FreeRTOS port this image was built for, decided from its evidence.
+
+        Symbols first (RISC-V has ``xPortStartFirstTask``; Cortex-M has
+        ``PendSV_Handler``), then the ARM build attribute ``Tag_CPU_name`` to tell
+        Cortex-M3 (``7-M``) from Cortex-M33 (``8-M.MAIN``). Undecided is ``None``.
+        """
+        if self._port_cache is not None:
+            return self._port_cache[1]
+        if gdb is None:
+            # Reason: outside GDB there is no image to decide from. Return without
+            # caching, so a later call inside a session still decides the port.
+            return None
+        port: Port | None = None
+        if symbol_exists(PORT_RISCV_SYMBOL):
+            port = port_of(has_start_first_task=True, has_pendsv=False, cpu_name=None)
+        elif symbol_exists(PORT_PENDSV_SYMBOL):
+            port = port_of(
+                has_start_first_task=False,
+                has_pendsv=True,
+                cpu_name=_arm_cpu_name(),
+            )
+        self._port_cache = (True, port)
+        return port
+
+    def _pc_cell(self, task: FreeRtosTask) -> Cell:
+        """The task's last PC as a symbol cell, or N/A when no proof admits it.
+
+        Only the switched-frame proof is used at run time: the TCB keeps no task
+        entry, so the never-started proof has no independent source here. A task
+        without a proof reads N/A rather than an unverified address.
+        """
+        port = self._port()
+        if port is None:
+            return text_cell("N/A")
+        decoded = decode_saved_pc(
+            task.top_of_stack,
+            None,
+            PORT_LAYOUTS[port],
+            read=read_bytes,
+            symbolised=lambda address: lookup_symbol_at(address) is not None,
+            endian=arch_or_default()[1],
+        )
+        if decoded is None:
+            return text_cell("N/A")
+        symbol = lookup_symbol_at(decoded.pc)
+        source = source_location_at(decoded.pc)
+        return symbol_cell(decoded.pc, symbol, source)
 
     def reset(self) -> None:
         """Drop the session symbol scan so a re-init sees the new image."""
@@ -823,8 +900,18 @@ class FreeRtosAdapter(RtosAdapter):
                         if dormant
                         else timer_expires_in(obj.expiry, tick, mask, in_overflow)
                     ),
-                    raw_cell(callback_cell(obj.callback), obj.callback),
-                    raw_cell(id_cell(obj.id), obj.id),
+                    symbol_cell(
+                        obj.callback,
+                        lookup_symbol_at(obj.callback),
+                        source_location_at(obj.callback),
+                    )
+                    if obj.callback
+                    else raw_cell(callback_cell(obj.callback), None),
+                    symbol_cell(
+                        obj.id, lookup_symbol_at(obj.id), source_definition_at(obj.id)
+                    )
+                    if obj.id
+                    else raw_cell(id_cell(obj.id), None),
                     text_cell(source_label(obj.source, obj.extra_sources)),
                     address_cell(obj.address),
                 ]
@@ -872,7 +959,7 @@ class FreeRtosAdapter(RtosAdapter):
                     obj.type_code,
                 ),
                 raw_cell(held_cell(obj), obj.count),
-                text_cell(obj.holder or "-"),
+                raw_cell(obj.holder or "-", obj.holder_address or None),
                 number_cell(obj.recursive_count),
                 waiters_cell(waiter_summary(obj.recv_waiters), obj.recv_waiters),
                 text_cell(source_label(obj.source, obj.extra_sources)),
@@ -944,6 +1031,12 @@ class FreeRtosAdapter(RtosAdapter):
             pairs = mutex_detail(obj, value, self.layout)
         return _detail(pairs)
 
+    def detail_table(self, kind: str) -> ObjectTable | None:
+        """Every discovered object with typed detail cells and diagnostics."""
+        from freertos.tableviews import detail_table
+
+        return detail_table(self, kind)
+
     def _find_named_object(self, kind: str, name: str):
         """Return ``(DiscoveredObject, native value)`` for a kind's name.
 
@@ -989,6 +1082,7 @@ class FreeRtosAdapter(RtosAdapter):
             ]
             if flags["base_priority"]:
                 row.append(number_cell(task.base_priority))
+            row.append(self._pc_cell(task))
             row.append(address_cell(task.top_of_stack))
             if flags["stack"]:
                 row += [number_cell(task.stack_size), number_cell(task.stack_used)]
@@ -1002,7 +1096,14 @@ class FreeRtosAdapter(RtosAdapter):
                 row.append(number_cell(task.core_affinity))
             row.append(address_cell(task.address))
             rows.append(row)
-        return ObjectTable.from_specs(specs, rows, elastic=("Name",), id_key="Addr")
+        table = ObjectTable.from_specs(specs, rows, elastic=("Name",), id_key="TCB")
+        if tasks and not high_water:
+            table.build_hints.append(
+                "HighWater is unavailable: enable configRECORD_STACK_HIGH_ADDRESS "
+                "and prefill via INCLUDE_uxTaskGetStackHighWaterMark or configCHECK_FOR_STACK_OVERFLOW > 1 "
+                "to retain bounds and prefill stacks."
+            )
+        return table
 
     def capabilities(self) -> Capabilities:
         """Structured capability claims: kinds, gated columns and their reasons.
@@ -1017,10 +1118,8 @@ class FreeRtosAdapter(RtosAdapter):
             for spec in task_specs(
                 base_priority=flags["base_priority"],
                 stack=flags["stack"],
-                # Reason: the table adds HighWater whenever any task carries a
-                # watermark, which is independent of whether stack *bounds* are
-                # readable, so the claim must not be tied to pxEndOfStack.
-                high_water=True,
+                # Reason: a used-byte watermark needs recorded total size.
+                high_water=flags["stack"],
                 runtime=flags["runtime"],
                 smp=flags["smp"],
                 affinity=flags["affinity"],
@@ -1072,6 +1171,7 @@ class FreeRtosAdapter(RtosAdapter):
         }
         return Capabilities(
             kinds=kinds,
+            build_hints=self._build_hints(flags),
             extra={
                 "smp": config.smp,
                 "cores": config.number_of_cores,
@@ -1082,6 +1182,32 @@ class FreeRtosAdapter(RtosAdapter):
             },
         )
 
+    def _build_hints(self, flags: dict[str, bool]) -> list[str]:
+        """Only actionable advice for features missing from this build."""
+        config = self.layout.config
+        hints: list[str] = []
+        if not flags["runtime"]:
+            hints.append(
+                "Runtime is unavailable: enable configGENERATE_RUN_TIME_STATS and provide the port runtime counter."
+            )
+        if not flags["stack"]:
+            hints.append(
+                "Stack/Used/HighWater are unavailable: enable configRECORD_STACK_HIGH_ADDRESS to retain stack bounds."
+            )
+        if not config.trace_facility:
+            hints.append(
+                "Object types are inferred: enable configUSE_TRACE_FACILITY for exact queue-family types."
+            )
+        if not config.queue_registry:
+            hints.append(
+                "Queue registry discovery is unavailable: set configQUEUE_REGISTRY_SIZE > 0 and register objects with vQueueAddToRegistry in firmware."
+            )
+        if not config.queue_sets:
+            hints.append(
+                "Queue Set membership is unavailable: enable configUSE_QUEUE_SETS."
+            )
+        return hints
+
     def _task_note(self, flags: dict[str, bool]) -> str | None:
         """Why an optional task column is missing, if any is."""
         gaps: list[str] = []
@@ -1090,7 +1216,7 @@ class FreeRtosAdapter(RtosAdapter):
         if not flags["runtime"]:
             gaps.append("Runtime needs configGENERATE_RUN_TIME_STATS")
         if not flags["stack"]:
-            gaps.append("Stack/Used need pxEndOfStack")
+            gaps.append("Stack/Used/HighWater need pxEndOfStack")
         if not flags["base_priority"]:
             gaps.append("BasePrio needs the kernel's uxBasePriority field")
         if not gaps:
@@ -1124,6 +1250,43 @@ class FreeRtosAdapter(RtosAdapter):
             # skipped finding instead of failing the whole verb.
             return [CheckFinding("SystemChecks", "skipped", str(exc), "system")]
         return check_findings(results, scope="system")
+
+    def heap_map(self) -> HeapMap | None:
+        """The linear block walk as a heap map for ``frt heap dump``.
+
+        The walk lists allocated and free blocks in address order, so the
+        bitmap shows the whole arena. FreeRTOS keeps no owner names, so the
+        used-block colour is one neutral colour. ``None`` when only the
+        free-list walk or no walk is available (heap_3 wraps libc malloc).
+        """
+        snap = heap_module.heap_snapshot(self.layout)
+        walk = snap.linear
+        if walk is None or not walk.blocks:
+            return None
+        blocks = [
+            HeapMapBlock(address=block.address, size=block.size, used=block.allocated)
+            for block in walk.blocks
+        ]
+        messages: list[str] = []
+        if walk.corrupt:
+            messages.append(
+                walk.corrupt_reason
+                or "the linear walk is corrupt; later blocks are not drawn"
+            )
+        elif walk.truncated:
+            messages.append("the linear walk hit its bound; later blocks are not drawn")
+        if walk.incomplete_reason:
+            messages.append(walk.incomplete_reason)
+        last = blocks[-1]
+        return HeapMap(
+            algorithm=snap.geometry.algorithm,
+            base=blocks[0].address,
+            end=last.address + last.size,
+            blocks=blocks,
+            owners=False,
+            truncated=walk.truncated or walk.corrupt,
+            messages=messages,
+        )
 
     def heap_report(self) -> HeapReport:
         """One collected heap snapshot formatted for ``frt heap``.
@@ -1217,11 +1380,6 @@ class FreeRtosAdapter(RtosAdapter):
         except TARGET_ACCESS_ERRORS:
             checks = []
         return SystemSummary(
-            kernel_version=(
-                ".".join(map(str, self.layout.version))
-                if self.layout.version is not None
-                else "unknown"
-            ),
             current_task=current,
             task_count=total if total is not None else len(tasks),
             # Reason: name the evidence source -- the kernel counter and the

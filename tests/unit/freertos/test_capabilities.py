@@ -61,7 +61,9 @@ def test_capabilities_track_the_task_columns_and_report_config_facts():
     task_columns = claims.kinds["task"].columns
     assert task_columns[:3] == ("Name", "State", "Prio")
     assert "CPU" not in task_columns
-    assert "HighWater" in task_columns
+    assert "HighWater" not in task_columns
+    bounded = _adapter(stack_end_field="pxEndOfStack").capabilities()
+    assert "HighWater" in bounded.kinds["task"].columns
     assert "configNUMBER_OF_CORES" in (claims.kinds["task"].note or "")
     assert claims.extra["smp"] is False
     assert claims.extra["cores"] == 1

@@ -59,8 +59,8 @@ def test_value_to_task_preserves_the_complete_intermediate_model(monkeypatch):
         top_of_stack=0x1180,
         stack_base=0x1000,
         stack_end=0x1200,
-        stack_size=0x200,
-        stack_used=0x80,
+        stack_size=0x204,
+        stack_used=0x84,
         high_water_mark=None,
         runtime_counter=0,
         core=0,
@@ -68,8 +68,13 @@ def test_value_to_task_preserves_the_complete_intermediate_model(monkeypatch):
     )
 
 
-def test_value_to_task_computes_high_water_from_the_stack_bytes(monkeypatch):
-    """A filled stack yields its untouched-fill size in bytes."""
+@pytest.mark.parametrize("fill_bytes", [128, 472, None])
+@pytest.mark.parametrize("word_bytes", [4, 8])
+@pytest.mark.parametrize("read_delta", [0, -4])
+def test_value_to_task_computes_high_water_from_the_stack_bytes(
+    monkeypatch, fill_bytes, word_bytes, read_delta
+):
+    """Historical fill usage wins unless saved SP proves greater occupancy."""
     layout = build_layout(FreeRtosConfig(stack_end_field="pxEndOfStack"), (10, 3, 1))
     raw = object()
     values = {
@@ -87,27 +92,35 @@ def test_value_to_task_computes_high_water_from_the_stack_bytes(monkeypatch):
     monkeypatch.setattr(adapter_module, "read_cstring", lambda _value: "w")
     monkeypatch.setattr(adapter_module, "value_address", lambda _value: 0x2000)
     monkeypatch.setattr(
-        adapter_module, "read_bytes", lambda _addr, _size: b"\xa5" * 128 + b"\x00"
+        adapter_module,
+        "read_bytes",
+        lambda _addr, size: (
+            b"\xa5" * (size if fill_bytes is None else fill_bytes)
+            + b"\x00" * (0 if fill_bytes is None else size - fill_bytes)
+        )[: size + read_delta],
     )
-    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda _layout: 4)
+    monkeypatch.setattr(adapter_module, "_stack_type_size", lambda _layout: word_bytes)
     monkeypatch.setattr(adapter_module, "is_idle_task", lambda _value, _layout: False)
 
     task = adapter_module.value_to_task(raw, "Ready", None, layout)
 
-    # 128 fill bytes = 32 words x 4; the model converts words to bytes.
-    assert task.high_water_mark == 128
+    assert task.stack_size == 512 + word_bytes
+    assert task.stack_used == 128 + word_bytes
+    if read_delta:
+        assert task.high_water_mark is None
+        return
+    assert task.high_water_mark is not None
+    assert task.stack_used is not None and task.stack_size is not None
+    assert task.stack_used <= task.high_water_mark <= task.stack_size
+    if fill_bytes == 128:
+        assert task.high_water_mark == 512 + word_bytes - fill_bytes
+    else:
+        # Partly or entirely untouched reserved slots are still occupied.
+        assert task.high_water_mark == task.stack_used
 
 
-def test_high_water_uses_px_top_of_stack_window_when_stack_end_absent(monkeypatch):
-    """HighWater must not depend on pxEndOfStack, absent on the default build.
-
-    The fixture's default downward-growing build records no stack-end member
-    (configRECORD_STACK_HIGH_ADDRESS is off), so the watermark scan must fall
-    back to the [pxStack, pxTopOfStack] window: the deepest historical use is
-    <= the current saved SP, so the untouched 0xa5 run always sits inside it.
-    A fully-filled window reports its whole word count -- conservative in that
-    it never overstates free stack beyond what is visible.
-    """
+def test_high_water_unavailable_without_recorded_stack_end(monkeypatch):
+    """Saved SP is not stack capacity: no maximum-used estimate without bounds."""
     layout = build_layout(FreeRtosConfig(), (10, 3, 1))  # no stack_end_field
     values = {
         "top_of_stack": 0x1180,
@@ -134,11 +147,9 @@ def test_high_water_uses_px_top_of_stack_window_when_stack_end_absent(monkeypatc
 
     task = adapter_module.value_to_task(object(), "Ready", None, layout)
 
-    # Read window is [stack_base, pxTopOfStack] since stack_end is absent.
-    assert read_bytes_calls == [(0x1000, 0x180)]
-    # Whole window 0xa5 => 96 words = 0x180 bytes, reported conservatively.
-    assert task.high_water_mark == 0x180
-    # Stack/Used stay gated off (no stack_end); only HighWater becomes available.
+    assert read_bytes_calls == []
+    assert task.high_water_mark is None
+    # All used-byte measures need the recorded capacity.
     assert task.stack_size is None
     assert task.stack_used is None
 
@@ -279,13 +290,14 @@ def test_task_table_uses_freertos_capability_columns(monkeypatch):
         "State",
         "Prio",
         "BasePrio",
+        "PC",
         "SP",
         "Stack",
         "Used",
         "Runtime",
         "CPU",
         "Affinity",
-        "Addr",
+        "TCB",
     ]
     assert table.rows == [
         [
@@ -293,6 +305,7 @@ def test_task_table_uses_freertos_capability_columns(monkeypatch):
             "Running",
             "4",
             "3",
+            "N/A",
             "0x3000",
             "512",
             "64",
@@ -314,17 +327,17 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
 
     table = adapter_module.FreeRtosAdapter(layout).task_table()
 
-    assert table.headers == ["Name", "State", "Prio", "SP", "Addr"]
+    assert table.headers == ["Name", "State", "Prio", "PC", "SP", "TCB"]
 
 
 @pytest.mark.parametrize(
     ("config", "task_kwargs", "expected_headers"),
     (
-        (FreeRtosConfig(), {}, ["Name", "State", "Prio", "SP", "Addr"]),
+        (FreeRtosConfig(), {}, ["Name", "State", "Prio", "PC", "SP", "TCB"]),
         (
             FreeRtosConfig(tcb_fields=frozenset({"uxBasePriority"})),
             {},
-            ["Name", "State", "Prio", "BasePrio", "SP", "Addr"],
+            ["Name", "State", "Prio", "BasePrio", "PC", "SP", "TCB"],
         ),
         (
             FreeRtosConfig(
@@ -332,7 +345,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 tcb_fields=frozenset({"ulRunTimeCounter"}),
             ),
             {},
-            ["Name", "State", "Prio", "SP", "Stack", "Used", "Runtime", "Addr"],
+            ["Name", "State", "Prio", "PC", "SP", "Stack", "Used", "Runtime", "TCB"],
         ),
         (
             FreeRtosConfig(
@@ -341,7 +354,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 tcb_fields=frozenset({"uxCoreAffinityMask", "xTaskRunState"}),
             ),
             {},
-            ["Name", "State", "Prio", "SP", "CPU", "Affinity", "Addr"],
+            ["Name", "State", "Prio", "PC", "SP", "CPU", "Affinity", "TCB"],
         ),
         (
             FreeRtosConfig(stack_end_field="pxEndOfStack"),
@@ -350,11 +363,12 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 "Name",
                 "State",
                 "Prio",
+                "PC",
                 "SP",
                 "Stack",
                 "Used",
                 "HighWater",
-                "Addr",
+                "TCB",
             ],
         ),
         (
@@ -377,6 +391,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 "State",
                 "Prio",
                 "BasePrio",
+                "PC",
                 "SP",
                 "Stack",
                 "Used",
@@ -384,7 +399,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 "Runtime",
                 "CPU",
                 "Affinity",
-                "Addr",
+                "TCB",
             ],
         ),
     ),
@@ -441,12 +456,13 @@ def test_task_table_reports_unavailable_high_water_cell(monkeypatch):
         "Ready",
         "1",
         "N/A",
+        "N/A",
         "256",
         "32",
         "N/A",
         "0x10",
     ]
-    assert table.rows[1][6] == "8"
+    assert table.rows[1][7] == "8"
 
 
 # --- object detail routing ---------------------------------------------------
@@ -532,19 +548,21 @@ def test_task_table_high_water_header_matches_the_cell_position(monkeypatch):
         "Name",
         "State",
         "Prio",
+        "PC",
         "SP",
         "HighWater",
         "Runtime",
-        "Addr",
+        "TCB",
     ]
     assert dict(zip(table.headers, table.rows[0], strict=True)) == {
         "Name": "t",
         "State": "Ready",
         "Prio": "1",
+        "PC": "N/A",
         "SP": "0x1180",
         "HighWater": "105",
         "Runtime": "42",
-        "Addr": "0x10",
+        "TCB": "0x10",
     }
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from io import StringIO
+from typing import NamedTuple
 
 from .constants import (
     GDR_DEFAULT_TERMINAL_WIDTH,
@@ -11,6 +12,21 @@ from .constants import (
     GDR_TABLE_COLUMN_GAP,
     GDR_TABLE_TRUNCATION_SUFFIX,
 )
+
+
+class SourceLoc(NamedTuple):
+    """Where a code address lives in the source tree.
+
+    ``fullname`` is GDB's resolved path, which may name a file that does not
+    exist on this machine (a build directory); ``name`` is the file as the
+    debug information recorded it, possibly relative to the compile directory.
+    The extension resolves the pair against the workspace (see its
+    ``resolveSourceFile``), so both must travel.
+    """
+
+    fullname: str
+    line: int
+    name: str
 
 
 def format_optional_int(value: int | None) -> str:

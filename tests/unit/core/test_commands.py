@@ -14,6 +14,7 @@ class _Adapter:
     task_output: ObjectTable = field(default_factory=ObjectTable)
     counts: dict[str, int] = field(default_factory=dict)
     tables: dict[str, ObjectTable] = field(default_factory=dict)
+    detail_tables: dict[str, ObjectTable] = field(default_factory=dict)
     details: dict[str, ObjectDetail] = field(default_factory=dict)
     summary: SystemSummary = field(default_factory=SystemSummary)
     count_calls: int = 0
@@ -33,6 +34,9 @@ class _Adapter:
 
     def object_detail(self, kind: str, name: str) -> ObjectDetail | None:  # noqa: ARG002
         return self.details.get(kind)
+
+    def detail_table(self, kind: str) -> ObjectTable | None:
+        return self.detail_tables.get(kind)
 
     def system_summary(self) -> SystemSummary:
         return self.summary
@@ -102,7 +106,6 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
     adapter = _Adapter(
         counts={"timer": 2, "task": 3},
         summary=SystemSummary(
-            kernel_version="10.3.1",
             current_task="worker",
             task_count=3,
             tick_count=123,
@@ -119,7 +122,6 @@ def test_system_renders_summary_and_sorted_object_counts(monkeypatch):
 
     assert written == [
         [
-            ("Kernel version", "10.3.1"),
             ("Current task", "worker"),
             ("Task number", "3"),
             ("Tick count", "123"),
@@ -291,8 +293,29 @@ def test_shared_renderer_guard_contains_unexpected_adapter_errors(monkeypatch):
     assert errors == ["render_tasks: ValueError: corrupt task list"]
 
 
-def test_object_detail_renders_adapter_pairs(monkeypatch):
-    """A found object renders its adapter-supplied key/value pairs."""
+def test_object_detail_renders_the_merged_table_marking_the_named_row(monkeypatch):
+    """Every object of the kind is one row; the named one carries the mark."""
+    table = ObjectTable(
+        headers=["Name", "Value"], rows=[["sem_a", "1"], ["test_sem", "3"]]
+    )
+    adapter = _Adapter(detail_tables={"semaphore": table})
+    printed: list[tuple[list[list[str]], list[str]]] = []
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        commands,
+        "print_table",
+        lambda rows, headers, **_kw: printed.append((rows, headers)),
+    )
+
+    commands.render_object_detail("semaphore", "test_sem")
+
+    assert printed == [
+        ([["sem_a", "1"], ["* test_sem", "3"]], ["Name", "Value"]),
+    ]
+
+
+def test_object_detail_falls_back_to_the_vertical_block(monkeypatch):
+    """An adapter without a merged table keeps the vertical block for one object."""
     adapter = _Adapter(
         details={
             "semaphore": ObjectDetail(pairs=[("Name", "test_sem"), ("Value", "3")])
@@ -325,14 +348,15 @@ def test_object_detail_warns_when_kind_is_not_enumerable(monkeypatch):
 
 def test_object_detail_warns_when_object_is_missing(monkeypatch):
     """A missing or disabled object reports a clear not-found diagnostic."""
-    adapter = _Adapter(details={"semaphore": ObjectDetail(found=False)})
+    table = ObjectTable(headers=["Name"], rows=[["other"]])
+    adapter = _Adapter(detail_tables={"semaphore": table})
     warnings: list[str] = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
     monkeypatch.setattr(commands, "warn", warnings.append)
     monkeypatch.setattr(
         commands,
-        "print_detail",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected detail")),
+        "print_table",
+        lambda *_args, **_kw: (_ for _ in ()).throw(AssertionError("unexpected table")),
     )
 
     commands.render_object_detail("semaphore", "missing")

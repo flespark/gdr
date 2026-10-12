@@ -125,10 +125,8 @@ def task_detail(
     pairs.append(("StackSize", format_optional_bytes(task.stack_size)))
     pairs.append(("Used", format_optional_bytes(task.stack_used)))
     if task.stack_size is not None or task.high_water_mark is not None:
-        # Reason: HighWater does not depend on the stack size -- the default
-        # build has no pxEndOfStack, so StackSize/Used stay N/A while the 0xa5
-        # watermark window is still scannable. Gating on stack_size alone hid
-        # a value that ``frt tasks`` shows, making the two commands disagree.
+        # Reason: keep an unavailable watermark visible when capacity is
+        # known but stack prefill cannot be established.
         pairs.append(
             (
                 "HighWater",
@@ -177,9 +175,6 @@ def task_detail(
 # queue-family shared cells and detail builders
 # ---------------------------------------------------------------------------
 
-# Item payloads longer than this are truncated in the Item[i] dump.
-GDR_QUEUE_ITEM_DUMP_BYTES = 64
-
 
 def waiter_summary(names: list[str] | None) -> str:
     """Render ``count@names`` with the count first so truncation keeps it.
@@ -224,49 +219,35 @@ def held_cell(obj) -> str:
 
 
 def checks_pairs(checks: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Render consistency-check results as a verdict row plus problem rows.
+    """Show actionable failures and incomplete reads, not success counters.
 
-    The checks themselves must stay exhaustive -- an inapplicable check is
-    reported so "not checked" is never read as "verified" -- but enumerating
-    every ``skipped: not a data queue`` inline produced a 150-column value
-    that buried the one line a reader acts on.  So the rendering splits by
-    what the reader can do about each outcome, mirroring RT-Thread's
-    named-verdict style (rtthread/diagnostics.py):
-
-    * inapplicable by structure (a mutex has no storage pointers) is
-      *counted* in the verdict as ``n/a``, never spelled out;
-    * an unreadable field means the check could not run -- a degradation the
-      reader may need to explain -- so it gets its own ``Check[<name>]`` row;
-    * a failure gets its own row, because that is the actionable output.
+    Full ok/skipped coverage is available on demand through ``frt checks``.
+    Reason: retaining the verdict prefix also lets machine clients classify
+    individual Check[name] columns correctly instead of treating them as text.
     """
-    verified = [name for name, status in checks if status == "ok"]
-    problems = [
-        (name, status)
+    return [
+        (f"Check[{name}]", status)
         for name, status in checks
-        if status.startswith("fail") or "unreadable" in status
+        if status.startswith("fail:")
+        or any(
+            word in status
+            for word in (
+                "unreadable",
+                "bound reached",
+                "unavailable",
+                "corrupt",
+                "truncated",
+                "partial",
+            )
+        )
     ]
-    inapplicable = [
-        name
-        for name, status in checks
-        if status.startswith("skipped") and "unreadable" not in status
-    ]
-
-    counts = [f"{len(verified)} verified"]
-    if inapplicable:
-        counts.append(f"{len(inapplicable)} n/a")
-    failures = [name for name, status in problems if status.startswith("fail")]
-    verdict = f"{len(failures)} failed" if failures else "ok"
-    pairs = [("Checks", f"{verdict} ({', '.join(counts)})")]
-    for name, status in problems:
-        pairs.append((f"Check[{name}]", status.removeprefix("fail: ").strip()))
-    return pairs
 
 
 def queue_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
     """Build the vertical pairs for ``frt queue <name>``.
 
     Key order is a stable output contract; ``Set`` appears only when the
-    build has queue sets, and the FIFO ``Item[i]`` dump trails the checks.
+    build has queue sets, and FIFO ``Item[i]`` storage addresses trail the checks.
     """
     ql = layout.structs["struct QueueDefinition"]
     pairs: list[tuple[str, str]] = [
@@ -294,20 +275,10 @@ def queue_detail(obj, value, layout: FreeRtosLayout) -> list[tuple[str, str]]:
     pairs.append(("RecvWait", waiter_summary(obj.recv_waiters)))
     pairs.append(("Src", source_label(obj.source, obj.extra_sources)))
     pairs.extend(checks_pairs(queue_checks(value, obj.kind, layout)))
-    item_size = obj.item_size
-    for index, address, payload in iter_queue_items(value, layout):
-        if payload is None:
-            pairs.append((f"Item[{index}]", f"@0x{address:x}: unreadable"))
-        elif item_size is not None and item_size > GDR_QUEUE_ITEM_DUMP_BYTES:
-            pairs.append(
-                (
-                    f"Item[{index}]",
-                    f"@0x{address:x}: {payload.hex(' ')}"
-                    f"…(+{item_size - len(payload)} bytes)",
-                )
-            )
-        else:
-            pairs.append((f"Item[{index}]", f"@0x{address:x}: {payload.hex(' ')}"))
+    # Reason: payload inspection belongs to GDB/the memory viewer. Timer
+    # command decoding still requests bytes through the same ring iterator.
+    for index, address, _payload in iter_queue_items(value, layout, max_payload=0):
+        pairs.append((f"Item[{index}]", format_address(address)))
     return pairs
 
 

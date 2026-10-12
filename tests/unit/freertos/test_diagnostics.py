@@ -739,6 +739,7 @@ def test_build_prefills_stacks_probes_the_population(monkeypatch):
 def _patch_system(
     monkeypatch, symbols: dict, task_count: int | None, mem, delayed_head, **config
 ):
+    symbols = {"xSchedulerRunning": 1, **symbols}
     monkeypatch.setattr(
         diagnostics,
         "lookup_symbol",
@@ -831,7 +832,7 @@ def test_system_task_count_mismatch_reports_both_numbers(monkeypatch):
     assert "8" in status and "7" in status
 
 
-def test_system_scheduler_suspended_nonzero_is_fail(monkeypatch):
+def test_system_scheduler_suspended_nonzero_skips_transient_checks(monkeypatch):
     """A nonzero suspend counter is surfaced with its value."""
     heap = types.SimpleNamespace(cross_check="ok")
     monkeypatch.setattr(diagnostics, "heap_snapshot", lambda _layout: heap)
@@ -851,8 +852,9 @@ def test_system_scheduler_suspended_nonzero_is_fail(monkeypatch):
     results = dict(diagnostics.system_checks(layout))
 
     status = results["SchedulerSuspended"]
-    assert status.startswith("fail:")
+    assert status.startswith("skipped:")
     assert "2" in status
+    assert results["NextUnblockTime"].startswith("skipped:")
 
 
 def test_system_next_unblock_time_mismatch_reports_both_numbers(monkeypatch):

@@ -20,6 +20,8 @@ from collections.abc import Sequence
 from gdr.adapter_api import (
     Capabilities,
     CheckFinding,
+    DetailSection,
+    HeapMap,
     HeapReport,
     ObjectDetail,
     ObjectTable,
@@ -30,7 +32,8 @@ from gdr.constants import (
     GDR_API_INLINE_LIMIT,
     GDR_API_SCHEMA_VERSION,
 )
-from gdr.formatting import format_optional_bytes
+from gdr.formatting import SourceLoc, format_optional_bytes
+from gdr.heapmap import build_palette, grid_layout
 from gdr.probe import ProbeCandidate, resolve_candidate
 
 # Transport thresholds live in gdr.constants; this module only consumes them.
@@ -97,6 +100,8 @@ def object_table_to_dict(
         "messages": list(table.messages),
         "elastic": list(table.elastic),
     }
+    if table.build_hints:
+        result["build_hints"] = list(table.build_hints)
     if kind is not None:
         result["kind"] = kind
     if table.column_specs:
@@ -107,6 +112,7 @@ def object_table_to_dict(
                 "align": spec.align,
                 "elastic": spec.elastic,
                 "doc": spec.doc,
+                "group": spec.group,
             }
             for spec in table.column_specs
         ]
@@ -122,11 +128,15 @@ def object_table_to_dict(
     return result
 
 
-def _source_to_dict(source: tuple[str, int] | None) -> dict[str, object] | None:
-    """Serialize one cell's source location as ``{"file", "line"}``, or null."""
+def _source_to_dict(source: SourceLoc | None) -> dict[str, object] | None:
+    """One cell's source location, or null.
+
+    ``file`` is GDB's resolved path, ``name`` the file as recorded in the debug
+    information; the client resolves a missing ``file`` through ``name``.
+    """
     if source is None:
         return None
-    return {"file": source[0], "line": source[1]}
+    return {"file": source.fullname, "name": source.name, "line": source.line}
 
 
 def object_detail_to_dict(detail: ObjectDetail) -> dict[str, object]:
@@ -141,17 +151,22 @@ def object_detail_to_dict(detail: ObjectDetail) -> dict[str, object]:
         "message": detail.message,
     }
     if detail.sections:
-        result["sections"] = [
-            {
-                "title": section.title,
-                "rows": [
-                    {"key": row.key, "value": row.value, "severity": row.severity}
-                    for row in section.rows
-                ],
-            }
-            for section in detail.sections
-        ]
+        result["sections"] = _sections_to_list(detail.sections)
     return result
+
+
+def _sections_to_list(sections: Sequence[DetailSection]) -> list[dict[str, object]]:
+    """Serialize verdict sections: title plus per-row key, value and severity."""
+    return [
+        {
+            "title": section.title,
+            "rows": [
+                {"key": row.key, "value": row.value, "severity": row.severity}
+                for row in section.rows
+            ],
+        }
+        for section in sections
+    ]
 
 
 def system_summary_pairs(summary: SystemSummary) -> list[tuple[str, str]]:
@@ -161,7 +176,6 @@ def system_summary_pairs(summary: SystemSummary) -> list[tuple[str, str]]:
     the JSON serializer share one ordering/formatting source of truth.
     """
     pairs: list[tuple[str, str]] = [
-        ("Kernel version", summary.kernel_version),
         ("Current task", summary.current_task or "N/A"),
         (
             summary.task_count_label,
@@ -171,8 +185,9 @@ def system_summary_pairs(summary: SystemSummary) -> list[tuple[str, str]]:
             "Tick count",
             str(summary.tick_count) if summary.tick_count is not None else "N/A",
         ),
-        ("Scheduler state", summary.scheduler_state),
     ]
+    if summary.scheduler_state is not None:
+        pairs.append(("Scheduler state", summary.scheduler_state))
     pairs.extend((state, str(count)) for state, count in summary.state_counts.items())
     pairs.extend(
         (kind, str(count)) for kind, count in sorted(summary.object_counts.items())
@@ -193,15 +208,41 @@ def system_summary_to_dict(summary: SystemSummary) -> dict[str, object]:
 
 
 def heap_report_to_dict(report: HeapReport) -> dict[str, object]:
-    """Serialize one heap snapshot."""
+    """Serialize one heap snapshot, with its verdict rows as ``sections``."""
     table = None
     if report.table is not None:
         table = object_table_to_dict(report.table)
-    return {
+    result: dict[str, object] = {
         "pairs": [[key, value] for key, value in report.pairs],
         "messages": list(report.messages),
         "table": table,
         "table_title": report.table_title,
+    }
+    if report.sections:
+        result["sections"] = _sections_to_list(report.sections)
+    return result
+
+
+def heap_map_to_dict(heap: HeapMap) -> dict[str, object]:
+    """Serialize the heap block layout the bitmap and the panel draw from.
+
+    Blocks are ``[address, size, used, owner]`` rows in address order; ``owner``
+    is ``null`` when the allocator keeps no owner names (see ``owners``).
+    """
+    return {
+        "algorithm": heap.algorithm,
+        "base": heap.base,
+        "end": heap.end,
+        "owners": heap.owners,
+        "truncated": heap.truncated,
+        "messages": list(heap.messages),
+        "blocks": [
+            [block.address, block.size, block.used, block.owner]
+            for block in heap.blocks
+        ],
+        # The colours the bitmap uses, so the panel's drawing matches the PNG.
+        "palette": build_palette(heap).as_json(),
+        "grid": grid_layout(heap),
     }
 
 
@@ -218,6 +259,7 @@ def capabilities_to_dict(capabilities: Capabilities) -> dict[str, object]:
             for kind, claim in sorted(capabilities.kinds.items())
         },
         "extra": capabilities.extra,
+        "build_hints": list(capabilities.build_hints),
     }
 
 

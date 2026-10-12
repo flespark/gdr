@@ -10,6 +10,7 @@ of the fixture belongs in unit tests instead.
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 
 import pytest
@@ -104,6 +105,34 @@ def _detail_pairs(output: str) -> dict[str, str]:
     }
 
 
+def _json_line(output: str) -> dict:
+    """The one JSON document a ``--json`` command printed."""
+    for line in output.splitlines():
+        if line.lstrip().startswith("{"):
+            return json.loads(line.strip())
+    raise AssertionError(f"no JSON envelope in output:\n{output}")
+
+
+def _detail_row(gdb, kind: str, name: str) -> dict[str, str]:
+    """The named object's row of the merged detail table, keyed by column.
+
+    Reads the same table the panel draws (``gdr api table``), so the values are
+    typed cell text rather than a re-parse of the terminal's column layout.
+    """
+    data = _json_line(gdb.run(f"gdr api table {kind} --json", timeout=20))["data"]
+    headers = data["headers"]
+    name_index = headers.index("Name")
+    for row in data["rows"]:
+        if row[name_index] == name:
+            return dict(zip(headers, row, strict=True))
+    raise AssertionError(f"{kind} {name!r} is not in the merged detail table")
+
+
+def _headers(output: str) -> str:
+    """The table's header line: the column names the terminal shows."""
+    return output.splitlines()[0]
+
+
 def test_all_rtt_commands_are_available(rtt_outputs):
     """Every public route completes without usage or Python error output."""
     for output in rtt_outputs.values():
@@ -154,12 +183,13 @@ print(f"max_stack_used={value.max_stack_used}")
         "State",
         "Prio",
         "BasePrio",
+        "PC",
         "SP",
         "Stack",
         "Used",
         "HighWater",
         "Entry",
-        "Addr",
+        "TCB",
     ):
         assert header in output
     assert "<worker1_entry" in output
@@ -196,7 +226,6 @@ def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
     output = rtt_outputs["system"]
     pairs = _detail_pairs(output)
     for label in (
-        "Kernel version",
         "Task number",
         "Tick count",
         "semaphore",
@@ -221,7 +250,7 @@ def test_rtt_system_produces_a_normalized_summary(rtt_outputs):
 
 
 def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
-    """``rtt heap`` shows basics, a bounded walk, holes, and occupancy."""
+    """``rtt heap`` shows the allocator basics and the Blocks line, no occupancy."""
     output = rtt_outputs["heap"]
     for label in (
         "Algorithm:",
@@ -230,9 +259,12 @@ def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
         "MaxUsed:",
         "MemTrace:",
         "Blocks:",
-        "Holes:",
     ):
         assert label in output, output
+    # Holes and per-thread occupancy moved out of the terminal heap view; owner
+    # data is drawn by `rtt heap dump`.
+    assert "Holes:" not in output, output
+    assert "Thread occupancy" not in output, output
     pairs = _detail_pairs(output)
     assert pairs["Algorithm"] == "small_mem", output
     assert pairs["TotalSize"].removesuffix(" B").isdecimal(), output
@@ -244,21 +276,6 @@ def test_rtt_heap_reports_system_heap_detail(rtt_outputs):
     # Blocks reports a used/free/total summary from the halted block chain.
     blocks = pairs["Blocks"]
     assert re.match(r"\d+ used, \d+ free, \d+ total", blocks), output
-
-    # Holes follows the exact free-block line shape.
-    holes = pairs["Holes"]
-    assert holes == "0 free" or re.match(
-        r"\d+ free; largest \d+ B; smallest \(up to 3\): \d+ B", holes
-    ), output
-
-    # MEMTRACE is enabled on the QEMU fixtures; occupancy is either the N/A
-    # degrade line or a per-thread table that lists allocating thread names.
-    if "Thread occupancy: N/A" in output:
-        assert "Thread occupancy: N/A" in pairs, output
-    else:
-        assert "Thread occupancy" in pairs, output
-        for header in ("Thread", "Blocks", "Bytes (header included)"):
-            assert header in output, output
 
 
 def test_rtt_semaphore_command_lists_fixture_data(rtt_outputs):
@@ -489,10 +506,11 @@ def test_rtt_tables_keep_column_set_at_80_columns(gdb):
                     "State",
                     "Prio",
                     "BasePrio",
+                    "PC",
                     "SP",
                     "Stack",
                     "Entry",
-                    "Addr",
+                    "TCB",
                 ),
             ),
             (
@@ -548,7 +566,7 @@ def test_rtt_tables_keep_column_set_at_80_columns(gdb):
                     "Name",
                     "State",
                     "Mode",
-                    "Type",
+                    "TimerType",
                     "InitTick",
                     "TimeoutTick",
                     "ExpiresIn",
@@ -581,82 +599,89 @@ def test_rtt_tables_keep_column_set_at_120_columns(gdb):
 
 
 def test_rtt_thread_detail_shows_public_fields(gdb):
-    """``rtt thread <name>`` renders a vertical key/value detail."""
+    """``rtt thread <name>`` prints every thread's detail as one table."""
     output = gdb.run("rtt thread worker1", timeout=20)
+    headers = _headers(output)
     for label in (
-        "Name:",
-        "Address:",
-        "Type:",
-        "State:",
-        "Priority:",
-        "Entry:",
-        "Error:",
-        "RemainingTick:",
+        "Name",
+        "Address",
+        "Type",
+        "State",
+        "Priority",
+        "Entry",
+        "Error",
+        "RemainingTick",
     ):
-        assert label in output, output
-    assert "worker1" in output
+        assert label in headers.split(), output
+    # Reason: the Name column is elastic, so at 80 columns the marked name can be
+    # shortened; the mark itself is the stable signal that this row was asked for.
+    assert any(line.lstrip().startswith("* ") for line in output.splitlines()[1:]), (
+        output
+    )
+    assert "[gdr] error:" not in output, output
 
 
 def test_rtt_semaphore_detail_shows_fixture_value(gdb):
-    """``rtt semaphore <name>`` renders the fixture's public fields."""
+    """``rtt semaphore <name>`` lists the fixture semaphore's public fields."""
     output = gdb.run(f"rtt semaphore {_PROFILE.semaphore_name}", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "Value:"):
-        assert label in output, output
-    assert _PROFILE.semaphore_name in output
+    assert "* " + _PROFILE.semaphore_name in output, output
+    row = _detail_row(gdb, "semaphore", _PROFILE.semaphore_name)
+    assert "Type" not in row, row
+    assert row["Value"].isdecimal(), row
 
 
 def test_rtt_mutex_detail_shows_priority_inheritance_fields(gdb):
     """Mutex detail retains owner, original priority, policy, and waiters."""
     output = gdb.run(f"rtt mutex {_PROFILE.wait_mutex_name}", timeout=20)
-    for label in (
-        "Name:",
-        "Address:",
-        "Type: Mutex",
-        "Value:",
-        "Hold:",
-        f"Owner: {_PROFILE.locker_thread_name}",
-        "OriginalPriority:",
-        "Waiters: 1@",
-    ):
-        assert label in output, output
+    _assert_clean_command_output(output)
+    row = _detail_row(gdb, "mutex", _PROFILE.wait_mutex_name)
+    assert "Type" not in row, row
+    assert row["Owner"] == _PROFILE.locker_thread_name, row
+    assert "OriginalPriority" in _headers(output), output
+    assert row["Hold"].isdecimal() and row["Value"].isdecimal(), row
+    assert row["Waiters"].startswith("1@"), row
     # RT-Thread v3 retains the configured FIFO flag while newer kernels force
     # mutex inheritance to PRIO. Both are target-valid policy renderings.
-    assert _detail_pairs(output)["Policy"] in {"FIFO", "PRIO"}, output
-    assert _PROFILE.mutex_waiter_thread in output
-    _assert_clean_command_output(output)
+    assert row["Policy"] in {"FIFO", "PRIO"}, row
+    assert _PROFILE.mutex_waiter_thread in row["Waiters"], row
 
 
 def test_rtt_semaphore_detail_shows_policy_and_waiters(gdb):
     """Semaphore detail includes the scheduler policy and blocking relation."""
     output = gdb.run(f"rtt semaphore {_PROFILE.wait_semaphore_name}", timeout=20)
-    for label in ("Policy: FIFO", "Waiters: 1@"):
-        assert label in output, output
-    assert _PROFILE.sem_waiter_thread in output
+    _assert_clean_command_output(output)
+    row = _detail_row(gdb, "semaphore", _PROFILE.wait_semaphore_name)
+    assert row["Policy"] == "FIFO", row
+    assert row["Waiters"].startswith("1@"), row
+    assert _PROFILE.sem_waiter_thread in row["Waiters"], row
 
 
 def test_rtt_event_detail_shows_waiter_conditions(gdb):
     """``rtt event <name>`` pairs each waiter with its mask and mode."""
     output = gdb.run(f"rtt event {_PROFILE.wait_event_name}", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "Set:"):
-        assert label in output, output
-    assert _PROFILE.wait_event_name in output
-    assert "Policy: FIFO" in output
-    assert "Waiters: 1@" in output
-    assert _PROFILE.event_waiter_thread in output
-    assert f"Waiter: {_PROFILE.event_waiter_thread}: set=0x40 mode=AND|CLEAR" in output
     _assert_clean_command_output(output)
+    row = _detail_row(gdb, "event", _PROFILE.wait_event_name)
+    assert "Type" not in row and row["Set"], row
+    assert row["Policy"] == "FIFO", row
+    assert row["Waiters"].startswith("1@"), row
+    assert _PROFILE.event_waiter_thread in row["Waiters"], row
+    # Reason: each waiter's condition is one entry of the collapsed Waiter column.
+    assert (
+        f"Waiter: {_PROFILE.event_waiter_thread}: set=0x40 mode=AND|CLEAR"
+        in row["Waiter"]
+    ), row
 
 
 def test_rtt_mailbox_detail_shows_waiters(gdb):
     """``rtt mailbox <name>`` renders the fixture's public fields and slots."""
     output = gdb.run(f"rtt mailbox {_PROFILE.mailbox_name}", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "Entry:", "Size:", "MsgPool:"):
-        assert label in output, output
-    assert _PROFILE.mailbox_name in output
-    # Valid ring offsets yield FIFO slot lines and an explicit successful
-    # verdict; invalid offsets carry their reason in the same stable field.
-    assert "Slot[" in output
-    assert "OffsetCheck: ok" in output
+    for label in ("Name", "Address", "Entry", "Size", "MsgPool"):
+        assert label in _headers(output).split(), output
+    row = _detail_row(gdb, "mailbox", _PROFILE.mailbox_name)
+    # Valid ring offsets yield FIFO slot entries and an explicit successful
+    # verdict; invalid offsets carry their reason in the same stable column.
+    assert "Slot[" in row["Slot"], row
+    assert row["OffsetCheck"] == "ok", row
     assert "[gdr] error:" not in output, output
 
 
@@ -664,15 +689,17 @@ def test_rtt_mailbox_detail_shows_receiver_and_sender_waiters(gdb):
     """Mailbox detail distinguishes receive and send blocking lists."""
     recv = gdb.run(f"rtt mailbox {_PROFILE.wait_mailbox_recv_name}", timeout=20)
     send = gdb.run(f"rtt mailbox {_PROFILE.wait_mailbox_send_name}", timeout=20)
-    assert "RecvWait: 1@" in recv, recv
-    assert _PROFILE.mailbox_recv_thread in recv, recv
-    assert "Entry: 0" in recv, recv
-    assert "OffsetCheck: ok" in recv, recv
-    assert "SendWait: 1@" in send, send
-    assert _PROFILE.mailbox_send_thread in send, send
-    assert "Entry: 4" in send, send
+    recv_row = _detail_row(gdb, "mailbox", _PROFILE.wait_mailbox_recv_name)
+    send_row = _detail_row(gdb, "mailbox", _PROFILE.wait_mailbox_send_name)
+    assert recv_row["RecvWait"].startswith("1@"), recv_row
+    assert _PROFILE.mailbox_recv_thread in recv_row["RecvWait"], recv_row
+    assert recv_row["Entry"] == "0", recv_row
+    assert recv_row["OffsetCheck"] == "ok", recv_row
+    assert send_row["SendWait"].startswith("1@"), send_row
+    assert _PROFILE.mailbox_send_thread in send_row["SendWait"], send_row
+    assert send_row["Entry"] == "4", send_row
     for slot in range(4):
-        assert f"Slot[{slot}]:" in send, send
+        assert f"Slot[{slot}]:" in send_row["Slot"], send_row
     _assert_clean_command_output(recv)
     _assert_clean_command_output(send)
 
@@ -680,116 +707,97 @@ def test_rtt_mailbox_detail_shows_receiver_and_sender_waiters(gdb):
 def test_rtt_messagequeue_detail_shows_waiters(gdb):
     """``rtt messagequeue <name>`` renders capacity, nodes, and consistency."""
     output = gdb.run(f"rtt messagequeue {_PROFILE.msgqueue_name}", timeout=20)
-    for label in ("Name:", "Address:", "Type:", "MaxMsgs:", "MsgPool:", "Consistency:"):
-        assert label in output, output
-    assert _PROFILE.msgqueue_name in output
+    for label in ("Name", "Address", "MaxMsgs", "MsgPool", "Consistency"):
+        assert label in _headers(output).split(), output
+    row = _detail_row(gdb, "msgqueue", _PROFILE.msgqueue_name)
+    assert row["Consistency"].startswith("ok"), row
     assert "[gdr] error:" not in output, output
 
 
 def test_rtt_messagequeue_detail_shows_node_counts_and_waiters(gdb):
     """Message-queue detail combines memory consistency and blocking data."""
-    recv = gdb.run(f"rtt messagequeue {_PROFILE.wait_msgqueue_recv_name}", timeout=20)
-    recv_pairs = _detail_pairs(recv)
-    max_msgs = int(recv_pairs["MaxMsgs"])
-    assert recv_pairs["Entry"] == "0", recv
-    assert recv_pairs["ActiveNodes"] == "0", recv
-    assert recv_pairs["FreeNodes"] == str(max_msgs), recv
-    assert (
-        recv_pairs["Consistency"] == f"ok (entry=0, free={max_msgs}, max={max_msgs})"
-    ), recv
-    assert "RecvWait: 1@" in recv, recv
-    assert _PROFILE.msgqueue_recv_thread in recv, recv
+    recv_output = gdb.run(
+        f"rtt messagequeue {_PROFILE.wait_msgqueue_recv_name}", timeout=20
+    )
+    recv = _detail_row(gdb, "msgqueue", _PROFILE.wait_msgqueue_recv_name)
+    max_msgs = int(recv["MaxMsgs"])
+    assert recv["Entry"] == "0", recv
+    assert recv["ActiveNodes"] == "0", recv
+    assert recv["FreeNodes"] == str(max_msgs), recv
+    assert recv["Consistency"] == f"ok (entry=0, free={max_msgs}, max={max_msgs})", recv
+    assert recv["RecvWait"].startswith("1@"), recv
+    assert _PROFILE.msgqueue_recv_thread in recv["RecvWait"], recv
 
     if not _PROFILE.mq_sender_list:
         # COUPLED: pre-v3.1.4 and v4.0.0-v4.0.1 fixture patches intentionally
         # omit wait_mq_send because their kernel has no sender wait list.
-        assert recv_pairs["SendWait"] == "N/A", recv
-        _assert_clean_command_output(recv)
+        assert recv["SendWait"] == "N/A", recv
+        _assert_clean_command_output(recv_output)
         return
 
-    send = gdb.run(f"rtt messagequeue {_PROFILE.wait_msgqueue_send_name}", timeout=20)
-    send_pairs = _detail_pairs(send)
-    assert int(send_pairs["Entry"]) == max_msgs, send
-    assert send_pairs["ActiveNodes"] == str(max_msgs), send
-    assert send_pairs["FreeNodes"] == "0", send
-    assert (
-        send_pairs["Consistency"] == f"ok (entry={max_msgs}, free=0, max={max_msgs})"
-    ), send
-    assert "SendWait: 1@" in send, send
-    assert _PROFILE.msgqueue_send_thread in send, send
-    _assert_clean_command_output(recv)
-    _assert_clean_command_output(send)
+    send = _detail_row(gdb, "msgqueue", _PROFILE.wait_msgqueue_send_name)
+    assert int(send["Entry"]) == max_msgs, send
+    assert send["ActiveNodes"] == str(max_msgs), send
+    assert send["FreeNodes"] == "0", send
+    assert send["Consistency"] == f"ok (entry={max_msgs}, free=0, max={max_msgs})", send
+    assert send["SendWait"].startswith("1@"), send
+    assert _PROFILE.msgqueue_send_thread in send["SendWait"], send
+    _assert_clean_command_output(recv_output)
 
 
 def test_rtt_mempool_detail_shows_block_detail(gdb):
     """``rtt mempool <name>`` renders pool range, alignment, and free count."""
     output = gdb.run(f"rtt mempool {_PROFILE.mempool_name}", timeout=20)
     for label in (
-        "Name:",
-        "Address:",
-        "Type:",
-        "StartAddress:",
-        "PoolSize:",
-        "BlockList:",
-        "AlignmentCheck:",
-        "FreeCountCheck:",
+        "Name",
+        "Address",
+        "StartAddress",
+        "PoolSize",
+        "BlockList",
+        "AlignmentCheck",
+        "FreeCountCheck",
     ):
-        assert label in output, output
-    assert _PROFILE.mempool_name in output
+        assert label in _headers(output).split(), output
+    row = _detail_row(gdb, "mempool", _PROFILE.mempool_name)
+    assert row["AlignmentCheck"].startswith("ok"), row
     assert "[gdr] error:" not in output, output
 
 
 def test_rtt_mempool_detail_shows_waiters(gdb):
     """Memory-pool detail includes the blocking-thread relation."""
     output = gdb.run(f"rtt mempool {_PROFILE.wait_mempool_name}", timeout=20)
-    assert "Free: 0" in output, output
-    assert "FreeCountCheck: ok (0)" in output, output
-    assert "Waiters: 1@" in output, output
-    assert _PROFILE.mempool_waiter_thread in output, output
     _assert_clean_command_output(output)
+    row = _detail_row(gdb, "mempool", _PROFILE.wait_mempool_name)
+    assert row["Free"] == "0", row
+    assert row["FreeCountCheck"] == "ok (0)", row
+    assert row["Waiters"].startswith("1@"), row
+    assert _PROFILE.mempool_waiter_thread in row["Waiters"], row
 
 
 def test_rtt_timer_detail_shows_fixture_timer(gdb):
     """``rtt timer <name>`` renders the fixture timer's callback symbol."""
     output = gdb.run(f"rtt timer {_PROFILE.timer_name}", timeout=20)
     for label in (
-        "Name:",
-        "Address:",
-        "Type:",
-        "State:",
-        "Callback:",
-        "Parameter:",
-        "KernelTick:",
-        "ExpiresIn:",
+        "Name",
+        "Address",
+        "State",
+        "Callback",
+        "Parameter",
+        "ExpiresIn",
     ):
-        assert label in output, output
-    assert _PROFILE.timer_name in output
-    assert "Mode: periodic" in output, output
-    assert "TimerType: soft" in output, output
-    assert "Callback: <test_timer_timeout" in output, output
-    assert "Parameter: N/A" in output, output
-    kernel_tick = next(
-        line.split(":", 1)[1].strip()
-        for line in output.splitlines()
-        if line.strip().startswith("KernelTick:")
-    )
-    assert kernel_tick.isdecimal(), output
-    state = next(
-        line.split(":", 1)[1].strip().lower()
-        for line in output.splitlines()
-        if line.strip().startswith("State:")
-    )
-    expires_in = next(
-        line.split(":", 1)[1].strip()
-        for line in output.splitlines()
-        if line.strip().startswith("ExpiresIn:")
-    )
+        assert label in _headers(output).split(), output
+    row = _detail_row(gdb, "timer", _PROFILE.timer_name)
+    assert row["Mode"] == "periodic", row
+    assert row["TimerType"] == "soft", row
+    assert row["Callback"].startswith("<test_timer_timeout"), row
+    assert row["Parameter"] in {"N/A", "0x0"}, row
+    assert "KernelTick" not in row and "Type" not in row, row
     # QEMU keeps advancing between commands. Assert the dynamic contract, not
     # a particular tick snapshot; an inactive timer legitimately reports N/A.
-    if state == "inactive":
-        assert expires_in == "N/A", output
+    if row["State"] == "inactive":
+        assert row["ExpiresIn"] == "N/A", row
     else:
-        assert expires_in.isdecimal() and int(expires_in) >= 0, output
+        assert row["ExpiresIn"].isdecimal() and int(row["ExpiresIn"]) >= 0, row
     _assert_clean_command_output(output)
 
 

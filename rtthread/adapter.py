@@ -31,6 +31,10 @@ from gdr.adapter_api import (
     Cell,
     CheckFinding,
     ColumnSpec,
+    DetailRow,
+    DetailSection,
+    HeapMap,
+    HeapMapBlock,
     HeapReport,
     KindCapability,
     ObjectDetail,
@@ -39,6 +43,7 @@ from gdr.adapter_api import (
     SystemSummary,
     address_cell,
     count_cell,
+    merged_detail_table,
     number_cell,
     raw_cell,
     sections_from_pairs,
@@ -48,6 +53,8 @@ from gdr.adapter_api import (
 )
 from gdr.derive import timer_expires_in as derive_timer_expires_in
 from gdr.gdb_bridge import (
+    arch_or_default,
+    eval_identifier,
     lookup_symbol_at,
     read_bytes,
     read_cstring,
@@ -68,6 +75,14 @@ from rtthread.columns import (
     TIMER_SPECS,
     smp_columns_present,
     task_specs,
+)
+from rtthread.heapviews import (
+    HeapDetail,
+    HeapInfo,
+    _heap_accounting_finding,
+    _heap_chain_finding,
+    _heap_detail_from_walk,
+    _heap_status,
 )
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
@@ -94,8 +109,12 @@ from rtthread.navigation import (
     iter_suspend_threads,
     iter_threads,
     iter_timers,
+    read_irq_nest,
+    read_scheduler_lock_nest,
     suspend_thread_names,
 )
+from rtthread.stackpc import SavedPcLayout, decode_saved_pc, saved_pc_layout
+from rtthread.tableviews import DETAIL_SPECS, detail_cells
 
 # ---------------------------------------------------------------------------
 # Adapter-owned intermediate objects. These are semantic values assembled from
@@ -126,6 +145,9 @@ class Thread(KernelObject):
     remaining_tick: int = 0
     bind_cpu: int | None = None
     oncpu: int | None = None
+    # Last PC: the running PC for the current thread, else the saved switch
+    # frame's return address (see ``rtthread.stackpc``); ``None`` when unproven.
+    pc: int | None = None
 
     @property
     def stack_used(self) -> int | None:
@@ -190,40 +212,6 @@ class MemoryPool(KernelObject):
     block_size: int = 0
     block_total_count: int = 0
     block_free_count: int = 0
-
-
-@dataclass
-class HeapInfo:
-    """One snapshot+walk collection shared by ``rtt system`` and ``rtt heap``.
-
-    ``used``/``total`` are the snapshot counters, replaced by exact walk
-    bytes only when a closed small_mem/memheap walk is allowed to fill a
-    missing value. ``max_used`` stays snapshot-only. ``walk`` is the bounded
-    block walk, or ``None`` when the chain is unresolvable.
-    """
-
-    algorithm: str
-    used: int | None = None
-    total: int | None = None
-    max_used: int | None = None
-    from_walk: bool = False
-    walk: diagnostics.HeapWalk | None = None
-
-
-@dataclass
-class HeapDetail:
-    """Formatted ``rtt heap`` diagnostics from a bounded system-heap walk.
-
-    ``pairs`` holds the Blocks/Holes lines; ``occupancy`` is the per-thread
-    ``[thread, blocks, bytes]`` table rows, or ``None`` when MEMTRACE (or the
-    walk) does not expose owner information. ``status`` is heap health
-    (``good`` / ``corrupt`` / ``overrun``), copied onto
-    ``SystemSummary.heap_status``; a truncated walk is only a Blocks suffix.
-    """
-
-    pairs: list[tuple[str, str]]
-    occupancy: list[list[str]] | None
-    status: str | None = "good"
 
 
 # Value → dataclass converters
@@ -388,79 +376,6 @@ def value_to_mempool(val: gdb.Value, layout: KernelLayout) -> MemoryPool:
 # ---------------------------------------------------------------------------
 
 
-def _heap_status(
-    walk: diagnostics.HeapWalk | None,
-    used: int | None = None,
-    total: int | None = None,
-) -> str | None:
-    """Classify heap health; a truncated walk is not a status value.
-
-    ``truncated`` only means the bounded walk hit ``GDR_MAX_TRAVERSAL_COUNT``.
-    ``overrun`` is used exceeding total. Corrupt walks win over overrun.
-    ``None`` means the system command should omit Heap status.
-    """
-    if walk is not None and walk.corrupt:
-        return "corrupt"
-    if used is not None and total is not None and used > total:
-        return "overrun"
-    if walk is None:
-        return None
-    return "good"
-
-
-def _heap_detail_from_walk(
-    walk: diagnostics.HeapWalk | None,
-    used: int | None = None,
-    total: int | None = None,
-) -> HeapDetail | None:
-    """Assemble Blocks/Holes/occupancy from one bounded walk result."""
-    if walk is None:
-        return None
-    status = _heap_status(walk, used, total)
-    if walk.corrupt:
-        suffix = " (corrupt)"
-    elif walk.truncated:
-        suffix = " (truncated)"
-    else:
-        suffix = ""
-    occupancy = (
-        [
-            [thread, str(blocks), str(bytes_)]
-            for thread, blocks, bytes_ in walk.occupancy
-        ]
-        if walk.occupancy
-        else None
-    )
-    return HeapDetail(
-        pairs=[
-            (
-                "Blocks",
-                f"{walk.used_blocks} used, {walk.free_blocks} free, "
-                f"{walk.used_blocks + walk.free_blocks} total{suffix}",
-            ),
-            ("Holes", _holes_line(walk.hole_sizes)),
-        ],
-        occupancy=occupancy,
-        status=status,
-    )
-
-
-def _holes_line(sizes: list[int]) -> str:
-    """Format the ``rtt heap`` Holes line from free-block payload sizes.
-
-    ``N free; largest X B; smallest (up to 3): A B, B B, C B``: the three
-    smallest holes ascending (only the existing ones when fewer), every size in
-    bytes of allocatable payload. ``0 free`` when the heap has no free block.
-    """
-    if not sizes:
-        return "0 free"
-    smallest = ", ".join(format_optional_bytes(size) for size in sorted(sizes)[:3])
-    return (
-        f"{len(sizes)} free; largest {format_optional_bytes(max(sizes))}; "
-        f"smallest (up to 3): {smallest}"
-    )
-
-
 def _cpu_or_none(raw: int | None, cpu_count: int | None) -> int | None:
     """Map a raw SMP CPU field to a CPU index, or ``None`` when meaningless.
 
@@ -473,55 +388,6 @@ def _cpu_or_none(raw: int | None, cpu_count: int | None) -> int | None:
     if cpu_count is not None and (raw < 0 or raw >= cpu_count):
         return None
     return raw
-
-
-def _heap_accounting_finding(info: HeapInfo) -> CheckFinding:
-    """Cross-check the heap snapshot counters against exact chain accounting.
-
-    The walk reports exact chain bytes only when it closed cleanly, so this is
-    a real cross-check rather than a restated snapshot: a disagreement means
-    one of the two sources is stale or the chain is not the whole heap.
-
-    An overrun (used above total) is caught first because it needs no walk.
-    """
-    used, total = info.used, info.total
-    if used is not None and total is not None and used > total:
-        return CheckFinding(
-            "HeapAccounting", "fail", f"used {used} B exceeds total {total} B", "system"
-        )
-    walk = info.walk
-    if walk is None or walk.used_bytes is None or walk.total_bytes is None:
-        return CheckFinding(
-            "HeapAccounting", "skipped", "exact chain accounting unavailable", "system"
-        )
-    if used is None or total is None:
-        return CheckFinding(
-            "HeapAccounting", "skipped", "snapshot counters unavailable", "system"
-        )
-    if walk.used_bytes == used and walk.total_bytes == total:
-        return CheckFinding("HeapAccounting", "ok", scope="system")
-    return CheckFinding(
-        "HeapAccounting",
-        "fail",
-        f"snapshot used {used} B of {total} B != walk used {walk.used_bytes} B "
-        f"of {walk.total_bytes} B",
-        "system",
-    )
-
-
-def _heap_chain_finding(walk: diagnostics.HeapWalk | None) -> CheckFinding:
-    """Verdict for the bounded block-chain walk."""
-    if walk is None:
-        return CheckFinding(
-            "HeapChain", "skipped", "block chain not resolvable", "system"
-        )
-    if walk.corrupt:
-        return CheckFinding("HeapChain", "fail", "the block chain is corrupt", "system")
-    if walk.truncated:
-        return CheckFinding(
-            "HeapChain", "skipped", "the walk hit the traversal bound", "system"
-        )
-    return CheckFinding("HeapChain", "ok", scope="system")
 
 
 def _detail(pairs: list[tuple[str, str]], *, found: bool = True) -> ObjectDetail:
@@ -720,9 +586,19 @@ _DETAIL_BUILDERS: dict[str, tuple[Callable, Callable]] = {
 class RtThreadAdapter(RtosAdapter):
     """Expose RT-Thread navigation through GDR's semantic adapter contract."""
 
-    def __init__(self, layout: KernelLayout, heap_type: str = "none") -> None:
+    def __init__(
+        self,
+        layout: KernelLayout,
+        heap_type: str = "none",
+        version: tuple[int, int, int] | None = None,
+    ) -> None:
         self.layout = layout
         self.heap_type = heap_type
+        self.version = version
+        # Reason: the saved-PC layout is resolved on first use, so building the
+        # adapter never reads target memory (tests build it without GDB).
+        self._saved_pc: tuple[SavedPcLayout, int] | None = None
+        self._saved_pc_resolved = False
         # Reason: IPC policy decoding lives in ``_ipc_policy``; expose it to the
         # RTOS-neutral pretty-printer through the layout's formatter hook so the
         # core reuses the same decoder rather than a duplicated enum_map.
@@ -1048,28 +924,11 @@ class RtThreadAdapter(RtosAdapter):
             value = find_thread(name, self.layout)
             if value is None:
                 return ObjectDetail(found=False)
-            return _detail(
-                diagnostics.thread_detail(value_to_thread(value, self.layout))
-            )
+            return _detail(self._detail_pairs_for("task", value) or [])
         if kind == "timer":
-            current_tick = get_tick()
             for value in iter_timers(self.layout):
-                timer = value_to_timer(value, self.layout)
-                if timer.name == name:
-                    pairs = diagnostics.timer_detail(timer)
-                    pairs += [
-                        ("KernelTick", format_optional_int(current_tick)),
-                        (
-                            "ExpiresIn",
-                            (
-                                _timer_expires_in(timer.timeout_tick, current_tick)
-                                or "N/A"
-                            )
-                            if timer.active
-                            else "N/A",
-                        ),
-                    ]
-                    return _detail(pairs)
+                if value_to_timer(value, self.layout).name == name:
+                    return _detail(self._detail_pairs_for("timer", value) or [])
             return ObjectDetail(found=False)
 
         type_code = resolve_object_type_code(kind, self.layout)
@@ -1078,8 +937,36 @@ class RtThreadAdapter(RtosAdapter):
         value = find_rt_object(type_code, name, self.layout)
         if value is None:
             return ObjectDetail(found=False)
+        pairs = self._detail_pairs_for(kind, value)
+        if pairs is None:
+            return None
+        return _detail(pairs)
+
+    def _detail_pairs_for(
+        self, kind: str, value: gdb.Value
+    ) -> list[tuple[str, str]] | None:
+        """Flat detail pairs of one raw object, or ``None`` with no builder.
+
+        The single source for ``object_detail`` (one named object) and
+        ``detail_table`` (every object of a kind), so both render identical
+        properties.
+        """
+        if kind == "task":
+            return diagnostics.thread_detail(value_to_thread(value, self.layout))
+        if kind == "timer":
+            current_tick = get_tick()
+            timer = value_to_timer(value, self.layout)
+            return diagnostics.timer_detail(timer) + [
+                ("KernelTick", format_optional_int(current_tick)),
+                (
+                    "ExpiresIn",
+                    (_timer_expires_in(timer.timeout_tick, current_tick) or "N/A")
+                    if timer.active
+                    else "N/A",
+                ),
+            ]
         if kind == "event":
-            return _detail(_event_detail_with_waiters(value, self.layout))
+            return _event_detail_with_waiters(value, self.layout)
         entry = _DETAIL_BUILDERS.get(kind)
         if entry is None:
             return None
@@ -1111,7 +998,42 @@ class RtThreadAdapter(RtosAdapter):
                 "struct rt_mempool",
                 (("Waiters", "suspend_thread"),),
             )
-        return _detail(pairs)
+        return pairs
+
+    def _raw_objects(self, kind: str) -> Iterator[gdb.Value] | None:
+        """Every raw object of one kind, or ``None`` when it is not enumerable."""
+        if kind == "task":
+            return iter_threads(self.layout)
+        if kind == "timer":
+            return iter_timers(self.layout)
+        type_code = resolve_object_type_code(kind, self.layout)
+        if type_code is None:
+            return None
+        return iter_objects(type_code, self.layout)
+
+    def detail_table(self, kind: str) -> ObjectTable | None:
+        """Every object of one kind as a merged detail table, or ``None``."""
+        values = self._raw_objects(kind)
+        if values is None:
+            return None
+        rows: list[list[tuple[str, str]]] = []
+        overrides: list[dict[str, Cell]] = []
+        for value in values:
+            pairs = self._detail_pairs_for(kind, value)
+            if pairs is None:
+                return None
+            # Reason: kind and tick are already identified by the table/System;
+            # keep CLI detail prose but omit those redundant table columns.
+            pairs = [
+                (key, text)
+                for key, text in pairs
+                if kind == "task" or key not in ("Type", "KernelTick")
+            ]
+            rows.append(pairs)
+            overrides.append(detail_cells(kind, value, self.layout, pairs))
+        return merged_detail_table(
+            kind, rows, cell_overrides=overrides, column_specs=DETAIL_SPECS
+        )
 
     def iter_tasks(self):
         yield from iter_threads(self.layout)
@@ -1132,7 +1054,59 @@ class RtThreadAdapter(RtosAdapter):
             if is_current
             else None
         )
+        thread.pc = self._thread_pc(thread, bool(is_current))
         return thread, state, current_core
+
+    def _saved_pc_setup(self) -> tuple[SavedPcLayout, int] | None:
+        """The saved-PC slot layout and ``rt_hw_context_switch``'s address.
+
+        ``None`` when the release is not in the layout table, the port has no
+        ``rt_hw_context_switch_exit`` (the common restore path this decoder
+        relies on), or the switch symbol cannot be resolved.
+        """
+        if gdb is None:
+            return None
+        if not self._saved_pc_resolved:
+            self._saved_pc_resolved = True
+            pointer_size, _endian = arch_or_default()
+            layout = saved_pc_layout(self.version, pointer_size)
+            switch = eval_identifier("rt_hw_context_switch")
+            exit_path = eval_identifier("rt_hw_context_switch_exit")
+            if layout is not None and switch is not None and exit_path is not None:
+                self._saved_pc = (layout, value_address(switch))
+        return self._saved_pc
+
+    def _thread_pc(self, thread: Thread, is_current: bool) -> int | None:
+        """The last PC of one thread, or ``None`` when it cannot be proven.
+
+        The thread on the selected CPU is halted, so its PC is the newest
+        frame's PC. A thread running on another CPU has no saved frame to
+        decode. Any other thread decodes its saved switch frame.
+        """
+        if gdb is None:
+            return None
+        if is_current:
+            try:
+                return int(gdb.newest_frame().pc())
+            except (gdb.error, RuntimeError):
+                return None
+        if thread.oncpu is not None:
+            return None
+        setup = self._saved_pc_setup()
+        if setup is None or thread.sp == 0:
+            return None
+        layout, switch_addr = setup
+        _pointer_size, endian = arch_or_default()
+        decoded = decode_saved_pc(
+            thread.sp,
+            thread.entry,
+            layout,
+            read=lambda address, size: read_bytes(address, size),
+            switch_addr=switch_addr,
+            symbolised=lambda address: lookup_symbol_at(address) is not None,
+            endian=endian,
+        )
+        return decoded.pc if decoded is not None else None
 
     def _task_views(self):
         current = get_current_thread()
@@ -1144,18 +1118,22 @@ class RtThreadAdapter(RtosAdapter):
         smp = smp_columns_present(self.layout)
         rows: list[list[Cell]] = []
         for thread, state, current_core in self._task_views():
-            symbol = lookup_symbol_at(thread.entry) if thread.entry else None
-            source = source_location_at(thread.entry) if thread.entry else None
+            entry_symbol = lookup_symbol_at(thread.entry) if thread.entry else None
+            entry_source = source_location_at(thread.entry) if thread.entry else None
+            pc = thread.pc & ~1 if thread.pc is not None else None
+            pc_symbol = lookup_symbol_at(pc) if pc else None
+            pc_source = source_location_at(pc) if pc else None
             row = [
                 text_cell(thread.name + (" *" if current_core is not None else "")),
                 text_cell(state),
                 number_cell(thread.current_priority),
                 number_cell(thread.init_priority),
+                symbol_cell(pc, pc_symbol, pc_source),
                 address_cell(thread.sp),
                 number_cell(thread.stack_size or None),
                 number_cell(thread.stack_used),
                 number_cell(thread.max_stack_used),
-                symbol_cell(thread.entry, symbol, source),
+                symbol_cell(thread.entry, entry_symbol, entry_source),
             ]
             if smp:
                 row += [
@@ -1164,9 +1142,33 @@ class RtThreadAdapter(RtosAdapter):
                 ]
             row.append(address_cell(thread.address))
             rows.append(row)
-        return ObjectTable.from_specs(
-            task_specs(smp), rows, elastic=("Entry", "Name"), id_key="Addr"
+        table = ObjectTable.from_specs(
+            task_specs(smp), rows, elastic=("Entry", "Name"), id_key="TCB"
         )
+        high_water = table.headers.index("HighWater")
+        if rows and all(row[high_water].value is None for row in rows):
+            table.build_hints.append(
+                "HighWater is unavailable: build with kernel debug symbols and "
+                "ensure the port preserves RT-Thread's stack watermark fill; "
+                "an exhausted or unreadable stack can also make it unavailable."
+            )
+        return table
+
+    def scheduler_state(self) -> str | None:
+        """``In ISR``, ``Locked`` or ``Unlocked``; ``None`` when unreadable.
+
+        An interrupt in progress wins over the lock: a locked scheduler inside
+        an ISR is reported as the ISR, the outer condition a reader acts on.
+        """
+        irq_nest = read_irq_nest()
+        if irq_nest is not None and irq_nest > 0:
+            return f"In ISR (nest {irq_nest})"
+        lock_nest = read_scheduler_lock_nest(get_current_thread())
+        if lock_nest is None:
+            return None
+        if lock_nest > 0:
+            return f"Locked (nest {lock_nest})"
+        return "Unlocked"
 
     def system_summary(self) -> SystemSummary:
         tasks = list(self._task_views())
@@ -1183,11 +1185,10 @@ class RtThreadAdapter(RtosAdapter):
         )
         heap = self.heap_info()
         return SystemSummary(
-            kernel_version="RT-Thread",
             current_task=current,
             task_count=len(tasks),
             tick_count=get_tick(),
-            scheduler_state="N/A",
+            scheduler_state=self.scheduler_state(),
             state_counts=states,
             object_counts=self.object_counts(),
             heap_allocator=None if heap.algorithm == "none" else heap.algorithm,
@@ -1267,12 +1268,12 @@ class RtThreadAdapter(RtosAdapter):
         return pairs
 
     def heap_detail(self, info: HeapInfo | None = None) -> HeapDetail | None:
-        """Format Blocks/Holes/occupancy from the collected system-heap walk.
+        """Format the Blocks line from the collected system-heap walk.
 
         Pass ``heap_info()`` to reuse that collection; otherwise this method
         collects snapshot and walk itself. Returns ``None`` when the block
         chain is not resolvable so the caller keeps the basics and marks
-        Blocks/Holes unavailable.
+        Blocks unavailable.
         """
         heap = info if info is not None else self.heap_info()
         return _heap_detail_from_walk(heap.walk, heap.used, heap.total)
@@ -1314,6 +1315,13 @@ class RtThreadAdapter(RtosAdapter):
         return Capabilities(
             kinds=kinds,
             extra={"smp": smp, "heap_type": self.heap_type},
+            build_hints=(
+                [
+                    "CPU/Bind are unavailable: build with RT_USING_SMP for a multi-core target."
+                ]
+                if not smp
+                else []
+            ),
         )
 
     def diagnostics_report(self) -> list[CheckFinding]:
@@ -1323,44 +1331,89 @@ class RtThreadAdapter(RtosAdapter):
         is whether the block chain walked cleanly and whether the snapshot
         counters agree with the exact chain accounting.
         """
-        if self.heap_type == "none":
+        return self._heap_findings(
+            self.heap_info() if self.heap_type != "none" else None
+        )
+
+    def _heap_findings(self, info: HeapInfo | None) -> list[CheckFinding]:
+        """The heap verdicts, shared by ``checks`` and the heap section."""
+        if info is None:
             return [
                 CheckFinding(
                     "HeapChain", "skipped", "no system heap in this build", "system"
                 )
             ]
-        info = self.heap_info()
         return [_heap_chain_finding(info.walk), _heap_accounting_finding(info)]
+
+    def heap_map(self) -> HeapMap | None:
+        """The heap's block layout for ``rtt heap dump``.
+
+        ``None`` when there is no heap or its block chain cannot be resolved;
+        a truncated or corrupt walk still returns the blocks it read, flagged.
+        """
+        if self.heap_type == "none":
+            return None
+        info = self.heap_info()
+        walk = info.walk
+        if walk is None:
+            return None
+        messages: list[str] = []
+        if walk.corrupt:
+            messages.append(
+                "the block chain is corrupt; blocks past the damage are not drawn"
+            )
+        elif walk.truncated:
+            messages.append(
+                "the walk hit the traversal bound; later blocks are not drawn"
+            )
+        return HeapMap(
+            algorithm=info.algorithm,
+            base=walk.base,
+            end=walk.end,
+            blocks=[
+                HeapMapBlock(
+                    address=block.address,
+                    size=block.span,
+                    used=block.used,
+                    owner=block.owner,
+                )
+                for block in walk.blocks
+            ],
+            owners=self._memtrace_enabled(),
+            truncated=walk.truncated or walk.corrupt,
+            messages=messages,
+        )
 
     def heap_report(self) -> HeapReport:
         """One snapshot+walk collection formatted for ``rtt heap``.
 
-        The vertical basics plus the optional thread-occupancy table (as an
-        :class:`ObjectTable`) are returned so the neutral renderer prints
-        both; ``rtt heap`` never walks the heap twice.
+        The vertical basics and the Blocks line; the chain and accounting
+        verdicts ride as ``sections`` so the panel shows them as heap
+        diagnostics. There is no per-thread table: owner data is in
+        ``heap_map`` (``rtt heap dump``).
         """
         info_ = self.heap_info()
         pairs = self.heap_basic_pairs(info_)
         detail = self.heap_detail(info_)
         if detail is not None:
             pairs += detail.pairs
-            occupancy = detail.occupancy
-            if occupancy:
-                pairs.append(("Thread occupancy", f"{len(occupancy)} threads"))
-                table = ObjectTable(
-                    headers=["Thread", "Blocks", "Bytes (header included)"],
-                    rows=occupancy,
-                    elastic=("Thread",),
-                )
-            else:
-                pairs.append(("Thread occupancy", "N/A"))
-                table = None
         else:
-            pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
-            pairs.append(("Thread occupancy", "N/A"))
-            table = None
+            pairs.append(("Blocks", "N/A"))
+        findings = self._heap_findings(info_ if self.heap_type != "none" else None)
+        rows = tuple(
+            DetailRow(
+                key=finding.name,
+                value=(
+                    finding.verdict
+                    if not finding.detail
+                    else f"{finding.verdict}: {finding.detail}"
+                ),
+                severity=finding.verdict,
+            )
+            for finding in findings
+        )
         return HeapReport(
             pairs=pairs,
-            table=table,
-            table_title="Heap used by thread",
+            table=None,
+            sections=[DetailSection(title="Checks", rows=rows)] if rows else [],
         )

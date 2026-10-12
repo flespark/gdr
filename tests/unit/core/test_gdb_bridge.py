@@ -1021,11 +1021,13 @@ class _PcLineGdb:
 
 def test_source_location_at_clears_the_thumb_bit(monkeypatch):
     """A Thumb entry pointer resolves through its even instruction address."""
-    symtab = types.SimpleNamespace(fullname=lambda: "/src/shell.c")
+    symtab = types.SimpleNamespace(fullname=lambda: "/src/shell.c", filename="shell.c")
     fake = _PcLineGdb(types.SimpleNamespace(symtab=symtab, line=1700))
     monkeypatch.setattr(bridge, "gdb", fake)
 
-    assert bridge.source_location_at(0x600BCC01) == ("/src/shell.c", 1700)
+    located = bridge.source_location_at(0x600BCC01)
+    assert located == ("/src/shell.c", 1700, "shell.c")
+    assert located is not None and located.name == "shell.c"
     assert fake.queries == [0x600BCC00]
 
 

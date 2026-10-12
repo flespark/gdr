@@ -7,6 +7,7 @@ COUPLED: fixture object names and waiter relationships come from
 from __future__ import annotations
 
 import contextlib
+import json
 import re
 
 import pytest
@@ -89,6 +90,18 @@ def _fixture_row(output: str, name: str) -> list[str]:
     )
 
 
+def _vertical_detail(gdb_session, kind: str, name: str) -> str:
+    """Validate the merged CLI route, then read vertical API pairs losslessly."""
+    cli = gdb_session.run(f"freertos {kind} {name}", timeout=25)
+    _assert_clean_command_output(cli)
+    output = gdb_session.run(f"gdr api detail {kind} {name} --json", timeout=25)
+    envelope = next(
+        json.loads(line) for line in output.splitlines() if line.startswith("{")
+    )
+    assert envelope["ok"], envelope
+    return "\n".join(f"{key}: {value}" for key, value in envelope["data"]["pairs"])
+
+
 def _detail_pairs(output: str) -> dict[str, str]:
     """Parse stable ``Key: Value`` detail output without table assumptions."""
     return {
@@ -111,7 +124,7 @@ def _with_width(gdb, width: int):
 
 def test_all_freertos_commands_complete_cleanly(gdb_session):
     """Every public route completes without Python or guard error output."""
-    for command in _PUBLIC_COMMANDS:
+    for command in (*_PUBLIC_COMMANDS, "checks"):
         output = gdb_session.run(f"freertos {command}", timeout=20)
         _assert_clean_command_output(output)
 
@@ -173,7 +186,7 @@ def test_freertos_tables_fit_80_columns(gdb_session):
     with _with_width(gdb_session, 80):
         output = gdb_session.run("freertos tasks", timeout=20)
         _assert_clean_command_output(output)
-        for header in ("Name", "State", "Prio", "SP", "Addr"):
+        for header in ("Name", "State", "Prio", "SP", "TCB"):
             assert header in output, output
 
 
@@ -182,7 +195,7 @@ def test_freertos_tables_fit_120_columns(gdb_session):
     with _with_width(gdb_session, 120):
         output = gdb_session.run("freertos tasks", timeout=20)
         _assert_clean_command_output(output)
-        for header in ("Name", "State", "Prio", "SP", "Addr"):
+        for header in ("Name", "State", "Prio", "SP", "TCB"):
             assert header in output, output
 
 
@@ -246,10 +259,10 @@ def test_freertos_state_coverage_on_fixture(gdb_session):
 
 
 def test_freertos_high_water_matches_variant(gdb_session):
-    """base scans [pxStack, pxTopOfStack); full exposes Stack/Used too."""
+    """Peak-used HighWater needs both retained capacity and stack prefill."""
     tasks = gdb_session.run("freertos tasks", timeout=20)
     _assert_clean_command_output(tasks)
-    if not _PROFILE.stack_watermark:
+    if not _PROFILE.stack_watermark or _PROFILE.high_water_source != "pxEndOfStack":
         # Reason: without the 0xa5 prefill there is no watermark to scan, so
         # the capability column must be absent rather than showing a
         # fabricated value (trace-off variant).
@@ -386,10 +399,10 @@ def test_queue_detail_and_semaphore_detail_field_contract(gdb_session):
     """The detail views pin the queue Locks/Checks/FIFO and the semaphore's
     deliberate lack of an Owner block."""
     with _with_width(gdb_session, 200):
-        queue = gdb_session.run(f"freertos queue {_FIXTURE_QUEUE_NAME}", timeout=20)
-        sem = gdb_session.run("freertos semaphore gdr_semaphore", timeout=20)
-        mtx = gdb_session.run("freertos mutex gdr_mutex", timeout=20)
-        full = gdb_session.run("freertos queue gdr_full_queue", timeout=20)
+        queue = _vertical_detail(gdb_session, "queue", _FIXTURE_QUEUE_NAME)
+        sem = _vertical_detail(gdb_session, "semaphore", "gdr_semaphore")
+        mtx = _vertical_detail(gdb_session, "mutex", "gdr_mutex")
+        full = _vertical_detail(gdb_session, "queue", "gdr_full_queue")
     for output in (queue, sem, mtx, full):
         _assert_clean_command_output(output)
 
@@ -398,7 +411,7 @@ def test_queue_detail_and_semaphore_detail_field_contract(gdb_session):
     assert q["Items"] == "0"
     # Reason: the verdict row carries counts only; a healthy queue must not
     # emit any Check[...] problem row (see freertos/details.checks_pairs).
-    assert q["Checks"].startswith("ok (")
+    assert "Checks" not in q
     assert not any(key.startswith("Check[") for key in q)
     assert not any(key.startswith("Item[") for key in q)  # empty queue
 
@@ -422,12 +435,10 @@ def test_queue_detail_and_semaphore_detail_field_contract(gdb_session):
     assert holder_row[2] == m["OwnerPriority"]
     assert holder_row[3] == m["OwnerBasePriority"]
     # count(0) + holder(non-NULL) == 1 now holds, so no problem row is emitted.
-    assert m["Checks"].startswith("ok (")
+    assert "Checks" not in m
     assert not any(key.startswith("Check[") for key in m)
 
-    rec = _detail_pairs(
-        gdb_session.run("freertos mutex gdr_recursive_mutex", timeout=20)
-    )
+    rec = _detail_pairs(_vertical_detail(gdb_session, "mutex", "gdr_recursive_mutex"))
     assert rec["Owner"] == "gdr_recm"
     assert rec["OwnerPriority"] != "N/A"
     assert "OwnerBasePriority" in rec
@@ -437,7 +448,8 @@ def test_queue_detail_and_semaphore_detail_field_contract(gdb_session):
     # the uint32 1U, little-endian on the Cortex-M fixture.
     f = _detail_pairs(full)
     assert f["Items"] == "1"
-    assert f["Item[0]"].endswith(": 01 00 00 00")
+    assert f["Item[0]"].startswith("0x")
+    assert "01 00 00 00" not in full
 
 
 def test_timers_table_matches_fixture_ground_truth(gdb_session):
@@ -498,9 +510,9 @@ def test_timer_detail_reports_list_and_owner(gdb_session):
     member and report uninitialised for it.
     """
     with _with_width(gdb_session, 200):
-        active = gdb_session.run("freertos timer gdr_active", timeout=20)
-        created = gdb_session.run("freertos timer gdr_created", timeout=20)
-        stopped = gdb_session.run("freertos timer gdr_stopped", timeout=20)
+        active = _vertical_detail(gdb_session, "timer", "gdr_active")
+        created = _vertical_detail(gdb_session, "timer", "gdr_created")
+        stopped = _vertical_detail(gdb_session, "timer", "gdr_stopped")
     for output in (active, created, stopped):
         _assert_clean_command_output(output)
     a = _detail_pairs(active)
@@ -568,7 +580,7 @@ def test_timer_commands_section_is_honest(gdb_session):
     with _with_width(gdb_session, 200):
         detail = gdb_session.run("freertos timer gdr_active", timeout=20)
     _assert_clean_command_output(detail)
-    assert "Commands:" in detail
+    assert "Commands" in detail
     if "no pending timer commands" not in detail:
         header_line = next(line for line in detail.splitlines() if "Command" in line)
         for token in ("Seq", "Command", "Timer", "Value"):
@@ -670,7 +682,7 @@ print(f"tick={tick} event={event} tick_bits={cfg.tick_bits}")
     task = gdb_session.run("freertos task gdr_evw", timeout=20)
     _assert_clean_command_output(task)
     assert "Check[ListInit]" not in task, task
-    assert "Checks:" in task
+    assert "Checks:" not in task
 
 
 def test_mpu_lane_pool_channel_and_opaque_handles(gdb_session):
@@ -730,7 +742,7 @@ print(f"slot={int(slot['xInternalObjectHandle']):#x}")
     # A single-object detail must resolve through the same path (pool slot).
     detail = gdb_session.run("freertos queue gdr_empty_queue", timeout=20)
     _assert_clean_command_output(detail)
-    assert "Checks:" in detail, detail
+    assert "Checks:" not in detail, detail
 
 
 def test_stream_buffer_table_matches_fixture_geometry(gdb_session):
@@ -880,7 +892,8 @@ print(f"size_t={size_t} stack={stack_t} tick={tick_t}")
     _assert_clean_command_output(output)
     pairs = _detail_pairs(output)
     assert pairs["Algorithm"] == "heap_4"
-    assert pairs["CrossCheck"] == "ok", output
+    assert "CrossCheck" not in pairs, output
+    assert "Check[HeapCrossCheck]" not in pairs, output
     # The MSB-of-size_t allocated bit must be stripped: no block size may
     # carry a 0x8000000000000000-magnitude pollution.
     assert pairs["Blocks"].split()[0].isdigit()
@@ -930,11 +943,11 @@ def test_static_event_group_flag_value_live(gdb_session):
 
 def test_notification_index_gated_by_kernel_version(gdb_session):
     """uxNotificationIndex exists from V11.1.0 only; the detail says so."""
-    detail = gdb_session.run("freertos streambuffer gdr_stream_buffer", timeout=20)
+    detail = _vertical_detail(gdb_session, "streambuffer", "gdr_stream_buffer")
     _assert_clean_command_output(detail)
     major, minor, _patch = (int(part) for part in SPEC.version.split("."))
     if (major, minor) >= (11, 1):
-        assert "NotificationIndex: 0" in detail, detail
+        assert re.search(r"NotificationIndex:\s+0", detail), detail
     else:
         assert "NotificationIndex" in detail
         assert "N/A (kernel < 11.1.0)" in detail, detail
@@ -1008,17 +1021,17 @@ _HEAP_KEYS = [
     "TotalSize",
     "FreeSize",
     "MinEver",
-    "Allocs",
-    "Frees",
+    "Allocated",
+    "Freed",
     "Protector",
     "Blocks",
     "Holes",
-    "CrossCheck",
+    "Check[HeapCrossCheck]",
 ]
 
 
 def test_freertos_heap_contract_matches_variant(gdb_session):
-    """frt heap renders the ten stable keys; live values follow the variant.
+    """frt heap renders nine summary keys plus optional problem evidence.
 
     COUPLED: heap expectations come from ci/freertos/fixture/config/<variant>/
     (which MemMang source is linked) and the profile table in
@@ -1027,29 +1040,33 @@ def test_freertos_heap_contract_matches_variant(gdb_session):
     output = gdb_session.run("freertos heap", timeout=20)
     _assert_clean_command_output(output)
     # The block-table messages ride on [gdr] info lines; only the vertical
-    # Key: Value pairs belong to the ten-key contract.
+    # Key: Value pairs belong to the summary/problem contract.
     pairs = {
         key: value
         for key, value in _detail_pairs(output).items()
         if not key.startswith("[gdr]")
     }
-    assert list(pairs) == _HEAP_KEYS, output
+    assert "CrossCheck" not in pairs, output
+    assert "Allocs" not in pairs and "Frees" not in pairs, output
+    assert list(pairs) == [
+        key for key in _HEAP_KEYS if key != "Check[HeapCrossCheck]" or key in pairs
+    ], output
 
     kind = _PROFILE.heap_kind
     if kind == 1:
         assert pairs["Algorithm"] == "heap_1 (bump pointer)"
-        assert pairs["CrossCheck"].startswith("unavailable")
+        assert pairs["Check[HeapCrossCheck]"].startswith("skipped:")
         assert pairs["Blocks"] == "N/A" and pairs["Holes"] == "N/A"
     elif kind == 2:
         assert pairs["Algorithm"] == "heap_2"
         assert pairs["MinEver"] == "N/A"
-        assert pairs["Allocs"] == "N/A"
-        assert pairs["Frees"] == "N/A"
-        assert pairs["CrossCheck"] == "ok"
+        assert pairs["Allocated"] == "N/A"
+        assert pairs["Freed"] == "N/A"
+        assert "Check[HeapCrossCheck]" not in pairs
         assert pairs["Blocks"].split()[0].isdigit()
     elif kind == 4:
         assert pairs["Algorithm"] == "heap_4"
-        assert pairs["CrossCheck"] == "ok"
+        assert "Check[HeapCrossCheck]" not in pairs
         assert pairs["Blocks"].split()[0].isdigit()
         # The linear walk must start at the heap base (align_up(&ucHeap)),
         # not at the free-list head: heap_4 carves allocations from the front
@@ -1070,14 +1087,14 @@ def test_freertos_heap_contract_matches_variant(gdb_session):
             # completes and the three-way cross-check passes.
             assert pairs["Protector"] == "enabled"
             assert pairs["TotalSize"] != "unavailable", output
-            assert pairs["CrossCheck"] == "ok", output
+            assert "Check[HeapCrossCheck]" not in pairs, output
             match = re.search(r"linear walk: (\d+) block", output)
             assert match and int(match.group(1)) > 1, output
         else:
             # heap_5 without the heap protector exports no region bases, so
             # the linear walk is skipped and CrossCheck states the reason.
-            assert pairs["CrossCheck"] != "ok"
-            assert "heap_5" in pairs["CrossCheck"]
+            assert pairs["Check[HeapCrossCheck]"].startswith("skipped:")
+            assert "heap_5" in pairs["Check[HeapCrossCheck]"]
         assert pairs["Blocks"].split()[0].isdigit()
     elif _PROFILE.variant == "heap-3":
         assert pairs["Algorithm"] == "heap_3"

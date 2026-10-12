@@ -383,8 +383,8 @@ def test_small_mem_chain_walk_uses_pool_ptr_lsb_for_41(monkeypatch):
     assert walk.free_blocks == 1
 
 
-def test_small_mem_chain_walk_aggregates_memtrace_occupancy(monkeypatch):
-    """MEMTRACE names produce per-thread block/byte occupancy."""
+def test_small_mem_chain_walk_lists_memtrace_owners_per_block(monkeypatch):
+    """MEMTRACE names are kept per block, with each block's full span."""
     item_layout = StructLayout(
         "struct heap_mem",
         fields={"thread": StructField("thread", ("thread",), kind="string")},
@@ -416,9 +416,10 @@ def test_small_mem_chain_walk_aggregates_memtrace_occupancy(monkeypatch):
     )
 
     assert walk is not None
-    assert walk.occupancy == [
-        ("main", 2, 128),
-        ("worker1", 1, 128),
+    assert [(block.address, block.span, block.owner) for block in walk.blocks] == [
+        (0x1000, 64, "main"),
+        (0x1040, 64, "main"),
+        (0x1080, 128, "worker1"),
     ]
 
 
@@ -456,11 +457,11 @@ def test_small_mem_chain_walk_reads_memtrace_name_as_four_bytes(monkeypatch):
 
     assert walk is not None
     assert widths == [detail._MEMTRACE_NAME_WIDTH]
-    assert walk.occupancy == [("main", 1, 256)]
+    assert [(block.span, block.owner) for block in walk.blocks] == [(256, "main")]
 
 
 def test_small_mem_chain_walk_omits_occupancy_without_memtrace(monkeypatch):
-    """Without a ``thread`` field the walk reports no per-thread occupancy."""
+    """Without a ``thread`` field the walk records no block owners."""
     item_layout = StructLayout("struct heap_mem")
     monkeypatch.setattr(
         detail,
@@ -482,7 +483,7 @@ def test_small_mem_chain_walk_omits_occupancy_without_memtrace(monkeypatch):
     )
 
     assert walk is not None
-    assert walk.occupancy == []
+    assert all(block.owner is None for block in walk.blocks)
 
 
 def test_small_mem_chain_walk_reports_corrupt_magic(monkeypatch):
@@ -598,7 +599,7 @@ def test_memheap_walk_counts_circular_block_list(monkeypatch):
 
 
 def test_memheap_walk_aggregates_owner_thread_names(monkeypatch):
-    """MEMTRACE owner names on ``rt_memheap_item`` feed per-thread occupancy."""
+    """MEMTRACE owner names on ``rt_memheap_item`` are kept on each block."""
     heap = object()
     heap_layout = StructLayout(
         "struct rt_memheap",
@@ -653,7 +654,11 @@ def test_memheap_walk_aggregates_owner_thread_names(monkeypatch):
     walk = detail._walk_memheap(layout)
 
     assert walk is not None
-    assert walk.occupancy == [("main", 2, 32), ("worker1", 1, 16)]
+    assert [(block.address, block.span, block.owner) for block in walk.blocks] == [
+        (0x8000, 40, "main"),
+        (0x8028, 40, "worker1"),
+        (0x8050, 40, "main"),
+    ]
 
 
 def test_memheap_walk_skips_the_circular_tailer(monkeypatch):
@@ -732,7 +737,7 @@ def test_slab_walk_counts_free_and_used_pages(monkeypatch):
     assert walk.used_blocks == 2
     assert walk.free_blocks == 2
     assert walk.hole_sizes == [4096, 4096]
-    assert walk.occupancy == []
+    assert all(block.owner is None for block in walk.blocks)
 
 
 def test_walk_system_heap_dispatches_by_algorithm(monkeypatch):
@@ -879,7 +884,7 @@ def test_small_mem_chain_walk_returns_none_when_empty():
 
 
 def test_small_mem_chain_walk_skips_blank_owners(monkeypatch):
-    """Blank MEMTRACE names never enter the occupancy table."""
+    """Blank MEMTRACE names never become a block owner."""
     item_layout = StructLayout(
         "struct heap_mem",
         fields={"thread": StructField("thread", ("thread",), kind="string")},
@@ -906,7 +911,7 @@ def test_small_mem_chain_walk_skips_blank_owners(monkeypatch):
 
     assert walk is not None
     assert walk.used_blocks == 1
-    assert walk.occupancy == []
+    assert all(block.owner is None for block in walk.blocks)
 
 
 class _AddrHandle:

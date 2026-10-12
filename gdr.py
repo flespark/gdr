@@ -643,7 +643,7 @@ def _setup_rtthread(version: str, *, allow_unverified: bool = False) -> TargetVe
     )
     kl = build_layouts(cfg, target_version)
     info(f"  layout: {len(kl.structs)} structs, {len(kl.list_hooks)} list hooks")
-    adapter = RtThreadAdapter(kl, heap_type=cfg.heap_type)
+    adapter = RtThreadAdapter(kl, heap_type=cfg.heap_type, version=target_version)
 
     register_printers(kl)
     register_functions()

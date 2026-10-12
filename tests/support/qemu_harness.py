@@ -138,8 +138,11 @@ class QemuSession:
 
         return f"serial output:\n{read_log(self.serial_log)}\nQEMU output:\n{read_log(self.qemu_log)}"
 
-    def start(self, boot_wait: float) -> None:
-        """Launch QEMU and wait until the fixture has created its test objects.
+    def start(self, boot_wait: float, *, paused: bool = False) -> None:
+        """Launch QEMU; wait for fixture readiness, or GDB listening at reset.
+
+        ``paused`` adds ``-S`` and waits only for the GDB port, for tests that
+        must inspect startup data before the kernel has initialized it.
 
         Every failure path stops the process before raising. Reason: the caller
         registers teardown *after* start() returns (``session.start(...)`` then
@@ -150,6 +153,8 @@ class QemuSession:
         pipe to close.
         """
         command = self._command()
+        if paused:
+            command.append("-S")
         log_file = self.qemu_log.open("wb")
         self._qemu = subprocess.Popen(
             command,
@@ -169,7 +174,15 @@ class QemuSession:
                         "QEMU exited while booting "
                         f"(exit={self._qemu.returncode}): {command}\n{self._logs()}"
                     )
-                if self.profile.ready_marker in self._logs():
+                if paused:
+                    try:
+                        with socket.create_connection(
+                            ("127.0.0.1", self.gdb_port), timeout=0.1
+                        ):
+                            return
+                    except OSError:
+                        pass
+                elif self.profile.ready_marker in self._logs():
                     return
                 time.sleep(0.1)
             raise RuntimeError(

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from .formatting import format_address, format_optional_int, format_symbol_or_address
+from .formatting import (
+    SourceLoc,
+    format_address,
+    format_optional_int,
+    format_symbol_or_address,
+)
 
 try:
     import gdb
@@ -18,7 +24,6 @@ except ImportError:
 class SystemSummary:
     """RTOS-neutral system data for an adapter-owned system command."""
 
-    kernel_version: str = "unknown"
     current_task: str | None = None
     task_count: int | None = None
     # Row label for task_count; adapters override it to name the evidence
@@ -27,7 +32,9 @@ class SystemSummary:
     # unqualified.
     task_count_label: str = "Task number"
     tick_count: int | None = None
-    scheduler_state: str = "N/A"
+    # ``None`` when the adapter cannot read the scheduler lock/ISR nest counters;
+    # the summary then omits the row instead of printing a fabricated value.
+    scheduler_state: str | None = None
     state_counts: dict[str, int] = field(default_factory=dict)
     object_counts: dict[str, int] = field(default_factory=dict)
     heap_allocator: str | None = None
@@ -53,10 +60,12 @@ class ColumnSpec:
     Attributes:
         key: Column header (matches ``ObjectTable.headers``).
         kind: Value semantics: ``text``/``int``/``hex``/``addr``/
-            ``percent``/``waiters``/``symbol``/``enum``.
+            ``percent``/``waiters``/``symbol``/``pc``/``enum``/``addresses``.
         align: ``left`` or ``right`` for the plugin grid.
         elastic: Whether the plugin may shrink this column on narrow widths.
         doc: One-line column meaning (tooltip source).
+        group: ``basic`` for an identity/state property, ``diag`` for a
+            consistency verdict column (the panel's child checkboxes group on it).
     """
 
     key: str
@@ -64,6 +73,7 @@ class ColumnSpec:
     align: str = "left"
     elastic: bool = False
     doc: str = ""
+    group: str = "basic"
 
 
 @dataclass(frozen=True)
@@ -80,7 +90,7 @@ class Cell:
 
     text: str
     value: object = None
-    source: tuple[str, int] | None = None
+    source: SourceLoc | None = None
 
 
 def text_cell(value: str) -> Cell:
@@ -106,7 +116,7 @@ def address_cell(value: int | None) -> Cell:
 def symbol_cell(
     address: int | None,
     symbol: str | None = None,
-    source: tuple[str, int] | None = None,
+    source: SourceLoc | None = None,
 ) -> Cell:
     """A symbol-or-address column; the value stays the raw address."""
     return Cell(
@@ -159,11 +169,13 @@ class ObjectTable:
     value_rows: list[list[object]] | None = None
     # Per-cell ``(fullname, line)`` source locations mirroring ``rows``; None
     # when no cell in the table has one, so most tables stay unchanged.
-    source_rows: list[list[tuple[str, int] | None]] | None = None
+    source_rows: list[list[SourceLoc | None]] | None = None
     # Column whose value is the row's stable object identity (usually
     # ``Addr``); the serializer turns it into row ``ids`` a UI can key on
     # across refreshes.  Empty means the table has no stable identity.
     id_key: str = ""
+    # Actionable build/config advice, separate from general CLI/runtime messages.
+    build_hints: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Reason: rows and value_rows are two views of one row set, so a
@@ -241,7 +253,7 @@ class ObjectTable:
                 )
         rows: list[list[str]] = []
         values: list[list[object]] = []
-        sources: list[list[tuple[str, int] | None]] = []
+        sources: list[list[SourceLoc | None]] = []
         typed = False
         located = False
         for cell_row in cell_rows:
@@ -380,6 +392,93 @@ def check_findings(
     return findings
 
 
+# Detail keys whose number of entries varies per object: ``Msg[3]``,
+# ``Slot[0]``, ``Waiter: <name>``. They collapse into one column per stem.
+_DYNAMIC_DETAIL_KEY = re.compile(r"^(?P<stem>.+?)(?:\[\d+\]|: .+)$")
+
+
+def _detail_stem(key: str) -> str:
+    """The column a detail key belongs to: its stem when the key is dynamic."""
+    match = _DYNAMIC_DETAIL_KEY.match(key)
+    return match.group("stem") if match else key
+
+
+def merged_detail_table(
+    kind: str,
+    rows: Sequence[Sequence[tuple[str, str]]],
+    *,
+    id_key: str = "Address",
+    cell_overrides: Sequence[dict[str, Cell]] = (),
+    column_specs: Sequence[ColumnSpec] = (),
+) -> ObjectTable:
+    """Merge the detail blocks of every object of one kind into one table.
+
+    One row per object. Columns are the union of the detail keys in first-seen
+    order; a key that repeats per entry (``Msg[n]``, ``Slot[n]``,
+    ``Waiter: <name>``) collapses into one column whose cell lists its entries.
+    A column is ``diag`` when any of its values is a consistency verdict
+    (``verdict_severity``), so the panel's child checkboxes can group them.
+    ``N/A`` marks a property an object does not carry; an empty entry cell
+    means the object has no entries of that kind. Adapter-supplied
+    ``cell_overrides`` and ``column_specs`` preserve machine values and source
+    navigation without decoding RTOS detail strings in the core.
+    """
+    del kind  # the kind is carried by the table envelope, not the columns
+    declared = {spec.key: spec for spec in column_specs}
+    order: list[str] = []
+    severities: dict[str, DetailSeverity] = {}
+    dynamic: set[str] = set()
+    cells: list[dict[str, list[str]]] = []
+    for pairs in rows:
+        row: dict[str, list[str]] = {}
+        for key, value in pairs:
+            stem = _detail_stem(key)
+            if stem not in severities:
+                order.append(stem)
+                severities[stem] = "info"
+            verdict = verdict_severity(key, value)
+            if verdict != "info":
+                severities[stem] = verdict
+            if stem == key:
+                row[stem] = [value]
+            else:
+                dynamic.add(stem)
+                row.setdefault(stem, []).append(f"{key}: {value}")
+        cells.append(row)
+    specs = tuple(
+        ColumnSpec(
+            key=stem,
+            kind=declared[stem].kind
+            if stem in declared
+            else "addr"
+            if stem == id_key
+            else "text",
+            align=declared[stem].align if stem in declared else "left",
+            doc=declared[stem].doc if stem in declared else "",
+            elastic=stem == "Name",
+            group="diag" if severities[stem] != "info" else "basic",
+        )
+        for stem in order
+    )
+    table_rows: list[list[Cell]] = []
+    for index, row in enumerate(cells):
+        overrides = cell_overrides[index] if index < len(cell_overrides) else {}
+        line: list[Cell] = []
+        for stem in order:
+            if stem in dynamic:
+                text = "; ".join(row.get(stem, []))
+            else:
+                text = row[stem][0] if stem in row else "N/A"
+            line.append(overrides.get(stem, Cell(text=text, value=text)))
+        table_rows.append(line)
+    return ObjectTable.from_specs(
+        specs,
+        table_rows,
+        elastic=("Name",) if "Name" in order else (),
+        id_key=id_key if id_key in order else "",
+    )
+
+
 @dataclass
 class ObjectDetail:
     """Vertical key/value detail for one named object.
@@ -418,6 +517,41 @@ class HeapReport:
     table: ObjectTable | None = None
     messages: list[str] = field(default_factory=list)
     table_title: str = ""
+    # Verdict rows (system-wide consistency checks) grouped as detail sections,
+    # so a client shows them as diagnostic columns of the heap table.
+    sections: list[DetailSection] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class HeapMapBlock:
+    """One heap block for the heap-dump bitmap: a span and who owns it.
+
+    ``owner`` is the allocating thread's name when the allocator records it
+    (an allocator's owner tracing), ``None`` otherwise; free blocks carry ``used=False``.
+    """
+
+    address: int
+    size: int
+    used: bool
+    owner: str | None = None
+
+
+@dataclass
+class HeapMap:
+    """The heap's block layout, the input of ``<rtos> heap dump``.
+
+    ``base``/``end`` bound the arena; ``blocks`` are in address order. ``owners``
+    tells whether owner names exist for this allocator (False leaves every used
+    block's owner as ``N/A``). ``truncated`` marks a walk that stopped early.
+    """
+
+    algorithm: str
+    base: int
+    end: int
+    blocks: list[HeapMapBlock] = field(default_factory=list)
+    owners: bool = False
+    truncated: bool = False
+    messages: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -446,6 +580,8 @@ class Capabilities:
 
     kinds: dict[str, KindCapability] = field(default_factory=dict)
     extra: dict[str, object] = field(default_factory=dict)
+    # Only suggestions that can improve the target build belong in the panel.
+    build_hints: list[str] = field(default_factory=list)
 
 
 _active: RtosAdapter | None = None
@@ -577,6 +713,24 @@ class RtosAdapter(Protocol):
         ``None`` makes ``gdr api capabilities`` fall back to
         :func:`default_capabilities`; adapters override this to describe
         gated columns and the config macros that unlock them.
+        """
+        return None
+
+    def detail_table(self, kind: str) -> ObjectTable | None:
+        """Every object of one kind as a merged detail table, or ``None``.
+
+        Rows are the objects' full detail blocks (one row each), columns the
+        union of their properties, with diagnostic verdict columns grouped as
+        ``diag``. ``None`` means the adapter has no detail table for the kind;
+        callers fall back to :meth:`object_table`.
+        """
+        del kind
+        return None
+
+    def heap_map(self) -> HeapMap | None:
+        """The heap's block layout for ``<rtos> heap dump``, or ``None``.
+
+        ``None`` means the adapter has no heap to draw.
         """
         return None
 

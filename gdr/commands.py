@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from gdr import heapmap
 from gdr.adapter_api import HeapReport, ObjectDetail, ObjectTable, active
 from gdr.gdb_bridge import (
     gdb_command_guard,
@@ -12,8 +14,12 @@ from gdr.gdb_bridge import (
     print_detail,
     print_table,
     warn,
+    write_stdout,
 )
 from gdr.serialize import system_summary_pairs
+
+# Marks the object a ``<rtos> <kind> <name>`` command names inside the merged table.
+NAMED_MARK = "* "
 
 
 @gdb_command_guard
@@ -31,10 +37,12 @@ def render_tasks() -> None:
 
 @gdb_command_guard
 def render_object_detail(kind: str, name: str) -> None:
-    """Render one object as a vertical key/value detail block.
+    """Render the detail of every object of one kind as one merged table.
 
-    The adapter supplies RTOS-neutral ``(key, value)`` pairs so no adapter
-    field names leak into the generic renderer.
+    Each row is one object's full detail block, so the columns are the union of
+    every property the kind exposes (the same table the panel draws). The named
+    object's row is marked with :data:`NAMED_MARK`. An adapter without a detail
+    table keeps the vertical block for the named object.
     """
     adapter = active()
     if adapter is None:
@@ -44,14 +52,28 @@ def render_object_detail(kind: str, name: str) -> None:
     if not name.strip():
         warn("object name must not be empty")
         return
-    detail = collect_object_detail(adapter, requested, name)
-    if detail is None:
-        warn(f"object kind {requested!r} is not reliably enumerable")
+    table = collect_detail_table(adapter, requested)
+    if table is None:
+        detail = collect_object_detail(adapter, requested, name)
+        if detail is None:
+            warn(f"object kind {requested!r} is not reliably enumerable")
+            return
+        if not detail.found:
+            warn(
+                detail.message or f"{requested} {name!r}: not found or type not enabled"
+            )
+            return
+        print_detail(detail.pairs)
         return
-    if not detail.found:
-        warn(detail.message or f"{requested} {name!r}: not found or type not enabled")
+    name_index = table.headers.index("Name") if "Name" in table.headers else 0
+    rows = [list(row) for row in table.rows]
+    named = [row for row in rows if row and row[name_index] == name]
+    if not named:
+        warn(f"{requested} {name!r}: not found or type not enabled")
         return
-    print_detail(detail.pairs)
+    for row in named:
+        row[name_index] = NAMED_MARK + row[name_index]
+    print_table(rows, table.headers, elastic=table.elastic)
 
 
 @gdb_command_guard
@@ -95,6 +117,49 @@ def render_objects(kind: str = "") -> None:
 
 
 @gdb_command_guard
+def render_heap_dump(rtos: str, path: str = "") -> None:
+    """Draw the heap-occupancy bitmap, inline when the terminal can show it.
+
+    The bitmap goes to ``path`` (default ``gdr-heap-<rtos>-gen<N>.png`` in the
+    working directory) whenever the terminal cannot show images or ``path`` is
+    given. Otherwise the terminal's inline-image sequence is written to stdout.
+    """
+    adapter = active()
+    if adapter is None:
+        warn("run `gdr init <rtos> <version>` first")
+        return
+    heap = adapter.heap_map()
+    if heap is None:
+        warn("no heap block chain to draw (no heap, or the chain is not resolvable)")
+        return
+    for message in heap.messages:
+        info(message)
+    palette = heapmap.build_palette(heap)
+    png = heapmap.render_png(heap, palette)
+    for line in heapmap.summary_lines(heap, palette):
+        info(line)
+    mode = heapmap.output_mode(os.environ)
+    if path or mode == "file":
+        target = path or _default_heap_image(rtos)
+        try:
+            with open(target, "wb") as handle:
+                handle.write(png)
+        except OSError as exc:
+            warn(f"could not write the heap map to {target}: {exc.strerror or exc}")
+            return
+        info(f"heap map written to {target} ({len(png)} bytes)")
+        return
+    write_stdout("\n" + heapmap.inline_sequence(png, mode) + "\n")
+
+
+def _default_heap_image(rtos: str) -> str:
+    """The default bitmap path: the generation keeps successive dumps apart."""
+    from gdr.api import current_generation
+
+    return os.path.join(os.getcwd(), f"gdr-heap-{rtos}-gen{current_generation()}.png")
+
+
+@gdb_command_guard
 def render_heap() -> None:
     """Render the active adapter's heap snapshot via :class:`HeapReport`.
 
@@ -123,6 +188,11 @@ def render_heap() -> None:
 def collect_task_table(adapter) -> ObjectTable:
     """The adapter-owned task table, without printing."""
     return adapter.task_table()
+
+
+def collect_detail_table(adapter, kind: str) -> ObjectTable | None:
+    """One kind's merged detail table, or ``None`` when the adapter has none."""
+    return adapter.detail_table(_canonical_kind(kind))
 
 
 def collect_object_listing(adapter, kind: str) -> ObjectTable | None:

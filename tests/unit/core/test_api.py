@@ -11,6 +11,7 @@ import gdr.adapter_api as adapter_api
 import gdr.api as api
 from gdr.adapter_api import (
     CheckFinding,
+    HeapMap,
     HeapReport,
     ObjectDetail,
     ObjectTable,
@@ -32,8 +33,10 @@ class _ApiAdapter:
     counts: dict[str, int] = field(default_factory=lambda: {"queue": 1})
     details: dict[str, ObjectDetail] = field(default_factory=dict)
     summary: SystemSummary = field(
-        default_factory=lambda: SystemSummary(kernel_version="4.0.5")
+        default_factory=lambda: SystemSummary(current_task="main")
     )
+    tables: dict[str, ObjectTable] = field(default_factory=dict)
+    heap_map_value: HeapMap | None = None
     report: HeapReport | None = field(
         default_factory=lambda: HeapReport(pairs=[("Algorithm", "small")])
     )
@@ -61,6 +64,12 @@ class _ApiAdapter:
 
     def object_detail(self, kind, name):  # noqa: ARG002
         return self.details.get(kind)
+
+    def detail_table(self, kind):
+        return self.tables.get(kind)
+
+    def heap_map(self):
+        return self.heap_map_value
 
     def system_summary(self):
         return self.summary
@@ -197,14 +206,34 @@ def test_system_heap_capabilities_and_snapshot_compose(session):
     assert isinstance(kinds, dict)
     queue = kinds["queue"]
     assert isinstance(queue, dict)
-    assert pairs[0] == ["Kernel version", "4.0.5"]
+    assert pairs[0] == ["Current task", "main"]
+    assert "Kernel version" not in [key for key, _value in pairs]
     assert heap["table"] is None
     assert queue["enumerable"] is True
     assert "tasks" in data
-    checks = data["checks"]
-    assert isinstance(checks, dict)
-    assert checks["counts"] == {"ok": 1}
-    assert _dict_list(checks["findings"])[0]["name"] == "TaskCount"
+    # Reason: the snapshot carries no separate checks section; the verdicts ride
+    # inside the heap section and the per-kind tables, and ``checks`` stays a verb.
+    assert "checks" not in data
+    assert data["tables"] == {}
+    envelope = api.api_call("checks")
+    assert _data(envelope)["counts"] == {"ok": 1}
+
+
+def test_snapshot_separates_build_advice_from_general_messages(session):
+    from gdr.adapter_api import Capabilities
+
+    session.table.build_hints = ["fill stacks", "keep debug symbols"]
+    session.capabilities = lambda: Capabilities(
+        build_hints=["keep debug symbols", "enable tracing"]
+    )
+    result = api.api_call("snapshot")
+    assert _data(result)["build_hints"] == [
+        "fill stacks",
+        "keep debug symbols",
+        "enable tracing",
+    ]
+    assert result["warnings"] == ["scan note"]
+    assert "scan note" not in _strings(_data(result)["build_hints"])
 
 
 def test_snapshot_no_heap_skips_the_heap_walk(session):
@@ -216,7 +245,56 @@ def test_snapshot_no_heap_skips_the_heap_walk(session):
     assert snapshot["ok"] is True
     data = _data(snapshot)
     assert data["heap"] is None
-    assert "tasks" in data and "checks" in data
+    assert "tasks" in data and "tables" in data
+
+
+def test_snapshot_no_details_drops_the_tables(session):
+    """``--no-details`` skips the per-kind tables and keeps everything else."""
+    session.counts["semaphore"] = 1
+    session.tables["semaphore"] = ObjectTable(headers=["Name"], rows=[["sem"]])
+
+    data = _data(api.api_call("snapshot", "--no-details"))
+
+    assert data["tables"] is None
+    assert "tasks" in data and "heap" in data
+    tables = _data(api.api_call("snapshot"))["tables"]
+    assert isinstance(tables, dict)
+    assert tables["semaphore"]["rows"] == [["sem"]]
+    assert tables["semaphore"]["kind"] == "semaphore"
+
+
+def test_table_verb_returns_the_merged_table_or_reports_the_kind(session):
+    """``table <kind>`` answers with the adapter's merged table, else a coded error."""
+    session.tables["mutex"] = ObjectTable(headers=["Name"], rows=[["m"]])
+
+    envelope = api.api_call("table", "mutex")
+    assert _data(envelope)["headers"] == ["Name"]
+    assert _data(envelope)["kind"] == "mutex"
+    missing = api.api_call("table", "queue")
+    assert _error(missing)["code"] == "kind_not_enumerable"
+    assert _error(api.api_call("table"))["code"] == "bad_args"
+
+
+def test_heap_dump_verb_reports_no_heap_or_the_layout(session):
+    """``heap-dump`` is coded when there is nothing to draw, else the block layout."""
+    assert _error(api.api_call("heap-dump"))["code"] == "no_heap"
+
+    from gdr.adapter_api import HeapMap, HeapMapBlock
+
+    session.heap_map_value = HeapMap(
+        algorithm="small_mem",
+        base=0x1000,
+        end=0x1100,
+        blocks=[HeapMapBlock(0x1000, 0x40, True, "main")],
+    )
+    data = _data(api.api_call("heap-dump"))
+    assert data["blocks"] == [[0x1000, 0x40, True, "main"]]
+    assert data["owners"] is False
+    palette = data["palette"]
+    assert isinstance(palette, dict)
+    owners = palette["owners"]
+    assert isinstance(owners, dict)
+    assert set(owners) == {"main"}
 
 
 def test_the_verification_note_rides_every_envelope(session):

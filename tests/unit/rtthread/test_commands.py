@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 import rtthread.commands as commands
+from gdr import commands as core_commands
 
 
 class _FakeAdapter:
@@ -111,7 +112,8 @@ def test_help_topic_documents_fields_tips_config_and_limits(capsys):
         assert "TIPS" in output
         assert "CONFIGURATION" in output
         assert "LIMITATIONS" in output
-    assert "Thread occupancy" in heap
+    assert "Holes" not in heap and "Thread occupancy" not in heap
+    assert "dump" in heap
 
 
 def test_unknown_or_extra_arguments_refer_to_help(monkeypatch):
@@ -293,99 +295,62 @@ def test_complete_plural_list_command_does_not_walk_objects(monkeypatch):
 
 
 class _FakeHeapAdapter(commands.RtThreadAdapter):
-    """RtThreadAdapter stand-in exposing the heap command surface.
+    """RtThreadAdapter stand-in that hands back a fixed heap report.
 
-    Mirrors the real RtThreadAdapter.heap_report: the occupancy rows become
-    an ObjectTable and the N/A fallbacks are materialised into the pairs, so
-    the neutral renderer only prints.
+    The report is what the real adapter would return; these tests pin the
+    command's output shape, while test_adapter pins how the report is built.
     """
 
-    def __init__(self, diagnostics_data, basic_pairs=None):
-        self._detail = diagnostics_data
-        self._basic = (
-            basic_pairs if basic_pairs is not None else [("Algorithm", "small_mem")]
-        )
+    def __init__(self, report):
+        self._report = report
 
     def heap_report(self):
-        from gdr.adapter_api import HeapReport, ObjectTable
-
-        pairs = list(self._basic)
-        detail = self._detail
-        if detail is not None:
-            pairs += detail.pairs
-            if detail.occupancy:
-                pairs.append(("Thread occupancy", f"{len(detail.occupancy)} threads"))
-                table = ObjectTable(
-                    headers=["Thread", "Blocks", "Bytes (header included)"],
-                    rows=detail.occupancy,
-                    elastic=("Thread",),
-                )
-            else:
-                pairs.append(("Thread occupancy", "N/A"))
-                table = None
-        else:
-            pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
-            pairs.append(("Thread occupancy", "N/A"))
-            table = None
-        return HeapReport(pairs=pairs, table=table)
+        return self._report
 
 
-def test_render_heap_prints_basics_and_occupancy_table(monkeypatch):
-    """``rtt heap`` prints snapshot basics plus a per-thread occupancy table."""
-    from rtthread.adapter import HeapDetail
+def test_render_heap_prints_basics_and_verdict_free_of_removed_rows(monkeypatch):
+    """``rtt heap`` prints the basics and Blocks line; no Holes or occupancy rows."""
+    from gdr.adapter_api import HeapReport
 
     adapter = _FakeHeapAdapter(
-        HeapDetail(
+        HeapReport(
             pairs=[
+                ("Algorithm", "small_mem"),
                 ("Blocks", "12 used, 5 free, 17 total"),
-                ("Holes", "5 free, largest: 2048, smallest: 4, 8, 16"),
             ],
-            occupancy=[["main", "8", "4096"], ["worker1", "4", "1024"]],
         )
     )
-    monkeypatch.setattr(commands, "active", lambda: adapter)
+    printed: list[list[tuple[str, str]]] = []
+    monkeypatch.setattr(core_commands, "active", lambda: adapter)
+    monkeypatch.setattr(core_commands, "print_detail", printed.append)
+    monkeypatch.setattr(
+        core_commands,
+        "print_table",
+        lambda *_args, **_kw: (_ for _ in ()).throw(AssertionError("no table")),
+    )
 
-    report = adapter.heap_report()
+    commands.render_heap()
 
-    detail = dict(report.pairs)
-    assert detail["Blocks"] == "12 used, 5 free, 17 total"
-    assert detail["Holes"] == "5 free, largest: 2048, smallest: 4, 8, 16"
-    assert detail["Thread occupancy"] == "2 threads"
-    assert report.table is not None
-    assert report.table.headers == ["Thread", "Blocks", "Bytes (header included)"]
-    assert report.table.rows == [["main", "8", "4096"], ["worker1", "4", "1024"]]
+    assert printed == [
+        [("Algorithm", "small_mem"), ("Blocks", "12 used, 5 free, 17 total")]
+    ]
 
 
 def test_render_heap_degrades_to_na_without_a_walk(monkeypatch):
-    """An unresolvable block chain keeps the basics and marks everything N/A."""
-    monkeypatch.setattr(commands, "active", lambda: _FakeHeapAdapter(None))
-
-    report = commands.active().heap_report()
-
-    detail = dict(report.pairs)
-    assert detail["Blocks"] == "N/A"
-    assert detail["Holes"] == "N/A"
-    assert detail["Thread occupancy"] == "N/A"
-    assert report.table is None
-
-
-def test_render_heap_marks_occupancy_na_without_memtrace(monkeypatch):
-    """Without MEMTRACE the occupancy renders as a single N/A line."""
-    from rtthread.adapter import HeapDetail
+    """An unresolvable block chain keeps the basics and marks the Blocks line N/A."""
+    from gdr.adapter_api import HeapReport
 
     adapter = _FakeHeapAdapter(
-        HeapDetail(
-            pairs=[("Blocks", "1 used, 0 free, 1 total"), ("Holes", "0 free")],
-            occupancy=None,
-        )
+        HeapReport(pairs=[("Algorithm", "small_mem"), ("Blocks", "N/A")])
     )
-    monkeypatch.setattr(commands, "active", lambda: adapter)
+    printed: list[list[tuple[str, str]]] = []
+    monkeypatch.setattr(core_commands, "active", lambda: adapter)
+    monkeypatch.setattr(core_commands, "print_detail", printed.append)
 
-    report = adapter.heap_report()
+    commands.render_heap()
 
-    detail = dict(report.pairs)
-    assert detail["Thread occupancy"] == "N/A"
-    assert report.table is None
+    assert dict(printed[0])["Blocks"] == "N/A"
+    assert "Holes" not in dict(printed[0])
 
 
 def test_render_heap_degrades_an_adapter_without_heap_report(monkeypatch):

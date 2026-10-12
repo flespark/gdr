@@ -130,7 +130,9 @@ def queue_checks(
                     "Storage",
                     "ok"
                     if span == expected
-                    else f"fail: pcTail-pcHead = {span:#x} != {expected:#x}",
+                    else f"fail: pcHead={pc_head:#x}, pcTail={pc_tail:#x}: "
+                    f"span={span} B, expected uxLength({length}) * "
+                    f"uxItemSize({item_size}) = {expected} B",
                 )
             )
             results.append(
@@ -138,7 +140,8 @@ def queue_checks(
                     "WritePtr",
                     "ok"
                     if pc_head <= pc_write < pc_tail
-                    else "fail: pcWriteTo outside [pcHead, pcTail)",
+                    else f"fail: pcWriteTo={pc_write:#x} outside storage "
+                    f"[{pc_head:#x}, {pc_tail:#x})",
                 )
             )
             results.append(
@@ -146,7 +149,8 @@ def queue_checks(
                     "ReadPtr",
                     "ok"
                     if pc_head <= pc_read < pc_tail
-                    else "fail: pcReadFrom outside [pcHead, pcTail)",
+                    else f"fail: pcReadFrom={pc_read:#x} outside storage "
+                    f"[{pc_head:#x}, {pc_tail:#x})",
                 )
             )
 
@@ -169,7 +173,10 @@ def queue_checks(
                     "MutexAccounting",
                     "ok"
                     if ok
-                    else f"fail: {count} + holder({holder != 0}) != 1 accounting",
+                    else f"fail: uxMessagesWaiting={count}, "
+                    f"xMutexHolder={holder:#x}, uxLength={length}, "
+                    f"uxItemSize={item_size}; expected count + holder_present=1, "
+                    "length=1, item_size=0",
                 )
             )
         else:
@@ -185,7 +192,11 @@ def queue_checks(
             results.append(
                 (
                     "SemaphoreSelfHead",
-                    "ok" if ok else "fail: pcHead != object address or item size != 0",
+                    "ok"
+                    if ok
+                    else f"fail: pcHead={pc_head:#x}, "
+                    f"object={obj_address:#x}, uxItemSize={item_size}; "
+                    "expected head=object and item_size=0",
                 )
             )
         else:
@@ -685,10 +696,18 @@ def task_checks(
 def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
     """NextUnblockTime: xNextTaskUnblockTime vs the active delayed list front.
 
-    The kernel keeps ``xNextTaskUnblockTime`` at the front (minimum) value of
-    the active delayed list, or ``portMAX_DELAY`` when it is empty (tasks.c
-    xTaskIncrementTick); a disagreement means the counter was not refreshed.
+    Before scheduler startup its zero initializer is not a deadline. Once
+    running, an earlier cached value is allowed after an event unblock;
+    only a cache later than the first delayed wake can miss a deadline.
     """
+    running = read_int(lookup_symbol(layout.symbols["scheduler_running"]))
+    if running == 0:
+        return ("NextUnblockTime", "skipped: scheduler not started")
+    if running is None:
+        return ("NextUnblockTime", "skipped: scheduler state unreadable")
+    suspended = read_int(lookup_symbol(layout.symbols["scheduler_suspended"]))
+    if suspended not in (0,):
+        return ("NextUnblockTime", "skipped: scheduler suspended or state unreadable")
     expected = read_int(lookup_symbol(layout.symbols["next_unblock_time"]))
     delayed = safe_dereference(lookup_symbol(layout.lists["delayed_current"]))
     if delayed is None:
@@ -708,8 +727,8 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
     # pointer-width read would fold the padding bytes after each item value
     # into the minimum and falsely fail NextUnblockTime.
     tick_bytes = layout.config.tick_bits // 8
+    values: list[int] = []
     if walk.items:
-        values = []
         for item in walk.items:
             value = read_uint_at(item + offsets.item_value, tick_bytes)
             if value is None:
@@ -720,11 +739,17 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
         minimum = (1 << layout.config.tick_bits) - 1
     if expected is None:
         return ("NextUnblockTime", "skipped: unreadable")
-    if expected == minimum:
+    # Reason: tasks.c permits a stale EARLIER cache after an event unblocks
+    # a task. The tick ISR refreshes it on the next check; only a later cache
+    # can miss a deadline. portMAX_DELAY means no scheduled timeout.
+    if expected <= minimum:
         return ("NextUnblockTime", "ok")
+    first = walk.items[values.index(minimum)]
     return (
         "NextUnblockTime",
-        f"fail: xNextTaskUnblockTime {expected} != front delayed item {minimum}",
+        f"fail: xNextTaskUnblockTime={expected} ticks is later than earliest "
+        f"wake={minimum} ticks at delayed item {first:#x}; "
+        "tick processing may miss this deadline",
     )
 
 
@@ -785,8 +810,8 @@ def system_checks(layout: FreeRtosLayout) -> list[tuple[str, str]]:
         results.append(
             (
                 "SchedulerSuspended",
-                f"fail: uxSchedulerSuspended = {suspended} (a vTaskSuspendAll "
-                "is in effect; queue locks and lists may be transient)",
+                f"skipped: uxSchedulerSuspended={suspended}; stopped inside "
+                "vTaskSuspendAll, queue/list consistency may be transient",
             )
         )
 

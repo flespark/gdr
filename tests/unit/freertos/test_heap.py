@@ -33,12 +33,11 @@ _HEAP_KEYS = [
     "TotalSize",
     "FreeSize",
     "MinEver",
-    "Allocs",
-    "Frees",
+    "Allocated",
+    "Freed",
     "Protector",
     "Blocks",
     "Holes",
-    "CrossCheck",
 ]
 
 
@@ -836,7 +835,7 @@ def test_heap1_reports_bump_pointer(monkeypatch):
     assert pairs["Algorithm"] == "heap_1 (bump pointer)"
     assert pairs["Blocks"] == "N/A"
     assert pairs["Holes"] == "N/A"
-    assert pairs["CrossCheck"].startswith("unavailable")
+    assert pairs["Check[HeapCrossCheck]"].startswith("skipped:")
     assert heap.heap_status(snap) == "good"
 
 
@@ -846,7 +845,7 @@ def test_heap3_reports_opaque(monkeypatch):
     monkeypatch.setattr(heap, "symbol_exists", lambda name: name == "pvPortMalloc")
     monkeypatch.setattr(heap, "lookup_symbol", lambda _name: None)
     snap = heap.heap_snapshot(build_layout(FreeRtosConfig(), (10, 3, 1)))
-    for key in ("TotalSize", "FreeSize", "MinEver", "Allocs", "Frees"):
+    for key in ("TotalSize", "FreeSize", "MinEver", "Allocated", "Freed"):
         assert dict(heap.heap_pairs(snap))[key] == "N/A"
     assert heap.heap_status(snap) is None
 
@@ -872,6 +871,11 @@ def test_heap_pairs_key_order(kind):
     )
     keys = [key for key, _value in heap.heap_pairs(snap)]
     assert keys == _HEAP_KEYS
+    pairs = dict(heap.heap_pairs(snap))
+    assert pairs["Allocated"] == "3"
+    assert pairs["Freed"] == "2"
+    assert "CrossCheck" not in pairs
+    assert "Check[HeapCrossCheck]" not in pairs
 
 
 def test_protector_cell_states():
@@ -897,8 +901,8 @@ def test_heap_kind2_pairs_unavailable_without_symbols():
     snap = HeapSnapshot(geometry=geom, total=49144, free=49144, cross_check="ok")
     pairs = dict(heap.heap_pairs(snap))
     assert pairs["MinEver"] == "N/A"
-    assert pairs["Allocs"] == "N/A"
-    assert pairs["Frees"] == "N/A"
+    assert pairs["Allocated"] == "N/A"
+    assert pairs["Freed"] == "N/A"
     assert pairs["Protector"] == "N/A"
 
 
@@ -977,7 +981,9 @@ def test_render_heap_prints_pairs_and_table(monkeypatch):
     monkeypatch.setattr(gdr_commands, "info", lambda _msg: None)
     gdr_commands.render_heap()
     assert rendered_pairs["Algorithm"] == "heap_4"
-    assert rendered_pairs["CrossCheck"] == "ok"
+    assert "CrossCheck" not in rendered_pairs
+    assert "Check[HeapCrossCheck]" not in rendered_pairs
+    assert "Allocated" in rendered_pairs and "Freed" in rendered_pairs
     assert rendered_table["headers"] == ["Address", "Size", "State"]
 
 

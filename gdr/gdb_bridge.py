@@ -34,7 +34,7 @@ from gdr.constants import (
     GDR_MAX_CSTRING_LENGTH,
     GDR_PROPAGATE_EXCEPTION,
 )
-from gdr.formatting import format_table
+from gdr.formatting import SourceLoc, format_table
 
 
 @dataclass(frozen=True)
@@ -288,8 +288,8 @@ def lookup_symbol_at(addr: int) -> str | None:
     return symbol.replace(" + ", "+").replace(" - ", "-")
 
 
-def source_location_at(addr: int) -> tuple[str, int] | None:
-    """Return ``(fullname, line)`` of the source line that starts at ``addr``.
+def source_location_at(addr: int) -> SourceLoc | None:
+    """Return the source line covering ``addr`` as a :class:`SourceLoc`.
 
     Reads only the debug line table through ``gdb.find_pc_line``, never the
     target memory, so it is safe on a halted target. ``None`` when the address
@@ -304,7 +304,31 @@ def source_location_at(addr: int) -> tuple[str, int] | None:
         return None
     if sal.symtab is None or sal.line <= 0:
         return None
-    return sal.symtab.fullname(), int(sal.line)
+    return SourceLoc(sal.symtab.fullname(), int(sal.line), sal.symtab.filename)
+
+
+def source_definition_at(addr: int) -> SourceLoc | None:
+    """Resolve a data symbol's declaration, falling back to its code line.
+
+    Symbol lookup is identifier-only; offsets never become GDB expressions.
+    """
+    _ensure_gdb()
+    name = lookup_symbol_at(addr)
+    if name:
+        name = re.split(r"[+-]", name, maxsplit=1)[0]
+        if is_plain_identifier(name):
+            symbol = _lookup_gdb_symbol(name)
+            if symbol is not None:
+                try:
+                    if symbol.symtab is not None and symbol.line > 0:
+                        return SourceLoc(
+                            symbol.symtab.fullname(),
+                            int(symbol.line),
+                            symbol.symtab.filename,
+                        )
+                except (gdb.error, AttributeError, TypeError, ValueError):
+                    pass
+    return source_location_at(addr)
 
 
 def format_code_address(address: int | None) -> str:
@@ -861,6 +885,17 @@ def info(msg: str) -> None:
     """Print an info-prefixed message to GDB stdout."""
     _ensure_gdb()
     gdb.write(f"[gdr] {msg}\n")
+
+
+def write_stdout(text: str) -> None:
+    """Write raw text to GDB stdout without any prefix or wrapping.
+
+    Used for terminal escape sequences (inline images). ``gdb.write`` passes the
+    bytes through unchanged, which the pty check in the heap-dump spike confirmed
+    for a 20 KB base64 payload at 80 columns.
+    """
+    _ensure_gdb()
+    gdb.write(text)
 
 
 def format_exception(e: BaseException) -> str:

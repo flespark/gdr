@@ -96,10 +96,12 @@ warning: target RT-Thread version not exported; cannot verify version
 | --------- | ------------- |
 | `gdr init <rtos> <version> [--force] [--allow-unverified]` | Initialize the selected RTOS adapter; `--force` replaces adapter without restarting GDB, and `--allow-unverified` registers even when the target matches no RTOS symbol (a modified or stripped kernel) |
 | `gdr reset` | Drop the active adapter and session caches |
+| `frt checks [scope] [name]` | Run complete consistency checks (`frt help checks`); ordinary views show only specific problems |
 | `gdr help [topic]` | Show bootstrap or pretty-printer help |
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |
-| `<rtos> <object> <name>` | Show one object's vertical detail (e.g. `rtt semaphore my_sem`) |
+| `<rtos> <object> <name>` | Show every object of the kind as one detail table, with the named object's row marked with `*` followed by a space (e.g. `rtt semaphore my_sem`) |
+| `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG (default `gdr-heap-<rtos>-gen<N>.png`) |
 
 ## Convenience functions
 

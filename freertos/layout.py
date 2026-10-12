@@ -45,6 +45,12 @@ PROBE_MARKERS: tuple[str, ...] = (
 SMP_ERA_FIELD = "xTaskRunState"
 SMP_ERA_SYMBOL = "pxCurrentTCBs"
 
+# The port the image was built for, read from its symbols (see freertos/stackpc.py).
+# RISC-V's port has xPortStartFirstTask; Cortex-M's has PendSV_Handler, which both
+# Cortex-M3 and Cortex-M33 carry, so the ARM CPU name tells them apart.
+PORT_RISCV_SYMBOL = "xPortStartFirstTask"
+PORT_PENDSV_SYMBOL = "PendSV_Handler"
+
 
 @dataclass
 class FreeRtosConfig:

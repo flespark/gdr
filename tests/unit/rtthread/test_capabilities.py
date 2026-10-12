@@ -71,10 +71,19 @@ def _walk(**overrides) -> diagnostics.HeapWalk:
         "used_blocks": 2,
         "free_blocks": 1,
         "hole_sizes": [],
-        "occupancy": [],
     }
     base.update(overrides)
     return diagnostics.HeapWalk(**base)
+
+
+def test_build_advice_gates_smp_and_does_not_repeat_release_notes(monkeypatch):
+    plain = _adapter()
+    smp = _adapter(smp=True)
+    for adapter in (plain, smp):
+        monkeypatch.setattr(adapter, "object_counts", lambda: {"task": 1})
+    assert "RT_USING_SMP" in " ".join(plain.capabilities().build_hints)
+    assert smp.capabilities().build_hints == []
+    assert not any("SendWait" in hint for hint in plain.capabilities().build_hints)
 
 
 def test_diagnostics_report_flags_a_corrupt_or_truncated_chain(monkeypatch):

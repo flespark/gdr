@@ -92,6 +92,7 @@ def test_object_table_serializes_column_specs_and_value_rows():
             "align": "right",
             "elastic": False,
             "doc": "",
+            "group": "basic",
         }
     ]
     assert rendered["value_rows"] == [[16]]
@@ -119,7 +120,6 @@ def _pairs(document: dict[str, object]) -> list[list[str]]:
 def test_system_summary_pairs_match_the_text_renderer_order():
     """The JSON pairs and the vertical text block share one builder."""
     summary = SystemSummary(
-        kernel_version="4.0.5",
         current_task="main",
         task_count=2,
         task_count_label="Threads",
@@ -135,12 +135,13 @@ def test_system_summary_pairs_match_the_text_renderer_order():
 
     pairs = system_summary_pairs(summary)
 
-    assert pairs[2] == ("Threads", "2")
+    assert pairs[1] == ("Threads", "2")
     assert ("semaphore", "2") in pairs
     assert pairs.index(("semaphore", "2")) < pairs.index(("timer", "1"))
     assert ("Heap used", "N/A") in pairs
     assert pairs[-1] == ("Check", "ok")
-    assert _pairs(system_summary_to_dict(summary))[0] == ["Kernel version", "4.0.5"]
+    assert _pairs(system_summary_to_dict(summary))[0] == ["Current task", "main"]
+    assert "Kernel version" not in [pair[0] for pair in pairs]
 
 
 def test_heap_report_serializes_a_missing_table_as_null():

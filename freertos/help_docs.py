@@ -6,6 +6,7 @@ from freertos.layout import FreeRtosLayout
 from gdr.help import (
     CommandHelp,
     HelpField,
+    HelpTopic,
     HelpTree,
     functions_topic,
     pretty_printer_topic,
@@ -27,6 +28,39 @@ _CHECK_LIMIT = (
 )
 _SOURCE_FIELD = ("Src", "Discovery evidence; '+' joins corroborating channels.")
 _ADDR_FIELD = ("Addr", "Target address of the kernel object.")
+_PROBLEM_FIELD = (
+    "Check[name]",
+    "Specific failure or incomplete-check evidence only; frt checks shows all verdicts.",
+)
+
+
+_HEAP_DUMP = HelpTopic(
+    name="dump",
+    summary="Draw the heap block bitmap",
+    description=(
+        "Draws the linear block walk as coloured cells: grey for free blocks, one "
+        "neutral colour for allocated blocks (FreeRTOS keeps no owner names). Inline "
+        "in iTerm2 or Kitty; otherwise written to a PNG file."
+    ),
+    usage=("frt heap dump [path]",),
+    fields=_fields(
+        (
+            "Cells",
+            "The arena split evenly into a fixed grid, row by row; a block paints every cell it touches.",
+        ),
+        (
+            "File",
+            "Default gdr-heap-freertos-gen<N>.png in the working directory, or the given path.",
+        ),
+    ),
+    tips=(
+        "GDR_HEAP_IMAGE=iterm|kitty|file overrides terminal detection.",
+        "heap_3 wraps the C library malloc; the bitmap is unavailable there.",
+    ),
+    limitations=(
+        "Only the linear walk is drawn; a free-list-only walk has no allocated blocks to show.",
+    ),
+)
 
 
 def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
@@ -43,13 +77,23 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 ("Prio", "Current effective priority."),
                 ("BasePrio", "Base priority before mutex inheritance, when present."),
                 ("SP", "Current top-of-stack pointer."),
-                ("Stack", "Configured stack bytes when pxEndOfStack is available."),
+                (
+                    "Stack",
+                    "Recorded usable stack span through pxEndOfStack, inclusive, in bytes; excludes alignment-discarded allocation padding.",
+                ),
                 ("Used", "Currently used stack bytes."),
-                ("HighWater", "Bytes never overwritten by the 0xa5 fill pattern."),
+                (
+                    "HighWater",
+                    "Historical maximum stack bytes used: max(Used, recorded usable span minus untouched 0xa5 fill bytes); includes initial context reservations before scheduler startup.",
+                ),
                 ("Runtime", "Raw run-time counter when statistics are enabled."),
                 ("CPU", "Current SMP core, when configured."),
                 ("Affinity", "SMP core-affinity mask, when present."),
-                _ADDR_FIELD,
+                (
+                    "PC",
+                    "Last PC as <symbol+offset>, proven from the saved context frame (Cortex-M and RISC-V ports). N/A when no proof admits it.",
+                ),
+                ("TCB", "Task control block address; the row identity."),
             ),
             tips=(
                 "Use `frt task <name>` for blocking, notification and consistency details.",
@@ -57,10 +101,12 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             ),
             configuration=(
                 "BasePrio, stack bounds, Runtime, CPU and Affinity appear only when their TCB fields/configuration exist.",
-                "HighWater appears only when at least one stack has a usable fill watermark.",
+                "HighWater requires pxEndOfStack (configRECORD_STACK_HIGH_ADDRESS) and stack prefill; appears only when at least one task has both.",
             ),
             limitations=(
                 "There is no Entry column: a FreeRTOS TCB does not retain the task entry function after creation.",
+                "A proven initial frame can show an entry PC before startup; this does not mean the task ran, nor provide a retained TCB entry field.",
+                "Current saved-SP reservations count even when slots still contain fill, so HighWater >= Used. Historical reservations that left no write trace cannot be recovered from a halted snapshot.",
             ),
             aliases=("threads",),
             action="tasks",
@@ -84,7 +130,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 ("WakeTick/BlockedOn", "Blocking deadline and host when available."),
                 ("Notify[n]", "Notification value and state for each configured slot."),
                 ("Runtime/Runtime%", "Raw and percentage run time when enabled."),
-                ("Checks", "List and TCB consistency verdicts."),
+                _PROBLEM_FIELD,
             ),
             tips=("Names may contain spaces, for example `frt task Tmr Svc`.",),
             configuration=(
@@ -129,6 +175,26 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             action="objects",
         ),
         CommandHelp(
+            "checks",
+            "Run explicit consistency checks",
+            "Reports each pass, failure and skip with the object address and concrete evidence. Normal views show only problems.",
+            usage=(
+                "frt checks [system|heap|task|queue|semaphore|mutex|timer|eventgroup] [name]",
+            ),
+            fields=_fields(
+                ("Object", "Object name and address or system/heap scope."),
+                (
+                    "Check/Verdict/Evidence",
+                    "Invariant, ok/fail/skipped and observed fields/locations.",
+                ),
+            ),
+            tips=(
+                "Run after kernel initialization; stops inside kernel updates can be transient.",
+            ),
+            limitations=(_CHECK_LIMIT,),
+            action="checks",
+        ),
+        CommandHelp(
             "system",
             "Show scheduler, object and heap summary",
             "Combines kernel identity, scheduler counts, object discovery, heap status and consistency checks.",
@@ -145,7 +211,10 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                     "Heap allocator/used/total/status",
                     "Allocator snapshot when one is linked.",
                 ),
-                ("Checks", "Adapter-owned scheduler and object consistency verdicts."),
+                (
+                    "Check[name]",
+                    "Specific failure or incomplete-read evidence; use frt checks for all results.",
+                ),
             ),
             tips=("Use `frt heap` or an object command for the underlying evidence.",),
             configuration=(
@@ -160,24 +229,31 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             "heap",
             "Inspect the FreeRTOS allocator",
             "Reports a stable allocator summary and, when safe, a bounded linear or free-list block table.",
-            usage=("frt heap",),
+            usage=("frt heap", "frt heap dump [path]"),
+            children=(_HEAP_DUMP,),
             fields=_fields(
                 ("Algorithm", "heap_1..heap_5, heap_3, or none."),
                 (
                     "TotalSize/FreeSize/MinEver",
                     "Kernel size and free-space counters, in bytes.",
                 ),
-                ("Allocs/Frees", "Successful allocation/free counters when exported."),
+                (
+                    "Allocated/Freed",
+                    "Cumulative successful allocation/free operation counts, not byte sizes or live block counts; N/A when not exported.",
+                ),
                 ("Protector", "Heap-protector canary state when enabled."),
                 ("Blocks/Holes", "Bounded walk counts and fragmentation."),
-                ("CrossCheck", "Free-list, linear-walk and kernel-counter agreement."),
+                (
+                    "Check[HeapCrossCheck]",
+                    "Only failure/incomplete evidence, with affected blocks or counters; absent when healthy. frt checks heap includes passes.",
+                ),
                 (
                     "Address/Size/State|Next",
                     "Optional physical-block or free-list rows.",
                 ),
             ),
             tips=(
-                "Treat a mismatch/corrupt CrossCheck as evidence to inspect before continuing the target.",
+                "Use frt checks heap for complete consistency results; inspect reported mismatch/corrupt evidence before continuing the target.",
                 "Compare MinEver with current FreeSize to distinguish a transient peak from current pressure.",
             ),
             configuration=(
@@ -186,7 +262,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             limitations=(
                 "FreeRTOS block headers have no owner field, so heap use cannot be attributed per task.",
                 "heap_3 wraps libc and exposes no FreeRTOS arena to walk.",
-                "heap_5 without the protector exports no reliable linear region bounds; CrossCheck is unavailable.",
+                "heap_5 without the protector exports no reliable linear region bounds; Check[HeapCrossCheck] explains the skipped comparison.",
             ),
             action="heap",
         ),
@@ -218,7 +294,7 @@ def _queue_list_help() -> CommandHelp:
             _ADDR_FIELD,
         ),
         tips=(
-            "Use `frt queue <name>` to dump queued item prefixes and consistency checks.",
+            "Use `frt queue <name>` for FIFO storage addresses; `frt checks queue <name>` for full consistency results.",
         ),
         configuration=(
             "Set requires configUSE_QUEUE_SETS; exact Type requires configUSE_TRACE_FACILITY.",
@@ -233,15 +309,18 @@ def _queue_list_help() -> CommandHelp:
 def _queue_detail_help() -> CommandHelp:
     return CommandHelp(
         "queue",
-        "Show one queue in detail",
-        "Shows queue geometry, waiters, locks, checks and bounded FIFO item bytes.",
+        "Show queue details",
+        "Shows all discovered queues in one merged table, marking the selected row with '*'; includes geometry, waiters, problems and FIFO storage addresses.",
         usage=("frt queue <name-or-address>",),
         fields=_fields(
             ("Head/Tail/WriteTo/ReadFrom", "Queue storage ring pointers."),
             ("Items/Length/ItemSize/Free", "Occupancy geometry."),
             ("SendWait/RecvWait/Locks/Set", "Blocking and deferred-operation state."),
-            ("Checks", "Queue list and storage consistency."),
-            ("Item[n]", "Address and bounded payload prefix in FIFO order."),
+            _PROBLEM_FIELD,
+            (
+                "Item",
+                "FIFO storage addresses labelled Item[n], merged in one column; inspect bytes through GDB or the memory viewer.",
+            ),
             _SOURCE_FIELD,
         ),
         tips=(
@@ -281,14 +360,14 @@ def _semaphore_list_help() -> CommandHelp:
 def _semaphore_detail_help() -> CommandHelp:
     return CommandHelp(
         "semaphore",
-        "Show one semaphore in detail",
-        "Shows token counts, take waiters, lock state and queue-structure checks.",
+        "Show semaphore details",
+        "Shows all discovered semaphores in one merged table, marking the selected row with '*'; includes counts, take waiters, locks and problems.",
         usage=("frt semaphore <name-or-address>",),
         fields=_fields(
             ("Count/Max", "Available tokens and capacity."),
             ("Waiters", "Tasks blocked on take."),
             ("Locks", "Deferred queue unlock counters."),
-            ("Checks", "List and queue consistency."),
+            _PROBLEM_FIELD,
             _SOURCE_FIELD,
         ),
         tips=("Use waiter names to continue with `frt task <name>`.",),
@@ -330,8 +409,8 @@ def _mutex_list_help() -> CommandHelp:
 def _mutex_detail_help() -> CommandHelp:
     return CommandHelp(
         "mutex",
-        "Show one mutex in detail",
-        "Shows holder priorities, recursion, waiters, locks and consistency checks.",
+        "Show mutex details",
+        "Shows all discovered mutexes in one merged table, marking the selected row with '*'; includes holder priorities, recursion, waiters, locks and problems.",
         usage=("frt mutex <name-or-address>",),
         fields=_fields(
             ("Held/Owner", "Ownership state and task name."),
@@ -341,7 +420,7 @@ def _mutex_detail_help() -> CommandHelp:
             ),
             ("RecursiveCallCount", "Recursive nesting depth."),
             ("Waiters/Locks", "Blocked takers and deferred queue state."),
-            ("Checks", "Mutex/list consistency."),
+            _PROBLEM_FIELD,
             _SOURCE_FIELD,
         ),
         tips=(
@@ -390,14 +469,15 @@ def _timer_list_help() -> CommandHelp:
 def _timer_detail_help() -> CommandHelp:
     return CommandHelp(
         "timer",
-        "Show one software timer in detail",
-        "Shows timing, daemon-list membership, ownership checks and pending timer commands.",
+        "Show software timer details",
+        "Shows all discovered timers in one merged table, marking the selected row with '*'; includes timing, list membership, ownership and pending commands.",
         usage=("frt timer <name-or-address>",),
         fields=_fields(
             ("State/Mode/Period", "Current evidence, reload mode and period."),
             ("Expiry/ExpiresIn", "Deadline and wrap-safe delta; N/A when dormant."),
             ("Callback/ID/List", "Callback, application ID and current/overflow list."),
-            ("OwnerCheck/Checks", "List-item ownership and structural verdicts."),
+            ("OwnerCheck", "List-item ownership verdict."),
+            _PROBLEM_FIELD,
             ("Commands", "Bounded timer-daemon queue decode."),
             _SOURCE_FIELD,
         ),
@@ -443,14 +523,17 @@ def _event_list_help() -> CommandHelp:
 def _event_detail_help() -> CommandHelp:
     return CommandHelp(
         "eventgroup",
-        "Show one event group in detail",
-        "Decodes current bits and every waiter's ANY/ALL, clear-on-exit and missing-bit condition.",
+        "Show event group details",
+        "Shows all discovered event groups in one merged table, marking the selected row with '*'; decodes bits and each waiter's ANY/ALL, clear-on-exit and missing-bit condition.",
         usage=("frt eventgroup <name-or-address>",),
         fields=_fields(
             ("Bits/Waiters", "Current mask and waiter count."),
             ("StaticallyAllocated", "Allocation mode when the field exists."),
-            ("Waiter[n]", "Task, wanted bits, mode, clear-on-exit and missing bits."),
-            ("Checks", "Wait-list/control-bit consistency."),
+            (
+                "Waiter",
+                "Merged Waiter[n] entries: task, wanted bits, mode, clear-on-exit and missing bits.",
+            ),
+            _PROBLEM_FIELD,
             _SOURCE_FIELD,
         ),
         tips=(
@@ -499,8 +582,8 @@ def _stream_list_help() -> CommandHelp:
 def _stream_detail_help() -> CommandHelp:
     return CommandHelp(
         "streambuffer",
-        "Show one stream/message buffer in detail",
-        "Shows ring geometry, trigger semantics, waiters, message-prefix assumptions and bounds checks.",
+        "Show stream/message buffer details",
+        "Shows all discovered buffers in one merged table, marking the selected row with '*'; includes ring geometry, triggers, waiters, message-prefix assumptions and bounds checks.",
         usage=("frt streambuffer <name-or-address>",),
         fields=_fields(
             (

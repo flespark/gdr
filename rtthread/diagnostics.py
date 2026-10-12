@@ -13,7 +13,7 @@ consistency checks alongside the readable summary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 try:
@@ -375,6 +375,21 @@ PAGE_TYPE_FREE = 0x00
 _MEMTRACE_NAME_WIDTH = 4
 
 
+@dataclass(frozen=True)
+class WalkBlock:
+    """One block of the bounded walk, in address order.
+
+    ``span`` is the block's full extent including its header, the unit the
+    kernel counts; ``owner`` is the MEMTRACE thread name of a used block, or
+    ``None`` when the allocator keeps no owner.
+    """
+
+    address: int
+    span: int
+    used: bool
+    owner: str | None = None
+
+
 @dataclass
 class HeapWalk:
     """Bounded system-heap block walk result for ``rtt heap`` diagnostics.
@@ -382,20 +397,22 @@ class HeapWalk:
     All sizes are bytes. ``used_bytes`` / ``total_bytes`` follow the kernel's
     snapshot counters: a used block counts its full span including its header,
     and ``total_bytes`` is the arena capacity without the end sentinel. They are
-    set only when the walk closed without truncation or corruption. ``occupancy``
-    byte counts use the same span, so they sum to ``used_bytes``. ``hole_sizes``
-    are the usable payload bytes of each free block. Slab page walks leave the
-    byte counts unset.
+    set only when the walk closed without truncation or corruption. ``hole_sizes``
+    are the usable payload bytes of each free block. ``blocks`` lists every
+    walked block (the heap-dump bitmap draws them) and ``base``/``end`` bound the
+    arena they cover. Slab page walks leave the byte counts unset.
     """
 
     used_blocks: int
     free_blocks: int
     hole_sizes: list[int]
-    occupancy: list[tuple[str, int, int]]  # (thread, blocks, bytes)
     truncated: bool = False
     corrupt: bool = False
     used_bytes: int | None = None
     total_bytes: int | None = None
+    blocks: list[WalkBlock] = field(default_factory=list)
+    base: int = 0
+    end: int = 0
 
 
 def _read_name_at(
@@ -455,16 +472,6 @@ def _exact_byte_counts(
     return used_bytes, total_bytes
 
 
-def _occupancy_rows(
-    owner_blocks: dict[str, int], owner_bytes: dict[str, int]
-) -> list[tuple[str, int, int]]:
-    """Sort per-thread occupancy most-allocating first, then by name."""
-    return sorted(
-        ((name, owner_blocks[name], owner_bytes[name]) for name in owner_blocks),
-        key=lambda row: (-row[1], row[0]),
-    )
-
-
 def _walk_small_mem_chain(
     heap_ptr: int,
     heap_end: int,
@@ -487,8 +494,7 @@ def _walk_small_mem_chain(
     used = 0
     used_bytes = 0
     holes: list[int] = []
-    owner_blocks: dict[str, int] = {}
-    owner_bytes: dict[str, int] = {}
+    blocks: list[WalkBlock] = []
     truncated = False
     corrupt = False
     memtrace = "thread" in item_layout.fields
@@ -535,23 +541,25 @@ def _walk_small_mem_chain(
         size = next_off - offset - header_size
         span = next_off - offset
         items += 1
+        owner: str | None = None
         if is_used:
             used += 1
             used_bytes += span
             if memtrace:
-                owner = _read_name_at(
-                    addr,
-                    item_type,
-                    item_layout,
-                    "thread",
-                    _MEMTRACE_NAME_WIDTH,
-                    endian,
+                owner = (
+                    _read_name_at(
+                        addr,
+                        item_type,
+                        item_layout,
+                        "thread",
+                        _MEMTRACE_NAME_WIDTH,
+                        endian,
+                    )
+                    or None
                 )
-                if owner:
-                    owner_blocks[owner] = owner_blocks.get(owner, 0) + 1
-                    owner_bytes[owner] = owner_bytes.get(owner, 0) + span
         else:
             holes.append(max(size, 0))
+        blocks.append(WalkBlock(address=addr, span=span, used=is_used, owner=owner))
         addr = heap_ptr + next_off
     if items == 0:
         return None
@@ -567,11 +575,13 @@ def _walk_small_mem_chain(
         used_blocks=used,
         free_blocks=items - used,
         hole_sizes=holes,
-        occupancy=_occupancy_rows(owner_blocks, owner_bytes),
         truncated=truncated,
         corrupt=corrupt,
         used_bytes=exact_used,
         total_bytes=exact_total,
+        blocks=blocks,
+        base=heap_ptr,
+        end=heap_end,
     )
 
 
@@ -655,8 +665,7 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
     items = 0
     used = 0
     holes: list[int] = []
-    owner_blocks: dict[str, int] = {}
-    owner_bytes: dict[str, int] = {}
+    blocks: list[WalkBlock] = []
     truncated = False
     corrupt = False
     memtrace = "owner_thread_name" in item_layout.fields
@@ -691,22 +700,26 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
         is_used = bool(magic & 0x1)
         size = next_addr - addr - header_size
         items += 1
+        owner: str | None = None
         if is_used:
             used += 1
             if memtrace:
-                owner = _read_name_at(
-                    addr,
-                    "struct rt_memheap_item",
-                    item_layout,
-                    "owner_thread_name",
-                    _MEMTRACE_NAME_WIDTH,
-                    endian,
+                owner = (
+                    _read_name_at(
+                        addr,
+                        "struct rt_memheap_item",
+                        item_layout,
+                        "owner_thread_name",
+                        _MEMTRACE_NAME_WIDTH,
+                        endian,
+                    )
+                    or None
                 )
-                if owner:
-                    owner_blocks[owner] = owner_blocks.get(owner, 0) + 1
-                    owner_bytes[owner] = owner_bytes.get(owner, 0) + max(size, 0)
         else:
             holes.append(max(size, 0))
+        blocks.append(
+            WalkBlock(address=addr, span=next_addr - addr, used=is_used, owner=owner)
+        )
         addr = next_addr
     exact_used = exact_total = None
     if closed:
@@ -723,26 +736,29 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
             used_blocks=0,
             free_blocks=0,
             hole_sizes=[],
-            occupancy=[],
             used_bytes=exact_used,
             total_bytes=exact_total,
+            base=head,
+            end=addr,
         )
     return HeapWalk(
         used_blocks=used,
         free_blocks=items - used,
         hole_sizes=holes,
-        occupancy=_occupancy_rows(owner_blocks, owner_bytes),
         truncated=truncated,
         corrupt=corrupt,
         used_bytes=exact_used,
         total_bytes=exact_total,
+        blocks=blocks,
+        base=head,
+        end=addr,
     )
 
 
 def _walk_slab_pages(kl: KernelLayout) -> HeapWalk | None:
     """Walk slab ``memusage`` page descriptors for a page/zone summary.
 
-    Slab has no chunk-owner ABI, so occupancy is always ``[]``. Contiguous
+    Slab has no chunk-owner ABI, so its blocks carry no owner. Contiguous
     ``PAGE_TYPE_FREE`` pages form the free runs reported as holes.
     """
     ptrsize, endian = arch_or_default()
@@ -813,7 +829,6 @@ def _walk_slab_pages(kl: KernelLayout) -> HeapWalk | None:
         used_blocks=used_pages,
         free_blocks=free_pages,
         hole_sizes=[run_length * page_size for run_length in runs],
-        occupancy=[],
         truncated=truncated,
         corrupt=corrupt,
     )

@@ -59,6 +59,27 @@ def test_task_table_entry_cell_carries_the_entry_source(monkeypatch):
     assert table.source_rows[0][table.headers.index("Entry")] == ("/src/shell.c", 1700)
 
 
+@pytest.mark.parametrize(
+    "marks, hint", [([], False), ([None], True), ([128], False), ([None, 128], False)]
+)
+def test_high_water_build_advice_only_when_all_tasks_are_unavailable(
+    monkeypatch, marks, hint
+):
+    adapter = adapter_module.RtThreadAdapter(KernelLayout())
+    threads = [
+        adapter_module.Thread(name="worker", max_stack_used=value) for value in marks
+    ]
+    monkeypatch.setattr(
+        adapter,
+        "_task_views",
+        lambda: iter((thread, "Ready", None) for thread in threads),
+    )
+    table = adapter.task_table()
+    assert bool(table.build_hints) is hint
+    if hint:
+        assert "HighWater" in table.build_hints[0]
+
+
 def test_task_table_reads_current_task_once(monkeypatch):
     """RT-Thread does not re-read the current task for every rendered row."""
     current_reads = 0
@@ -657,6 +678,7 @@ def test_system_summary_copies_heap_snapshot_fields(monkeypatch):
         ),
     )
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -681,6 +703,7 @@ def test_system_summary_keeps_missing_heap_counters(monkeypatch):
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
     )
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -700,6 +723,7 @@ def test_system_summary_keeps_partial_heap_counters(monkeypatch):
 
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -736,6 +760,7 @@ def test_system_summary_omits_none_heap_allocator(monkeypatch):
         lambda _type, _layout: HeapSnapshot(algorithm="none"),
     )
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -761,6 +786,7 @@ def test_system_summary_falls_back_to_a_closed_heap_walk(monkeypatch):
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
     )
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -770,7 +796,6 @@ def test_system_summary_falls_back_to_a_closed_heap_walk(monkeypatch):
             used_blocks=2,
             free_blocks=1,
             hole_sizes=[64],
-            occupancy=[],
             used_bytes=160,
             total_bytes=256,
         ),
@@ -794,6 +819,7 @@ def test_system_summary_does_not_use_truncated_or_slab_estimates(monkeypatch):
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
     )
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -803,7 +829,6 @@ def test_system_summary_does_not_use_truncated_or_slab_estimates(monkeypatch):
             used_blocks=2,
             free_blocks=1,
             hole_sizes=[64],
-            occupancy=[],
             truncated=True,
             used_bytes=160,
             total_bytes=256,
@@ -830,6 +855,7 @@ def test_system_summary_reports_a_corrupt_heap_walk(monkeypatch):
         ),
     )
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -839,7 +865,6 @@ def test_system_summary_reports_a_corrupt_heap_walk(monkeypatch):
             used_blocks=1,
             free_blocks=0,
             hole_sizes=[],
-            occupancy=[],
             corrupt=True,
         ),
     )
@@ -857,6 +882,7 @@ def test_system_summary_reports_overrun_when_used_exceeds_total(monkeypatch):
 
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
     monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
     monkeypatch.setattr(adapter, "object_counts", lambda: {})
     monkeypatch.setattr(
@@ -873,7 +899,6 @@ def test_system_summary_reports_overrun_when_used_exceeds_total(monkeypatch):
             used_blocks=3,
             free_blocks=0,
             hole_sizes=[],
-            occupancy=[],
             used_bytes=70000,
             total_bytes=65536,
         ),
@@ -891,23 +916,11 @@ def test_system_summary_reports_overrun_when_used_exceeds_total(monkeypatch):
             used_blocks=3,
             free_blocks=0,
             hole_sizes=[],
-            occupancy=[],
             truncated=True,
         ),
     )
     summary = adapter.system_summary()
     assert summary.heap_status == "overrun"
-
-
-def test_holes_line_formats_free_blocks():
-    """The Holes line is ``N free; largest X B; smallest (up to 3): ...`` in bytes."""
-    assert adapter_module._holes_line([2048, 4, 16, 16]) == (
-        "4 free; largest 2048 B; smallest (up to 3): 4 B, 16 B, 16 B"
-    )
-    assert adapter_module._holes_line([64]) == (
-        "1 free; largest 64 B; smallest (up to 3): 64 B"
-    )
-    assert adapter_module._holes_line([]) == "0 free"
 
 
 def test_heap_basic_pairs_report_na_missing_values(monkeypatch):
@@ -978,7 +991,6 @@ def test_heap_basic_pairs_fall_back_to_a_closed_walk(monkeypatch):
             used_blocks=2,
             free_blocks=1,
             hole_sizes=[64],
-            occupancy=[],
             used_bytes=160,
             total_bytes=256,
         ),
@@ -1013,7 +1025,6 @@ def test_heap_basic_pairs_do_not_use_truncated_walk_sizes(monkeypatch):
             used_blocks=2,
             free_blocks=1,
             hole_sizes=[64],
-            occupancy=[],
             truncated=True,
             used_bytes=160,
             total_bytes=256,
@@ -1031,7 +1042,7 @@ def test_heap_basic_pairs_do_not_use_truncated_walk_sizes(monkeypatch):
 
 
 def test_heap_report_walks_the_heap_once(monkeypatch):
-    """``rtt heap`` shares one snapshot+walk with the size fallback."""
+    """One snapshot+walk feeds the basics, the Blocks line and the verdicts."""
     from rtthread.diagnostics import HeapWalk
     from rtthread.navigation import HeapSnapshot
 
@@ -1044,7 +1055,6 @@ def test_heap_report_walks_the_heap_once(monkeypatch):
             used_blocks=2,
             free_blocks=1,
             hole_sizes=[64],
-            occupancy=[("main", 2, 160)],
             used_bytes=160,
             total_bytes=256,
         )
@@ -1067,14 +1077,18 @@ def test_heap_report_walks_the_heap_once(monkeypatch):
     assert by_label["UsedSize"] == "160 B"
     assert by_label["Source"] == "walk"
     assert by_label["Blocks"] == "2 used, 1 free, 3 total"
-    assert by_label["Thread occupancy"] == "1 threads"
-    assert report.table is not None
-    assert report.table.rows == [["main", "2", "160"]]
-    assert report.table_title == "Heap used by thread"
+    assert "Holes" not in by_label
+    assert "Thread occupancy" not in by_label
+    assert report.table is None
+    assert [section.title for section in report.sections] == ["Checks"]
+    assert {row.key: row.severity for row in report.sections[0].rows} == {
+        "HeapChain": "ok",
+        "HeapAccounting": "ok",
+    }
 
 
-def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):
-    """The walk assembly keeps Blocks/Holes pairs plus sorted occupancy rows."""
+def test_heap_detail_formats_the_blocks_line(monkeypatch):
+    """The walk assembly keeps the Blocks pair; holes and owners live elsewhere."""
     from rtthread.diagnostics import HeapWalk
     from rtthread.navigation import HeapSnapshot
 
@@ -1092,7 +1106,6 @@ def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):
             used_blocks=12,
             free_blocks=5,
             hole_sizes=[2048, 4, 16, 16, 8],
-            occupancy=[("main", 8, 4096), ("worker1", 4, 1024)],
         ),
     )
 
@@ -1100,14 +1113,7 @@ def test_heap_detail_formats_blocks_holes_and_occupancy(monkeypatch):
 
     assert result is not None
     assert result.status == "good"
-    assert result.pairs == [
-        ("Blocks", "12 used, 5 free, 17 total"),
-        ("Holes", "5 free; largest 2048 B; smallest (up to 3): 4 B, 8 B, 16 B"),
-    ]
-    assert result.occupancy == [
-        ["main", "8", "4096"],
-        ["worker1", "4", "1024"],
-    ]
+    assert result.pairs == [("Blocks", "12 used, 5 free, 17 total")]
 
 
 def test_heap_detail_is_none_when_walk_unresolvable(monkeypatch):
@@ -1143,7 +1149,7 @@ def test_heap_detail_marks_corrupt_walks(monkeypatch):
         adapter_module.diagnostics,
         "walk_system_heap",
         lambda _t, _kl: HeapWalk(
-            used_blocks=1, free_blocks=0, hole_sizes=[], occupancy=[], corrupt=True
+            used_blocks=1, free_blocks=0, hole_sizes=[], corrupt=True
         ),
     )
 
@@ -1174,7 +1180,6 @@ def test_heap_detail_marks_truncated_walks_without_changing_status(monkeypatch):
             used_blocks=2,
             free_blocks=1,
             hole_sizes=[64],
-            occupancy=[],
             truncated=True,
         ),
     )

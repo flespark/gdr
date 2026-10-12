@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import gdr.layout as layout
 
 
@@ -102,6 +104,34 @@ def test_iter_list_does_not_warn_at_an_exact_safety_limit_boundary(monkeypatch):
 
     assert list(layout.iter_list(head, _HOOK, max_count=1)) == [node]
     assert warnings == []
+
+
+def test_iter_list_does_not_convert_a_null_startup_node(monkeypatch):
+    """GDB's lazy container value must never be made from NULL minus offset."""
+    warnings = _configure_iter_list(monkeypatch)
+    head = _FakeNode(0x100)
+    head.next = _FakeNode(0)
+
+    def unexpected_container(*_args):
+        pytest.fail("NULL node passed to container_of")
+
+    monkeypatch.setattr(layout, "container_of", unexpected_container)
+    assert list(layout.iter_list(head, _HOOK)) == []
+    assert warnings == [
+        "list traversal stopped at NULL node (list not initialized or corrupted)"
+    ]
+
+
+def test_iter_list_stops_at_null_after_valid_nodes(monkeypatch):
+    """A broken tail keeps earlier valid nodes, but never yields a fake object."""
+    warnings = _configure_iter_list(monkeypatch)
+    head = _FakeNode(0x100)
+    first = _FakeNode(0x200)
+    head.next = first
+    first.next = _FakeNode(0)
+    assert list(layout.iter_list(head, _HOOK)) == [first]
+    assert len(warnings) == 1
+    assert "NULL" in warnings[0]
 
 
 def test_resolve_list_head_indexes_an_array_symbol(monkeypatch):

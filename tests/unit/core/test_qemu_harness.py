@@ -114,6 +114,54 @@ def test_stop_is_idempotent(monkeypatch, tmp_path):
     assert killed == [proc.pid]
 
 
+def test_paused_start_waits_for_gdb_port_without_a_ready_marker(monkeypatch, tmp_path):
+    """Reset-entry tests must not wait for firmware output while QEMU is paused."""
+    proc = _FakeProc()
+    _patch_spawn(monkeypatch, proc)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        "tests.support.qemu_harness.subprocess.Popen",
+        lambda command, **_kwargs: commands.append(command) or proc,
+    )
+
+    class _Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        "tests.support.qemu_harness.socket.create_connection",
+        lambda *_args, **_kwargs: _Connection(),
+    )
+    session = QemuSession(_profile(tmp_path))
+    try:
+        session.start(0.1, paused=True)
+        assert "-S" in commands[0]
+        assert session._qemu is proc
+    finally:
+        session.stop()
+
+
+def test_paused_start_timeout_cleans_up_qemu(monkeypatch, tmp_path):
+    """A paused QEMU whose GDB port never listens has the same teardown net."""
+    proc = _FakeProc()
+    killed = _patch_spawn(monkeypatch, proc)
+
+    def not_listening(*_args, **_kwargs):
+        raise OSError("not listening")
+
+    monkeypatch.setattr(
+        "tests.support.qemu_harness.socket.create_connection", not_listening
+    )
+    session = QemuSession(_profile(tmp_path))
+    with pytest.raises(RuntimeError):
+        session.start(0.01, paused=True)
+    assert killed == [proc.pid]
+    assert session._qemu is None
+
+
 def test_start_registers_an_atexit_net(monkeypatch, tmp_path):
     """A hard interpreter exit never runs fixture teardown; atexit must."""
     proc = _FakeProc()

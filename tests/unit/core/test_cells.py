@@ -26,6 +26,7 @@ from gdr.adapter_api import (
     verdict_severity,
     waiters_cell,
 )
+from gdr.formatting import SourceLoc
 from gdr.serialize import (
     checks_to_dict,
     object_detail_to_dict,
@@ -196,12 +197,24 @@ def test_serialized_table_carries_source_rows_as_file_and_line():
     """The envelope names each located cell's file and line, or null."""
     table = ObjectTable.from_specs(
         (ColumnSpec("Name"), ColumnSpec("Entry", kind="symbol")),
-        [[text_cell("tshell"), symbol_cell(0x100, "main", ("/src/shell.c", 12))]],
+        [
+            [
+                text_cell("tshell"),
+                symbol_cell(0x100, "main", SourceLoc("/src/shell.c", 12, "shell.c")),
+            ]
+        ],
     )
 
     rendered = object_table_to_dict(table, kind="task")
 
-    assert rendered["source_rows"] == [[None, {"file": "/src/shell.c", "line": 12}]]
+    # Reason: "file" is GDB's resolved path; "name" is the path as the debug
+    # information recorded it, which the extension falls back to.
+    assert rendered["source_rows"] == [
+        [
+            None,
+            {"file": "/src/shell.c", "name": "shell.c", "line": 12},
+        ]
+    ]
 
 
 def test_serialized_detail_keeps_flat_pairs_and_adds_severity():

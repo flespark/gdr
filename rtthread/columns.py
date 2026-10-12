@@ -82,7 +82,7 @@ TIMER_SPECS = (
     ColumnSpec("Name", elastic=True, doc="timer name"),
     ColumnSpec("State"),
     ColumnSpec("Mode"),
-    ColumnSpec("Type"),
+    ColumnSpec("TimerType", doc="soft timer thread vs hard interrupt callback"),
     ColumnSpec("InitTick", kind="int", align="right"),
     ColumnSpec("TimeoutTick", kind="int", align="right"),
     ColumnSpec("ExpiresIn", kind="int", align="right"),
@@ -111,12 +111,22 @@ def smp_columns_present(layout: KernelLayout) -> bool:
 
 
 def task_specs(smp: bool) -> tuple[ColumnSpec, ...]:
-    """The task table contract; SMP adds the CPU affinity pair."""
+    """The task table contract; SMP adds the CPU affinity pair.
+
+    ``PC`` is the thread's last program counter (``pc`` kind: a source link when
+    the line resolves, the memory view otherwise). ``TCB`` is the thread control
+    block address and the row identity; it has no property meaning to a reader.
+    """
     specs = [
         ColumnSpec("Name", elastic=True, doc="thread name; '*' marks the running one"),
         ColumnSpec("State"),
         ColumnSpec("Prio", kind="int", align="right"),
         ColumnSpec("BasePrio", kind="int", align="right"),
+        ColumnSpec(
+            "PC",
+            kind="pc",
+            doc="last PC: the running PC, or the return address on the saved switch frame",
+        ),
         ColumnSpec("SP", kind="addr", doc="stack pointer"),
         ColumnSpec("Stack", kind="int", align="right", doc="stack size in bytes"),
         ColumnSpec("Used", kind="int", align="right", doc="stack bytes in use"),
@@ -130,5 +140,5 @@ def task_specs(smp: bool) -> tuple[ColumnSpec, ...]:
             ColumnSpec("CPU", kind="int", align="right"),
             ColumnSpec("Bind", kind="int", align="right"),
         ]
-    specs.append(ColumnSpec("Addr", kind="addr"))
+    specs.append(ColumnSpec("TCB", kind="addr", doc="thread control block address"))
     return tuple(specs)

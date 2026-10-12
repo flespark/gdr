@@ -10,6 +10,7 @@ set can only show one corruption.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -176,16 +177,12 @@ def test_runtime_percent_uses_array_total(snapshot_session):
     assert "10.0%" in detail, detail
 
 
-def test_high_water_scan_reports_untouched_fill_bytes(snapshot_session):
-    """The 0xa5a5a5a5 prefill below pxTopOfStack is reported as free bytes.
-
-    idle0's stack holds 12 untouched fill words (0xa5a5a5a5 each) followed
-    by 4 used words; the word-granular scan counts 12 words and the model
-    converts them to 12 * 4 = 48 bytes -- the same unit as Stack/Used.
-    """
+def test_high_water_scan_reports_peak_used_bytes(snapshot_session):
+    """idle0 has 64 stack bytes with 48 untouched: maximum used is 16 B."""
     detail = snapshot_session.run("freertos task idle0", timeout=20)
     pairs = _pairs(detail)
-    assert pairs["HighWater"] == "48 B", detail
+    assert pairs["StackSize"] == "64 B", detail
+    assert pairs["HighWater"] == "16 B", detail
 
 
 def test_overflow_timer_expires_in_uses_next_epoch(snapshot_session):
@@ -217,11 +214,18 @@ def test_overflow_timer_detail_names_its_list(snapshot_session):
     provides the daemon handle (not xTimerQueue) to keep the queue
     discovery channel closed, so the daemon queue check cannot run.
     """
-    detail = snapshot_session.run("freertos timer gdr_tmr_ovf", timeout=20)
+    cli = snapshot_session.run("freertos timer gdr_tmr_ovf", timeout=20)
+    assert "* gdr_tmr_ovf" in cli, cli
+    output = snapshot_session.run("gdr api detail timer gdr_tmr_ovf --json", timeout=20)
+    envelope = next(
+        json.loads(line) for line in output.splitlines() if line.startswith("{")
+    )
+    assert envelope["ok"], envelope
+    detail = "\n".join(f"{key}: {value}" for key, value in envelope["data"]["pairs"])
     assert "List: overflow(xActiveTimerList2)" in detail, detail
     assert "OwnerCheck: ok" in detail, detail
     assert "ExpiresIn: " + str(_EXPECTED_OVERFLOW_EXPIRES_IN) in detail, detail
-    assert "Checks: ok (3 verified)" in detail, detail
+    assert "Checks:" not in detail, detail
     assert "Check[TimerQueueItemSize]: skipped: unreadable" in detail, detail
 
 
@@ -235,7 +239,8 @@ def test_heap_cross_check_reports_three_numbers(snapshot_session):
     """
     output = snapshot_session.run("freertos heap", timeout=20)
     assert (
-        "CrossCheck: mismatch: free-list 16 B vs linear 48 B vs counter 64 B" in output
+        "Check[HeapCrossCheck]: fail: mismatch: free-list 16 B vs linear 48 B vs counter 64 B"
+        in output
     ), output
     pairs = _pairs(output)
     assert pairs["FreeSize"] == "64 B", output
@@ -248,7 +253,7 @@ def test_system_reports_corrupt_heap_status(snapshot_session):
     output = snapshot_session.run("freertos system", timeout=20)
     assert "Heap status: corrupt" in output, output
     assert (
-        "Check[HeapCrossCheck]: mismatch: free-list 16 B vs linear 48 B vs counter 64 B"
+        "Check[HeapCrossCheck]: fail: mismatch: free-list 16 B vs linear 48 B vs counter 64 B"
         in output
     ), output
     # The rest of the system stays consistent on the snapshot.
@@ -264,7 +269,8 @@ def test_free_list_allocated_bit_is_reported_as_corrupt(heap_snapshot_session):
     carries the ``(corrupt)`` suffix -- never a plausible-looking number.
     """
     output = heap_snapshot_session.run("freertos heap", timeout=20)
-    assert "CrossCheck: unavailable: corrupt walk" in output, output
+    assert "Check[HeapCrossCheck]: skipped: corrupt walk; free-list:" in output, output
+    assert "carries the allocated bit" in output, output
     assert "Blocks: 0 (corrupt)" in output, output
     assert "FreeSize: 16" in output, output
     # The linear walk still tiles the extent: one allocated 16-byte block.
@@ -279,27 +285,29 @@ def test_corrupt_list_walk_is_reported_not_hung(snapshot_session):
     silently reporting a short healthy list.
     """
     detail = snapshot_session.run("freertos task negcycle", timeout=20)
-    assert "Check[ListIntegrity]: list cycle at 0x" in detail, detail
-    assert "Check[ListCount]: walk corrupt (list cycle at 0x" in detail, detail
-    assert "Check[ItemOwner]: event item pvOwner=0x" in detail, detail
+    assert "Check[ListIntegrity]: fail: list cycle at 0x" in detail, detail
+    assert "Check[ListCount]: fail: walk corrupt (list cycle at 0x" in detail, detail
+    assert "Check[ItemOwner]: fail: event item pvOwner=0x" in detail, detail
     # The negative TCB's stack is all-zero while the population (idle tasks)
     # proves this build prefills, so the fill check must fail too (the
     # renderer strips the ``fail:`` prefix on Check[...] rows).
-    assert "Check[StackFillPresent]: no 0xa5 fill at the stack base" in detail, detail
+    assert "Check[StackFillPresent]: fail: no 0xa5 fill at the stack base" in detail, (
+        detail
+    )
     assert "Traceback" not in detail
 
 
 def test_list_count_mismatch_surfaces_in_checks(snapshot_session):
     """uxNumberOfItems and the walked length both appear in Check[ListCount]."""
     detail = snapshot_session.run("freertos task negcount", timeout=20)
-    assert "Check[ListCount]: uxNumberOfItems 3 != 2 walked" in detail, detail
+    assert "Check[ListCount]: fail: uxNumberOfItems 3 != 2 walked" in detail, detail
     assert "Traceback" not in detail
 
 
 def test_list_index_violation_surfaces_on_smp(snapshot_session):
     """pxIndex parked off &xListEnd is an SMP violation, not a rotation."""
     detail = snapshot_session.run("freertos task negindex", timeout=20)
-    assert "Check[ListIndex]: pxIndex 0x" in detail, detail
+    assert "Check[ListIndex]: fail: pxIndex 0x" in detail, detail
     assert "!= &xListEnd 0x" in detail, detail
 
 
@@ -313,7 +321,7 @@ def test_out_of_range_list_node_is_reported(snapshot_session):
 def test_healthy_task_checks_pass(snapshot_session):
     """A scheduler-resident task's list checks all verify."""
     detail = snapshot_session.run("freertos task idle0", timeout=20)
-    assert "Checks: ok (8 verified)" in detail, detail
+    assert "Checks:" not in detail, detail
     assert "Check[" not in detail, detail
 
 
@@ -327,7 +335,7 @@ def test_corrupt_list_integrity_magic_is_reported(snapshot_session):
     """
     detail = snapshot_session.run("freertos task negmagic", timeout=20)
     assert (
-        "Check[ListIntegrityBytes]: integrity values 0xdeadbeef/0x5a5a5a5a != 0x5a5a5a5a"
+        "Check[ListIntegrityBytes]: fail: integrity values 0xdeadbeef/0x5a5a5a5a != 0x5a5a5a5a"
         in detail
     ), detail
     assert "Traceback" not in detail

@@ -12,6 +12,7 @@ from gdr.commands import (
     CommandTreeSpec,
     complete_command_tree,
     render_heap,
+    render_heap_dump,
     render_object_detail,
     render_objects,
     render_system,
@@ -75,7 +76,9 @@ def _invoke_command(argument: str) -> None:
         print(render_terminal(tree, path))
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
-    if len(args) == 2 and command in _SINGULAR_COMMANDS:
+    if command == "heap" and len(args) in (2, 3) and args[1].lower() == "dump":
+        render_heap_dump("rtthread", args[2] if len(args) == 3 else "")
+    elif len(args) == 2 and command in _SINGULAR_COMMANDS:
         render_object_detail(_SINGULAR_COMMANDS[command], args[1])
     elif len(args) != 1:
         warn(_USAGE)
