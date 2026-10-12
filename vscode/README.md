@@ -3,7 +3,7 @@
 An RTOS view for embedded debugging, driven by [GDR (GDB enhance for RTOS)](https://github.com/flespark/gdr) CLI.
 For discover task/timer/IPC/heap status, resource usage, corruption and potential bug.
 
-![screenshot](./media/screenshot.png)
+![GDR panel screenshot](https://raw.githubusercontent.com/flespark/gdr/main/vscode/media/screenshot.png)
 
 ## How it works
 

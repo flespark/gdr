@@ -91,15 +91,16 @@ def _fixture_row(output: str, name: str) -> list[str]:
 
 
 def _vertical_detail(gdb_session, kind: str, name: str) -> str:
-    """Validate the merged CLI route, then read vertical API pairs losslessly."""
+    """Read CLI Key: Value output and verify it matches the single-object API."""
     cli = gdb_session.run(f"freertos {kind} {name}", timeout=25)
     _assert_clean_command_output(cli)
     output = gdb_session.run(f"gdr api detail {kind} {name} --json", timeout=25)
     envelope = next(
         json.loads(line) for line in output.splitlines() if line.startswith("{")
     )
-    assert envelope["ok"], envelope
-    return "\n".join(f"{key}: {value}" for key, value in envelope["data"]["pairs"])
+    assert envelope["ok"] and envelope["data"]["found"], envelope
+    assert _detail_pairs(cli) == dict(envelope["data"]["pairs"]), cli
+    return cli
 
 
 def _detail_pairs(output: str) -> dict[str, str]:

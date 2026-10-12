@@ -72,8 +72,6 @@ All notable changes to GDR are documented in this file.
 - `rtt heap` drops the Holes line and the per-thread occupancy table; its
   verdicts move into the table as diagnostic columns. The Checks card is gone
   from the panel. `gdr api checks` stays.
-- `rtt <kind> <name>` prints every object of the kind as one merged table, with
-  the named object's row marked with `*` and a space, instead of one vertical block.
 - The task table's `Addr` column is now `TCB`, the thread control block address.
   It is the row identity, last in the table. A new `PC` column after `BasePrio`
   shows the thread's last PC, proven from its saved switch frame or `N/A`.

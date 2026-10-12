@@ -86,7 +86,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 _TCB,
             ),
             tips=(
-                "Use `rtt thread <name>` for the merged detail table of every thread.",
+                "Use `rtt thread <name>` for one thread's Key: Value details.",
                 'Use `p $gdr_task("<name>")` for native rt_thread inspection.',
             ),
             configuration=("CPU and Bind appear only in an RT_USING_SMP layout.",),
@@ -98,7 +98,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
         CommandHelp(
             "thread",
             "Show one thread in detail",
-            "Prints the detail of every thread as one table, with the named thread's row marked '* '. Columns carry identity, scheduling, stack, entry, error/tick state and CPU placement.",
+            "Prints one thread as Key: Value pairs, including identity, scheduling, stack, entry, error/tick state and CPU placement.",
             usage=("rtt thread <name>",),
             fields=_fields(
                 ("Name/Address/Type", "Thread identity and native object type."),

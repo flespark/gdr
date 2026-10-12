@@ -215,13 +215,16 @@ def test_overflow_timer_detail_names_its_list(snapshot_session):
     discovery channel closed, so the daemon queue check cannot run.
     """
     cli = snapshot_session.run("freertos timer gdr_tmr_ovf", timeout=20)
-    assert "* gdr_tmr_ovf" in cli, cli
+    assert "Name: gdr_tmr_ovf" in cli, cli
     output = snapshot_session.run("gdr api detail timer gdr_tmr_ovf --json", timeout=20)
     envelope = next(
         json.loads(line) for line in output.splitlines() if line.startswith("{")
     )
     assert envelope["ok"], envelope
-    detail = "\n".join(f"{key}: {value}" for key, value in envelope["data"]["pairs"])
+    detail = "\n".join(line.strip() for line in cli.splitlines())
+    assert detail == "\n".join(
+        f"{key}: {value}" for key, value in envelope["data"]["pairs"]
+    )
     assert "List: overflow(xActiveTimerList2)" in detail, detail
     assert "OwnerCheck: ok" in detail, detail
     assert "ExpiresIn: " + str(_EXPECTED_OVERFLOW_EXPIRES_IN) in detail, detail

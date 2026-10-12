@@ -165,6 +165,12 @@ inspection is left to `$gdr_task(name)` + `p $gdr_task(name).field`. This
 keeps the command set small and avoids commands silently breaking when a field
 is renamed (the function returns the raw `gdb.Value`).
 
+Singular CLI detail commands print only the selected object's complete
+`Key: Value` block, preserving long diagnostics and per-entry rows without
+terminal-width truncation. They use `object_detail`, including adapter-owned
+name/address resolution and type validation; merged `detail_table` collection
+remains the API/Panel surface for comparing every object of a kind.
+
 ### One machine-readable contract, rendered from the same collectors
 
 Text tables cannot be consumed by an IDE, and DAP `evaluate` with a `repl`

@@ -115,7 +115,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
         CommandHelp(
             "task",
             "Show one task in detail",
-            "Displays scheduler, stack, blocking, notification, run-time and consistency data for one task.",
+            "Displays scheduler, stack, blocking, notification, run-time and consistency data for one task as Key: Value pairs.",
             usage=("frt task <name>",),
             fields=_fields(
                 ("Name/Address/Type", "Identity and Idle/Normal classification."),
@@ -310,7 +310,7 @@ def _queue_detail_help() -> CommandHelp:
     return CommandHelp(
         "queue",
         "Show queue details",
-        "Shows all discovered queues in one merged table, marking the selected row with '*'; includes geometry, waiters, problems and FIFO storage addresses.",
+        "Shows one queue as Key: Value pairs, including geometry, waiters, problems and FIFO storage addresses.",
         usage=("frt queue <name-or-address>",),
         fields=_fields(
             ("Head/Tail/WriteTo/ReadFrom", "Queue storage ring pointers."),
@@ -318,8 +318,8 @@ def _queue_detail_help() -> CommandHelp:
             ("SendWait/RecvWait/Locks/Set", "Blocking and deferred-operation state."),
             _PROBLEM_FIELD,
             (
-                "Item",
-                "FIFO storage addresses labelled Item[n], merged in one column; inspect bytes through GDB or the memory viewer.",
+                "Item[n]",
+                "FIFO storage address for each queued item; inspect bytes through GDB or the memory viewer.",
             ),
             _SOURCE_FIELD,
         ),
@@ -361,7 +361,7 @@ def _semaphore_detail_help() -> CommandHelp:
     return CommandHelp(
         "semaphore",
         "Show semaphore details",
-        "Shows all discovered semaphores in one merged table, marking the selected row with '*'; includes counts, take waiters, locks and problems.",
+        "Shows one semaphore as Key: Value pairs, including counts, take waiters, locks and problems.",
         usage=("frt semaphore <name-or-address>",),
         fields=_fields(
             ("Count/Max", "Available tokens and capacity."),
@@ -410,7 +410,7 @@ def _mutex_detail_help() -> CommandHelp:
     return CommandHelp(
         "mutex",
         "Show mutex details",
-        "Shows all discovered mutexes in one merged table, marking the selected row with '*'; includes holder priorities, recursion, waiters, locks and problems.",
+        "Shows one mutex as Key: Value pairs, including holder priorities, recursion, waiters, locks and problems.",
         usage=("frt mutex <name-or-address>",),
         fields=_fields(
             ("Held/Owner", "Ownership state and task name."),
@@ -470,7 +470,7 @@ def _timer_detail_help() -> CommandHelp:
     return CommandHelp(
         "timer",
         "Show software timer details",
-        "Shows all discovered timers in one merged table, marking the selected row with '*'; includes timing, list membership, ownership and pending commands.",
+        "Shows one timer as Key: Value pairs, including timing, list membership, ownership and pending commands.",
         usage=("frt timer <name-or-address>",),
         fields=_fields(
             ("State/Mode/Period", "Current evidence, reload mode and period."),
@@ -524,14 +524,14 @@ def _event_detail_help() -> CommandHelp:
     return CommandHelp(
         "eventgroup",
         "Show event group details",
-        "Shows all discovered event groups in one merged table, marking the selected row with '*'; decodes bits and each waiter's ANY/ALL, clear-on-exit and missing-bit condition.",
+        "Shows one event group as Key: Value pairs, decoding bits and each waiter's ANY/ALL, clear-on-exit and missing-bit condition.",
         usage=("frt eventgroup <name-or-address>",),
         fields=_fields(
             ("Bits/Waiters", "Current mask and waiter count."),
             ("StaticallyAllocated", "Allocation mode when the field exists."),
             (
-                "Waiter",
-                "Merged Waiter[n] entries: task, wanted bits, mode, clear-on-exit and missing bits.",
+                "Waiter[n]",
+                "Per-waiter task, wanted bits, mode, clear-on-exit and missing bits.",
             ),
             _PROBLEM_FIELD,
             _SOURCE_FIELD,
@@ -583,7 +583,7 @@ def _stream_detail_help() -> CommandHelp:
     return CommandHelp(
         "streambuffer",
         "Show stream/message buffer details",
-        "Shows all discovered buffers in one merged table, marking the selected row with '*'; includes ring geometry, triggers, waiters, message-prefix assumptions and bounds checks.",
+        "Shows one buffer as Key: Value pairs, including ring geometry, triggers, waiters, message-prefix assumptions and bounds checks.",
         usage=("frt streambuffer <name-or-address>",),
         fields=_fields(
             (

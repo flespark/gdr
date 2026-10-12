@@ -96,7 +96,7 @@ warning: target RT-Thread version not exported; cannot verify version
 | `gdr help [topic]` | 查看初始化或 pretty-printer 帮助 |
 | `<rtos> help [topic]` | 浏览命令树；topic 包含字段说明、使用 tips、配置依赖与实现限制 |
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |
-| `<rtos> <object> <name>` | 以合并表显示同类对象的全部详情，命名对象的行前带 `*` 和一个空格（如 `rtt semaphore my_sem`） |
+| `<rtos> <object> <name>` | 以纵向 `Key: Value` 显示指定对象的详情（如 `rtt semaphore my_sem`） |
 | `<rtos> heap dump [path]` | 绘制堆占用位图，iTerm2 或 Kitty 中内联显示，否则写入 PNG（默认 `gdr-heap-<rtos>-gen<N>.png`） |
 
 ## 便捷函数

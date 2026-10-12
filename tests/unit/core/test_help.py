@@ -62,7 +62,7 @@ def test_heap_help_matches_summary_and_problem_fields():
     assert "frt checks heap" in output
 
 
-def test_free_rtos_detail_help_uses_current_problem_and_merged_fields():
+def test_free_rtos_detail_help_uses_single_object_problem_and_entry_fields():
     tree = build_help_tree()
     for kind in ("task", "queue", "semaphore", "mutex", "timer", "eventgroup"):
         topic = find_topic(tree, (kind,))
@@ -70,12 +70,15 @@ def test_free_rtos_detail_help_uses_current_problem_and_merged_fields():
         names = {field.name for field in topic.fields}
         assert "Check[name]" in names
         assert "Checks" not in names and "OwnerCheck/Checks" not in names
-        if kind != "task":
-            assert "merged table" in topic.description
+        assert "Key: Value" in topic.description
+        assert "merged table" not in topic.description
     queue = find_topic(tree, ("queue",))
     assert queue is not None
-    assert "Item" in {field.name for field in queue.fields}
-    assert "Item[n]" not in {field.name for field in queue.fields}
+    assert "Item[n]" in {field.name for field in queue.fields}
+    assert "Item" not in {field.name for field in queue.fields}
+    event = find_topic(tree, ("eventgroup",))
+    assert event is not None
+    assert "Waiter[n]" in {field.name for field in event.fields}
 
 
 def test_high_water_help_and_panel_column_document_peak_used_bytes():

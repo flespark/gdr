@@ -114,18 +114,26 @@ def _json_line(output: str) -> dict:
 
 
 def _detail_row(gdb, kind: str, name: str) -> dict[str, str]:
-    """The named object's row of the merged detail table, keyed by column.
-
-    Reads the same table the panel draws (``gdr api table``), so the values are
-    typed cell text rather than a re-parse of the terminal's column layout.
-    """
-    data = _json_line(gdb.run(f"gdr api table {kind} --json", timeout=20))["data"]
-    headers = data["headers"]
-    name_index = headers.index("Name")
-    for row in data["rows"]:
-        if row[name_index] == name:
-            return dict(zip(headers, row, strict=True))
-    raise AssertionError(f"{kind} {name!r} is not in the merged detail table")
+    """Read one object's CLI pairs and compare with the lossless detail API."""
+    command = {"task": "thread", "msgqueue": "messagequeue"}.get(kind, kind)
+    output = gdb.run(f"rtt {command} {name}", timeout=20)
+    _assert_clean_command_output(output)
+    envelope = _json_line(gdb.run(f"gdr api detail {kind} {name} --json", timeout=20))
+    assert envelope["ok"] and envelope["data"]["found"], envelope
+    expected = dict(envelope["data"]["pairs"])
+    # Detail keys may contain a colon (for example ``Waiter: worker6``), so
+    # split against the lossless API keys instead of the first ``: ``.
+    row = {}
+    for line in output.splitlines():
+        stripped = line.strip()
+        for key in sorted(expected, key=len, reverse=True):
+            prefix = f"{key}: "
+            if stripped.startswith(prefix):
+                row[key] = stripped[len(prefix) :]
+                break
+    assert row == expected, output
+    assert row["Name"] == name, row
+    return row
 
 
 def _headers(output: str) -> str:
@@ -599,9 +607,9 @@ def test_rtt_tables_keep_column_set_at_120_columns(gdb):
 
 
 def test_rtt_thread_detail_shows_public_fields(gdb):
-    """``rtt thread <name>`` prints every thread's detail as one table."""
+    """``rtt thread <name>`` prints only that thread as Key: Value pairs."""
     output = gdb.run("rtt thread worker1", timeout=20)
-    headers = _headers(output)
+    row = _detail_pairs(output)
     for label in (
         "Name",
         "Address",
@@ -612,21 +620,18 @@ def test_rtt_thread_detail_shows_public_fields(gdb):
         "Error",
         "RemainingTick",
     ):
-        assert label in headers.split(), output
-    # Reason: the Name column is elastic, so at 80 columns the marked name can be
-    # shortened; the mark itself is the stable signal that this row was asked for.
-    assert any(line.lstrip().startswith("* ") for line in output.splitlines()[1:]), (
-        output
-    )
+        assert label in row, output
+    assert row["Name"] == "worker1", output
+    assert sum(line.strip().startswith("Name:") for line in output.splitlines()) == 1
     assert "[gdr] error:" not in output, output
 
 
 def test_rtt_semaphore_detail_shows_fixture_value(gdb):
     """``rtt semaphore <name>`` lists the fixture semaphore's public fields."""
     output = gdb.run(f"rtt semaphore {_PROFILE.semaphore_name}", timeout=20)
-    assert "* " + _PROFILE.semaphore_name in output, output
+    assert _detail_pairs(output)["Name"] == _PROFILE.semaphore_name, output
     row = _detail_row(gdb, "semaphore", _PROFILE.semaphore_name)
-    assert "Type" not in row, row
+    assert "Type" in row, row
     assert row["Value"].isdecimal(), row
 
 
@@ -635,9 +640,9 @@ def test_rtt_mutex_detail_shows_priority_inheritance_fields(gdb):
     output = gdb.run(f"rtt mutex {_PROFILE.wait_mutex_name}", timeout=20)
     _assert_clean_command_output(output)
     row = _detail_row(gdb, "mutex", _PROFILE.wait_mutex_name)
-    assert "Type" not in row, row
+    assert "Type" in row, row
     assert row["Owner"] == _PROFILE.locker_thread_name, row
-    assert "OriginalPriority" in _headers(output), output
+    assert "OriginalPriority" in _detail_pairs(output), output
     assert row["Hold"].isdecimal() and row["Value"].isdecimal(), row
     assert row["Waiters"].startswith("1@"), row
     # RT-Thread v3 retains the configured FIFO flag while newer kernels force
@@ -661,14 +666,12 @@ def test_rtt_event_detail_shows_waiter_conditions(gdb):
     output = gdb.run(f"rtt event {_PROFILE.wait_event_name}", timeout=20)
     _assert_clean_command_output(output)
     row = _detail_row(gdb, "event", _PROFILE.wait_event_name)
-    assert "Type" not in row and row["Set"], row
+    assert "Type" in row and row["Set"], row
     assert row["Policy"] == "FIFO", row
     assert row["Waiters"].startswith("1@"), row
     assert _PROFILE.event_waiter_thread in row["Waiters"], row
-    # Reason: each waiter's condition is one entry of the collapsed Waiter column.
     assert (
-        f"Waiter: {_PROFILE.event_waiter_thread}: set=0x40 mode=AND|CLEAR"
-        in row["Waiter"]
+        row[f"Waiter: {_PROFILE.event_waiter_thread}"] == "set=0x40 mode=AND|CLEAR"
     ), row
 
 
@@ -676,11 +679,11 @@ def test_rtt_mailbox_detail_shows_waiters(gdb):
     """``rtt mailbox <name>`` renders the fixture's public fields and slots."""
     output = gdb.run(f"rtt mailbox {_PROFILE.mailbox_name}", timeout=20)
     for label in ("Name", "Address", "Entry", "Size", "MsgPool"):
-        assert label in _headers(output).split(), output
+        assert label in _detail_pairs(output), output
     row = _detail_row(gdb, "mailbox", _PROFILE.mailbox_name)
     # Valid ring offsets yield FIFO slot entries and an explicit successful
     # verdict; invalid offsets carry their reason in the same stable column.
-    assert "Slot[" in row["Slot"], row
+    assert any(key.startswith("Slot[") for key in row), row
     assert row["OffsetCheck"] == "ok", row
     assert "[gdr] error:" not in output, output
 
@@ -699,7 +702,7 @@ def test_rtt_mailbox_detail_shows_receiver_and_sender_waiters(gdb):
     assert _PROFILE.mailbox_send_thread in send_row["SendWait"], send_row
     assert send_row["Entry"] == "4", send_row
     for slot in range(4):
-        assert f"Slot[{slot}]:" in send_row["Slot"], send_row
+        assert f"Slot[{slot}]" in send_row, send_row
     _assert_clean_command_output(recv)
     _assert_clean_command_output(send)
 
@@ -708,7 +711,7 @@ def test_rtt_messagequeue_detail_shows_waiters(gdb):
     """``rtt messagequeue <name>`` renders capacity, nodes, and consistency."""
     output = gdb.run(f"rtt messagequeue {_PROFILE.msgqueue_name}", timeout=20)
     for label in ("Name", "Address", "MaxMsgs", "MsgPool", "Consistency"):
-        assert label in _headers(output).split(), output
+        assert label in _detail_pairs(output), output
     row = _detail_row(gdb, "msgqueue", _PROFILE.msgqueue_name)
     assert row["Consistency"].startswith("ok"), row
     assert "[gdr] error:" not in output, output
@@ -757,7 +760,7 @@ def test_rtt_mempool_detail_shows_block_detail(gdb):
         "AlignmentCheck",
         "FreeCountCheck",
     ):
-        assert label in _headers(output).split(), output
+        assert label in _detail_pairs(output), output
     row = _detail_row(gdb, "mempool", _PROFILE.mempool_name)
     assert row["AlignmentCheck"].startswith("ok"), row
     assert "[gdr] error:" not in output, output
@@ -785,13 +788,13 @@ def test_rtt_timer_detail_shows_fixture_timer(gdb):
         "Parameter",
         "ExpiresIn",
     ):
-        assert label in _headers(output).split(), output
+        assert label in _detail_pairs(output), output
     row = _detail_row(gdb, "timer", _PROFILE.timer_name)
     assert row["Mode"] == "periodic", row
     assert row["TimerType"] == "soft", row
     assert row["Callback"].startswith("<test_timer_timeout"), row
     assert row["Parameter"] in {"N/A", "0x0"}, row
-    assert "KernelTick" not in row and "Type" not in row, row
+    assert "KernelTick" in row and "Type" in row, row
     # QEMU keeps advancing between commands. Assert the dynamic contract, not
     # a particular tick snapshot; an inactive timer legitimately reports N/A.
     if row["State"] == "inactive":

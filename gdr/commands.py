@@ -18,9 +18,6 @@ from gdr.gdb_bridge import (
 )
 from gdr.serialize import system_summary_pairs
 
-# Marks the object a ``<rtos> <kind> <name>`` command names inside the merged table.
-NAMED_MARK = "* "
-
 
 @gdb_command_guard
 def render_tasks() -> None:
@@ -37,12 +34,10 @@ def render_tasks() -> None:
 
 @gdb_command_guard
 def render_object_detail(kind: str, name: str) -> None:
-    """Render the detail of every object of one kind as one merged table.
+    """Render one named object's complete detail as a Key: Value block.
 
-    Each row is one object's full detail block, so the columns are the union of
-    every property the kind exposes (the same table the panel draws). The named
-    object's row is marked with :data:`NAMED_MARK`. An adapter without a detail
-    table keeps the vertical block for the named object.
+    # Reason: terminal detail is focused and lossless; merged tables belong to
+    # the API/Panel, not to a command selecting one object by name or address.
     """
     adapter = active()
     if adapter is None:
@@ -52,28 +47,14 @@ def render_object_detail(kind: str, name: str) -> None:
     if not name.strip():
         warn("object name must not be empty")
         return
-    table = collect_detail_table(adapter, requested)
-    if table is None:
-        detail = collect_object_detail(adapter, requested, name)
-        if detail is None:
-            warn(f"object kind {requested!r} is not reliably enumerable")
-            return
-        if not detail.found:
-            warn(
-                detail.message or f"{requested} {name!r}: not found or type not enabled"
-            )
-            return
-        print_detail(detail.pairs)
+    detail = collect_object_detail(adapter, requested, name)
+    if detail is None:
+        warn(f"object kind {requested!r} is not reliably enumerable")
         return
-    name_index = table.headers.index("Name") if "Name" in table.headers else 0
-    rows = [list(row) for row in table.rows]
-    named = [row for row in rows if row and row[name_index] == name]
-    if not named:
-        warn(f"{requested} {name!r}: not found or type not enabled")
+    if not detail.found:
+        warn(detail.message or f"{requested} {name!r}: not found or type not enabled")
         return
-    for row in named:
-        row[name_index] = NAMED_MARK + row[name_index]
-    print_table(rows, table.headers, elastic=table.elastic)
+    print_detail(detail.pairs)
 
 
 @gdb_command_guard

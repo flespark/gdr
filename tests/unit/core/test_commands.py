@@ -293,29 +293,45 @@ def test_shared_renderer_guard_contains_unexpected_adapter_errors(monkeypatch):
     assert errors == ["render_tasks: ValueError: corrupt task list"]
 
 
-def test_object_detail_renders_the_merged_table_marking_the_named_row(monkeypatch):
-    """Every object of the kind is one row; the named one carries the mark."""
-    table = ObjectTable(
-        headers=["Name", "Value"], rows=[["sem_a", "1"], ["test_sem", "3"]]
-    )
-    adapter = _Adapter(detail_tables={"semaphore": table})
-    printed: list[tuple[list[list[str]], list[str]]] = []
+def test_object_detail_selects_one_object_even_when_panel_tables_exist(monkeypatch):
+    """CLI detail never collects the all-object Panel table or truncates entries."""
+    pairs = [
+        ("Name", "test_sem"),
+        ("Value", "3"),
+        ("Check[ListCount]", "fail: " + "long diagnostic evidence " * 12),
+        ("Waiter[0]", "worker"),
+    ]
+    adapter = _Adapter(details={"semaphore": ObjectDetail(pairs=pairs)})
+    selected = []
+    written = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        adapter,
+        "detail_table",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("unexpected all-object traversal")
+        ),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "object_detail",
+        lambda kind, name: selected.append((kind, name)) or adapter.details[kind],
+    )
+    monkeypatch.setattr(commands, "print_detail", written.append)
     monkeypatch.setattr(
         commands,
         "print_table",
-        lambda rows, headers, **_kw: printed.append((rows, headers)),
+        lambda *_args, **_kw: (_ for _ in ()).throw(AssertionError("unexpected table")),
     )
 
-    commands.render_object_detail("semaphore", "test_sem")
+    commands.render_object_detail(" SEMAPHORE ", "test_sem")
 
-    assert printed == [
-        ([["sem_a", "1"], ["* test_sem", "3"]], ["Name", "Value"]),
-    ]
+    assert selected == [("semaphore", "test_sem")]
+    assert written == [pairs]
 
 
-def test_object_detail_falls_back_to_the_vertical_block(monkeypatch):
-    """An adapter without a merged table keeps the vertical block for one object."""
+def test_object_detail_renders_the_vertical_block(monkeypatch):
+    """The selected object is printed as ordered Key: Value pairs."""
     adapter = _Adapter(
         details={
             "semaphore": ObjectDetail(pairs=[("Name", "test_sem"), ("Value", "3")])
@@ -348,8 +364,7 @@ def test_object_detail_warns_when_kind_is_not_enumerable(monkeypatch):
 
 def test_object_detail_warns_when_object_is_missing(monkeypatch):
     """A missing or disabled object reports a clear not-found diagnostic."""
-    table = ObjectTable(headers=["Name"], rows=[["other"]])
-    adapter = _Adapter(detail_tables={"semaphore": table})
+    adapter = _Adapter(details={"semaphore": ObjectDetail(found=False)})
     warnings: list[str] = []
     monkeypatch.setattr(commands, "active", lambda: adapter)
     monkeypatch.setattr(commands, "warn", warnings.append)
@@ -362,6 +377,27 @@ def test_object_detail_warns_when_object_is_missing(monkeypatch):
     commands.render_object_detail("semaphore", "missing")
 
     assert warnings == ["semaphore 'missing': not found or type not enabled"]
+
+
+def test_object_detail_preserves_address_selection_and_type_redirect(monkeypatch):
+    adapter = _Adapter()
+    selected = []
+    message = "'0x2000' is a mutex, not a semaphore; try `freertos mutex 0x2000`"
+    monkeypatch.setattr(commands, "active", lambda: adapter)
+    monkeypatch.setattr(
+        adapter,
+        "object_detail",
+        lambda kind, name: (
+            selected.append((kind, name)) or ObjectDetail(found=False, message=message)
+        ),
+    )
+    warnings = []
+    monkeypatch.setattr(commands, "warn", warnings.append)
+
+    commands.render_object_detail("semaphore", "0x2000")
+
+    assert selected == [("semaphore", "0x2000")]
+    assert warnings == [message]
 
 
 def test_object_detail_warns_before_initialization(monkeypatch):
