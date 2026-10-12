@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from gdr.constants import GDR_API_SCHEMA_VERSION
 from tests.support.freertos_fixture_profiles import get_freertos_test_profile
 from tests.support.loader import load_integration_spec
 
@@ -46,7 +47,7 @@ def test_tasks_envelope_names_the_session_and_carries_the_contract(gdb):
     """Typed cells mirror the rendered task rows and key them by address."""
     envelope = _envelope_line(gdb.run("gdr api tasks --json", timeout=25))
 
-    assert envelope["schema_version"] == 1
+    assert envelope["schema_version"] == GDR_API_SCHEMA_VERSION
     assert envelope["ok"] is True
     assert envelope["rtos"] == "freertos"
     assert envelope["rtos_version"] == SPEC.version
@@ -55,14 +56,14 @@ def test_tasks_envelope_names_the_session_and_carries_the_contract(gdb):
     assert data["kind"] == "task"
     columns = {column["key"]: column for column in data["columns"]}
     assert list(columns) == data["headers"]
-    assert columns["Addr"]["kind"] == "addr"
+    assert columns["TCB"]["kind"] == "addr"
     assert columns["Prio"]["kind"] == "int"
 
     value_rows = data["value_rows"]
     assert len(value_rows) == len(data["rows"]) >= 1
     assert len(data["ids"]) == len(data["rows"])
 
-    address_index = data["headers"].index("Addr")
+    address_index = data["headers"].index("TCB")
     priority_index = data["headers"].index("Prio")
     for text_row, value_row, row_id in zip(
         data["rows"], value_rows, data["ids"], strict=True
@@ -104,17 +105,20 @@ def test_probe_answers_before_initialization(gdb):
     re-initialized afterwards to leave the shared fixture as it was found.
     """
     gdb.run("gdr reset", timeout=20)
-    output = gdb.run_python(
-        """
+    try:
+        output = gdb.run_python(
+            """
 import gdb
 print("GDR_PREINIT", gdb.parse_and_eval('$gdr_json("probe")').string()[:200])
 """,
-        timeout=25,
-    )
-    assert 'GDR_PREINIT {"schema_version":1,' in output
-    assert '"rtos":"freertos"' in output
-
-    gdb.run(f"gdr init freertos {SPEC.version}", timeout=25)
+            timeout=25,
+        )
+        assert f'GDR_PREINIT {{"schema_version":{GDR_API_SCHEMA_VERSION},' in output
+        assert '"rtos":"freertos"' in output
+    finally:
+        # Reason: a failed assertion must not leave the shared session reset, or
+        # every later test in this lane runs against no adapter at all.
+        gdb.run(f"gdr init freertos {SPEC.version}", timeout=25)
 
 
 def test_probe_names_the_adapter_and_its_evidence(gdb):

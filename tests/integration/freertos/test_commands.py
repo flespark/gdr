@@ -12,6 +12,7 @@ import re
 
 import pytest
 
+from tests.support.detail_text import assert_detail_matches
 from tests.support.freertos_fixture_profiles import get_freertos_test_profile
 from tests.support.loader import load_integration_spec
 
@@ -99,12 +100,12 @@ def _vertical_detail(gdb_session, kind: str, name: str) -> str:
         json.loads(line) for line in output.splitlines() if line.startswith("{")
     )
     assert envelope["ok"] and envelope["data"]["found"], envelope
-    assert _detail_pairs(cli) == dict(envelope["data"]["pairs"]), cli
+    assert_detail_matches(cli, dict(envelope["data"]["pairs"]))
     return cli
 
 
 def _detail_pairs(output: str) -> dict[str, str]:
-    """Parse stable ``Key: Value`` detail output without table assumptions."""
+    """Parse stable single-line ``Key: Value`` entries (no multi-line value)."""
     return {
         key.strip(): value
         for line in output.splitlines()

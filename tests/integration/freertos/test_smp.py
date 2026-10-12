@@ -133,7 +133,7 @@ for i in range(2):
     lines = _tasks_table(gdb_session)
     header = next(line for line in lines if line.lstrip().startswith("Name ")).split()
     cpu_index = header.index("CPU")
-    addr_index = header.index("Addr")
+    addr_index = header.index("TCB")
     for core, (name, address) in current.items():
         row = _row(lines, name)
         assert row[addr_index] == hex(int(address, 16)), (

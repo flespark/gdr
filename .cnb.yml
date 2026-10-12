@@ -92,10 +92,13 @@
     # Reason: a release-grade `.vsix` must be reproducible from a clean tree:
     # `npm ci` + vendored runtime + `vsce package`, and the artifact goes out as
     # a commit attachment for manual verification and manual marketplace
-    # upload -- CI holds no publishing credentials.
+    # upload -- CI holds no publishing credentials.  `npm test` runs the
+    # TypeScript sources directly, so `dist/extension.js` only exists after an
+    # explicit `npm run build`; without it vsce refuses the missing entrypoint.
     script: |
       set -eu
       cd vscode
+      npm run build
       npx vsce package --no-dependencies --out gdb-rtos-views.vsix
       cd ..
       mkdir -p /tmp/gdr-artifacts

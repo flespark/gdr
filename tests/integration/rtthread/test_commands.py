@@ -15,6 +15,7 @@ import re
 
 import pytest
 
+from tests.support.detail_text import assert_detail_matches, parse_detail
 from tests.support.loader import load_integration_spec
 from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
 
@@ -121,17 +122,10 @@ def _detail_row(gdb, kind: str, name: str) -> dict[str, str]:
     envelope = _json_line(gdb.run(f"gdr api detail {kind} {name} --json", timeout=20))
     assert envelope["ok"] and envelope["data"]["found"], envelope
     expected = dict(envelope["data"]["pairs"])
-    # Detail keys may contain a colon (for example ``Waiter: worker6``), so
-    # split against the lossless API keys instead of the first ``: ``.
-    row = {}
-    for line in output.splitlines():
-        stripped = line.strip()
-        for key in sorted(expected, key=len, reverse=True):
-            prefix = f"{key}: "
-            if stripped.startswith(prefix):
-                row[key] = stripped[len(prefix) :]
-                break
-    assert row == expected, output
+    # Detail keys may contain a colon (``Waiter: worker6``) and values may span
+    # lines, so the CLI text is rebuilt against the lossless API keys.
+    row = parse_detail(output, list(expected))
+    assert_detail_matches(output, expected)
     assert row["Name"] == name, row
     return row
 
