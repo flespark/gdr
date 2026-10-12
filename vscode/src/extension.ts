@@ -25,9 +25,10 @@ import {
 	trackedDebugTypes,
 	unsupportedReason
 } from './inject.ts';
-import { RtosViewsPanel, type SnapshotFetcher } from './panel.ts';
+import { RtosViewsPanel, type HeapMapFetcher, type LayoutStore, type SnapshotFetcher } from './panel.ts';
 import { GdrCache, GdrSession, runtimeFor } from './session.ts';
 import { costArgs, parseSnapshotTransport, type CostOptions } from './snapshot.ts';
+import { decodeLayout, type PanelLayout } from './webview/messages.ts';
 import {
 	resolveEventSession,
 	resolveTrackerApi,
@@ -94,6 +95,24 @@ interface TrackerEvent {
 	stackTrace?: { body?: { stackFrames?: { id?: number }[] } };
 }
 
+/** The key the panel layout is saved under; one per workspace, not per session. */
+const LAYOUT_KEY = 'gdr.panel.layout';
+
+/**
+ * The panel layout kept in the workspace's memento.
+ *
+ * A stored value that no longer decodes (an older shape, a hand edit) reads as
+ * no layout: the panel then starts from the defaults rather than failing.
+ */
+export function workspaceLayoutStore(store: vscode.Memento): LayoutStore {
+	return {
+		read: (): PanelLayout | null => decodeLayout(store.get<unknown>(LAYOUT_KEY)),
+		write: (layout: PanelLayout): void => {
+			void store.update(LAYOUT_KEY, layout);
+		}
+	};
+}
+
 let sessionFactory: ((session: vscode.DebugSession, frameId: number) => Promise<boolean>) | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -135,7 +154,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	const config = (): vscode.WorkspaceConfiguration => vscode.workspace.getConfiguration('gdr');
 
-	const costOptions = (): CostOptions => ({ noHeap: config().get<boolean>('refreshHeaps', true) === false });
+	const costOptions = (): CostOptions => ({
+		noHeap: config().get<boolean>('refreshHeaps', true) === false,
+		noDetails: config().get<boolean>('refreshDetails', true) === false
+	});
 
 	const recordDir = (): string => config().get<string>('recordSnapshotsDir', '');
 
@@ -163,12 +185,24 @@ export function activate(context: vscode.ExtensionContext): void {
 		return gs.fetch('snapshot', args, frameId, { dir: recordDir() });
 	};
 
+	// Reason: the heap map is one more verb over the same session transport as the
+	// snapshot, so a chunked or file-routed answer is handled identically.
+	const heapMapFetcher: HeapMapFetcher = async (sessionId, frameId) => {
+		const gs = sessions.get(sessionId);
+		if (gs === undefined) {
+			return null;
+		}
+		return gs.fetch('heap-dump', [], frameId);
+	};
+
 	const panel = new RtosViewsPanel({
 		log,
 		extensionUri: context.extensionUri,
 		costOptions,
 		recordDir,
-		fetchSnapshot: snapshotFetcher
+		fetchSnapshot: snapshotFetcher,
+		fetchHeapMap: heapMapFetcher,
+		layoutStore: workspaceLayoutStore(context.workspaceState)
 	});
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(RtosViewsPanel.viewType, panel, {
@@ -218,16 +252,17 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('gdrRtosViews.showStatus', () => {
 			const active = vscode.debug.activeDebugSession;
 			if (!active) {
-				void vscode.window.showInformationMessage('GDR: no active debug session');
+				void vscode.window.showWarningMessage('GDR: no active debug session');
 				return;
 			}
 			const state = sessionFor(active);
 			const decision = state.decision;
-			void vscode.window.showInformationMessage(
-				state.initialized
-					? `GDR: ${state.initialized.rtos} ${state.initialized.version}`
-					: `GDR: not initialized (${decision?.kind ?? 'no decision yet'})`
-			);
+			if (state.initialized) {
+				log(`GDR: ${state.initialized.rtos} ${state.initialized.version}`);
+				output.show(true);
+			} else {
+				void vscode.window.showWarningMessage(`GDR: not initialized (${decision?.kind ?? 'no decision yet'})`);
+			}
 		}),
 		vscode.commands.registerCommand('gdrRtosViews.refresh', () => {
 			panel.refreshNow(undefined);
@@ -262,9 +297,13 @@ export function activate(context: vscode.ExtensionContext): void {
  */
 async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 	const { context, log } = deps;
+	const startupFailure = (reason: string): void => {
+		log(reason);
+		void vscode.window.showErrorMessage(`GDR: panel startup failed: ${reason}`);
+	};
 	const extension = vscode.extensions.getExtension('mcu-debug.debug-tracker-vscode');
 	if (!extension) {
-		log('debug-tracker-vscode is not installed; stop events will not reach GDR');
+		startupFailure('debug-tracker-vscode is not installed; stop events will not reach GDR');
 		return;
 	}
 	// Reason: a tracker whose exports do not match what this client expects used
@@ -275,7 +314,7 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 		const activated: unknown = await extension.activate();
 		const tracker = await resolveTrackerApi<TrackerSubscription>(activated);
 		if (tracker instanceof Error) {
-			log(`debug tracker unavailable: ${tracker.message}`);
+			startupFailure(`debug tracker unavailable: ${tracker.message}`);
 			return;
 		}
 		const grant = tracker.subscribe({
@@ -289,7 +328,13 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 					// Reason: a rejection here would only reach the Extension Host console,
 					// so the output channel would show a stall with no cause.
 					handleTrackerEvent(event, deps).catch((error: unknown) => {
-						log(`tracker: '${event.event}' failed: ${error instanceof Error ? error.message : String(error)}`);
+						const reason = `${event.event}: ${error instanceof Error ? error.message : String(error)}`;
+						log(`tracker: ${reason}`);
+						const session = resolveEventSession(event, deps.sessionById);
+						if (session !== undefined && deps.sessions.has(session.id)) {
+							deps.panel.sessionStarted(session.id, session.name);
+							deps.panel.sessionFailed(session.id, reason);
+						}
 					});
 				}
 			}
@@ -298,12 +343,12 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 		// (`Unknown version`, `No handler specified`, ...), so an unchecked return
 		// would report success for a subscription that delivers nothing.
 		if (typeof grant === 'string') {
-			log(`debug tracker refused the subscription: ${grant}`);
+			startupFailure(`debug tracker refused the subscription: ${grant}`);
 			return;
 		}
 		log('stop events follow debug-tracker-vscode');
 	} catch (error) {
-		log(`debug tracker subscription failed: ${error instanceof Error ? error.message : String(error)}`);
+		startupFailure(`debug tracker subscription failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	void context;
 }
@@ -349,7 +394,7 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			const refused = unsupportedReason(session.type);
 			if (refused !== null) {
 				panel.sessionStarted(session.id, session.name);
-				panel.sessionFailed(session.id, refused);
+				panel.sessionFailed(session.id, refused, 'warning');
 				deps.log(`${session.type}: ${refused}`);
 				return;
 			}
@@ -359,7 +404,11 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 				if (!sessions.has(session.id) || ok || gs.errorMessage === null) {
 					return;
 				}
-				panel.sessionFailed(session.id, gs.errorMessage);
+				panel.sessionFailed(session.id, gs.errorMessage, gs.failureLevel);
+			}).catch((error: unknown) => {
+				if (sessions.has(session.id)) {
+					panel.sessionFailed(session.id, error instanceof Error ? error.message : String(error));
+				}
 			});
 			return;
 		}
@@ -381,19 +430,23 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			if (unsupportedReason(session.type) !== null) {
 				return;
 			}
+			panel.sessionStarted(session.id, session.name);
 			const gs = sessionFor(session);
 			if (!gs.initialized) {
 				if (!sessionFactory) {
 					return;
 				}
 				await sessionFactory(session, frameId);
+				// Reason: initialization can await UI/transport while termination
+				// removes this session. Never notify or revive its panel afterwards.
+				if (sessions.get(session.id) !== gs) { return; }
 				if (gs.initialized) {
 					panel.sessionInitialized(session.id);
 					if (config().get<boolean>('refreshOnStop', true)) {
 						panel.firstStackTrace(session.id, frameId);
 					}
 				} else {
-					panel.sessionFailed(session.id, gs.errorMessage ?? 'the session could not be initialized');
+					panel.sessionFailed(session.id, gs.errorMessage ?? 'the session could not be initialized', gs.failureLevel);
 				}
 				return;
 			}

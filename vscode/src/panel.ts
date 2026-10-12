@@ -19,24 +19,33 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { describeFailure, type GdrEnvelope } from './transport.ts';
-import { isStale, parseSnapshot, type CostOptions, type PanelSnapshot } from './snapshot.ts';
+import { isStale, parseHeapMap, parseSnapshot, type CostOptions, type HeapMapData, type PanelSnapshot } from './snapshot.ts';
 import {
 	MEMORY_VIEW_EXTENSION_ID,
 	memoryViewMissingHint,
 	memoryViewUri
 } from './memoryNav.ts';
 import { renderApp, renderShell, type ShellArgs } from './webview/render.ts';
-import { decodeWebviewMessage } from './webview/messages.ts';
+import { decodeWebviewMessage, type PanelLayout } from './webview/messages.ts';
+import { changedKeys } from './diff.ts';
+import { NotificationGate, snapshotWarnings, type NotificationLevel } from './notifications.ts';
+import { resolveSourceFile, type SourceResolution } from './sourceFiles.ts';
 import type { PanelSessionState, SessionStatus } from './webview/panelState.ts';
 
 /** How long a burst of stops must settle before one refresh runs. */
 const REFRESH_DEBOUNCE_MS = 120;
+
+/** The layout a panel starts with: every table and column shown, the default order. */
+const DEFAULT_LAYOUT: PanelLayout = { order: [], hiddenTables: [], tables: {} };
 
 /** Snapshot arguments for the current cost settings. */
 export type CostOptionsGetter = () => CostOptions;
 
 /** The one thing the panel asks the session layer for. */
 export type SnapshotFetcher = (sessionId: string, frameId: number) => Promise<GdrEnvelope | null>;
+
+/** The heap block layout for one session's current stop (the `heap-dump` verb). */
+export type HeapMapFetcher = (sessionId: string, frameId: number) => Promise<GdrEnvelope | null>;
 
 export interface PanelOptions {
 	log: (message: string) => void;
@@ -45,9 +54,23 @@ export interface PanelOptions {
 	/** Directory to keep one snapshot JSON per refresh; empty disables. */
 	recordDir: () => string;
 	fetchSnapshot: SnapshotFetcher;
+	/** The heap block layout for a session's stop; the canvas draws it. */
+	fetchHeapMap: HeapMapFetcher;
+	/**
+	 * The panel's saved layout, kept per workspace. Injected so the panel never
+	 * touches the VS Code memento itself; the extension supplies the store.
+	 */
+	layoutStore: LayoutStore;
+}
+
+/** Read and write the panel layout. */
+export interface LayoutStore {
+	read(): PanelLayout | null;
+	write(layout: PanelLayout): void;
 }
 
 interface SessionEntry {
+	notifications: NotificationGate;
 	state: PanelSessionState;
 	lastGeneration: number | null;
 	frameId?: number;
@@ -55,6 +78,12 @@ interface SessionEntry {
 	inFlight: boolean;
 	pending: boolean;
 	debounce: NodeJS.Timeout | null;
+	/** Cells that changed at the last applied stop, keyed for the renderer. */
+	changed: Set<string>;
+	/** Whether the reader asked for the heap bitmap in this session. */
+	heapRequested: boolean;
+	/** The last heap map fetched for the session, drawn on its canvas. */
+	heapMap: HeapMapData | null;
 }
 
 export class RtosViewsPanel implements vscode.WebviewViewProvider {
@@ -64,9 +93,13 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 	/** Sessions whose panel was already revealed once (discoverability). */
 	private readonly revealed = new Set<string>();
 	private activeId: string | null = null;
+	/** The reader's table layout: order, shown tables and columns, widths. */
+	private layout: PanelLayout;
 	private view: vscode.WebviewView | undefined;
 
-	constructor(private readonly options: PanelOptions) {}
+	constructor(private readonly options: PanelOptions) {
+		this.layout = options.layoutStore.read() ?? DEFAULT_LAYOUT;
+	}
 
 	// -- provider ----------------------------------------------------------
 
@@ -114,12 +147,16 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			return;
 		}
 		const entry: SessionEntry = {
+			notifications: new NotificationGate(),
 			state: { id: sessionId, name, status: 'waiting', message: null },
 			lastGeneration: null,
 			refreshSeq: 0,
 			inFlight: false,
 			pending: false,
-			debounce: null
+			debounce: null,
+			changed: new Set<string>(),
+			heapRequested: false,
+			heapMap: null
 		};
 		this.sessions.set(sessionId, entry);
 		this.activate(sessionId);
@@ -137,18 +174,29 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			return;
 		}
 		entry.state.status = 'ok';
+		entry.state.message = null;
 		this.scheduleRefresh(sessionId);
 		this.broadcast();
 	}
 
-	sessionFailed(sessionId: string, reason: string): void {
+	sessionFailed(sessionId: string, reason: string, level: NotificationLevel = 'error'): void {
 		const entry = this.sessions.get(sessionId);
 		if (entry === undefined) {
 			return;
 		}
 		entry.state.status = 'error';
 		entry.state.message = reason;
+		this.notify(sessionId, level, `panel startup failed for "${entry.state.name}": ${reason}`);
 		this.broadcast();
+	}
+
+	/** Errors remain in session status; popups report each distinct cause once. */
+	private notify(sessionId: string | null | undefined, level: NotificationLevel, message: string): void {
+		const gate = this.sessions.get(sessionId ?? this.activeId ?? '')?.notifications;
+		if (gate !== undefined && !gate.accept(level, message)) { return; }
+		this.options.log(`panel: ${level}: ${message}`);
+		if (level === 'error') { void vscode.window.showErrorMessage(`GDR: ${message}`); }
+		else { void vscode.window.showWarningMessage(`GDR: ${message}`); }
 	}
 
 	/** The target resumed; the last snapshot stays, marked stale. */
@@ -238,6 +286,8 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 				return;
 			}
 			this.applyEnvelope(sessionId, entry, envelope);
+		} catch (error) {
+			this.sessionFailed(sessionId, `snapshot request failed: ${String(error)}`);
 		} finally {
 			entry.inFlight = false;
 			if (entry.pending) {
@@ -268,14 +318,39 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			collectedAt: Date.now(),
 			warnings: envelope.warnings ?? [],
 			noHeap: this.options.costOptions().noHeap,
+			noDetails: this.options.costOptions().noDetails,
 			data
 		};
+		const previous = entry.state.snapshot ?? null;
+		entry.changed = changedKeys(previous, snapshot);
 		entry.state.snapshot = snapshot;
 		entry.state.status = 'ok';
 		entry.state.message = null;
+		for (const warning of snapshotWarnings(envelope)) { this.notify(sessionId, 'warning', warning); }
 		this.record(sessionId, envelope);
 		this.revealOnce(sessionId);
 		this.broadcast();
+		if (entry.heapRequested) {
+			// Reason: the bitmap follows the stop the reader is looking at; a drawn
+			// map from an earlier stop would name blocks that have since moved.
+			void this.refreshHeapMap(sessionId, entry).catch((error) => this.notify(sessionId, 'error', `heap map refresh failed: ${String(error)}`));
+		}
+	}
+
+	/** Re-fetch the heap map for a session whose bitmap the reader asked for. */
+	private async refreshHeapMap(sessionId: string, entry: SessionEntry): Promise<void> {
+		const frameId = entry.frameId;
+		if (frameId === undefined) {
+			return;
+		}
+		const envelope = await this.options.fetchHeapMap(sessionId, frameId);
+		const map = envelope !== null && envelope.ok ? parseHeapMap(envelope.data) : null;
+		if (map === null) {
+			entry.heapMap = null;
+			return;
+		}
+		entry.heapMap = map;
+		void this.view?.webview.postMessage({ type: 'heapMap', sessionId, map });
 	}
 
 	/**
@@ -328,29 +403,120 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		if (decoded === null) {
 			return;
 		}
-		if (decoded.type === 'openMemory') {
-			void this.openMemory(decoded.address, decoded.sessionId);
-		} else {
-			void this.openSource(decoded.file, decoded.line);
+		switch (decoded.type) {
+			case 'selectSession':
+				if (this.sessions.has(decoded.sessionId)) { this.activate(decoded.sessionId); }
+				return;
+			case 'openMemory':
+				void this.openMemory(decoded.address, decoded.sessionId).catch((error) => this.notify(decoded.sessionId, 'error', String(error)));
+				return;
+			case 'openSource':
+				void this.openSource(decoded.file, decoded.name, decoded.line, decoded.fallbackAddress, decoded.sessionId).catch((error) => this.notify(decoded.sessionId, 'error', String(error)));
+				return;
+			case 'refresh':
+				this.refreshNow(decoded.sessionId);
+				return;
+			case 'heapDump':
+				// Reason: the bitmap is requested on demand (plan D6); the request is
+				// answered by the heap-map fetch wired in the canvas step.
+				void this.heapDumpRequested(decoded.sessionId).catch((error) => this.notify(decoded.sessionId, 'error', `heap map request failed: ${String(error)}`));
+				return;
+			case 'layout':
+				this.layoutChanged(decoded.layout);
+				return;
 		}
 	}
 
 	// -- source navigation -------------------------------------------------
 
 	/** Open the file a task entry starts in, with the caret on its line. */
-	private async openSource(file: string, line: number): Promise<void> {
+	private async openSource(
+		file: string,
+		name: string,
+		line: number,
+		fallbackAddress: string | undefined,
+		sessionId: string | undefined
+	): Promise<void> {
 		const position = new vscode.Position(line - 1, 0);
+		const resolved = await this.resolveSource(file, name);
+		if (resolved.kind === 'found') {
+			await this.showSource(resolved.path, position);
+			return;
+		}
+		if (resolved.kind === 'ambiguous') {
+			const picked = await vscode.window.showQuickPick(resolved.paths, {
+				placeHolder: `Which ${name} does line ${line} belong to?`
+			});
+			if (picked !== undefined) {
+				await this.showSource(picked, position);
+			}
+			return;
+		}
+		this.options.log(`panel: no workspace file for ${file}:${line} (${name})`);
+		if (fallbackAddress !== undefined) {
+			await this.openMemory(fallbackAddress, sessionId);
+			return;
+		}
+		this.notify(sessionId, 'warning', `could not find ${name} in the workspace; check that the source is in this folder`);
+	}
+
+	/** Open one file with the caret on a line; a failure is logged, not thrown. */
+	private async showSource(file: string, position: vscode.Position): Promise<void> {
 		try {
 			const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
 			await vscode.window.showTextDocument(document, {
 				selection: new vscode.Range(position, position)
 			});
 		} catch (error) {
-			this.options.log(`panel: could not open ${file}:${line}: ${String(error)}`);
-			void vscode.window.showInformationMessage(
-				`GDR: could not open ${file}:${line}; check that the source is on this machine`
-			);
+			this.notify(this.activeId, 'error', `could not open ${file}: ${String(error)}`);
 		}
+	}
+
+	/**
+	 * Find the file a debug-info source path names: the path GDB resolved when it
+	 * exists here, else the longest workspace match on the recorded name.
+	 */
+	private async resolveSource(file: string, name: string): Promise<SourceResolution> {
+		const basename = path.basename(name.replace(/\\/g, '/'));
+		const found = await vscode.workspace.findFiles(`**/${basename}`, '**/node_modules/**', 200);
+		const candidates = found.map((uri) => uri.fsPath);
+		return resolveSourceFile(name, file, candidates, (candidate) => fs.existsSync(candidate));
+	}
+
+	/** A heap-dump request from the heap card: fetch the block layout and draw it. */
+	private async heapDumpRequested(sessionId: string | undefined): Promise<void> {
+		const id = sessionId ?? this.activeId;
+		if (id === null) {
+			return;
+		}
+		const entry = this.sessions.get(id);
+		const frameId = entry?.frameId;
+		if (entry === undefined || frameId === undefined) {
+			return;
+		}
+		entry.heapRequested = true;
+		const envelope = await this.options.fetchHeapMap(id, frameId);
+		const map = envelope !== null && envelope.ok ? parseHeapMap(envelope.data) : null;
+		if (map === null) {
+			this.options.log(`panel: no heap map for ${entry.state.name}: ${envelope?.error?.message ?? 'not drawable'}`);
+			this.notify(id, 'warning', `no heap map to draw for ${entry.state.name}: ${envelope?.error?.message ?? 'allocator data is unavailable'}`);
+			entry.heapRequested = false;
+			this.broadcast();
+			return;
+		}
+		entry.heapMap = map;
+		this.broadcast();
+		void this.view?.webview.postMessage({ type: 'heapMap', sessionId: id, map });
+	}
+
+	/**
+	 * The reader changed the order, the shown tables or columns, or a width.
+	 * The layout is saved for the workspace and the panel is redrawn with it.
+	 */
+	private layoutChanged(layout: PanelLayout): void {
+		this.layout = layout;
+		this.options.layoutStore.write(layout);
+		this.broadcast();
 	}
 
 	// -- address navigation ------------------------------------------------
@@ -358,9 +524,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 	private async openMemory(address: string, sessionId: string | undefined): Promise<void> {
 		const extension = vscode.extensions.getExtension(MEMORY_VIEW_EXTENSION_ID);
 		if (extension === undefined) {
-			void vscode.window.showInformationMessage(
-				`${memoryViewMissingHint()}. The address ${address} was copied to the clipboard instead.`
-			);
+			this.notify(sessionId, 'warning', `${memoryViewMissingHint()}. The address ${address} was copied to the clipboard instead.`);
 			void vscode.env.clipboard.writeText(address);
 			return;
 		}
@@ -376,7 +540,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		// an address constant, never an inferior call.
 		const opened = await vscode.env.openExternal(vscode.Uri.parse(uri));
 		if (!opened) {
-			void vscode.window.showInformationMessage(`GDR: could not open the memory view for ${address}`);
+			this.notify(sessionId, 'error', `could not open the memory view for ${address}`);
 		}
 	}
 
@@ -400,6 +564,27 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			})),
 			activeId: this.activeId
 		};
-		void this.view.webview.postMessage({ type: 'state', html: renderApp(state) });
+		void this.view.webview.postMessage({
+			type: 'state',
+			layout: this.layout,
+			map: this.activeId === null ? null : this.sessions.get(this.activeId)?.heapMap ?? null,
+			html: renderApp(state, { layout: this.layout, changed: this.changedFor(this.activeId), heapCanvas: this.heapRequestedFor(this.activeId) })
+		});
+	}
+
+	/** Whether the active session has asked for its heap bitmap. */
+	private heapRequestedFor(sessionId: string | null): boolean {
+		if (sessionId === null) {
+			return false;
+		}
+		return this.sessions.get(sessionId)?.heapRequested === true;
+	}
+
+	/** The cells that changed at the active session's last applied stop. */
+	private changedFor(sessionId: string | null): Set<string> {
+		if (sessionId === null) {
+			return new Set<string>();
+		}
+		return this.sessions.get(sessionId)?.changed ?? new Set<string>();
 	}
 }

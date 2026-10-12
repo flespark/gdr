@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 
 /** Envelope schema this client knows how to read. */
-export const GDR_SCHEMA_VERSION = 1;
+export const GDR_SCHEMA_VERSION = 2;
 
 export interface GdrError {
 	code: string;

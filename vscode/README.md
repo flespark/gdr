@@ -1,7 +1,9 @@
-# GDB RTOS Views (VSCode extension)
+# GDB RTOS Views
 
-An RTOS view for embedded debugging, driven by [GDR (GDB enhance for RTOS)](https://github.com/flespark) CLI.
-For discover task/timer/IPC status, resource usage, corruption and potential bug.
+An RTOS view for embedded debugging, driven by [GDR (GDB enhance for RTOS)](https://github.com/flespark/gdr) CLI.
+For discover task/timer/IPC/heap status, resource usage, corruption and potential bug.
+
+![screenshot](./media/screenshot.png)
 
 ## How it works
 
@@ -57,7 +59,7 @@ flowchart TB
 ### Session lifecycle
 
 1. **At launch** it checks that GDB has Python, then `source`s the bundled
-   `gdr.py`. Without Python the session still starts, and the panel shows why.
+   `gdr.py`. Without Python the session still starts; an error notification explains why GDR could not start.
 2. **At the first stop** it asks GDR which RTOS and version this target is
    (`$gdr_json("probe")`) and initializes that adapter.
 3. **At every later stop** the panel asks for one snapshot, which runs the
@@ -115,30 +117,57 @@ v1 API for exactly four things:
 Every other event the tracker sends (`capabilities`, `protocol-event`,
 `initializing`) is ignored. GDR itself is never driven while the target runs, so
 a tracker that is missing or answers with a shape this client does not know
-degrades to a logged "initialized, no data" panel rather than reading a moving
-target.
+produces a startup error notification rather than silently leaving the panel
+without data or reading a moving target.
 
-## The RTOS panel
+## The GDR panel
 
-The panel lives in the bottom **Panel** area, next to Terminal, Problems and the
-Debug Console — it appears there once a debug session GDR can drive starts, and
-stays out of the way otherwise (no standing activity-bar icon). `GDR: Open RTOS
-Views` focuses it from the Command Palette; the refresh button in its title bar
-re-reads the target on demand.
+The **GDR** panel appears there once a debug session GDR can drive starts, and
+stays out of the way otherwise (no standing activity-bar icon).
+`GDR: Open RTOS Views` focuses it from the Command Palette; the refresh button
+in its title bar re-reads the target on demand. Startup failures are reported
+even before the
+webview is opened: runtime/Python/transport failures are errors, while missing
+RTOS/version selection or an unsupported adapter is a warning. Notifications
+include the session name and cause, with repeated causes suppressed per session;
+details remain in the Output Channel and Debug Console.
 
-One tab per debug session; each tab
-shows the snapshot GDR took at the last stop: the task table (numeric columns
-right-aligned, stack usage as a bar, waiters collapsible, addresses clickable),
-object overview, checks, heap, and hint bars that name the configuration a
-missing column needs (a capability note or envelope warning verbatim from GDR).
-The panel refreshes at each stop (generation-checked, so a stale answer is
-dropped) and shows the last snapshot under a *target running* banner while the
-target runs.
+One tab per debug session. Each tab shows the snapshot GDR took at the last
+stop, in this order:
 
-Clicking an address opens the mcu-debug memory viewer at that address — install
-`mcu-debug.memory-view`; without it the address is copied to the clipboard
-instead. A snapshot can be kept to disk per refresh (see `gdr.recordSnapshotsDir`)
-for bug reports and offline inspection.
+- **System**: one header row and one value row, the same shape as the task
+  table. It shows the current task, the tick, the scheduler state (`Unlocked`,
+  `Locked (nest N)` or `In ISR (nest N)`, omitted when the target cannot read
+  it). Per-kind object counts and the heap used/total/status fields are omitted;
+  heap counters live in the Heap card.
+- **Tables**: one card per object kind (tasks, timers, heap, semaphores, mutexes,
+  events, mailboxes, message queues, memory pools). Numeric columns are
+  right-aligned, stack usage is a bar, waiters collapse, and addresses are
+  clickable. Diagnostic columns are the consistency checks of that kind.
+- **Heap**: the basics in one header row and one value row, with the heap's
+  consistency checks as diagnostic columns. There is no separate Checks card.
+  *Draw heap map* draws the block layout on a canvas: free blocks are grey, each
+  owner has a colour, and hovering a block reads `owner:<name>, size: <n> B`.
+  The collapsible map refreshes at each stop once you have asked for it;
+  block details appear only in the floating pointer tooltip.
+- **Hint bars**: the warnings and capability gaps GDR reports, verbatim.
+
+The **Display selection** list above the cards ticks which tables and which
+columns are drawn. A table whose data is missing (no heap, a kind the target
+cannot enumerate) is greyed out. Each table's column group starts collapsed;
+checkbox changes keep the groups open and preserve the current scroll position.
+Drag a card's title to change the table order, drag a column header to reorder
+columns, and drag its edge to resize it. Checkbox parents and children follow the
+same table/column order, including hidden columns in their saved positions.
+Drag a parent row in Display selection to reorder tables, or a child column
+chip to reorder that table's columns; hidden tables and columns can also be
+reordered without enabling them. Heap basics and checks reorder within their
+respective tables. Drag handles, drop outlines and diagnostic badges distinguish
+reordering from checkbox selection. The layout is saved per workspace.
+
+A value that changed since the previous stop is drawn in the theme's number
+colour, so a changed value is distinct from a link. The first stop has nothing to
+compare with and shows no change.
 
 ## Settings
 
@@ -149,6 +178,7 @@ for bug reports and offline inspection.
 | `gdr.autoInit` | Initialize automatically when the probe is unambiguous (default). Turn it off to always be asked. |
 | `gdr.refreshOnStop` | Refresh the panel at each stop (default on). Turn off to refresh only on initialization or with the panel's refresh button. |
 | `gdr.refreshHeaps` | Include the heap snapshot in every refresh (default on). The heap walk is the most expensive part; turn off when stops feel slow. |
+| `gdr.refreshDetails` | Include the per-kind detail tables in every refresh (default on). Each one walks its objects' entries; turn off when stops feel slow. |
 | `gdr.recordSnapshotsDir` | Directory to save snapshot JSON files on each refresh (for offline inspection and bug reports). Empty disables recording (default). |
 | `gdr.snapshotTransport` | Transport method for snapshots from GDB to the extension: `evaluate` (default) transfers data in memory via DAP; `file` passes data via temporary files (faster for large snapshots, but requires GDB and VS Code to share a filesystem). GDR switches to `file` by itself when the adapter's `evaluate` cannot carry a payload (cortex-debug and the cdt-gdb family, ST-LINK included, render a returned string as its element count, so those sessions use the file route). |
 
@@ -197,10 +227,6 @@ The byte-for-byte check that the VSIX carries the GDR runtime it claims is
 
 ## Known limits
 
-- The panel's own DOM is not exercised end-to-end (that needs an Electron
-  host); the renderer is pure and is asserted against a *real* QEMU snapshot in
-  the integration lane, so the markup and the data it renders are both tested
-  on real targets.
 - The file route needs the extension to read the filesystem GDB writes to. GDR
   picks that route by itself when `evaluate` cannot carry a payload (every
   Cortex-Debug or ST-LINK session, see the `gdr.snapshotTransport` row above), so a GDB in
@@ -208,5 +234,3 @@ The byte-for-byte check that the VSIX carries the GDR runtime it claims is
   all; the panel reports the failed bypass instead of showing nothing.
 - The probe reads versions from DWARF. A build without `-g3` exports no version
   macro, so the extension asks the user instead of guessing.
-- GDR's console warnings (a rejected version, an unsupported RTOS) appear in the
-  Debug Console; the extension reports success or failure from session state.

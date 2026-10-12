@@ -207,6 +207,7 @@ function renderableSnapshot(envelope: GdrEnvelope): PanelSnapshot {
 		collectedAt: Date.now(),
 		warnings: envelope.warnings ?? [],
 		noHeap: false,
+		noDetails: false,
 		data
 	};
 }

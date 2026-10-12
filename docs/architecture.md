@@ -260,6 +260,35 @@ boots a real QEMU profile, loads a real fixture ELF, and drives GDR through the
 same expressions the extension issues, so a contract change on either side fails
 in a test rather than in a user's session.
 
+### Two notification surfaces: build advice versus runtime faults
+
+The machine-readable `snapshot` envelope reaches the extension through the
+transport used by `SnapshotFetcher`; the panel does not receive GDB command
+stdout or adapter objects directly. General `messages` remain available to
+CLI/API consumers, while panel-facing `data.build_hints` is a separate,
+explicit list. It contains only actionable RTOS build/configuration advice,
+for example enabling a missing config macro. Registry provenance, kernel tick,
+object-discovery limitations, release-layout notes, and allocator walk prose
+stay in the CLI/API response but are not panel hints. A hint block therefore
+helps users produce a more informative firmware image; it is not an error log.
+
+Errors and state failures use the extension host's popup surface: session
+initialization failures, malformed/failed snapshots, failed heap-map requests,
+source/memory navigation failures, and missing optional integrations are shown
+with `showErrorMessage` or `showWarningMessage`, with a per-session gate so a
+refresh loop cannot repeat the same popup. Startup notifications do not depend
+on resolving the webview: runtime/transport failures are errors, missing adapter
+selection is a warning, and tracker subscription failures report before any
+session can populate the panel. Each session failure retains its concrete cause;
+terminated sessions cannot publish a late initialization result. Informational status is written to
+the GDR output channel rather than being presented as an alert. The popup is
+for a condition requiring attention now; the inline block is for improving a
+future build. Its viewport defaults to 88 px, has a bottom-centre resize handle
+(48–480 px, pointer and keyboard), and preserves height/scroll per session.
+New advice is appended at the bottom and scrolled into view; the border pulses
+three times, respecting reduced-motion preferences. Unchanged advice does not
+pulse on refresh, and advice that no longer applies is removed.
+
 ### The panel renders host-side and never decodes
 
 The panel (`vscode/src/panel.ts`) is a webview view that follows the tracker's
@@ -271,8 +300,8 @@ envelope into HTML host-side; the webview script only swaps the markup and posts
 clicks back, so the XSS boundary is a single audited `escapeHtml` seam instead
 of a DOM codebase inside the webview. Panel semantics derive only from the
 envelope's own fields: alignment from `ColumnSpec.align`, machine values from
-`value_rows`, waiter lists from `waiters` cells, capability gaps and warnings
-verbatim as hint bars. The one arithmetic the panel performs is a used/stack
+`value_rows`, waiter lists from `waiters` cells, and actionable build advice
+from `data.build_hints` (see the notification policy above). The one arithmetic the panel performs is a used/stack
 ratio bar against the adapter-provided numeric pair -- presentation, never
 kernel interpretation. The bar is a background class (`gdr-pct-N`) chosen by
 the host, not an inline `style`: the panel's Content-Security-Policy allows
@@ -288,7 +317,13 @@ session, never an inferior call. A symbol cell that GDR resolves to a source
 line (`source_rows`, from `gdb.find_pc_line`, which reads only the debug line
 table) opens that file at that line on click; the host accepts only absolute
 paths, and the webview's client stays import-free so a refresh can restore the
-scroll position of the session still shown.
+scroll position of the session still shown. Typed pointer links carry a raw
+hexadecimal label on hover/focus; one fixed, selectable overlay escapes table
+clipping and permits normal text selection/keyboard copying, without adding a
+button or evaluating an expression.
+FreeRTOS waiter records carry a proven saved-PC/source when available, otherwise
+a TCB address; ambiguous task names remain non-actionable rather than guessing
+an entry or selecting a different task.
 
 ### A thread's last PC is proven, never guessed
 
@@ -344,6 +379,51 @@ Unsupported name glyphs are losslessly escaped. Palette colours are shared with
 the canvas. Used blocks without recorded owners read `owner:N/A`; incomplete
 walks retain an explicit legend warning.
 
+### Layout and highlights are data, not style
+
+The table and column order, the shown tables and columns, and the widths the reader set are a
+`PanelLayout` the host stores per workspace and sends back into the markup.
+Widths travel as `data-width` attributes and the client applies them through the
+CSSOM after each render, because the panel's CSP refuses `style=` attributes.
+Resize grips cover the full right header edge; pointer capture and temporarily
+non-draggable headers isolate resizing from column reordering. Once a width is
+set, fixed-layout `colgroup` tracks and their summed table width prevent automatic
+layout or long values from overriding it; tracks follow column keys on reorder.
+Table cards and scroll wrappers shrink to content with a viewport-width cap;
+independent Heap tables close their own last-column borders. Wide tables retain
+horizontal scrolling rather than stretching the page or forcing narrow tables wide.
+Column groups default to native collapsed disclosures; same-session redraws
+restore their open state (including the heap-map disclosure) and keyed
+table/heap-map scroll offsets after layout. The checkbox tree consumes the same
+saved column order as the table renderer, rather than regrouping diagnostic
+columns; DOM drag gestures synchronize the tree before the host redraws it.
+Card titles themselves are draggable (not their ancestor sections), so native
+`dragstart` targets are unambiguous and canvas interaction remains independent.
+The Display selection tree uses the same table/column layout for its parent and
+child drag sources, including hidden entries; child moves stay within a table.
+Checkboxes change presentation only, without collecting another snapshot. A
+value that changed since the last applied stop is found by `vscode/src/diff.ts`,
+which compares cells under the same key the renderer uses (table kind, row id,
+column). The highlight colour is the theme's number-token colour, deliberately not
+the link accent, and applies to links as well as plain values. Comparison includes
+machine values so a symbol label hiding an address change still highlights; numeric
+row ids are normalized without losing their positions. System and Heap properties
+and verdicts use the same diff path.
+
+Session selectors sit between RTOS identity and snapshot metadata. Waiter cells
+show a count with a fixed-position, scrollable disclosure that overlays following
+rows, preserving expansion by kind/object/column across same-session refreshes.
+RT-Thread waiter links open the retained thread entry, not a guessed creation site;
+FreeRTOS waiter navigation follows the proven saved-PC/TCB fallback described above. Timer
+parameters/IDs use data-symbol declarations when available, otherwise memory
+navigation; mailbox slots and FreeRTOS queue-item storage addresses open memory.
+Queue Head/Tail/WriteTo/ReadFrom/Set and mutex Owner retain machine pointers for
+memory navigation even when their labels are symbolized; scalar sizes/ticks are
+never promoted to pointers.
+RT-Thread merged tables omit redundant object `Type` and `KernelTick` columns;
+soft/hard `TimerType` remains meaningful, while FreeRTOS subtype distinctions are
+retained under `Subtype`.
+
 ### One evidence ladder for `probe` and `init`
 
 `gdr probe` and `gdr init` must not disagree about a target, so they read the
@@ -363,8 +443,8 @@ Two deliberate asymmetries keep real workflows working:
 - **`--allow-unverified`** registers anyway, for a kernel whose symbols were
   deliberately modified or stripped. The override is not silent: the verdict's
   note is stored on the session (`adapter_api.register(verification_note=...)`)
-  and prepended to every later envelope's `warnings`, so a client repeats it on
-  every refresh instead of trusting the reads. That is why the note lives on the
+  and prepended to every later envelope's `warnings`, so a client can keep it
+  available without silently trusting the reads. That is why the note lives on the
   session and not in `gdr init`'s output, which a plugin cannot read.
 
 ### Exception guard for kernel data collection

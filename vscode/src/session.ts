@@ -33,6 +33,7 @@ import {
 	watchExpression
 } from './inject.ts';
 import { cacheKey, decideInit, parseProbePayload, type GdrSettings, type InitDecision } from './probe.ts';
+import type { NotificationLevel } from './notifications.ts';
 import { checkRuntime, locateRuntime, type RuntimeLocation } from './runtime.ts';
 import {
 	describeFailure,
@@ -62,6 +63,7 @@ export interface SessionState {
 	decision: InitDecision | null;
 	/** The first problem that stopped the lifecycle, for the panel. */
 	errorMessage: string | null;
+	failureLevel: NotificationLevel;
 }
 
 export class GdrSession {
@@ -69,7 +71,8 @@ export class GdrSession {
 		python: null,
 		initialized: null,
 		decision: null,
-		errorMessage: null
+		errorMessage: null,
+		failureLevel: 'error'
 	};
 
 	private closed = false;
@@ -100,6 +103,11 @@ export class GdrSession {
 		return this.state.errorMessage;
 	}
 
+	/** Missing configuration/selection is a warning; runtime failures are errors. */
+	get failureLevel(): NotificationLevel {
+		return this.state.failureLevel;
+	}
+
 	/**
 	 * Run the lifecycle up to the point where data can be read.
 	 *
@@ -121,6 +129,8 @@ export class GdrSession {
 		if (!(await this.watchLaunchPython())) {
 			return false;
 		}
+		this.state.failureLevel = 'error';
+		this.state.errorMessage = null;
 		const decision = decideInit(await this.probe(frameId), this.settings, this.cache.read(this.key));
 		this.state.decision = decision;
 		return this.applyDecision(decision, frameId);
@@ -135,6 +145,13 @@ export class GdrSession {
 	 */
 	watchLaunchPython(): Promise<boolean> {
 		if (this.launchPythonReady === null) {
+			const problem = checkRuntime(this.runtime);
+			if (problem !== null) {
+				this.state.errorMessage = problem.message;
+				this.log(problem.message);
+				this.launchPythonReady = Promise.resolve(false);
+				return this.launchPythonReady;
+			}
 			const loader = launchLoaderPath(this.session.configuration);
 			if (loader === null) {
 				// Reason: without the loader path no result file can ever be read, so
@@ -216,13 +233,23 @@ export class GdrSession {
 
 	private async applyDecision(decision: InitDecision, frameId: number): Promise<boolean> {
 		if (decision.kind === 'none') {
-			this.log(`no adapter to initialize: ${decision.reason}`);
+			if (this.state.errorMessage === null) {
+				this.state.errorMessage = `${decision.reason}; configure gdr.rtos and gdr.version for this firmware`;
+				this.state.failureLevel = 'warning';
+			}
+			this.log(this.state.errorMessage);
 			return false;
 		}
 		let target: { rtos: string; version: string; source: 'settings' | 'probe' | 'cache' };
 		if (decision.kind === 'init') {
 			target = decision;
 		} else {
+			if (decision.options.length === 0) {
+				this.state.errorMessage = `${decision.reason}; configure gdr.rtos and gdr.version for this firmware`;
+				this.state.failureLevel = 'warning';
+				this.log(this.state.errorMessage);
+				return false;
+			}
 			const picked = await vscode.window.showQuickPick(
 				decision.options.map((option) => ({
 					label: `${option.rtos} ${option.version}`,
@@ -233,6 +260,9 @@ export class GdrSession {
 				{ title: `GDR: ${decision.reason}`, placeHolder: 'Pick the RTOS and version to initialize' }
 			);
 			if (!picked) {
+				this.state.errorMessage = 'RTOS selection was cancelled; select an adapter at the next stop or configure gdr.rtos and gdr.version';
+				this.state.failureLevel = 'warning';
+				this.log(this.state.errorMessage);
 				return false;
 			}
 			target = {
@@ -257,7 +287,9 @@ export class GdrSession {
 		await this.evaluate(consoleCommand(this.session.type, command), frameId, 'repl');
 		const envelope = await this.fetch('capabilities', [], frameId);
 		if (envelope === null || !envelope.ok) {
-			const detail = envelope !== null ? ` (${describeFailure(envelope)})` : '';
+			const detail = envelope !== null
+				? ` (${describeFailure(envelope)})`
+				: ` (${this.state.errorMessage ?? 'no capabilities envelope came back'})`;
 			this.state.errorMessage =
 				`initialization of ${target.rtos} ${target.version} did not take effect${detail}` +
 				"; GDR's reason is in the Debug Console" +
@@ -267,6 +299,7 @@ export class GdrSession {
 			this.log(this.state.errorMessage);
 			return false;
 		}
+		this.state.errorMessage = null;
 		this.state.initialized = { rtos: target.rtos, version: target.version };
 		this.cache.write(this.key, this.state.initialized);
 		return true;
@@ -276,14 +309,15 @@ export class GdrSession {
 	async probe(frameId: number): Promise<ReturnType<typeof parseProbePayload>> {
 		const envelope = await this.fetch('probe', [], frameId);
 		if (envelope === null || !envelope.ok) {
-			this.log(
-				envelope === null
-					? 'GDR did not answer the probe (no envelope came back)'
-					: `GDR probe failed: ${describeFailure(envelope)}`
-			);
+			this.state.errorMessage = envelope === null
+				? `GDR did not answer the probe: ${this.state.errorMessage ?? 'no envelope came back'}; check GDR loading in the Debug Console`
+				: `GDR probe failed: ${describeFailure(envelope)}`;
+			this.log(this.state.errorMessage);
 			return null;
 		}
-		return parseProbePayload(envelope.data);
+		const payload = parseProbePayload(envelope.data);
+		this.state.errorMessage = payload === null ? 'GDR probe returned malformed adapter data' : null;
+		return payload;
 	}
 
 	/**
@@ -326,7 +360,8 @@ export class GdrSession {
 				this.fileRoute = true;
 				return this.fetchViaFile(verb, args, frameId, record?.dir ?? '', false);
 			}
-			this.log(`GDR sent an unrecognized payload for ${verb}: ${plan.payload.slice(0, 120)}`);
+			this.state.errorMessage = `GDR sent an unrecognized payload for ${verb}: ${plan.payload.slice(0, 120)}`;
+			this.log(this.state.errorMessage);
 			return null;
 		}
 		const slices: string[] = [];
@@ -443,8 +478,11 @@ export class GdrSession {
 			if (context === 'repl') {
 				return typed === undefined ? null : '';
 			}
-			return typeof typed?.result === 'string' ? typed.result : null;
+			if (typeof typed?.result === 'string') { return typed.result; }
+			this.state.errorMessage = `the debug adapter returned no value for ${expression}`;
+			return null;
 		} catch (error) {
+			this.state.errorMessage = `${expression}: ${error instanceof Error ? error.message : String(error)}`;
 			if (context === 'repl') {
 				// A failing console command still means the session is usable;
 				// the caller verifies the effect through a data verb.

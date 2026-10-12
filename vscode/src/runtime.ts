@@ -12,7 +12,7 @@
 // invocation whose analysis root is the repository root would otherwise not
 // resolve the Node builtins this file uses.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { GDR_SCHEMA_VERSION } from './transport.ts';
@@ -81,6 +81,11 @@ export function locateRuntime(bundledDirectory: string, configuredPath: string):
  * that guessed at a different one would mis-render data instead of failing.
  */
 export function checkRuntime(location: RuntimeLocation): RuntimeProblem | null {
+	try {
+		if (!statSync(location.entryPoint).isFile()) { throw new Error('not a file'); }
+	} catch {
+		return { kind: 'missing', message: `GDR runtime entry point is missing or inaccessible: ${location.entryPoint}; check gdr.runtimePath or reinstall the extension` };
+	}
 	if (location.overridden) {
 		return null;
 	}

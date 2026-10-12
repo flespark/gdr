@@ -52,7 +52,8 @@ All notable changes to GDR are documented in this file.
   `gdr init --json` reports the init outcome as one structured line.
 - `<rtos> heap dump [path]` draws the heap occupancy bitmap: grey for free
   blocks and one colour per owner. Inline in iTerm2 or Kitty; otherwise a PNG
-  (`gdr-heap-<rtos>-gen<N>.png`).
+  (`gdr-heap-<rtos>-gen<N>.png`). The panel's heap card draws the same map with a
+  hover readout.
 
 ### Changed
 
@@ -66,9 +67,11 @@ All notable changes to GDR are documented in this file.
   counts; `frt checks [scope] [name]` exposes all verdicts with object addresses.
 - Memory sizes are unified to bytes: key/value sizes print with a `B` suffix,
   and table columns state bytes in their descriptions rather than in headers.
-- Kernel version is omitted from `rtt system`.
+- The panel's system summary is one header row and one value row, the task
+  table's shape. Kernel version is gone from `rtt system` and the panel.
 - `rtt heap` drops the Holes line and the per-thread occupancy table; its
-  verdicts move into the table as diagnostic columns. `gdr api checks` stays.
+  verdicts move into the table as diagnostic columns. The Checks card is gone
+  from the panel. `gdr api checks` stays.
 - `rtt <kind> <name>` prints every object of the kind as one merged table, with
   the named object's row marked with `*` and a space, instead of one vertical block.
 - The task table's `Addr` column is now `TCB`, the thread control block address.

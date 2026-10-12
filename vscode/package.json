@@ -5,6 +5,11 @@
   "publisher": "flespark",
   "version": "2026.3.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flespark/gdr.git",
+    "directory": "vscode"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -40,7 +45,7 @@
       "panel": [
         {
           "id": "gdb-rtos-views",
-          "title": "GDB RTOS Views",
+          "title": "GDR",
           "icon": "media/trend.svg"
         }
       ]
@@ -120,6 +125,11 @@
           "default": true,
           "description": "Include the heap snapshot in every refresh. The heap walk is the most expensive part; disable it when stops feel slow."
         },
+        "gdr.refreshDetails": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include the per-kind detail tables (semaphores, mutexes, mailboxes, message queues, pools, timers) in every refresh. Each one walks its objects' entries; disable it when stops feel slow."
+        },
         "gdr.recordSnapshotsDir": {
           "type": "string",
           "default": "",
@@ -136,7 +146,7 @@
             "Ask GDB to write the envelope to a file and read it back; cheaper for very large snapshots, but the extension must be able to read the filesystem GDB writes to."
           ],
           "default": "evaluate",
-          "markdownDescription": "How the panel's snapshot crosses from GDB to the extension. `file` runs `gdr api snapshot --json --out <tmp>` and reads the file instead of the evaluate transport; it needs the filesystem GDB writes to be readable by the extension \u2014 true for a locally started GDB (whether gdbserver is local or remote) and for Remote-SSH/Dev Containers, where the extension runs beside GDB, but not for a GDB in a separate filesystem namespace (for example WSL)."
+          "markdownDescription": "How the panel's snapshot crosses from GDB to the extension. `file` runs `gdr api snapshot --json --out <tmp>` and reads the file instead of the evaluate transport; it needs the filesystem GDB writes to be readable by the extension — true for a locally started GDB (whether gdbserver is local or remote) and for Remote-SSH/Dev Containers, where the extension runs beside GDB, but not for a GDB in a separate filesystem namespace (for example WSL)."
         }
       }
     }
@@ -149,9 +159,11 @@
     "package": "npm run vendor && npm run build && vsce package --out gdb-rtos-views.vsix"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.4.0",
+    "jsdom": "^30.1.2",
     "typescript": "^5.7.0"
   },
   "icon": "media/icon.png"

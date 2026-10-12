@@ -34,10 +34,9 @@ body {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 4px;
-	padding: 6px 8px;
-	border-bottom: 1px solid var(--gdr-border);
-	background: var(--vscode-sideBar-background, var(--gdr-bg));
-	flex: none;
+	padding: 0;
+	flex: 1;
+	min-width: 0;
 }
 
 .gdr-tab {
@@ -124,7 +123,7 @@ body {
 
 .gdr-session-header {
 	display: flex;
-	align-items: baseline;
+	align-items: center;
 	gap: 10px;
 	flex-wrap: wrap;
 	margin-bottom: 6px;
@@ -163,10 +162,46 @@ body {
 /* --- hint bars --------------------------------------------------------- */
 
 .gdr-hints {
-	display: flex;
-	flex-direction: column;
-	gap: 3px;
 	margin: 6px 0;
+	border: 1px solid var(--gdr-border);
+	border-radius: 5px;
+	overflow: hidden;
+}
+
+.gdr-hints-scroll {
+	height: 88px;
+	overflow-y: auto;
+	padding: 4px 8px;
+	box-sizing: border-box;
+}
+
+.gdr-hints-grip {
+	height: 16px;
+	text-align: center;
+	line-height: 16px;
+	cursor: ns-resize;
+	touch-action: none;
+	user-select: none;
+	border-top: 1px solid var(--gdr-border);
+	color: var(--gdr-muted);
+	background: var(--vscode-sideBar-background, var(--gdr-bg));
+}
+
+.gdr-hints-grip:focus-visible {
+	outline: 1px solid var(--gdr-accent);
+	outline-offset: -1px;
+}
+
+.gdr-hints-new {
+	animation: gdr-hint-arrival 1s ease-in-out 3;
+}
+
+@keyframes gdr-hint-arrival {
+	50% { border-color: var(--gdr-accent); box-shadow: 0 0 4px var(--gdr-accent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.gdr-hints-new { animation: none; border-color: var(--gdr-accent); }
 }
 
 .gdr-hint {
@@ -186,6 +221,11 @@ body {
 /* --- table cards ------------------------------------------------------- */
 
 .gdr-card {
+	/* Reason: the frame must follow the table too; shrinking only the table
+	 * leaves its row rules disconnected from a viewport-wide right border. */
+	width: fit-content;
+	max-width: 100%;
+	box-sizing: border-box;
 	margin: 10px 0;
 	border: 1px solid var(--gdr-border);
 	border-radius: 4px;
@@ -205,12 +245,18 @@ body {
 }
 
 .gdr-scroll {
+	width: fit-content;
+	max-width: 100%;
 	overflow-x: auto;
 }
 
 .gdr-table {
-	border-collapse: collapse;
-	width: 100%;
+	/* Reason: narrow tables must end at their content/column widths, not the
+	 * viewport edge. Separate borders keep sticky/clipped cells from losing
+	 * collapsed half-pixel row rules at the last column. */
+	border-collapse: separate;
+	border-spacing: 0;
+	width: max-content;
 	font-variant-numeric: tabular-nums;
 }
 
@@ -238,6 +284,13 @@ body {
 .gdr-table th + th,
 .gdr-table td + td {
 	border-left: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+
+/* Reason: Heap has independently sized basics/verdict tables; each needs
+ * its own closing edge rather than relying on the wider card's border. */
+.gdr-table th:last-child,
+.gdr-table td:last-child {
+	border-right: 1px solid var(--gdr-border);
 }
 
 .gdr-addr a {
@@ -385,15 +438,44 @@ body {
 }
 
 
+/* Selectable raw pointer labels escape horizontally scrolled table clipping. */
+.gdr-pointer-label {
+	position: fixed;
+	z-index: 200;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 8px;
+	max-width: calc(100vw - 16px);
+	box-sizing: border-box;
+	background: var(--gdr-bg);
+	color: var(--gdr-fg);
+	border: 1px solid var(--gdr-border);
+	border-radius: 4px;
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
+}
+.gdr-pointer-label[hidden] { display: none; }
+.gdr-pointer-label code { user-select: text; overflow-wrap: anywhere; }
+
 /* --- waiters ----------------------------------------------------------- */
 
 .gdr-waiter-fold summary {
 	cursor: pointer;
 }
 
-.gdr-waiter-fold ul {
-	margin: 2px 0 0;
-	padding-left: 16px;
+.gdr-waiter-menu {
+	position: fixed;
+	z-index: 100;
+	box-sizing: border-box;
+	margin: 0;
+	padding: 8px 8px 8px 24px;
+	white-space: normal;
+	overflow: auto;
+	background: var(--gdr-bg);
+	color: var(--gdr-fg);
+	border: 1px solid var(--gdr-border);
+	border-radius: 4px;
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
 }
 
 /* --- checks ------------------------------------------------------------ */
@@ -418,4 +500,233 @@ body {
 
 .gdr-verdict-skipped {
 	color: var(--gdr-muted);
+}
+
+/* A value that changed since the last stop. The number-token colour is the
+ * theme's value colour and is not the link accent, so it never reads as a link;
+ * the green fallback applies only when the theme does not define it. */
+.gdr-changed,
+.gdr-changed a {
+	color: var(--vscode-debugTokenExpression-number, #4caf50);
+	font-weight: 600;
+}
+
+/* The layout gestures: a dragged card dims, a resize grip sits on the header edge. */
+.gdr-dragging {
+	opacity: 0.5;
+}
+
+/* Reason: empty inline grips can have zero height; anchor a full-height hit
+ * area to the actual column boundary instead of the end of the header text. */
+.gdr-col-grip {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	right: 0;
+	width: 8px;
+	z-index: 2;
+	cursor: col-resize;
+	touch-action: none;
+	user-select: none;
+}
+
+.gdr-col-grip:hover {
+	background: var(--vscode-focusBorder, var(--gdr-accent));
+}
+
+.gdr-sized-table th,
+.gdr-sized-table td {
+	box-sizing: border-box;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gdr-tree {
+	margin: 10px 0;
+	font-size: 12px;
+	border: 1px solid var(--gdr-border);
+	border-radius: 8px;
+	background: var(--vscode-sideBar-background, var(--gdr-bg));
+}
+
+.gdr-tree > summary,
+.gdr-heap-fold > summary {
+	padding: 10px 12px;
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.gdr-tree-children {
+	list-style: none;
+	margin: 0;
+	padding: 8px 12px 12px 28px;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	border-top: 1px solid var(--gdr-border);
+}
+
+.gdr-tree-child label {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 8px;
+	border-radius: 5px;
+	border: 1px solid var(--gdr-border);
+	background: var(--gdr-bg);
+	cursor: pointer;
+}
+
+.gdr-tree input {
+	margin: 0;
+	accent-color: var(--vscode-checkbox-selectBackground, var(--gdr-accent));
+}
+
+.gdr-tree label:focus-within,
+.gdr-tree summary:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, var(--gdr-accent));
+	outline-offset: 2px;
+}
+
+.gdr-tree-child label:has(input:checked) {
+	border-color: var(--vscode-focusBorder, var(--gdr-accent));
+}
+
+.gdr-tree-child label:hover,
+.gdr-tree-parent summary:hover {
+	background: var(--vscode-list-hoverBackground, var(--gdr-bg));
+}
+
+.gdr-tree-unavailable {
+	opacity: 0.55;
+}
+
+.gdr-tree-unavailable label {
+	cursor: not-allowed;
+}
+
+.gdr-tree-reason {
+	display: block;
+	color: var(--gdr-muted);
+	margin: 0 12px 8px 28px;
+}
+
+.gdr-tree-count,
+.gdr-tree-badge {
+	font-size: 10px;
+	font-weight: normal;
+	color: var(--gdr-muted);
+	border: 1px solid var(--gdr-border);
+	border-radius: 10px;
+	padding: 1px 6px;
+	margin-left: 6px;
+}
+
+.gdr-tree-count {
+	float: right;
+}
+
+.gdr-heap-canvas {
+	display: block;
+	max-width: none;
+	image-rendering: pixelated;
+}
+
+.gdr-heap-map {
+	overflow-x: auto;
+}
+
+.gdr-tree-root {
+	list-style: none;
+	padding: 0 8px 8px;
+	margin: 0;
+}
+
+.gdr-tree-parent {
+	border: 1px solid var(--gdr-border);
+	border-radius: 6px;
+	margin-top: 6px;
+	overflow: hidden;
+}
+
+.gdr-tree-parent summary {
+	cursor: pointer;
+	padding: 8px 10px;
+}
+
+.gdr-tree-parent summary label {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+
+th[draggable],
+.gdr-card-title[draggable],
+.gdr-tree-parent summary[draggable],
+.gdr-tree-child[draggable] {
+	cursor: grab;
+}
+
+.gdr-card-title[draggable] {
+	user-select: none;
+}
+
+.gdr-drag-handle {
+	color: var(--gdr-muted);
+	font-size: 16px;
+	line-height: 1;
+	margin-right: 6px;
+	user-select: none;
+}
+
+.gdr-tree-child .gdr-drag-handle {
+	margin-right: 0;
+	font-size: 13px;
+}
+
+.gdr-drop-target {
+	outline: 2px solid var(--vscode-focusBorder, var(--gdr-accent));
+	outline-offset: -2px;
+}
+
+.gdr-tree-child label {
+	cursor: grab;
+}
+
+.gdr-tree-child input,
+.gdr-tree-parent input {
+	cursor: pointer;
+	width: 14px;
+	height: 14px;
+}
+
+.gdr-tree-child label:has(input:checked) {
+	background: var(--vscode-list-inactiveSelectionBackground, var(--gdr-bg));
+}
+
+.gdr-column-dragging {
+	opacity: 0.5;
+}
+
+.gdr-heap-fold {
+	border-top: 1px solid var(--gdr-border);
+}
+
+.gdr-heap-tooltip {
+	position: fixed;
+	z-index: 100;
+	pointer-events: none;
+	max-width: calc(100vw - 16px);
+	padding: 6px 10px;
+	border-radius: 5px;
+	color: var(--vscode-editorHoverWidget-foreground, var(--gdr-fg));
+	background: var(--vscode-editorHoverWidget-background, var(--gdr-bg));
+	border: 1px solid var(--vscode-editorHoverWidget-border, var(--gdr-border));
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
+	font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.gdr-heap-tooltip[hidden] {
+	display: none;
 }
