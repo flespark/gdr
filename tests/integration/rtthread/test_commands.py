@@ -191,7 +191,7 @@ print(f"max_stack_used={value.max_stack_used}")
         "Used",
         "HighWater",
         "Entry",
-        "TCB",
+        "Addr",
     ):
         assert header in output
     assert "<worker1_entry" in output
@@ -512,7 +512,7 @@ def test_rtt_tables_keep_column_set_at_80_columns(gdb):
                     "SP",
                     "Stack",
                     "Entry",
-                    "TCB",
+                    "Addr",
                 ),
             ),
             (

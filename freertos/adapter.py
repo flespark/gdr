@@ -1107,7 +1107,7 @@ class FreeRtosAdapter(RtosAdapter):
                 row.append(number_cell(task.core_affinity))
             row.append(address_cell(task.address))
             rows.append(row)
-        table = ObjectTable.from_specs(specs, rows, elastic=("Name",), id_key="TCB")
+        table = ObjectTable.from_specs(specs, rows, elastic=("Name",), id_key="Addr")
         if tasks and not high_water:
             table.build_hints.append(
                 "HighWater is unavailable: enable configRECORD_STACK_HIGH_ADDRESS "

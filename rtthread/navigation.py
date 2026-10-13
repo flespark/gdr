@@ -216,7 +216,7 @@ def find_thread(name: str, kl: KernelLayout) -> gdb.Value | None:
 
     Name lookup comes first; :func:`find_object` then matches an explicit
     address literal or a plain-C-identifier symbol against registry
-    addresses, so the ``TCB`` column stays a valid selector.
+    addresses, so the ``Addr`` column stays a valid selector.
     """
     type_code = _object_code(kl, "thread")
     return find_object(type_code, name, kl) if type_code is not None else None

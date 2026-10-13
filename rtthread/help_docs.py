@@ -18,7 +18,7 @@ def _fields(*items: tuple[str, str]) -> tuple[HelpField, ...]:
 
 
 _ADDR = ("Addr", "Target address of the kernel object.")
-_TCB = ("TCB", "Thread control block address; the row identity.")
+_THREAD_ADDR = ("Addr", "Thread control block address; the row identity.")
 _WAITERS = ("Waiters", "Blocked tasks as `count@names`; N/A means no list exists.")
 _SNAPSHOT_LIMIT = (
     "The target stays halted and GDR never calls inferior code; values are one "
@@ -83,7 +83,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 ),
                 ("Entry", "Symbolized entry function or address."),
                 ("CPU/Bind", "Current/bound CPU when SMP fields exist."),
-                _TCB,
+                _THREAD_ADDR,
             ),
             tips=(
                 "Use `rtt thread <name-or-address>` for one thread's Key: Value details.",

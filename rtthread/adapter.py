@@ -1180,7 +1180,7 @@ class RtThreadAdapter(RtosAdapter):
             row.append(address_cell(thread.address))
             rows.append(row)
         table = ObjectTable.from_specs(
-            task_specs(smp), rows, elastic=("Entry", "Name"), id_key="TCB"
+            task_specs(smp), rows, elastic=("Entry", "Name"), id_key="Addr"
         )
         high_water = table.headers.index("HighWater")
         if rows and all(row[high_water].value is None for row in rows):

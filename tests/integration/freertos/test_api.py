@@ -56,14 +56,14 @@ def test_tasks_envelope_names_the_session_and_carries_the_contract(gdb):
     assert data["kind"] == "task"
     columns = {column["key"]: column for column in data["columns"]}
     assert list(columns) == data["headers"]
-    assert columns["TCB"]["kind"] == "addr"
+    assert columns["Addr"]["kind"] == "addr"
     assert columns["Prio"]["kind"] == "int"
 
     value_rows = data["value_rows"]
     assert len(value_rows) == len(data["rows"]) >= 1
     assert len(data["ids"]) == len(data["rows"])
 
-    address_index = data["headers"].index("TCB")
+    address_index = data["headers"].index("Addr")
     priority_index = data["headers"].index("Prio")
     for text_row, value_row, row_id in zip(
         data["rows"], value_rows, data["ids"], strict=True

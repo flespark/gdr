@@ -188,7 +188,7 @@ def test_freertos_tables_fit_80_columns(gdb_session):
     with _with_width(gdb_session, 80):
         output = gdb_session.run("freertos tasks", timeout=20)
         _assert_clean_command_output(output)
-        for header in ("Name", "State", "Prio", "SP", "TCB"):
+        for header in ("Name", "State", "Prio", "SP", "Addr"):
             assert header in output, output
 
 
@@ -197,7 +197,7 @@ def test_freertos_tables_fit_120_columns(gdb_session):
     with _with_width(gdb_session, 120):
         output = gdb_session.run("freertos tasks", timeout=20)
         _assert_clean_command_output(output)
-        for header in ("Name", "State", "Prio", "SP", "TCB"):
+        for header in ("Name", "State", "Prio", "SP", "Addr"):
             assert header in output, output
 
 

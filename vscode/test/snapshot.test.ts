@@ -20,7 +20,7 @@ function envelope(data: unknown, generation?: number): GdrEnvelope {
 }
 
 const TASKS = {
-	headers: ['Name', 'Prio', 'PC', 'TCB'],
+	headers: ['Name', 'Prio', 'PC', 'Addr'],
 	rows: [
 		['main *', '10', '<rt_schedule+584>', '0x20001234'],
 		['worker', '20', '<rt_thread_idle_entry>', '0x20001568']
@@ -32,7 +32,7 @@ const TASKS = {
 		{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: 'thread name', group: 'basic' },
 		{ key: 'Prio', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
 		{ key: 'PC', kind: 'pc', align: 'left', elastic: false, doc: 'last PC', group: 'basic' },
-		{ key: 'TCB', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
+		{ key: 'Addr', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
 	],
 	value_rows: [
 		['main *', 10, '<rt_schedule+584>', 0x20001234],

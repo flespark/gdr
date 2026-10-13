@@ -14,7 +14,7 @@ import { renderCheckboxTree } from '../src/webview/render.ts';
 function snapshot(overrides: Partial<SnapshotData> = {}, flags: Partial<PanelSnapshot> = {}): PanelSnapshot {
 	const data: SnapshotData = {
 		tasks: {
-			headers: ['Name', 'Prio', 'PC', 'TCB'],
+			headers: ['Name', 'Prio', 'PC', 'Addr'],
 			rows: [['main', '10', '<rt_schedule+584>', '0x2000']],
 			messages: [],
 			elastic: ['Name'],
@@ -22,7 +22,7 @@ function snapshot(overrides: Partial<SnapshotData> = {}, flags: Partial<PanelSna
 				{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: '', group: 'basic' },
 				{ key: 'Prio', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
 				{ key: 'PC', kind: 'pc', align: 'left', elastic: false, doc: '', group: 'basic' },
-				{ key: 'TCB', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
+				{ key: 'Addr', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
 			]
 		},
 		tables: {
@@ -179,9 +179,9 @@ test('toggling a table or a column yields the next layout without touching the r
 	const shown = toggleTable(hidden, 'heap', true);
 	assert.deepEqual(shown.hiddenTables, ['timer']);
 
-	const column = toggleColumn(start, 'task', 'TCB', false);
-	assert.deepEqual(column.tables.task, { kind: 'task', widths: { Name: 120 }, hiddenColumns: ['TCB'] });
-	const back = toggleColumn(column, 'task', 'TCB', true);
+	const column = toggleColumn(start, 'task', 'Addr', false);
+	assert.deepEqual(column.tables.task, { kind: 'task', widths: { Name: 120 }, hiddenColumns: ['Addr'] });
+	const back = toggleColumn(column, 'task', 'Addr', true);
 	assert.deepEqual(back.tables.task.hiddenColumns, []);
 	assert.deepEqual(back.order, ['task'], 'the order is untouched');
 });

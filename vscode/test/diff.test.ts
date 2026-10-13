@@ -12,7 +12,7 @@ import { changeKey, renderApp } from '../src/webview/render.ts';
 
 function tasks(rows: string[][], ids: string[]): ObjectTableData {
 	return {
-		headers: ['Name', 'State', 'Prio', 'TCB'],
+		headers: ['Name', 'State', 'Prio', 'Addr'],
 		rows,
 		messages: [],
 		elastic: ['Name'],
@@ -20,7 +20,7 @@ function tasks(rows: string[][], ids: string[]): ObjectTableData {
 			{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: '', group: 'basic' },
 			{ key: 'State', kind: 'text', align: 'left', elastic: false, doc: '', group: 'basic' },
 			{ key: 'Prio', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-			{ key: 'TCB', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
+			{ key: 'Addr', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
 		],
 		ids
 	};

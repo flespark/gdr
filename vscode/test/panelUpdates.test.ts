@@ -10,9 +10,9 @@ import { renderApp } from '../src/webview/render.ts';
 const source = { file: '/src/main.c', name: 'main.c', line: 9 };
 function snapshot(pc: number = 0x1000, tick = '1'): PanelSnapshot {
  const data = parseSnapshot({
-  tasks: { headers: ['Name', 'PC', 'Entry', 'TCB'], rows: [['a', '<worker>', '<entry>', '0x2000'], ['b', '<idle>', '<idle>', '0x3000']], messages: [], elastic: [],
+  tasks: { headers: ['Name', 'PC', 'Entry', 'Addr'], rows: [['a', '<worker>', '<entry>', '0x2000'], ['b', '<idle>', '<idle>', '0x3000']], messages: [], elastic: [],
    ids: [0x2000, 0x3000], value_rows: [['a', pc, 0x1010, 0x2000], ['b', 0x1020, 0x1020, 0x3000]],
-   columns: ['text', 'pc', 'symbol', 'addr'].map((kind, i) => ({ key: ['Name','PC','Entry','TCB'][i], kind })), source_rows: [[null, source, source, null]] },
+   columns: ['text', 'pc', 'symbol', 'addr'].map((kind, i) => ({ key: ['Name','PC','Entry','Addr'][i], kind })), source_rows: [[null, source, source, null]] },
   tables: {
    timer: { headers: ['Name','Callback','Parameter'], rows: [['t','<cb>','<parameter>']], ids: [0x4000], messages: [], elastic: [], columns: [{key:'Name'}, {key:'Callback',kind:'symbol'}, {key:'Parameter',kind:'symbol'}], value_rows: [['t',0x1000,0x5000]], source_rows: [[null, source, null]] },
    mailbox: { headers: ['Name','RecvWait','Slot'], rows: [['m','2@a,b','Slot[0]: 0x6000']], ids: [0x7000], messages: [], elastic: [], columns: [{key:'Name'}, {key:'RecvWait',kind:'waiters'}, {key:'Slot',kind:'addresses'}], value_rows: [['m',[{name:'a',source,address:0x1010},'b'],[{text:'Slot[0]: 0x6000',address:0x6000}]]] }

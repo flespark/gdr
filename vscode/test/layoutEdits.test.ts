@@ -43,13 +43,13 @@ test('a resize writes the clamped width for that column and leaves the others al
 	const start: PanelLayout = {
 		order: ['task'],
 		hiddenTables: [],
-		tables: { task: { kind: 'task', widths: { Name: 140 }, hiddenColumns: ['TCB'] } }
+		tables: { task: { kind: 'task', widths: { Name: 140 }, hiddenColumns: ['Addr'] } }
 	};
 	const resized = withWidth(start, 'task', 'PC', 9000);
 	assert.deepEqual(resized.tables.task, {
 		kind: 'task',
 		widths: { Name: 140, PC: MAX_COLUMN_WIDTH },
-		hiddenColumns: ['TCB']
+		hiddenColumns: ['Addr']
 	});
 });
 

@@ -115,7 +115,7 @@ def task_specs(smp: bool) -> tuple[ColumnSpec, ...]:
     """The task table contract; SMP adds the CPU affinity pair.
 
     ``PC`` is the thread's last program counter (``pc`` kind: a source link when
-    the line resolves, the memory view otherwise). ``TCB`` is the thread control
+    the line resolves, the memory view otherwise). ``Addr`` is the thread control
     block address and the row identity; it has no property meaning to a reader.
     """
     specs = [
@@ -141,5 +141,5 @@ def task_specs(smp: bool) -> tuple[ColumnSpec, ...]:
             ColumnSpec("CPU", kind="int", align="right"),
             ColumnSpec("Bind", kind="int", align="right"),
         ]
-    specs.append(ColumnSpec("TCB", kind="addr", doc="thread control block address"))
+    specs.append(ColumnSpec("Addr", kind="addr", doc="thread control block address"))
     return tuple(specs)

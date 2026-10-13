@@ -82,7 +82,7 @@ test('a layout message keeps order, hidden tables and positive widths only', () 
 			order: ['task', 'heap', 'semaphore'],
 			hiddenTables: ['timer'],
 			tables: {
-				task: { widths: { Name: 140.4, PC: -3, Entry: Number.NaN, TCB: 80 }, hiddenColumns: ['TCB', 7] },
+				task: { widths: { Name: 140.4, PC: -3, Entry: Number.NaN, Addr: 80 }, hiddenColumns: ['Addr', 7] },
 				semaphore: 'not a table'
 			}
 		}
@@ -93,7 +93,7 @@ test('a layout message keeps order, hidden tables and positive widths only', () 
 			order: ['task', 'heap', 'semaphore'],
 			hiddenTables: ['timer'],
 			tables: {
-				task: { kind: 'task', widths: { Name: 140, TCB: 80 }, hiddenColumns: ['TCB'] }
+				task: { kind: 'task', widths: { Name: 140, Addr: 80 }, hiddenColumns: ['Addr'] }
 			}
 		}
 	});

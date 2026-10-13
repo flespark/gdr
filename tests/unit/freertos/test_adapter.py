@@ -297,7 +297,7 @@ def test_task_table_uses_freertos_capability_columns(monkeypatch):
         "Runtime",
         "CPU",
         "Affinity",
-        "TCB",
+        "Addr",
     ]
     assert table.rows == [
         [
@@ -327,17 +327,17 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
 
     table = adapter_module.FreeRtosAdapter(layout).task_table()
 
-    assert table.headers == ["Name", "State", "Prio", "PC", "SP", "TCB"]
+    assert table.headers == ["Name", "State", "Prio", "PC", "SP", "Addr"]
 
 
 @pytest.mark.parametrize(
     ("config", "task_kwargs", "expected_headers"),
     (
-        (FreeRtosConfig(), {}, ["Name", "State", "Prio", "PC", "SP", "TCB"]),
+        (FreeRtosConfig(), {}, ["Name", "State", "Prio", "PC", "SP", "Addr"]),
         (
             FreeRtosConfig(tcb_fields=frozenset({"uxBasePriority"})),
             {},
-            ["Name", "State", "Prio", "BasePrio", "PC", "SP", "TCB"],
+            ["Name", "State", "Prio", "BasePrio", "PC", "SP", "Addr"],
         ),
         (
             FreeRtosConfig(
@@ -345,7 +345,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 tcb_fields=frozenset({"ulRunTimeCounter"}),
             ),
             {},
-            ["Name", "State", "Prio", "PC", "SP", "Stack", "Used", "Runtime", "TCB"],
+            ["Name", "State", "Prio", "PC", "SP", "Stack", "Used", "Runtime", "Addr"],
         ),
         (
             FreeRtosConfig(
@@ -354,7 +354,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 tcb_fields=frozenset({"uxCoreAffinityMask", "xTaskRunState"}),
             ),
             {},
-            ["Name", "State", "Prio", "PC", "SP", "CPU", "Affinity", "TCB"],
+            ["Name", "State", "Prio", "PC", "SP", "CPU", "Affinity", "Addr"],
         ),
         (
             FreeRtosConfig(stack_end_field="pxEndOfStack"),
@@ -368,7 +368,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 "Stack",
                 "Used",
                 "HighWater",
-                "TCB",
+                "Addr",
             ],
         ),
         (
@@ -399,7 +399,7 @@ def test_task_table_hides_unavailable_capability_columns(monkeypatch):
                 "Runtime",
                 "CPU",
                 "Affinity",
-                "TCB",
+                "Addr",
             ],
         ),
     ),
@@ -553,7 +553,7 @@ def test_task_table_high_water_header_matches_the_cell_position(monkeypatch):
         "SP",
         "HighWater",
         "Runtime",
-        "TCB",
+        "Addr",
     ]
     assert dict(zip(table.headers, table.rows[0], strict=True)) == {
         "Name": "t",
@@ -563,7 +563,7 @@ def test_task_table_high_water_header_matches_the_cell_position(monkeypatch):
         "SP": "0x1180",
         "HighWater": "105",
         "Runtime": "42",
-        "TCB": "0x10",
+        "Addr": "0x10",
     }
 
 

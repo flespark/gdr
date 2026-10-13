@@ -82,7 +82,7 @@ def task_specs(
         specs.append(ColumnSpec("CPU", kind="int", align="right"))
     if affinity:
         specs.append(ColumnSpec("Affinity", kind="hex"))
-    specs.append(ColumnSpec("TCB", kind="addr", doc="task control block address"))
+    specs.append(ColumnSpec("Addr", kind="addr", doc="task control block address"))
     return tuple(specs)
 
 

@@ -119,7 +119,7 @@ def test_tasks_envelope_carries_the_column_contract(gdb):
     assert data["kind"] == "task"
     columns = {column["key"]: column for column in data["columns"]}
     assert list(columns) == data["headers"]
-    assert columns["TCB"]["kind"] == "addr"
+    assert columns["Addr"]["kind"] == "addr"
     assert columns["Prio"]["kind"] == "int"
     assert columns["Prio"]["align"] == "right"
 
@@ -128,7 +128,7 @@ def test_tasks_envelope_carries_the_column_contract(gdb):
     assert all(len(row) == len(data["headers"]) for row in value_rows)
     assert len(data["ids"]) == len(data["rows"])
 
-    address_index = data["headers"].index("TCB")
+    address_index = data["headers"].index("Addr")
     priority_index = data["headers"].index("Prio")
     for text_row, value_row, row_id in zip(
         data["rows"], value_rows, data["ids"], strict=True

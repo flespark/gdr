@@ -83,7 +83,7 @@ All notable changes to GDR are documented in this file.
 - FreeRTOS `HighWater` now matches RT-Thread's historical maximum used bytes,
   not remaining bytes; unavailable without retained stack bounds and prefill.
 - FreeRTOS normal views show concrete check problems instead of verified/n/a
-  counts; `frt checks [scope] [name]` exposes all verdicts with object addresses.
+  counts; `frt check [scope] [name]` exposes all verdicts with object addresses.
 - Memory sizes are unified to bytes: key/value sizes print with a `B` suffix,
   and table columns state bytes in their descriptions rather than in headers.
 - The panel's system summary is one header row and one value row, the task
@@ -91,9 +91,8 @@ All notable changes to GDR are documented in this file.
 - `rtt heap` drops the Holes line and the per-thread occupancy table; its
   verdicts move into the table as diagnostic columns. The Checks card is gone
   from the panel. `gdr api check` stays.
-- The task table's `Addr` column is now `TCB`, the thread control block address.
-  It is the row identity, last in the table. A new `PC` column after `BasePrio`
-  shows the thread's last PC, proven from its saved switch frame or `N/A`.
+- A new `PC` column after `BasePrio` shows the thread's last PC, proven from
+  its saved switch frame or `N/A`.
 
 ### Fixed
 

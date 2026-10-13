@@ -93,7 +93,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                     "PC",
                     "Last PC as <symbol+offset>, proven from the saved context frame (Cortex-M and RISC-V ports). N/A when no proof admits it.",
                 ),
-                ("TCB", "Task control block address; the row identity."),
+                ("Addr", "Task control block address; the row identity."),
             ),
             tips=(
                 "Use `frt task <name-or-address>` for blocking, notification and consistency details.",

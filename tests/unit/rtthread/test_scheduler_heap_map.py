@@ -52,12 +52,12 @@ def test_system_summary_omits_scheduler_state_when_unreadable(monkeypatch):
     assert adapter.system_summary().scheduler_state is None
 
 
-def test_task_columns_put_pc_after_baseprio_and_tcb_last():
-    """The contract order: last PC before SP, the TCB address as the final column."""
+def test_task_columns_put_pc_after_baseprio_with_addr_last():
+    """The contract order: last PC before SP, the thread address as final column."""
     headers = [spec.key for spec in task_specs(smp=False)]
     assert headers[:6] == ["Name", "State", "Prio", "BasePrio", "PC", "SP"]
-    assert headers[-1] == "TCB"
-    assert "Addr" not in headers
+    assert headers[-1] == "Addr"
+    assert "TCB" not in headers
     pc = next(spec for spec in task_specs(smp=False) if spec.key == "PC")
     assert pc.kind == "pc"
 

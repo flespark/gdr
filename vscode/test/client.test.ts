@@ -14,7 +14,7 @@ const client = ts.transpileModule(readFileSync('src/webview/client.ts', 'utf8'),
 const snapshot: PanelSnapshot = {
 	rtos: 'rtthread', rtosVersion: '4.0.5', gdrVersion: null, generation: 1, elapsedMs: null,
 	collectedAt: 0, warnings: [], noHeap: false, noDetails: false,
-	data: { tasks: { headers: ['Name', 'Prio', 'TCB'], rows: [['main', '10', '0x1000']], messages: [], elastic: [] },
+	data: { tasks: { headers: ['Name', 'Prio', 'Addr'], rows: [['main', '10', '0x1000']], messages: [], elastic: [] },
 		tables: {}, system: null, heap: null, capabilities: null }
 };
 const markup = () => renderApp({ sessions: [{ id: 's1', name: 'firmware', status: 'ok', message: null, snapshot }], activeId: 's1' });
@@ -60,15 +60,15 @@ test('checkbox redraw preserves open groups, vertical position and keyed horizon
 
 test('dragging a header reorders all row cells and posts column order without dragging its card', () => {
 	const { dom, document, messages } = setup();
-	const from = document.querySelector<HTMLElement>('th[data-col="TCB"]')!;
+	const from = document.querySelector<HTMLElement>('th[data-col="Addr"]')!;
 	const target = document.querySelector<HTMLElement>('th[data-col="Name"]')!;
 	from.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true }));
 	assert.equal(document.querySelector('.gdr-card.gdr-dragging'), null);
 	target.dispatchEvent(new dom.window.Event('drop', { bubbles: true, cancelable: true }));
-	assert.deepEqual(Array.from(document.querySelectorAll('thead th')).map((node) => node.textContent), ['TCB', 'Name', 'Prio']);
+	assert.deepEqual(Array.from(document.querySelectorAll('thead th')).map((node) => node.textContent), ['Addr', 'Name', 'Prio']);
 	assert.deepEqual(Array.from(document.querySelectorAll('tbody td')).map((node) => node.textContent), ['0x1000', 'main', '10']);
-	assert.deepEqual(Array.from(messages.at(-1).layout.tables.task.columnOrder), ['TCB', 'Name', 'Prio']);
-	assert.deepEqual(Array.from(document.querySelectorAll('[data-tree-kind="task"] input[data-column]')).map((box) => (box as HTMLInputElement).dataset.column), ['TCB', 'Name', 'Prio']);
+	assert.deepEqual(Array.from(messages.at(-1).layout.tables.task.columnOrder), ['Addr', 'Name', 'Prio']);
+	assert.deepEqual(Array.from(document.querySelectorAll('[data-tree-kind="task"] input[data-column]')).map((box) => (box as HTMLInputElement).dataset.column), ['Addr', 'Name', 'Prio']);
 	dom.window.close();
 });
 
@@ -131,13 +131,13 @@ test('column boundary resizing persists exact tracks without starting a header d
 	const layout = messages[0].layout;
 	assert.equal(layout.tables.task.widths.Name, 100, 'persist the requested width, not the old auto-layout rectangle');
 	assert.equal(layout.tables.task.widths.Prio, 90);
-	assert.equal(layout.tables.task.widths.TCB, 90);
+	assert.equal(layout.tables.task.widths.Addr, 90);
 	apply(renderApp({ sessions: [{ id: 's1', name: 'firmware', status: 'ok', message: null, snapshot }], activeId: 's1' }, { layout }));
 	const table = document.querySelector<HTMLTableElement>('[data-kind="task"] table')!;
 	assert.equal(table.style.tableLayout, 'fixed');
 	assert.equal(table.style.width, '280px');
 	assert.deepEqual(Array.from(table.querySelectorAll<HTMLTableColElement>('col')).map((node) => node.style.width), ['100px', '90px', '90px']);
-	const from = table.querySelector<HTMLElement>('th[data-col="TCB"]')!;
+	const from = table.querySelector<HTMLElement>('th[data-col="Addr"]')!;
 	const target = table.querySelector<HTMLElement>('th[data-col="Name"]')!;
 	from.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true }));
 	target.dispatchEvent(new dom.window.Event('drop', { bubbles: true, cancelable: true }));
@@ -172,9 +172,9 @@ test('resize clamps widths, ignores secondary buttons and cleans up on pointerca
 
 test('Display selection reorder keeps resized column tracks attached to their values', () => {
 	const { dom, document, messages, apply } = setup();
-	const layout = { order: [], hiddenTables: [], tables: { task: { kind: 'task', widths: { Name: 160, Prio: 60, TCB: 120 }, hiddenColumns: [] } } };
+	const layout = { order: [], hiddenTables: [], tables: { task: { kind: 'task', widths: { Name: 160, Prio: 60, Addr: 120 }, hiddenColumns: [] } } };
 	apply(renderApp({ sessions: [{ id: 's1', name: 'firmware', status: 'ok', message: null, snapshot }], activeId: 's1' }, { layout }));
-	document.querySelector('[data-tree-kind="task"] [data-tree-column="TCB"]')!.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true }));
+	document.querySelector('[data-tree-kind="task"] [data-tree-column="Addr"]')!.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true }));
 	document.querySelector('[data-tree-kind="task"] [data-tree-column="Name"]')!.dispatchEvent(new dom.window.Event('drop', { bubbles: true, cancelable: true }));
 	assert.deepEqual(Array.from(document.querySelectorAll<HTMLTableColElement>('col')).map((node) => node.style.width), ['120px', '160px', '60px']);
 	assert.deepEqual(Array.from(document.querySelectorAll('tbody td')).map((node) => node.textContent), ['0x1000', 'main', '10']);
@@ -267,16 +267,16 @@ test('Display selection child drag reorders table values, including hidden colum
  const { dom, document, apply, messages } = setup();
  const state = { sessions: [{ id: 's1', name: 'firmware', status: 'ok' as const, message: null, snapshot }], activeId: 's1' };
  apply(renderApp(state, { layout: { order: [], hiddenTables: [], tables: { task: { kind: 'task', widths: {}, hiddenColumns: ['Prio'] } } } }));
- const source = document.querySelector('[data-tree-kind="task"] [data-tree-column="TCB"]')!;
+ const source = document.querySelector('[data-tree-kind="task"] [data-tree-column="Addr"]')!;
  const target = document.querySelector('[data-tree-kind="task"] [data-tree-column="Name"]')!;
  source.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true, cancelable: true }));
  target.dispatchEvent(new dom.window.MouseEvent('drop', { bubbles: true, cancelable: true }));
  const result = messages.at(-1).layout;
- assert.deepEqual(Array.from(result.tables.task.columnOrder), ['TCB', 'Name', 'Prio']);
+ assert.deepEqual(Array.from(result.tables.task.columnOrder), ['Addr', 'Name', 'Prio']);
  assert.deepEqual(Array.from(document.querySelectorAll('tbody td')).map((node) => node.textContent), ['0x1000', 'main']);
  apply(renderApp(state, { layout: result }));
- assert.deepEqual(Array.from(document.querySelectorAll('thead th')).map((node) => node.textContent), ['TCB', 'Name']);
- assert.deepEqual(Array.from(document.querySelectorAll('[data-tree-kind="task"] [data-tree-column]')).map((node) => (node as HTMLElement).dataset.treeColumn), ['TCB', 'Name', 'Prio']);
+ assert.deepEqual(Array.from(document.querySelectorAll('thead th')).map((node) => node.textContent), ['Addr', 'Name']);
+ assert.deepEqual(Array.from(document.querySelectorAll('[data-tree-kind="task"] [data-tree-column]')).map((node) => (node as HTMLElement).dataset.treeColumn), ['Addr', 'Name', 'Prio']);
  const group = document.querySelector<HTMLDetailsElement>('[data-disclosure="columns:task"]')!;
  group.open = true;
  const box = document.querySelector<HTMLInputElement>('input[data-column="Name"]')!;
@@ -290,7 +290,7 @@ test('child drag cannot move a column into a different table', () => {
  const { dom, document, apply, messages } = setup();
  const data: PanelSnapshot = { ...snapshot, data: { ...snapshot.data, tables: { semaphore: { headers: ['Name'], rows: [['sem']], messages: [], elastic: [] } } } };
  apply(renderApp({ sessions: [{ id: 's1', name: 'firmware', status: 'ok', message: null, snapshot: data }], activeId: 's1' }));
- document.querySelector('[data-tree-kind="task"] [data-tree-column="TCB"]')!.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true }));
+ document.querySelector('[data-tree-kind="task"] [data-tree-column="Addr"]')!.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true }));
  document.querySelector('[data-tree-kind="semaphore"] [data-tree-column="Name"]')!.dispatchEvent(new dom.window.Event('drop', { bubbles: true, cancelable: true }));
  assert.equal(messages.length, 0);
  dom.window.close();
