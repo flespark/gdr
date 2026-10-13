@@ -364,10 +364,15 @@ $:
           script: |
             apt-get update
             apt-get install --yes --no-install-recommends \
-              ca-certificates curl git
+              ca-certificates curl git python3
             rm -rf /var/lib/apt/lists/*
         - name: create source archives
           script: bash ci/create-release-archives.sh "$CNB_BRANCH"
+        - name: build the release VSIX
+          # Reason: same versioned `ci/build-vsix.sh` the GitHub release
+          # runs, so both forges attach the identical file name; the tag
+          # check fails the pipeline on a mistagged release.
+          script: bash ci/build-vsix.sh "$CNB_BRANCH"
         - name: publish CNB Release
           script: |
             if [ -z "${GDR_RELEASE_TOKEN:-}" ]; then

@@ -38,6 +38,14 @@ if [[ ${#archives[@]} -ne 2 ]]; then
     echo "expected one versioned archive in each format" >&2
     exit 1
 fi
+vsix_files=("$archive_dir"/gdb-rtos-views-*.vsix)
+# Reason: unlike the source archives, the VSIX file name carries the extension
+# version (`vscode/package.json`, e.g. `gdb-rtos-views-2026.4.0.vsix`), which
+# is what installers and the Marketplace expect -- keep it versioned.
+if [[ ${#vsix_files[@]} -ne 1 ]]; then
+    echo "expected exactly one release VSIX in $archive_dir" >&2
+    exit 1
+fi
 
 repository="flespark-2026/gdr"
 target_commit="$(git -C "$repo_root" rev-parse --verify "${release_tag}^{commit}")"
@@ -103,12 +111,14 @@ upload_asset() {
 
     asset_name="$(basename "$archive_path")"
     case "$asset_name" in
-        *.tar.gz)
-            asset_name="${asset_name%-$release_tag.tar.gz}.tar.gz"
-            ;;
-        *.zip)
-            asset_name="${asset_name%-$release_tag.zip}.zip"
-            ;;
+    *.tar.gz)
+        asset_name="${asset_name%-$release_tag.tar.gz}.tar.gz"
+        ;;
+    *.zip)
+        asset_name="${asset_name%-$release_tag.zip}.zip"
+        ;;
+        # Reason: the VSIX name already carries the extension version and
+        # must stay versioned; only the source archives get stable names.
     esac
     asset_size="$(wc -c <"$archive_path" | tr -d '[:space:]')"
     upload_json="$("${cnb_cli[@]}" releases post-release-asset-upload-url \
@@ -176,7 +186,7 @@ upload_asset() {
         --ttl 0 >/dev/null
 }
 
-for archive in "${archives[@]}"; do
+for archive in "${archives[@]}" "${vsix_files[@]}"; do
     upload_asset "$archive"
 done
-printf 'published CNB Release %s with stable source archives\n' "$release_tag"
+printf 'published CNB Release %s with stable source archives and the release VSIX\n' "$release_tag"

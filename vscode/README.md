@@ -225,6 +225,13 @@ maintainer compares it with a local build and then publishes to the Marketplace
 by hand. CI never publishes, because Marketplace versions are immutable and the
 credentials would be a leak in the open-lane config.
 
+Every release tag additionally builds a versioned VSIX with
+`ci/build-vsix.sh <tag>` (name from `package.json`, tag-vs-version checked)
+and attaches it to both the GitHub Release and the CNB Release, next to the
+source archives. Publish that exact file to the Marketplace by hand; never
+repackage locally, or the checksums diverge. `categories` must stay within the
+Marketplace allowlist -- an unknown entry fails upload validation.
+
 `ci/check-vendored-schema.py` checks the generated bundle's version and schema
 against the source checkout, and enforces the version rule
 (`GDR x.y` ships as extension `x.y.0`).

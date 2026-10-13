@@ -34,6 +34,20 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: bash ci/create-release-archives.sh "$TAG"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          # Reason: no dependency cache on a release job -- a poisoned cache
+          # would flow into the published VSIX, and `npm ci` from the
+          # lockfile is hermetic without it.
+          node-version: "24"
+      - name: Build the release VSIX
+        # Reason: the file name carries the extension version from
+        # vscode/package.json (GDR `2026.4` ships as extension `2026.4.0`),
+        # and the script refuses a tag the extension does not track, so a
+        # mistagged release fails here instead of shipping a wrong VSIX.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash ci/build-vsix.sh "$TAG"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -41,10 +55,17 @@ jobs:
         run: |
           notes_file="$(mktemp)"
           bash ci/extract-changelog.sh "$TAG" >"$notes_file"
+          shopt -s nullglob
+          vsix_files=(dist/gdb-rtos-views-*.vsix)
+          if [[ ${#vsix_files[@]} -ne 1 ]]; then
+            echo "expected exactly one release VSIX in dist/" >&2
+            exit 1
+          fi
           gh release create "$TAG" \
             --title "GDR $TAG" \
             --notes-file "$notes_file" \
             "dist/gdr-$TAG.tar.gz" \
             "dist/gdr-$TAG.zip" \
             "dist/gdr-latest.tar.gz" \
-            "dist/gdr-latest.zip"
+            "dist/gdr-latest.zip" \
+            "${vsix_files[0]}"
