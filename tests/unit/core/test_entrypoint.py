@@ -425,6 +425,78 @@ def test_init_force_resets_before_replacing(monkeypatch):
     assert calls == ["reset", "setup"]
 
 
+def test_format_rtthread_config_lists_valued_options_and_toggles():
+    """The init banner names valued configs plus enable/disable toggles."""
+    entrypoint = _load_entrypoint()
+    cfg = RtConfig(
+        smp=True,
+        cpu_count=2,
+        heap_type="small_mem",
+        using_semaphore=True,
+        using_mutex=True,
+        using_event=False,
+        using_mailbox=True,
+        using_messagequeue=True,
+        using_mempool=False,
+        using_soft_timer=True,
+        using_memtrace=False,
+    )
+
+    assert entrypoint._format_rtthread_config(cfg) == (
+        "config: smp: enable, cores: 2, heap: small_mem, semaphore: enable, "
+        "mutex: enable, event: disable, mailbox: enable, messagequeue: enable, "
+        "mempool: disable, timer-soft: enable, memtrace: disable"
+    )
+
+
+def test_format_rtthread_config_omits_cores_on_single_core():
+    """Core counts ride the SMP entry and stay out of UP banners."""
+    entrypoint = _load_entrypoint()
+
+    assert "cores" not in entrypoint._format_rtthread_config(RtConfig())
+    assert "smp" not in entrypoint._format_rtthread_config(RtConfig())
+
+
+def test_format_freertos_config_aligns_with_rtthread():
+    """Same k/v shape; tick width and notification counts stay out."""
+    entrypoint = _load_entrypoint()
+    cfg = FreeRtosConfig(
+        smp=True,
+        number_of_cores=2,
+        tick_bits=16,
+        notification_count=8,
+        heap_kind=4,
+        heap_protector=True,
+        timers=True,
+        event_groups=True,
+        stream_buffers=False,
+        queue_support=True,
+        queue_registry=True,
+        queue_registry_size=9,
+        queue_sets=False,
+        trace_facility=True,
+        mpu_object_pool=False,
+    )
+
+    assert entrypoint._format_freertos_config(cfg) == (
+        "config: smp: enable, cores: 2, heap: heap_4+protector, timers: enable, "
+        "event-groups: enable, stream-buffers: disable, queues: enable, "
+        "queue-sets: disable, trace: enable, mpu: disable, "
+        "queue-registry: enable (size 9)"
+    )
+
+
+def test_format_freertos_config_omits_smp_and_names_unknown_heap():
+    """Single-core builds skip placement; a symbol-less heap is unknown."""
+    entrypoint = _load_entrypoint()
+    banner = entrypoint._format_freertos_config(FreeRtosConfig())
+
+    assert "smp" not in banner
+    assert "cores" not in banner
+    assert "tick" not in banner
+    assert "heap: unknown" in banner
+
+
 def test_stop_hook_and_reset_cover_the_watch_set():
     """Watch printing rides the guarded stop hook; reset drops the set.
 

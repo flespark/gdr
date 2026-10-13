@@ -612,6 +612,40 @@ def _register_session_events() -> None:
         return
 
 
+def _on_off(enabled: bool) -> str:
+    """Render a probed component toggle in init banners."""
+    return "enable" if enabled else "disable"
+
+
+def _format_rtthread_config(cfg) -> str:
+    """One-line probed RT-Thread config: valued options plus component toggles.
+
+    Only options with debugger-visible effects are listed (SMP placement,
+    heap shape, the IPC/object toggles gating commands, soft-timer class,
+    MEMTRACE ownership); core counts ride the SMP entry and are omitted on
+    single-core builds. Pure so unit tests can pin the format without GDB.
+    """
+    parts = []
+    if cfg.smp:
+        smp = "smp: enable"
+        if cfg.cpu_count:
+            smp += f", cores: {cfg.cpu_count}"
+        parts.append(smp)
+    parts.append(f"heap: {cfg.heap_type}")
+    for name, flag in (
+        ("semaphore", cfg.using_semaphore),
+        ("mutex", cfg.using_mutex),
+        ("event", cfg.using_event),
+        ("mailbox", cfg.using_mailbox),
+        ("messagequeue", cfg.using_messagequeue),
+        ("mempool", cfg.using_mempool),
+        ("timer-soft", cfg.using_soft_timer),
+        ("memtrace", cfg.using_memtrace),
+    ):
+        parts.append(f"{name}: {_on_off(flag)}")
+    return "config: " + ", ".join(parts)
+
+
 def _setup_rtthread(version: str, *, allow_unverified: bool = False) -> TargetVerdict:
     """Initialise RT-Thread support once for the current GDB session.
 
@@ -644,11 +678,7 @@ def _setup_rtthread(version: str, *, allow_unverified: bool = False) -> TargetVe
     target_version = verdict.version
     info(f"setting up RT-Thread v{version}...")
     cfg = detect_config()
-    info(
-        f"  config: smp={cfg.smp} heap={cfg.heap_type} "
-        f"sem={cfg.using_semaphore} mutex={cfg.using_mutex} "
-        f"mb={cfg.using_mailbox} mq={cfg.using_messagequeue}"
-    )
+    info(f"  {_format_rtthread_config(cfg)}")
     kl = build_layouts(cfg, target_version)
     info(f"  layout: {len(kl.structs)} structs, {len(kl.list_hooks)} list hooks")
     adapter = RtThreadAdapter(kl, heap_type=cfg.heap_type, version=target_version)
@@ -666,6 +696,46 @@ def _setup_rtthread(version: str, *, allow_unverified: bool = False) -> TargetVe
 
     info("RT-Thread support ready. Type 'rtt help' for commands.")
     return verdict
+
+
+def _format_freertos_config(cfg) -> str:
+    """One-line probed FreeRTOS config, aligned with the RT-Thread banner.
+
+    Only options with debugger-visible effects are listed (SMP placement,
+    heap shape, the kind-gating toggles, registry/set/trace channels, MPU
+    resolution); fine-grained DWARF mechanics such as tick width or
+    notification counts stay out. Core counts ride the SMP entry and are
+    omitted on single-core builds. Pure so unit tests can pin the format
+    without GDB.
+    """
+    parts = []
+    if cfg.smp:
+        smp = "smp: enable"
+        if cfg.number_of_cores:
+            smp += f", cores: {cfg.number_of_cores}"
+        parts.append(smp)
+    if cfg.heap_kind is None:
+        heap = "heap: unknown"
+    else:
+        heap = f"heap: heap_{cfg.heap_kind}"
+        if cfg.heap_protector:
+            heap += "+protector"
+    parts.append(heap)
+    for name, flag in (
+        ("timers", cfg.timers),
+        ("event-groups", cfg.event_groups),
+        ("stream-buffers", cfg.stream_buffers),
+        ("queues", cfg.queue_support),
+        ("queue-sets", cfg.queue_sets),
+        ("trace", cfg.trace_facility),
+        ("mpu", cfg.mpu_object_pool),
+    ):
+        parts.append(f"{name}: {_on_off(flag)}")
+    if cfg.queue_registry:
+        parts.append(f"queue-registry: enable (size {cfg.queue_registry_size})")
+    else:
+        parts.append("queue-registry: disable")
+    return "config: " + ", ".join(parts)
 
 
 def _setup_freertos(version: str, *, allow_unverified: bool = False) -> TargetVerdict:
@@ -700,10 +770,7 @@ def _setup_freertos(version: str, *, allow_unverified: bool = False) -> TargetVe
     target_version = verdict.version
     info(f"setting up FreeRTOS v{version}...")
     cfg = detect_config()
-    info(
-        f"  config: smp={cfg.smp} cores={cfg.number_of_cores} "
-        f"tick={cfg.tick_bits} notifications={cfg.notification_count}"
-    )
+    info(f"  {_format_freertos_config(cfg)}")
     layout = build_layout(cfg, target_version)
     info(f"  layout: {len(layout.structs)} structs")
     adapter = FreeRtosAdapter(layout)

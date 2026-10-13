@@ -27,7 +27,7 @@ import {
 function panelSnapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
 	const data: SnapshotData = {
 		tasks: {
-			headers: ['Name', 'State', 'Prio', 'Stack', 'Used', 'Waiters', 'TCB'],
+			headers: ['Name', 'State', 'Prio', 'Stack', 'Used', 'Waiters', 'Addr'],
 			rows: [
 				['main *', 'running', '10', '2048', '512', '3 (a, b, c)', '0x20001234'],
 				['worker', 'suspend', '20', '4096', '3900', '1 (idle)', '0x20001568']
@@ -41,7 +41,7 @@ function panelSnapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
 				{ key: 'Stack', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
 				{ key: 'Used', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
 				{ key: 'Waiters', kind: 'waiters', align: 'left', elastic: true, doc: '', group: 'basic' },
-				{ key: 'TCB', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
+				{ key: 'Addr', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
 			],
 			value_rows: [
 				['main *', 'running', 10, 2048, 512, ['alpha', 'beta', 'gamma'], 0x20001234],
@@ -393,6 +393,22 @@ test('saved column order reorders the header and the associated values together'
  const card = html.slice(html.indexOf('data-kind="task"'));
  assert.ok(card.indexOf('data-col="Prio"') < card.indexOf('data-col="Name"'));
  assert.ok(card.includes('<tr data-id="0x20001234"><td class="gdr-right">10</td><td>main *'));
+});
+
+test('tasks table renders the Addr identity column last by default', () => {
+ const html = renderApp(state(), { layout: { order: [], hiddenTables: [], tables: {} } });
+ const card = html.slice(html.indexOf('data-kind="task"'));
+ assert.ok(card.indexOf('data-col="Name"') >= 0);
+ assert.ok(card.indexOf('data-col="Name"') < card.indexOf('data-col="Addr"'));
+ assert.ok(!card.includes('data-col="TCB"'));
+});
+
+test('a saved layout naming the pre-rename TCB column still renders Addr last', () => {
+ const html = renderApp(state(), { layout: { order: [], hiddenTables: [], tables: { task: { kind: 'task', widths: {}, hiddenColumns: [], columnOrder: ['Name', 'TCB'] } } } });
+ const card = html.slice(html.indexOf('data-kind="task"'));
+ assert.ok(!card.includes('data-col="TCB"'));
+ assert.ok(card.indexOf('data-col="Name"') < card.indexOf('data-col="Addr"'));
+ assert.ok(card.includes('<tr data-id="0x20001234">'));
 });
 
 test('heap diagnostic columns render saved widths and resize grips', () => {

@@ -162,11 +162,16 @@ def test_unknown_or_extra_arguments_refer_to_help(monkeypatch):
     (
         ("task", "worker1", "task"),
         ("queue", "serial", "queue"),
+        ("q", "serial", "queue"),
         ("semaphore", "bin", "semaphore"),
+        ("sem", "bin", "semaphore"),
         ("mutex", "fw_mutex", "mutex"),
+        ("mtx", "fw_mutex", "mutex"),
         ("timer", "watchdog", "timer"),
         ("eventgroup", "events", "eventgroup"),
+        ("eg", "events", "eventgroup"),
         ("streambuffer", "stream", "streambuffer"),
+        ("sb", "stream", "streambuffer"),
     ),
 )
 def test_singular_commands_route_to_object_detail(

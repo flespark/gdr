@@ -60,70 +60,229 @@ _HEAP_DUMP = HelpTopic(
 )
 
 
+def _threads_list() -> CommandHelp:
+    return CommandHelp(
+        "threads",
+        "List registered threads",
+        "Shows scheduling, priority, stack, entry-point and optional SMP state for every registered thread.",
+        usage=("rtt threads",),
+        fields=_fields(
+            ("Name", "Thread name; '*' marks a currently running thread."),
+            ("State", "Decoded scheduler state."),
+            ("Prio/BasePrio", "Current and initial priority."),
+            (
+                "PC",
+                "Last PC as <symbol+offset>, the running PC or the return address on the saved switch frame; a source link when the line resolves. N/A when the frame cannot be proven.",
+            ),
+            ("SP", "Current stack pointer."),
+            (
+                "Stack/Used/HighWater",
+                "Stack capacity, current use and maximum observed use, in bytes.",
+            ),
+            ("Entry", "Symbolized entry function or address."),
+            ("CPU/Bind", "Current/bound CPU when SMP fields exist."),
+            _THREAD_ADDR,
+        ),
+        tips=(
+            "Use `rtt thread <name-or-address>` for one thread's Key: Value details.",
+            'Use `p $gdr_task("<name-or-address>")` for native rt_thread inspection.',
+        ),
+        configuration=("CPU and Bind appear only in an RT_USING_SMP layout.",),
+        limitations=(_SNAPSHOT_LIMIT,),
+        aliases=("tasks",),
+        action="tasks",
+        kind="task",
+    )
+
+
+def _thread_detail() -> CommandHelp:
+    return CommandHelp(
+        "thread",
+        "Show one thread in detail",
+        "Prints one thread as Key: Value pairs, including identity, scheduling, stack, entry, error/tick state and CPU placement.",
+        usage=("rtt thread <name-or-address>",),
+        fields=_fields(
+            ("Name/Address/Type", "Thread identity and native object type."),
+            (
+                "State/Priority/BasePriority",
+                "Decoded state and current/initial priorities.",
+            ),
+            (
+                "SP/Stack/StackSize/Used/HighWater",
+                "Stack geometry and watermark-derived usage; sizes in bytes.",
+            ),
+            ("Entry", "Symbolized entry function or address."),
+            ("Error/RemainingTick", "Kernel error and remaining time slice."),
+            ("BindCPU/OnCPU", "SMP placement when present."),
+        ),
+        tips=('Inspect additional fields with `p $gdr_task("<name-or-address>")`.',),
+        configuration=(
+            "SMP rows require RT_USING_SMP; watermark quality depends on stack fill bytes.",
+        ),
+        limitations=(_SNAPSHOT_LIMIT,),
+        action="detail",
+        kind="task",
+    )
+
+
+def _objects_summary() -> CommandHelp:
+    return CommandHelp(
+        "objects",
+        "Summarise registry-backed object counts",
+        "Counts enabled object kinds by traversing RT-Thread's object registry.",
+        usage=("rtt objects",),
+        fields=_fields(
+            ("Kind", "Semantic object kind."),
+            ("Count", "Objects found in the registry."),
+            ("Sources", "Registry provenance for the count."),
+        ),
+        tips=("Open the matching plural command to inspect individual rows.",),
+        configuration=(
+            "Only object classes enabled in the detected kernel configuration are listed.",
+        ),
+        limitations=(
+            "Detached or corrupted registry nodes cannot be counted.",
+            _SNAPSHOT_LIMIT,
+        ),
+        action="objects",
+    )
+
+
+def _check_command() -> CommandHelp:
+    return CommandHelp(
+        "check",
+        "Run explicit consistency checks",
+        "Reports each pass, failure and skip with the object address and concrete evidence. Normal views show only problems.",
+        usage=(
+            "rtt check [system|heap|thread|semaphore|mutex|event|mailbox|messagequeue|mempool|timer] [target]",
+        ),
+        fields=_fields(
+            ("Object", "Object name and address or system/heap scope."),
+            (
+                "Check/Verdict/Evidence",
+                "Invariant, ok/fail/skipped and observed fields/locations.",
+            ),
+        ),
+        tips=(
+            "Run after kernel initialization; stops inside kernel updates can be transient.",
+        ),
+        configuration=(
+            "Unavailable fields report skipped with the missing symbol, field or config macro.",
+        ),
+        limitations=(_SNAPSHOT_LIMIT,),
+        action="check",
+    )
+
+
+def _watch_command() -> CommandHelp:
+    return CommandHelp(
+        "watch",
+        "Print watched objects on every stop",
+        "Prints a watched kind's list table, or one object's Key: Value detail, each time the target stops. Like GDB display, not a watchpoint: it never stops the target itself.",
+        usage=(
+            "rtt watch",
+            "rtt watch <kind>",
+            "rtt watch <object> <name-or-address>",
+        ),
+        fields=_fields(
+            ("Kind", "A plural list command (threads, semaphores, timers, ...)."),
+            ("Target", "A singular detail selector: name, address or symbol."),
+            ("Output", "One [gdr watch: ...] block per watch, in the order added."),
+        ),
+        tips=(
+            "A singleton must exist when added; a later detach renders as gone instead of a stale address.",
+        ),
+        configuration=("Watchable kinds follow the enabled kernel components.",),
+        limitations=(
+            "Long tables and `set pagination on` can hold the prompt at every stop; keep watches narrow.",
+            "Watches are session state and are dropped by `gdr reset`.",
+            _SNAPSHOT_LIMIT,
+        ),
+        action="watch",
+    )
+
+
+def _unwatch_command() -> CommandHelp:
+    return CommandHelp(
+        "unwatch",
+        "Drop stop-time watches",
+        "Removes one watch, or every watch with --all.",
+        usage=(
+            "rtt unwatch <kind> | <object> <target>",
+            "rtt unwatch --all",
+        ),
+        tips=("Run bare `rtt watch` to list the set with its labels.",),
+        limitations=(_SNAPSHOT_LIMIT,),
+        action="unwatch",
+    )
+
+
+def _system_summary() -> CommandHelp:
+    return CommandHelp(
+        "system",
+        "Show kernel, scheduler, object and heap summary",
+        "Combines current thread, tick/state counts, object counts and system-heap status.",
+        usage=("rtt system",),
+        fields=_fields(
+            ("Current task", "Current thread or per-core current threads."),
+            (
+                "Task/Tick/Scheduler",
+                "Registry count, tick count and scheduler state: Unlocked, Locked (nest N), or In ISR (nest N). The row is omitted when no lock or interrupt counter is readable.",
+            ),
+            ("Object counts", "Enabled registry-backed object totals."),
+            (
+                "Heap allocator/used/total/status",
+                "Detected system allocator snapshot.",
+            ),
+        ),
+        tips=("Use `rtt heap` when heap status is not good or counters are N/A.",),
+        configuration=("Heap and object sections follow detected symbols/components.",),
+        limitations=(
+            "Missing symbols render N/A rather than being guessed.",
+            _SNAPSHOT_LIMIT,
+        ),
+        action="system",
+    )
+
+
+def _heap_command() -> CommandHelp:
+    return CommandHelp(
+        "heap",
+        "Inspect the RT-Thread system heap",
+        "Reports allocator counters and a bounded block walk. Owner-level occupancy is drawn by `rtt heap dump`.",
+        usage=("rtt heap", "rtt heap dump [path]"),
+        children=(_HEAP_DUMP,),
+        fields=_fields(
+            ("Algorithm", "Detected small_mem, memheap, slab, or none allocator."),
+            (
+                "UsedSize/TotalSize/MaxUsed",
+                "Kernel heap counters in bytes when exported.",
+            ),
+            ("Status", "good, corrupt, overrun or capability state."),
+            ("Blocks", "Used/free/total block counts from a bounded walk."),
+        ),
+        tips=(
+            "A corrupt/overrun status should be investigated before resuming the target.",
+            "Use hole sizes to distinguish fragmentation from total exhaustion.",
+        ),
+        configuration=(
+            "Shape depends on the detected small_mem, memheap or slab implementation.",
+            "Heap-dump owner colours require RT_USING_MEMTRACE owner fields.",
+        ),
+        limitations=(
+            "Owner attribution is N/A without MEMTRACE and may be truncated by the kernel's short owner-name field.",
+            "Unreadable bounds or block headers keep counters but suppress unsafe walk results.",
+            _SNAPSHOT_LIMIT,
+        ),
+        action="heap",
+    )
+
+
 def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
     """Build the RT-Thread help tree, optionally with live printer metadata."""
     commands = (
-        CommandHelp(
-            "threads",
-            "List registered threads",
-            "Shows scheduling, priority, stack, entry-point and optional SMP state for every registered thread.",
-            usage=("rtt threads",),
-            fields=_fields(
-                ("Name", "Thread name; '*' marks a currently running thread."),
-                ("State", "Decoded scheduler state."),
-                ("Prio/BasePrio", "Current and initial priority."),
-                (
-                    "PC",
-                    "Last PC as <symbol+offset>, the running PC or the return address on the saved switch frame; a source link when the line resolves. N/A when the frame cannot be proven.",
-                ),
-                ("SP", "Current stack pointer."),
-                (
-                    "Stack/Used/HighWater",
-                    "Stack capacity, current use and maximum observed use, in bytes.",
-                ),
-                ("Entry", "Symbolized entry function or address."),
-                ("CPU/Bind", "Current/bound CPU when SMP fields exist."),
-                _THREAD_ADDR,
-            ),
-            tips=(
-                "Use `rtt thread <name-or-address>` for one thread's Key: Value details.",
-                'Use `p $gdr_task("<name-or-address>")` for native rt_thread inspection.',
-            ),
-            configuration=("CPU and Bind appear only in an RT_USING_SMP layout.",),
-            limitations=(_SNAPSHOT_LIMIT,),
-            aliases=("tasks",),
-            action="tasks",
-            kind="task",
-        ),
-        CommandHelp(
-            "thread",
-            "Show one thread in detail",
-            "Prints one thread as Key: Value pairs, including identity, scheduling, stack, entry, error/tick state and CPU placement.",
-            usage=("rtt thread <name-or-address>",),
-            fields=_fields(
-                ("Name/Address/Type", "Thread identity and native object type."),
-                (
-                    "State/Priority/BasePriority",
-                    "Decoded state and current/initial priorities.",
-                ),
-                (
-                    "SP/Stack/StackSize/Used/HighWater",
-                    "Stack geometry and watermark-derived usage; sizes in bytes.",
-                ),
-                ("Entry", "Symbolized entry function or address."),
-                ("Error/RemainingTick", "Kernel error and remaining time slice."),
-                ("BindCPU/OnCPU", "SMP placement when present."),
-            ),
-            tips=(
-                'Inspect additional fields with `p $gdr_task("<name-or-address>")`.',
-            ),
-            configuration=(
-                "SMP rows require RT_USING_SMP; watermark quality depends on stack fill bytes.",
-            ),
-            limitations=(_SNAPSHOT_LIMIT,),
-            action="detail",
-            kind="task",
-        ),
+        _threads_list(),
+        _thread_detail(),
         _semaphore_list(),
         _semaphore_detail(),
         _mutex_list(),
@@ -138,143 +297,12 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
         _mempool_detail(),
         _timer_list(),
         _timer_detail(),
-        CommandHelp(
-            "objects",
-            "Summarise registry-backed object counts",
-            "Counts enabled object kinds by traversing RT-Thread's object registry.",
-            usage=("rtt objects",),
-            fields=_fields(
-                ("Kind", "Semantic object kind."),
-                ("Count", "Objects found in the registry."),
-                ("Sources", "Registry provenance for the count."),
-            ),
-            tips=("Open the matching plural command to inspect individual rows.",),
-            configuration=(
-                "Only object classes enabled in the detected kernel configuration are listed.",
-            ),
-            limitations=(
-                "Detached or corrupted registry nodes cannot be counted.",
-                _SNAPSHOT_LIMIT,
-            ),
-            action="objects",
-        ),
-        CommandHelp(
-            "check",
-            "Run explicit consistency checks",
-            "Reports each pass, failure and skip with the object address and concrete evidence. Normal views show only problems.",
-            usage=(
-                "rtt check [system|heap|thread|semaphore|mutex|event|mailbox|messagequeue|mempool|timer] [target]",
-            ),
-            fields=_fields(
-                ("Object", "Object name and address or system/heap scope."),
-                (
-                    "Check/Verdict/Evidence",
-                    "Invariant, ok/fail/skipped and observed fields/locations.",
-                ),
-            ),
-            tips=(
-                "Run after kernel initialization; stops inside kernel updates can be transient.",
-            ),
-            configuration=(
-                "Unavailable fields report skipped with the missing symbol, field or config macro.",
-            ),
-            limitations=(_SNAPSHOT_LIMIT,),
-            action="check",
-        ),
-        CommandHelp(
-            "watch",
-            "Print watched objects on every stop",
-            "Prints a watched kind's list table, or one object's Key: Value detail, each time the target stops. Like GDB display, not a watchpoint: it never stops the target itself.",
-            usage=(
-                "rtt watch",
-                "rtt watch <kind>",
-                "rtt watch <object> <name-or-address>",
-            ),
-            fields=_fields(
-                ("Kind", "A plural list command (threads, semaphores, timers, ...)."),
-                ("Target", "A singular detail selector: name, address or symbol."),
-                ("Output", "One [gdr watch: ...] block per watch, in the order added."),
-            ),
-            tips=(
-                "A singleton must exist when added; a later detach renders as gone instead of a stale address.",
-            ),
-            configuration=("Watchable kinds follow the enabled kernel components.",),
-            limitations=(
-                "Long tables and `set pagination on` can hold the prompt at every stop; keep watches narrow.",
-                "Watches are session state and are dropped by `gdr reset`.",
-                _SNAPSHOT_LIMIT,
-            ),
-            action="watch",
-        ),
-        CommandHelp(
-            "unwatch",
-            "Drop stop-time watches",
-            "Removes one watch, or every watch with --all.",
-            usage=(
-                "rtt unwatch <kind> | <object> <target>",
-                "rtt unwatch --all",
-            ),
-            tips=("Run bare `rtt watch` to list the set with its labels.",),
-            limitations=(_SNAPSHOT_LIMIT,),
-            action="unwatch",
-        ),
-        CommandHelp(
-            "system",
-            "Show kernel, scheduler, object and heap summary",
-            "Combines current thread, tick/state counts, object counts and system-heap status.",
-            usage=("rtt system",),
-            fields=_fields(
-                ("Current task", "Current thread or per-core current threads."),
-                (
-                    "Task/Tick/Scheduler",
-                    "Registry count, tick count and scheduler state: Unlocked, Locked (nest N), or In ISR (nest N). The row is omitted when no lock or interrupt counter is readable.",
-                ),
-                ("Object counts", "Enabled registry-backed object totals."),
-                (
-                    "Heap allocator/used/total/status",
-                    "Detected system allocator snapshot.",
-                ),
-            ),
-            tips=("Use `rtt heap` when heap status is not good or counters are N/A.",),
-            configuration=(
-                "Heap and object sections follow detected symbols/components.",
-            ),
-            limitations=(
-                "Missing symbols render N/A rather than being guessed.",
-                _SNAPSHOT_LIMIT,
-            ),
-            action="system",
-        ),
-        CommandHelp(
-            "heap",
-            "Inspect the RT-Thread system heap",
-            "Reports allocator counters and a bounded block walk. Owner-level occupancy is drawn by `rtt heap dump`.",
-            usage=("rtt heap", "rtt heap dump [path]"),
-            children=(_HEAP_DUMP,),
-            fields=_fields(
-                ("Algorithm", "Detected small_mem, memheap, slab, or none allocator."),
-                (
-                    "UsedSize/TotalSize/MaxUsed",
-                    "Kernel heap counters in bytes when exported.",
-                ),
-                ("Status", "good, corrupt, overrun or capability state."),
-                ("Blocks", "Used/free/total block counts from a bounded walk."),
-            ),
-            tips=(
-                "A corrupt/overrun status should be investigated before resuming the target.",
-                "Use hole sizes to distinguish fragmentation from total exhaustion.",
-            ),
-            configuration=(
-                "Shape depends on the detected small_mem, memheap or slab implementation.",
-                "Heap-dump owner colours require RT_USING_MEMTRACE owner fields.",
-            ),
-            limitations=(
-                "Owner attribution is N/A without MEMTRACE and may be truncated by the kernel's short owner-name field.",
-                "Unreadable bounds or block headers keep counters but suppress unsafe walk results.",
-                _SNAPSHOT_LIMIT,
-            ),
-            action="heap",
-        ),
+        _objects_summary(),
+        _check_command(),
+        _watch_command(),
+        _unwatch_command(),
+        _system_summary(),
+        _heap_command(),
     )
     return HelpTree(
         program="rtt",
