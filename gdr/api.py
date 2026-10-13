@@ -38,6 +38,7 @@ from gdr.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     format_exception,
     is_debug,
+    loaded_object_path,
     propagate_exception,
     show_last_exception,
 )
@@ -273,6 +274,11 @@ def _probe_payload(args: Sequence[str]) -> _VerbResult:
     warnings: list[str] = []
     if not candidates:
         warnings.append("no supported RTOS was detected on this target")
+        if loaded_object_path() is None:
+            warnings.append(
+                "GDB has no symbol file loaded; run `file <elf>` first "
+                "(`load` only writes the target memory)"
+            )
     return probe_to_dict(candidates), warnings
 
 

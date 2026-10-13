@@ -62,7 +62,7 @@ class _ApiAdapter:
     def object_summary_table(self):
         return None
 
-    def object_detail(self, kind, name):  # noqa: ARG002
+    def object_detail(self, kind, target):  # noqa: ARG002
         return self.details.get(kind)
 
     def detail_table(self, kind):
@@ -79,10 +79,10 @@ class _ApiAdapter:
             raise AssertionError("heap must not be collected")
         return self.report
 
-    def find_task(self, name):  # noqa: ARG002
+    def find_task(self, target):  # noqa: ARG002
         return None
 
-    def find_object(self, kind, name):  # noqa: ARG002
+    def find_object(self, kind, target):  # noqa: ARG002
         return None
 
     def iter_tasks(self):
@@ -425,6 +425,9 @@ def test_probe_reports_an_empty_target_as_a_capability_note(monkeypatch):
     assert _data(envelope)["resolved"] is None
     notes = _strings(envelope["warnings"])
     assert any("no supported RTOS" in note for note in notes)
+    # Reason: unit tests run outside GDB, where no symbol file can be
+    # loaded -- exactly the session that deserves the `file` hint.
+    assert any("`file <elf>`" in note for note in notes)
 
 
 def test_adapter_exception_becomes_an_internal_error(session, monkeypatch):

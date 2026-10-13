@@ -88,12 +88,29 @@ def test_check_target_refuses_a_target_without_any_marker(monkeypatch):
     monkeypatch.setattr(version, "warn", warnings.append)
     monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
     monkeypatch.setattr(version, "detect_target_version", lambda: None)
+    monkeypatch.setattr(version, "loaded_object_path", lambda: "/fw/rtthread.elf")
 
     verdict = version.check_target("4.0.5")
 
     assert not verdict.accepted
     assert verdict.code == "no_target_evidence"
     assert "--allow-unverified" in warnings[-1]
+
+
+def test_check_target_without_a_symbol_file_names_file(monkeypatch):
+    """`load` without `file` gets the actionable hint, not the load hint."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+    monkeypatch.setattr(version, "loaded_object_path", lambda: None)
+
+    verdict = version.check_target("4.0.5")
+
+    assert not verdict.accepted
+    assert verdict.code == "no_target_evidence"
+    assert "`file <elf>`" in warnings[-1]
+    assert "`load` only writes the target memory" in warnings[-1]
 
 
 def test_allow_unverified_keeps_the_escape_hatch_open(monkeypatch):

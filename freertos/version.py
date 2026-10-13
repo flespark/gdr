@@ -6,6 +6,7 @@ import re
 
 from freertos.layout import PROBE_MARKERS
 from gdr.gdb_bridge import (
+    loaded_object_path,
     lookup_symbol,
     read_int,
     read_macro_int,
@@ -184,10 +185,21 @@ def check_target(value: str, *, allow_unverified: bool = False) -> TargetVerdict
         return TargetVerdict(code="version_mismatch", message=message)
     if not markers:
         if not allow_unverified:
-            message = (
-                "no FreeRTOS symbol matched on this target; load the image "
-                "first, or pass --allow-unverified to register anyway"
-            )
+            # Reason: same `load`-without-symbols trap as the RT-Thread gate
+            # (see rtthread.version.check_target): name `file` only when GDB
+            # really has no symbol file loaded.
+            if loaded_object_path() is None:
+                message = (
+                    "no FreeRTOS symbol matched on this target; GDB has no "
+                    "symbol file loaded -- run `file <elf>` first (`load` "
+                    "only writes the target memory), or pass "
+                    "--allow-unverified to register anyway"
+                )
+            else:
+                message = (
+                    "no FreeRTOS symbol matched on this target; load the image "
+                    "first, or pass --allow-unverified to register anyway"
+                )
             warn(message)
             return TargetVerdict(code="no_target_evidence", message=message)
         note = (

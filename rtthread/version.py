@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from gdr.gdb_bridge import (
+    loaded_object_path,
     lookup_symbol,
     read_int,
     read_macro_int,
@@ -152,10 +153,23 @@ def check_target(version: str, *, allow_unverified: bool = False) -> TargetVerdi
         return TargetVerdict(code="version_mismatch", message=message)
     if not markers:
         if not allow_unverified:
-            message = (
-                "no RT-Thread symbol matched on this target; load the image "
-                "first, or pass --allow-unverified to register anyway"
-            )
+            # Reason: `load` writes the target memory but gives GDB no symbol
+            # table, so a remote session that only ran `load` fails here with
+            # a message that reads as if loading were the fix. Name `file`
+            # only when GDB really has no symbol file; otherwise the image
+            # is most likely stripped or a different RTOS.
+            if loaded_object_path() is None:
+                message = (
+                    "no RT-Thread symbol matched on this target; GDB has no "
+                    "symbol file loaded -- run `file <elf>` first (`load` "
+                    "only writes the target memory), or pass "
+                    "--allow-unverified to register anyway"
+                )
+            else:
+                message = (
+                    "no RT-Thread symbol matched on this target; load the image "
+                    "first, or pass --allow-unverified to register anyway"
+                )
             warn(message)
             return TargetVerdict(code="no_target_evidence", message=message)
         note = (
