@@ -538,6 +538,7 @@ def _reset_command() -> None:
     from gdr.api import next_generation
     from gdr.gdb_bridge import reset_loadable_ranges
     from gdr.printers import unregister_printers
+    from gdr.watch import clear as clear_watches
 
     if not is_initialized():
         warn("no active RTOS adapter to reset")
@@ -549,6 +550,8 @@ def _reset_command() -> None:
     reset_loadable_ranges()
     unregister_printers()
     reset()
+
+    clear_watches()
     next_generation()
     info("GDR session reset; run `gdr init <rtos> <version>` to re-initialize")
 
@@ -570,8 +573,13 @@ def _register_session_events() -> None:
     def on_stop(_event: object = None) -> None:
         try:
             from gdr.api import next_generation
+            from gdr.watch import render_watches
 
             next_generation()
+            # Reason: watch printing rides the same guarded hook so a second
+            # connection cannot interleave handlers; render_watches never
+            # raises itself, and this guard covers the import boundary too.
+            render_watches()
         except Exception:  # pragma: no cover - defensive event-loop guard
             # Reason: an event hook that raises aborts GDB's event dispatch
             # and prints a raw traceback into the prompt; generation is a

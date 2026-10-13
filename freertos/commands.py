@@ -29,6 +29,16 @@ from gdr.help import (
     find_topic,
     render_terminal,
 )
+from gdr.watch import (
+    WatchSpec,
+    add_watch,
+    complete_watch,
+    remove_watch,
+    render_watch_list,
+)
+from gdr.watch import (
+    clear as clear_watches,
+)
 
 _command_registered = False
 _alias_registered = False
@@ -53,6 +63,16 @@ _DETAIL_DESCRIPTIONS = {
 }
 _USAGE = "usage: freertos <command> (run 'frt help <topic>' for detailed help)"
 _HELP = render_terminal(_HELP_TREE)
+_WATCH_KINDS = {
+    name: ("task" if topic.action == "tasks" else topic.kind)
+    for name, topic in _COMMANDS.items()
+    if topic.action == "tasks" or (topic.action == "objects" and topic.kind)
+}
+_WATCH_USAGE = (
+    "usage: freertos watch [<kind> | <object> <name>] "
+    "(run 'frt help watch' for the kind list)"
+)
+_UNWATCH_USAGE = "usage: freertos unwatch [<kind> | <object> <name> | --all]"
 
 
 def _help_tree():
@@ -80,6 +100,10 @@ def _invoke_command(argument: str) -> None:
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
     if command == "check":
         render_checks(args[1:])
+    elif command == "watch":
+        _invoke_watch(argument)
+    elif command == "unwatch":
+        _invoke_unwatch(args[1:])
     elif command == "heap" and len(args) in (2, 3) and args[1].lower() == "dump":
         render_heap_dump("freertos", args[2] if len(args) == 3 else "")
     elif len(args) >= 2 and command in _SINGULAR_COMMANDS:
@@ -108,6 +132,76 @@ def _invoke_command(argument: str) -> None:
 def _command_vocabulary() -> list[str]:
     """Return every word the first argument may complete against."""
     return ["help", *list(_COMMANDS), "functions", "pretty-printers"]
+
+
+def _watch_spec() -> WatchSpec:
+    """Watchable words derived from the tree's own routing metadata."""
+    return WatchSpec(
+        kind_words=dict(_WATCH_KINDS),
+        singular_kinds=dict(_SINGULAR_COMMANDS),
+        aliases=dict(_COMMAND_ALIASES),
+        object_names_fn=_object_names,
+        preserve_spaces=True,
+    )
+
+
+def _invoke_watch(argument: str) -> None:
+    """Add a stop-time watch, or list the set when given no words."""
+    # Reason: names keep their inner spacing (see the detail dispatch
+    # above), so the target is everything after the second word instead of
+    # a single token.
+    words = argument.split(None, 2)[1:]
+    if not words:
+        render_watch_list()
+        return
+    first = _COMMAND_ALIASES.get(words[0].lower(), words[0].lower())
+    if first in _WATCH_KINDS:
+        if len(words) != 1:
+            warn(_WATCH_USAGE)
+            return
+        refusal = add_watch(f"frt {words[0].lower()}", _WATCH_KINDS[first], None)
+        label = words[0].lower()
+    elif first in _SINGULAR_COMMANDS:
+        if len(words) != 2:
+            warn(_WATCH_USAGE)
+            return
+        kind = _SINGULAR_COMMANDS[first]
+        refusal = add_watch(f"frt {words[0].lower()} {words[1]}", kind, words[1])
+        label = f"{words[0].lower()} {words[1]}"
+    else:
+        warn(_WATCH_USAGE)
+        return
+    if refusal is not None:
+        warn(refusal)
+    else:
+        info(f"watching {label}")
+
+
+def _invoke_unwatch(words: list[str]) -> None:
+    """Drop one watch, or every watch with ``--all``."""
+    if not words:
+        warn(_UNWATCH_USAGE)
+        return
+    if len(words) == 1 and words[0] == "--all":
+        clear_watches()
+        info("all watches cleared")
+        return
+    first = _COMMAND_ALIASES.get(words[0].lower(), words[0].lower())
+    if first in _WATCH_KINDS and len(words) == 1:
+        removed = remove_watch(_WATCH_KINDS[first], None)
+        label = words[0].lower()
+    elif first in _SINGULAR_COMMANDS and len(words) >= 2:
+        # Reason: same verbatim-name rule as _invoke_watch above.
+        target = " ".join(words[1:])
+        removed = remove_watch(_SINGULAR_COMMANDS[first], target)
+        label = f"{words[0].lower()} {target}"
+    else:
+        warn(_UNWATCH_USAGE)
+        return
+    if removed:
+        info(f"unwatched {label}")
+    else:
+        warn(f"no such watch: {label}")
 
 
 def _object_names(kind: str) -> list[str]:
@@ -141,8 +235,15 @@ def _complete(text: str, word: str | None) -> list[str]:
     names.  Mechanics are shared with the RT-Thread tree through
     :func:`gdr.commands.complete_command_tree`; FreeRTOS object names may
     contain spaces (the timer daemon task is literally ``"Tmr Svc"``), so
-    the name is preserved verbatim.
+    the name is preserved verbatim. Words after ``watch``/``unwatch``
+    complete against the watchable kinds and the same live names.
     """
+    parts = text.split()
+    if parts and _COMMAND_ALIASES.get(parts[0].lower(), parts[0].lower()) in (
+        "watch",
+        "unwatch",
+    ):
+        return complete_watch(_watch_spec(), text, word)
     return complete_command_tree(
         CommandTreeSpec(
             _command_vocabulary(),

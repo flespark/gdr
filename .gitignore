@@ -48,6 +48,7 @@ tests/fixtures/**/rtthread.bin
 # Convenience
 tmp/
 ref/
+plans/
 
 # Local agent workspace: scratch files and runs (never committed)
 .pi/

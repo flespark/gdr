@@ -196,6 +196,47 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             action="check",
         ),
         CommandHelp(
+            "watch",
+            "Print watched objects on every stop",
+            "Prints a watched kind's list table, or one object's Key: Value detail, each time the target stops. Like GDB display, not a watchpoint: it never stops the target itself.",
+            usage=(
+                "frt watch",
+                "frt watch <kind>",
+                "frt watch <object> <name-or-address>",
+            ),
+            fields=_fields(
+                ("Kind", "A plural list command (tasks, queues, timers, ...)."),
+                ("Target", "A singular detail selector: name, address or symbol."),
+                ("Output", "One [gdr watch: ...] block per watch, in the order added."),
+            ),
+            tips=(
+                "Names may contain spaces, for example `frt watch task Tmr Svc`.",
+                "A singleton must exist when added; a later detach renders as gone instead of a stale address.",
+            ),
+            configuration=(
+                "Watchable kinds follow the discovery channels available in this build.",
+            ),
+            limitations=(
+                "Long tables and `set pagination on` can hold the prompt at every stop; keep watches narrow.",
+                "Watches are session state and are dropped by `gdr reset`.",
+                _DISCOVERY_LIMIT,
+                _CHECK_LIMIT,
+            ),
+            action="watch",
+        ),
+        CommandHelp(
+            "unwatch",
+            "Drop stop-time watches",
+            "Removes one watch, or every watch with --all.",
+            usage=(
+                "frt unwatch <kind> | <object> <name>",
+                "frt unwatch --all",
+            ),
+            tips=("Run bare `frt watch` to list the set with its labels.",),
+            limitations=(_CHECK_LIMIT,),
+            action="unwatch",
+        ),
+        CommandHelp(
             "system",
             "Show scheduler, object and heap summary",
             "Combines kernel identity, scheduler counts, object discovery, heap status and consistency checks.",

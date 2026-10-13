@@ -97,6 +97,7 @@ warning: target RT-Thread version not exported; cannot verify version
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |
 | `<rtos> <object> <name-or-address>` | 以纵向 `Key: Value` 显示指定对象的详情 |
 | `<rtos> check [scope] [name]` | 显式运行完整一致性检查 |
+| `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | 每次停机打印被 watch 的对象，类似gdb的 `display`但不会使目标停下 |
 | `<rtos> heap dump [path]` | 绘制堆占用位图，iTerm2 或 Kitty 中内联显示，否则写入 PNG |
 
 ## 便捷函数

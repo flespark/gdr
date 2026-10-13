@@ -31,6 +31,8 @@ _PUBLIC_ROUTES = {
     "timers": ("objects", "timer"),
     "eventgroups": ("objects", "eventgroup"),
     "streambuffers": ("objects", "streambuffer"),
+    "watch": ("watch", None),
+    "unwatch": ("unwatch", None),
 }
 
 
@@ -55,6 +57,14 @@ def test_public_commands_reach_their_semantic_renderer(command, expected, monkey
     monkeypatch.setattr(commands, "render_heap", lambda: calls.append(("heap", None)))
     monkeypatch.setattr(
         commands, "render_checks", lambda _args: calls.append(("check", None))
+    )
+    monkeypatch.setattr(
+        commands, "render_watch_list", lambda: calls.append(("watch", None))
+    )
+    # Reason: bare ``unwatch`` has no renderer to reach; it degrades to the
+    # usage diagnostic, so the warn path stands in for the route here.
+    monkeypatch.setattr(
+        commands, "warn", lambda _message: calls.append(("unwatch", None))
     )
 
     commands._invoke_command(command)
@@ -325,6 +335,52 @@ def test_singular_command_accepts_a_name_containing_spaces(monkeypatch):
 
     assert calls == [("task", "Tmr Svc")]
     assert warnings == []
+
+
+def test_watch_routes_cover_list_add_and_drop(monkeypatch):
+    """``frt watch`` lists, adds kinds/singletons and drops them."""
+    calls: list = []
+    monkeypatch.setattr(commands, "render_watch_list", lambda: calls.append("list"))
+    monkeypatch.setattr(
+        commands,
+        "add_watch",
+        lambda label, kind, target: calls.append((label, kind, target)) or None,
+    )
+    monkeypatch.setattr(
+        commands,
+        "remove_watch",
+        lambda kind, target: calls.append(("unwatch", kind, target)) or True,
+    )
+    monkeypatch.setattr(commands, "clear_watches", lambda: calls.append("clear"))
+    monkeypatch.setattr(commands, "info", lambda _message: None)
+
+    commands._invoke_command("watch")
+    commands._invoke_command("watch tasks")
+    commands._invoke_command("watch task Tmr Svc")
+    commands._invoke_command("unwatch task Tmr Svc")
+    commands._invoke_command("unwatch --all")
+
+    assert calls == [
+        "list",
+        ("frt tasks", "task", None),
+        ("frt task Tmr Svc", "task", "Tmr Svc"),
+        ("unwatch", "task", "Tmr Svc"),
+        "clear",
+    ]
+
+
+def test_watch_completion_delegates_after_watch_words(monkeypatch):
+    """Words after ``watch`` complete against watchable kinds and names."""
+    seen: list = []
+
+    def fake_complete(spec, text, word):
+        seen.append((sorted(spec.kind_words), text, word))
+        return ["tasks"]
+
+    monkeypatch.setattr(commands, "complete_watch", fake_complete)
+
+    assert commands._complete("watch ", "") == ["tasks"]
+    assert "tasks" in seen[0][0] and "queues" in seen[0][0]
 
 
 def test_plural_command_with_extra_words_still_rejected(monkeypatch):

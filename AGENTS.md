@@ -21,6 +21,7 @@ gdr/                   RTOS-agnostic core
   printers.py          wrapper-type pretty-printer registration
   help.py              structured help schema + terminal/Markdown renderers
   adapter_api.py       adapter protocol, tables, details and active session
+  watch.py             stop-time watch set plus its guarded table/detail renderer
   commands.py          shared collectors plus their guarded text renderers
   functions.py         convenience functions incl. the $gdr_json and $gdr_dump transports
   serialize.py         pure API envelope and chunked evaluate transport

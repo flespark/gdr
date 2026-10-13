@@ -28,6 +28,8 @@ _PUBLIC_ROUTES = {
     "system": ("system", None),
     "heap": ("heap", None),
     "check": ("check", None),
+    "watch": ("watch", None),
+    "unwatch": ("unwatch", None),
 }
 
 
@@ -51,6 +53,14 @@ def test_public_commands_reach_their_semantic_renderer(command, expected, monkey
     )
     monkeypatch.setattr(
         commands, "render_check", lambda _args: calls.append(("check", None))
+    )
+    monkeypatch.setattr(
+        commands, "render_watch_list", lambda: calls.append(("watch", None))
+    )
+    # Reason: bare ``unwatch`` has no renderer to reach; it degrades to the
+    # usage diagnostic, so the warn path stands in for the route here.
+    monkeypatch.setattr(
+        commands, "warn", lambda _message: calls.append(("unwatch", None))
     )
 
     commands._invoke_command(command)
@@ -161,6 +171,81 @@ def test_singular_commands_route_to_object_detail(
     commands._invoke_command(f"{command} {name}")
 
     assert calls == [(expected_kind, name)]
+
+
+def test_watch_routes_cover_list_add_and_drop(monkeypatch):
+    """``rtt watch`` lists, adds kinds/singletons and drops them."""
+    calls: list = []
+    monkeypatch.setattr(commands, "render_watch_list", lambda: calls.append("list"))
+    monkeypatch.setattr(
+        commands,
+        "add_watch",
+        lambda label, kind, target: calls.append((label, kind, target)) or None,
+    )
+    monkeypatch.setattr(
+        commands,
+        "remove_watch",
+        lambda kind, target: calls.append(("unwatch", kind, target)) or True,
+    )
+    monkeypatch.setattr(commands, "clear_watches", lambda: calls.append("clear"))
+    monkeypatch.setattr(commands, "info", lambda _message: None)
+
+    commands._invoke_command("watch")
+    commands._invoke_command("watch threads")
+    commands._invoke_command("watch semaphore work_sem")
+    commands._invoke_command("unwatch semaphore work_sem")
+    commands._invoke_command("unwatch --all")
+
+    assert calls == [
+        "list",
+        ("rtt threads", "task", None),
+        ("rtt semaphore work_sem", "semaphore", "work_sem"),
+        ("unwatch", "semaphore", "work_sem"),
+        "clear",
+    ]
+
+
+def test_watch_rejections_and_missing_drops_warn(monkeypatch):
+    """Bad watch shapes and unknown drops degrade to usage diagnostics."""
+    warnings: list[str] = []
+    monkeypatch.setattr(commands, "warn", warnings.append)
+    monkeypatch.setattr(commands, "add_watch", lambda _label, _kind, _target: "refused")
+    monkeypatch.setattr(commands, "remove_watch", lambda _kind, _target: False)
+    monkeypatch.setattr(commands, "info", lambda _message: None)
+
+    commands._invoke_command("watch bogus")
+    commands._invoke_command("watch threads extra")
+    commands._invoke_command("watch thread")
+    commands._invoke_command("watch semaphore work_sem")
+    commands._invoke_command("unwatch")
+    commands._invoke_command("unwatch threads")
+
+    assert warnings[0].startswith("usage: rtthread watch")
+    assert warnings[1].startswith("usage: rtthread watch")
+    assert warnings[2].startswith("usage: rtthread watch")
+    assert warnings[3] == "refused"
+    assert warnings[4].startswith("usage: rtthread unwatch")
+    assert warnings[5] == "no such watch: threads"
+
+
+def test_watch_completion_delegates_after_watch_words(monkeypatch):
+    """Words after ``watch`` complete against watchable kinds and names."""
+    seen: list = []
+
+    def fake_complete(spec, text, word):
+        seen.append((sorted(spec.kind_words), text, word))
+        return ["threads"]
+
+    monkeypatch.setattr(commands, "complete_watch", fake_complete)
+    monkeypatch.setattr(
+        commands,
+        "_object_names",
+        lambda kind: ["work_sem"] if kind == "semaphore" else [],
+    )
+
+    assert commands._complete("watch ", "") == ["threads"]
+    assert "threads" in seen[0][0] and "semaphores" in seen[0][0]
+    assert commands._complete("watch semaphore ", "") == ["threads"]
 
 
 def test_singular_command_without_name_refers_to_help(monkeypatch):

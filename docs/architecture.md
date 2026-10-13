@@ -41,6 +41,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`system`/`heap`/`capabilities`/`snapshot`) over the same collectors the text renderers use. |
 | `derive.py` | RTOS-neutral derived-value helpers shared by the adapters: wrap-safe timer expiry (with/without the `overdue` label), fill-byte stack watermark counting, and the `count@names` waiter cell. Scalar-in/string-out, never adapter model objects. |
 | `commands.py` / `functions.py` | Generic output coordination — the `collect_*` functions plus their guarded text renderers — and convenience functions including the `$gdr_json` transport; task columns and object vocabulary remain adapter-owned. |
+| `watch.py` | Session watch set plus the guarded stop-time renderer behind `<rtos> watch`; kinds print their list table and singletons their detail block on every stop, reusing the same collectors. |
 | `help.py` | RTOS-neutral dataclasses and terminal/Markdown renderers for help trees. Command metadata stays structured so the same source can feed GDB now and MkDocs later. |
 
 ### `rtthread/` — adapter

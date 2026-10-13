@@ -101,6 +101,7 @@ warning: target RT-Thread version not exported; cannot verify version
 | `<rtos> <objects>` | List the kernel object type collective status |
 | `<rtos> <object> <name-or-address>` | Show one object's details as a vertical `Key: Value` block |
 | `<rtos> check [scope] [name]` | Run complete consistency checks (`rtt help check`) |
+| `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | Print watched kinds/objects on every stop, like `display` of gdb but never stops the target |
 | `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG |
 
 ## Convenience functions

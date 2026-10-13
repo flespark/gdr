@@ -1,0 +1,9 @@
+{
+  "$schema": "https://pi-lens.dev/schema.json",
+  "ignore": [
+    "ci/rtthread/patch/**",
+    "ci/freertos/fixture/**",
+    "ci/freertos/snapshot/**"
+  ],
+  "comment": "RTOS fixture C sources are ignored because linting may make them hard to diff or unusable."
+}

@@ -63,6 +63,11 @@ All notable changes to GDR are documented in this file.
   `gdr api checks` is now `gdr api check` (both old spellings stay as aliases).
 - The `rtt timers` table gains a `Src` column recording registry and/or active-list
   evidence per timer, so a dormant timer and a detached-but-linked one are told apart.
+- `<rtos> watch [<kind> | <object> <target>]` prints watched kinds (list table)
+  or singletons (detail block) on every target stop, reusing the same collectors
+  as the commands; `<rtos> unwatch` drops them and bare `<rtos> watch` lists the
+  set. Like GDB `display`, not a watchpoint: it never stops the target. Watches
+  are session state dropped by `gdr reset`.
 - Singular object details accept a name, an explicit address or a symbol:
   `<rtos> <object> <name-or-address>` (and the `detail` API verb plus
   `$gdr_task`/`$gdr_object`) resolve a name first, then match an address

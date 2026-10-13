@@ -425,6 +425,19 @@ def test_init_force_resets_before_replacing(monkeypatch):
     assert calls == ["reset", "setup"]
 
 
+def test_stop_hook_and_reset_cover_the_watch_set():
+    """Watch printing rides the guarded stop hook; reset drops the set.
+
+    The event loop only exists inside GDB, so the wiring is asserted on the
+    module source -- the only artifact that exists in both worlds.
+    """
+    entrypoint_file = _load_entrypoint().__file__
+    assert entrypoint_file is not None
+    source = Path(entrypoint_file).read_text()
+    assert "render_watches()" in source
+    assert "clear_watches()" in source
+
+
 def test_probe_command_renders_the_evidence_table(monkeypatch):
     """The human view lists each candidate's evidence and what resolved."""
     entrypoint = _load_entrypoint()
