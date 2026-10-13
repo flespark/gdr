@@ -12,6 +12,10 @@ For discover task/timer/IPC/heap status, resource usage, corruption and potentia
 Four layers sit between the panel and the target. Each one does one job, and
 only GDR knows anything about the RTOS:
 
+The data flow is: VS Code panel → debug adapter → GDB/GDR → halted target;
+GDR returns a versioned JSON envelope through GDB, and the panel renders that
+response.
+
 ```mermaid
 flowchart TB
     ext["VS Code panel (this extension)<br/>session lifecycle, transport, rendering"]
@@ -192,8 +196,8 @@ not ask again.
 
 The extension version tracks GDR's own year.serial release (the `__version__` in
 `gdr/__init__.py`), with the semver patch left free for extension-only fixes:
-GDR `2026.3` ships as extension `2026.3.0`, and a packaging or UI fix may
-publish `2026.3.1` against the same runtime. `ci/check-vendored-schema.py` fails
+GDR `2026.4` ships as extension `2026.4.0`, and a packaging or UI fix may
+publish `2026.4.1` against the same runtime. `ci/check-vendored-schema.py` fails
 when the two disagree, so a bundle never claims a runtime it was not built
 from.
 
@@ -221,8 +225,8 @@ maintainer compares it with a local build and then publishes to the Marketplace
 by hand. CI never publishes, because Marketplace versions are immutable and the
 credentials would be a leak in the open-lane config.
 
-The byte-for-byte check that the VSIX carries the GDR runtime it claims is
-`ci/check-vendored-schema.py`, which also enforces the version rule
+`ci/check-vendored-schema.py` checks the generated bundle's version and schema
+against the source checkout, and enforces the version rule
 (`GDR x.y` ships as extension `x.y.0`).
 
 ## Known limits

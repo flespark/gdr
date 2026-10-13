@@ -6,6 +6,8 @@ All notable changes to GDR are documented in this file.
 
 ## [Unreleased]
 
+## [2026.04] - 2026-10-13
+
 ### Added
 
 - `gdr probe [--json]` reports which adapter a target matches with the evidence

@@ -3,7 +3,7 @@
   "displayName": "GDB RTOS Views",
   "description": "RTOS kernel state views for embedded debugging, driven by the GDR",
   "publisher": "flespark",
-  "version": "2026.3.0",
+  "version": "2026.4.0",
   "license": "MIT",
   "repository": {
     "type": "git",
