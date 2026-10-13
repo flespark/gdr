@@ -491,7 +491,9 @@ def test_timer_detail_includes_tick_detail(monkeypatch):
     adapter = adapter_module.RtThreadAdapter(KernelLayout())
     value = object()
     timer = Timer(name="heartbeat", active=True, timeout_tick=125)
-    monkeypatch.setattr(adapter_module, "iter_timers", lambda _layout: iter((value,)))
+    monkeypatch.setattr(
+        adapter_module, "find_timer_by_target", lambda _target, _layout: value
+    )
     monkeypatch.setattr(adapter_module, "value_to_timer", lambda _v, _l: timer)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: 100)
     monkeypatch.setattr(

@@ -34,6 +34,7 @@ from gdr.gdb_bridge import (
     is_plain_identifier,
     loadable_ranges,
     lookup_symbol,
+    parse_user_address,
     read_bytes,
     read_cstring,
     read_int,
@@ -1362,29 +1363,23 @@ def resolve_object(
     text = text.strip()
     if not text:
         return None
-    if text.lower().startswith("0x"):
-        try:
-            address = int(text, 16)
-        except ValueError:
-            return None
-        if not address:
-            return None
+    # Reason: address parsing is shared with the other adapters through
+    # parse_user_address so `<name-or-address>` means the same everywhere;
+    # a name still wins over a decimal reading -- a numeric object name
+    # (e.g. ``"42"``) is looked up as a symbol first, and digits only fall
+    # back to an address when that lookup fails.
+    address = parse_user_address(text)
+    if address is not None and text.lower().startswith("0x"):
         return DiscoveredObject(kind=kind, address=address, source="user")
-    # Reason: a name wins over a decimal-address reading -- a numeric object
-    # name (e.g. ``"42"``) must be looked up as a symbol first, and digits
-    # only fall back to an address when that lookup fails.
     if is_plain_identifier(text) or text.isdecimal():
         value = lookup_symbol(text)
         if value is not None:
-            address = _address_from_symbol(value, layout)
-            if address:
+            resolved = _address_from_symbol(value, layout)
+            if resolved:
                 return DiscoveredObject(
-                    kind=kind, address=address, name=text, source="user"
+                    kind=kind, address=resolved, name=text, source="user"
                 )
-    if text.isdecimal():
-        address = int(text, 10)
-        if not address:
-            return None
+    if address is not None:
         return DiscoveredObject(kind=kind, address=address, source="user")
     return None
 

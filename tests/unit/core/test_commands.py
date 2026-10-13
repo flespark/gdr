@@ -424,4 +424,4 @@ def test_object_detail_warns_for_an_empty_name(monkeypatch):
 
     commands.render_object_detail("semaphore", "  ")
 
-    assert warnings == ["object name must not be empty"]
+    assert warnings == ["object name or address must not be empty"]

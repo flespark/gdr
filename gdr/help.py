@@ -312,9 +312,9 @@ def functions_topic() -> HelpTopic:
             "objects, leaving field inspection and expression evaluation to GDB."
         ),
         usage=(
-            'p $gdr_task("<name>")',
+            'p $gdr_task("<name-or-address>")',
             "p $gdr_tasks()",
-            'p $gdr_object("<kind>", "<name>")',
+            'p $gdr_object("<kind>", "<name-or-address>")',
         ),
         fields=(
             HelpField(
@@ -325,7 +325,7 @@ def functions_topic() -> HelpTopic:
             ),
             HelpField(
                 "$gdr_object",
-                "One target-native object value selected by kind and name.",
+                "One target-native object value selected by kind and name, address or symbol.",
             ),
         ),
         tips=("Inspect fields with normal GDB expressions after navigation.",),
@@ -333,7 +333,7 @@ def functions_topic() -> HelpTopic:
             "The accepted kinds and enumeration capability are adapter-owned.",
         ),
         limitations=(
-            "Functions never call target code and cannot find objects the adapter cannot enumerate.",
+            "Functions never call target code; an address or symbol selector matches only objects the adapter can enumerate.",
         ),
         category="Reference",
     )

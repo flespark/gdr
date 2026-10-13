@@ -620,10 +620,10 @@ class FreeRtosAdapter(RtosAdapter):
 
         reset_symbol_object_cache()
 
-    def find_task(self, name: str) -> gdb.Value | None:
-        return find_task(name, self.layout)
+    def find_task(self, target: str) -> gdb.Value | None:
+        return find_task(target, self.layout)
 
-    def find_object(self, kind: str, name: str) -> gdb.Value | None:
+    def find_object(self, kind: str, target: str) -> gdb.Value | None:
         """Return the native object value for a name, address or symbol.
 
         First tries the discovery channels by name (registry names, static
@@ -637,13 +637,13 @@ class FreeRtosAdapter(RtosAdapter):
         # $gdr_object("task", "IDLE") agrees with the task table instead of
         # requiring a static symbol for the task.
         if requested == "task":
-            task = find_task(name, self.layout)
+            task = find_task(target, self.layout)
             if task is not None:
                 return task
         for found in discover(requested, layout):
-            if found.name == name:
+            if found.name == target:
                 return _cast_object(found.address, requested, layout)
-        resolved = resolve_object(requested, name, layout)
+        resolved = resolve_object(requested, target, layout)
         if resolved is None:
             return None
         return _cast_object(resolved.address, requested, layout)
@@ -975,37 +975,48 @@ class FreeRtosAdapter(RtosAdapter):
             id_key="Addr",
         )
 
-    def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
+    def object_detail(self, kind: str, target: str) -> ObjectDetail | None:
         """Return one object's vertical detail (task, timer, event group,
-        stream buffer or queue family)."""
+        stream buffer or queue family).
+
+        *target* is a registry name, an explicit ``0x``-hex or decimal
+        address, or a plain C identifier naming the static symbol or handle.
+        """
         kind = kind.strip().lower()
         if kind == "task":
-            value = find_task(name, self.layout)
+            value = find_task(target, self.layout)
+            if value is None:
+                resolved = resolve_object("task", target, self.layout)
+                value = (
+                    _cast_object(resolved.address, "task", self.layout)
+                    if resolved is not None
+                    else None
+                )
             if value is None:
                 return ObjectDetail(found=False)
             task = value_to_task(value, *task_state(value, self.layout), self.layout)
             return _detail(task_detail(task, self.layout, tcb_value=value))
         if kind == "timer":
-            found, value = self._find_named_object(kind, name)
+            found, value = self._find_named_object(kind, target)
             if found is None or value is None:
                 return ObjectDetail(found=False)
             obj = value_to_timer_object(value, found, self.layout)
             return _detail(timer_detail(obj, value, self.layout))
         if kind == "eventgroup":
-            found, value = self._find_named_object(kind, name)
+            found, value = self._find_named_object(kind, target)
             if found is None or value is None:
                 return ObjectDetail(found=False)
             obj = value_to_event_group_object(value, found, self.layout)
             return _detail(event_group_detail(obj, value, self.layout))
         if kind == "streambuffer":
-            found, value = self._find_named_object(kind, name)
+            found, value = self._find_named_object(kind, target)
             if found is None or value is None:
                 return ObjectDetail(found=False)
             obj = value_to_stream_buffer_object(value, found, self.layout)
             return _detail(stream_buffer_detail(obj, value, self.layout))
         if kind not in _QUEUE_FAMILY_KINDS:
             return None
-        found, value = self._find_named_object(kind, name)
+        found, value = self._find_named_object(kind, target)
         if found is None or value is None:
             return ObjectDetail(found=False)
         # Reason: the address/symbol fallback stamps the *requested* kind on
@@ -1018,8 +1029,8 @@ class FreeRtosAdapter(RtosAdapter):
             return ObjectDetail(
                 found=False,
                 message=(
-                    f"{name!r} is a {actual.kind}, not a {kind}; "
-                    f"try `freertos {actual.kind} {name}`"
+                    f"{target!r} is a {actual.kind}, not a {kind}; "
+                    f"try `freertos {actual.kind} {target}`"
                 ),
             )
         obj = value_to_queue_object(value, found, self.layout)
@@ -1037,8 +1048,8 @@ class FreeRtosAdapter(RtosAdapter):
 
         return detail_table(self, kind)
 
-    def _find_named_object(self, kind: str, name: str):
-        """Return ``(DiscoveredObject, native value)`` for a kind's name.
+    def _find_named_object(self, kind: str, target: str):
+        """Return ``(DiscoveredObject, native value)`` for a name or address.
 
         Mirrors :meth:`find_object`: discovery names first, then the explicit
         address/symbol/decimal fallback -- but keeps the found object so the
@@ -1046,9 +1057,9 @@ class FreeRtosAdapter(RtosAdapter):
         agnostic: timers and the queue family both resolve through it.
         """
         for found in discover(kind, self.layout):
-            if found.name == name:
+            if found.name == target:
                 return found, _cast_object(found.address, found.kind, self.layout)
-        resolved = resolve_object(kind, name, self.layout)
+        resolved = resolve_object(kind, target, self.layout)
         if resolved is None:
             return None, None
         return resolved, _cast_object(resolved.address, resolved.kind, self.layout)

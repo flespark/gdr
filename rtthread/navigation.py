@@ -16,7 +16,15 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import lookup_symbol, read_cstring, read_int, value_address
+from gdr.gdb_bridge import (
+    is_plain_identifier,
+    lookup_symbol,
+    parse_user_address,
+    read_cstring,
+    read_int,
+    safe_int,
+    value_address,
+)
 from gdr.layout import (
     KernelLayout,
     ListHook,
@@ -100,7 +108,14 @@ def iter_objects(type_code: int, kl: KernelLayout) -> Iterator[gdb.Value]:
 
 
 def find_object(type_code: int, name: str, kl: KernelLayout) -> gdb.Value | None:
-    """Find an RT-Thread object by type code and C-string name."""
+    """Find an RT-Thread object by name, address or symbol.
+
+    A registry name wins; an explicit ``0x``-hex or decimal literal and a
+    plain C identifier (looked up as a symbol, never evaluated, so the
+    inferior stays halted) then match against live registry addresses.
+    Anonymous or duplicate-named objects are therefore reachable by the
+    ``Addr`` column their list row prints.
+    """
     type_info = kl.object_types.get(type_code)
     if type_info is None:
         return None
@@ -108,11 +123,33 @@ def find_object(type_code: int, name: str, kl: KernelLayout) -> gdb.Value | None
     if layout is None:
         return None
 
+    target = name.strip()
+    if target:
+        for obj in iter_objects(type_code, kl):
+            object_name = read_cstring(read_field(obj, layout, "name"))
+            if object_name == target:
+                return obj
+    address = parse_user_address(target)
+    if address is None and is_plain_identifier(target):
+        address = _symbol_object_address(lookup_symbol(target))
+    if address is None:
+        return None
     for obj in iter_objects(type_code, kl):
-        object_name = read_cstring(read_field(obj, layout, "name"))
-        if object_name == name:
+        if value_address(obj) == address:
             return obj
     return None
+
+
+def _symbol_object_address(value) -> int | None:
+    """Return the registry address a data symbol refers to, or ``None``.
+
+    A struct instance symbol contributes its own address; a pointer/handle
+    symbol contributes the address it holds. Anything else (scalars,
+    unreadable values) is not an object selector.
+    """
+    if value is None:
+        return None
+    return safe_int(value) or value_address(value) or None
 
 
 MAX_SUSPEND_THREADS = 256
@@ -175,9 +212,40 @@ def iter_threads(kl: KernelLayout) -> Iterator[gdb.Value]:
 
 
 def find_thread(name: str, kl: KernelLayout) -> gdb.Value | None:
-    """Find an RT-Thread thread by name."""
+    """Find an RT-Thread thread by name, address or symbol.
+
+    Name lookup comes first; :func:`find_object` then matches an explicit
+    address literal or a plain-C-identifier symbol against registry
+    addresses, so the ``TCB`` column stays a valid selector.
+    """
     type_code = _object_code(kl, "thread")
     return find_object(type_code, name, kl) if type_code is not None else None
+
+
+def find_timer_by_target(text: str, kl: KernelLayout) -> gdb.Value | None:
+    """Find an RT-Thread timer by name, address or symbol.
+
+    Timers live on the active timer lists as well as the registry, so the
+    address/symbol fallback scans :func:`iter_timers` (the union of both)
+    instead of one registry route.
+    """
+    target = text.strip()
+    timer_layout = kl.structs.get("struct rt_timer")
+    if timer_layout is None:
+        return None
+    if target:
+        for value in iter_timers(kl):
+            if read_cstring(read_field(value, timer_layout, "name")) == target:
+                return value
+    address = parse_user_address(target)
+    if address is None and is_plain_identifier(target):
+        address = _symbol_object_address(lookup_symbol(target))
+    if address is None:
+        return None
+    for value in iter_timers(kl):
+        if value_address(value) == address:
+            return value
+    return None
 
 
 def iter_object_names(kind: str, kl: KernelLayout) -> Iterator[str]:

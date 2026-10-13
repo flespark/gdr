@@ -33,8 +33,11 @@ def render_tasks() -> None:
 
 
 @gdb_command_guard
-def render_object_detail(kind: str, name: str) -> None:
-    """Render one named object's complete detail as a Key: Value block.
+def render_object_detail(kind: str, target: str) -> None:
+    """Render one object's complete detail as a Key: Value block.
+
+    *target* is a registry name, an explicit ``0x``-hex or decimal address,
+    or a plain C identifier naming the object's static symbol or handle.
 
     # Reason: terminal detail is focused and lossless; merged tables belong to
     # the API/Panel, not to a command selecting one object by name or address.
@@ -44,15 +47,15 @@ def render_object_detail(kind: str, name: str) -> None:
         warn("run `gdr init <rtos> <version>` first")
         return
     requested = _canonical_kind(kind)
-    if not name.strip():
-        warn("object name must not be empty")
+    if not target.strip():
+        warn("object name or address must not be empty")
         return
-    detail = collect_object_detail(adapter, requested, name)
+    detail = collect_object_detail(adapter, requested, target)
     if detail is None:
         warn(f"object kind {requested!r} is not reliably enumerable")
         return
     if not detail.found:
-        warn(detail.message or f"{requested} {name!r}: not found or type not enabled")
+        warn(detail.message or f"{requested} {target!r}: not found or type not enabled")
         return
     print_detail(detail.pairs)
 
@@ -205,9 +208,9 @@ def collect_object_overview(adapter) -> ObjectTable:
     )
 
 
-def collect_object_detail(adapter, kind: str, name: str) -> ObjectDetail | None:
+def collect_object_detail(adapter, kind: str, target: str) -> ObjectDetail | None:
     """One object's vertical detail, or ``None`` when the kind is unknown."""
-    return adapter.object_detail(_canonical_kind(kind), name)
+    return adapter.object_detail(_canonical_kind(kind), target)
 
 
 def collect_heap_report(adapter) -> HeapReport | None:

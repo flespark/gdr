@@ -116,9 +116,9 @@ def _objects_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
 
 def _detail_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     if len(args) != 2:
-        raise ApiError("bad_args", "detail requires <kind> <name>")
+        raise ApiError("bad_args", "detail requires <kind> <name-or-address>")
     if not args[1].strip():
-        raise ApiError("empty_name", "object name must not be empty")
+        raise ApiError("empty_name", "object name or address must not be empty")
     detail = collect_object_detail(adapter, args[0], args[1])
     if detail is None:
         raise ApiError(

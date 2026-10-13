@@ -54,6 +54,11 @@ All notable changes to GDR are documented in this file.
   blocks and one colour per owner. Inline in iTerm2 or Kitty; otherwise a PNG
   (`gdr-heap-<rtos>-gen<N>.png`). The panel's heap card draws the same map with a
   hover readout.
+- Singular object details accept a name, an explicit address or a symbol:
+  `<rtos> <object> <name-or-address>` (and the `detail` API verb plus
+  `$gdr_task`/`$gdr_object`) resolve a name first, then match an address
+  literal or symbol against live objects, so duplicate-named or nameless
+  objects stay reachable by their `Addr` column.
 
 ### Changed
 

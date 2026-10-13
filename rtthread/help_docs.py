@@ -86,8 +86,8 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 _TCB,
             ),
             tips=(
-                "Use `rtt thread <name>` for one thread's Key: Value details.",
-                'Use `p $gdr_task("<name>")` for native rt_thread inspection.',
+                "Use `rtt thread <name-or-address>` for one thread's Key: Value details.",
+                'Use `p $gdr_task("<name-or-address>")` for native rt_thread inspection.',
             ),
             configuration=("CPU and Bind appear only in an RT_USING_SMP layout.",),
             limitations=(_SNAPSHOT_LIMIT,),
@@ -99,7 +99,7 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
             "thread",
             "Show one thread in detail",
             "Prints one thread as Key: Value pairs, including identity, scheduling, stack, entry, error/tick state and CPU placement.",
-            usage=("rtt thread <name>",),
+            usage=("rtt thread <name-or-address>",),
             fields=_fields(
                 ("Name/Address/Type", "Thread identity and native object type."),
                 (
@@ -114,7 +114,9 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
                 ("Error/RemainingTick", "Kernel error and remaining time slice."),
                 ("BindCPU/OnCPU", "SMP placement when present."),
             ),
-            tips=('Inspect additional fields with `p $gdr_task("<name>")`.',),
+            tips=(
+                'Inspect additional fields with `p $gdr_task("<name-or-address>")`.',
+            ),
             configuration=(
                 "SMP rows require RT_USING_SMP; watermark quality depends on stack fill bytes.",
             ),
@@ -252,7 +254,7 @@ def _semaphore_detail() -> CommandHelp:
         "semaphore",
         "Show one semaphore in detail",
         "Shows count, policy, waiter names and waiter-list diagnostics.",
-        usage=("rtt semaphore <name>",),
+        usage=("rtt semaphore <name-or-address>",),
         fields=_fields(
             ("Name/Address/Type", "Object identity."),
             ("Value/Policy", "Available count and scheduling policy."),
@@ -296,7 +298,7 @@ def _mutex_detail() -> CommandHelp:
         "mutex",
         "Show one mutex in detail",
         "Shows ownership, recursive depth, inherited-priority baseline, policy and waiters.",
-        usage=("rtt mutex <name>",),
+        usage=("rtt mutex <name-or-address>",),
         fields=_fields(
             ("Value/Hold/Owner", "Availability, recursive depth and holder."),
             ("OriginalPriority", "Holder priority before inheritance."),
@@ -335,7 +337,7 @@ def _event_detail() -> CommandHelp:
         "event",
         "Show one event object in detail",
         "Shows current bits plus every waiter's requested mask, AND/OR mode and clear behavior.",
-        usage=("rtt event <name>",),
+        usage=("rtt event <name-or-address>",),
         fields=_fields(
             ("Set", "Current event bit mask."),
             ("Waiters", "Waiter summary."),
@@ -362,7 +364,9 @@ def _mailbox_list() -> CommandHelp:
             ("RecvWait/SendWait", "Blocked receivers and senders."),
             _ADDR,
         ),
-        tips=("Use `rtt mailbox <name>` to dump occupied slots and validate offsets.",),
+        tips=(
+            "Use `rtt mailbox <name-or-address>` to dump occupied slots and validate offsets.",
+        ),
         configuration=_ipc_configuration("MAILBOX"),
         limitations=(_SNAPSHOT_LIMIT,),
         aliases=("mboxs", "mailboxes"),
@@ -376,7 +380,7 @@ def _mailbox_detail() -> CommandHelp:
         "mailbox",
         "Show one mailbox in detail",
         "Shows ring pointers/offsets, FIFO slots, waiters and consistency diagnostics.",
-        usage=("rtt mailbox <name>",),
+        usage=("rtt mailbox <name-or-address>",),
         fields=_fields(
             ("Entry/Size/InOffset/OutOffset", "Ring occupancy and positions."),
             ("OffsetCheck/SlotCheck", "Bounds and readability verdicts."),
@@ -426,7 +430,7 @@ def _messagequeue_detail() -> CommandHelp:
         "messagequeue",
         "Show one message queue in detail",
         "Walks active/free message nodes and compares them with cached queue counters.",
-        usage=("rtt messagequeue <name>",),
+        usage=("rtt messagequeue <name-or-address>",),
         fields=_fields(
             ("Entry/MsgSize/MaxMsgs", "Queue geometry."),
             ("MsgPool/Msg[n]", "Pool base and bounded payload prefixes."),
@@ -469,7 +473,7 @@ def _mempool_detail() -> CommandHelp:
         "mempool",
         "Show one fixed-block memory pool in detail",
         "Shows pool bounds, free-list head, waiters and count/alignment checks.",
-        usage=("rtt mempool <name>",),
+        usage=("rtt mempool <name-or-address>",),
         fields=_fields(
             ("BlockSize/Total/Free", "Block geometry and cached counts."),
             ("StartAddress/PoolSize/BlockList", "Arena and free-list pointers."),
@@ -518,7 +522,7 @@ def _timer_detail() -> CommandHelp:
         "timer",
         "Show one kernel timer in detail",
         "Shows state, periodicity, timer class, deadline, callback, parameter and expiry delta.",
-        usage=("rtt timer <name>",),
+        usage=("rtt timer <name-or-address>",),
         fields=_fields(
             ("State/Mode/TimerType", "Activity, reload mode and soft/hard class."),
             (

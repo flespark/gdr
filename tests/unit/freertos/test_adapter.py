@@ -470,6 +470,7 @@ def test_task_table_reports_unavailable_high_water_cell(monkeypatch):
 
 def test_object_detail_reports_missing_task(monkeypatch):
     monkeypatch.setattr(adapter_module, "find_task", lambda _name, _layout: None)
+    monkeypatch.setattr(adapter_module, "resolve_object", lambda *_args: None)
     adapter = adapter_module.FreeRtosAdapter(FreeRtosLayout(version=(10, 3, 1)))
 
     detail = adapter.object_detail("task", "nope")

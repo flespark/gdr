@@ -96,8 +96,8 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 ("TCB", "Task control block address; the row identity."),
             ),
             tips=(
-                "Use `frt task <name>` for blocking, notification and consistency details.",
-                'Use `p $gdr_task("<name>")` for native TCB field inspection.',
+                "Use `frt task <name-or-address>` for blocking, notification and consistency details.",
+                'Use `p $gdr_task("<name-or-address>")` for native TCB field inspection.',
             ),
             configuration=(
                 "BasePrio, stack bounds, Runtime, CPU and Affinity appear only when their TCB fields/configuration exist.",
@@ -116,7 +116,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             "task",
             "Show one task in detail",
             "Displays scheduler, stack, blocking, notification, run-time and consistency data for one task as Key: Value pairs.",
-            usage=("frt task <name>",),
+            usage=("frt task <name-or-address>",),
             fields=_fields(
                 ("Name/Address/Type", "Identity and Idle/Normal classification."),
                 (
@@ -294,7 +294,7 @@ def _queue_list_help() -> CommandHelp:
             _ADDR_FIELD,
         ),
         tips=(
-            "Use `frt queue <name>` for FIFO storage addresses; `frt checks queue <name>` for full consistency results.",
+            "Use `frt queue <name-or-address>` for FIFO storage addresses; `frt checks queue <name-or-address>` for full consistency results.",
         ),
         configuration=(
             "Set requires configUSE_QUEUE_SETS; exact Type requires configUSE_TRACE_FACILITY.",
@@ -370,7 +370,7 @@ def _semaphore_detail_help() -> CommandHelp:
             _PROBLEM_FIELD,
             _SOURCE_FIELD,
         ),
-        tips=("Use waiter names to continue with `frt task <name>`.",),
+        tips=("Use waiter names to continue with `frt task <name-or-address>`.",),
         configuration=("Kind certainty depends on configUSE_TRACE_FACILITY.",),
         limitations=(
             "Semaphore detail deliberately never reads the mutex-only union arm.",
@@ -396,7 +396,7 @@ def _mutex_list_help() -> CommandHelp:
             _ADDR_FIELD,
         ),
         tips=(
-            "Compare Owner and waiter priorities in `frt mutex <name>` when diagnosing inversion.",
+            "Compare Owner and waiter priorities in `frt mutex <name-or-address>` when diagnosing inversion.",
         ),
         configuration=("Exact recursive kind requires configUSE_TRACE_FACILITY.",),
         limitations=(_DISCOVERY_LIMIT,),
@@ -453,7 +453,7 @@ def _timer_list_help() -> CommandHelp:
             _ADDR_FIELD,
         ),
         tips=(
-            "Use `frt timer <name>` to inspect active-list membership and queued daemon commands.",
+            "Use `frt timer <name-or-address>` to inspect active-list membership and queued daemon commands.",
         ),
         configuration=(
             "Requires configUSE_TIMERS=1; number metadata depends on configUSE_TRACE_FACILITY.",
@@ -509,7 +509,7 @@ def _event_list_help() -> CommandHelp:
             _SOURCE_FIELD,
             _ADDR_FIELD,
         ),
-        tips=("Use `frt eventgroup <name>` to decode each wait condition.",),
+        tips=("Use `frt eventgroup <name-or-address>` to decode each wait condition.",),
         configuration=(
             "Requires configUSE_EVENT_GROUPS=1; masks derive from the target TickType_t width.",
         ),
@@ -565,7 +565,9 @@ def _stream_list_help() -> CommandHelp:
             _SOURCE_FIELD,
             _ADDR_FIELD,
         ),
-        tips=("Use `frt streambuffer <name>` for trigger and bounds diagnostics.",),
+        tips=(
+            "Use `frt streambuffer <name-or-address>` for trigger and bounds diagnostics.",
+        ),
         configuration=(
             "Requires configUSE_STREAM_BUFFERS=1; batching is version/config dependent.",
         ),

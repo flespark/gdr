@@ -18,9 +18,9 @@ _registered_api_functions: set[str] = set()
 if gdb is not None:
 
     class GdrTaskFunction(gdb.Function):
-        """Return a target-native task value by name.
+        """Return a target-native task value by name, address or symbol.
 
-        Usage: ``p $gdr_task("worker")``.
+        Usage: ``p $gdr_task("worker")`` or ``p $gdr_task("0x20000000")``.
         """
 
         def __init__(self) -> None:
@@ -52,9 +52,10 @@ if gdb is not None:
             )
 
     class GdrObjectFunction(gdb.Function):
-        """Return a target-native object by semantic kind and name.
+        """Return a target-native object by semantic kind and target.
 
-        Usage: ``p $gdr_object("semaphore", "work_sem")``. An adapter
+        Usage: ``p $gdr_object("semaphore", "work_sem")`` or
+        ``p $gdr_object("semaphore", "0x20000000")``. An adapter
         returns zero when that kind is not reliably enumerable on its RTOS.
         """
 

@@ -102,6 +102,7 @@ from rtthread.navigation import (
 )
 from rtthread.navigation import (
     find_thread,
+    find_timer_by_target,
     get_current_thread,
     get_heap_snapshot,
     get_tick,
@@ -607,15 +608,25 @@ class RtThreadAdapter(RtosAdapter):
             if policy is not None:
                 policy.formatter = _ipc_policy
 
-    def find_task(self, name: str) -> gdb.Value | None:
-        return find_thread(name, self.layout)
+    def find_task(self, target: str) -> gdb.Value | None:
+        """Return the native thread for a name, address or symbol."""
+        return find_thread(target, self.layout)
 
-    def find_object(self, kind: str, name: str) -> gdb.Value | None:
+    def find_object(self, kind: str, target: str) -> gdb.Value | None:
+        """Return the native object for a name, address or symbol.
+
+        A registry name wins; an explicit address literal or a plain C
+        identifier then matches against live registry addresses, so objects
+        with a duplicate, truncated or missing name stay reachable by the
+        ``Addr`` column their list row prints.
+        """
         if kind.strip().lower() == "task":
             kind = "thread"
+        if kind.strip().lower() == "timer":
+            return find_timer_by_target(target, self.layout)
         type_code = resolve_object_type_code(kind, self.layout)
         return (
-            find_rt_object(type_code, name, self.layout)
+            find_rt_object(type_code, target, self.layout)
             if type_code is not None
             else None
         )
@@ -913,28 +924,28 @@ class RtThreadAdapter(RtosAdapter):
             )
         return None
 
-    def object_detail(self, kind: str, name: str) -> ObjectDetail | None:
-        """Return vertical detail pairs for one named object.
+    def object_detail(self, kind: str, target: str) -> ObjectDetail | None:
+        """Return vertical detail pairs for one named or addressed object.
 
         ``None`` means the kind is not reliably enumerable; ``ObjectDetail``
         carries ``found=False`` when the object is missing or its type is not
         enabled.
         """
         if kind == "task":
-            value = find_thread(name, self.layout)
+            value = find_thread(target, self.layout)
             if value is None:
                 return ObjectDetail(found=False)
             return _detail(self._detail_pairs_for("task", value) or [])
         if kind == "timer":
-            for value in iter_timers(self.layout):
-                if value_to_timer(value, self.layout).name == name:
-                    return _detail(self._detail_pairs_for("timer", value) or [])
-            return ObjectDetail(found=False)
+            value = find_timer_by_target(target, self.layout)
+            if value is None:
+                return ObjectDetail(found=False)
+            return _detail(self._detail_pairs_for("timer", value) or [])
 
         type_code = resolve_object_type_code(kind, self.layout)
         if type_code is None:
             return None
-        value = find_rt_object(type_code, name, self.layout)
+        value = find_rt_object(type_code, target, self.layout)
         if value is None:
             return ObjectDetail(found=False)
         pairs = self._detail_pairs_for(kind, value)

@@ -94,14 +94,14 @@ warning: target RT-Thread version not exported; cannot verify version
 
 | Command | Description |
 | --------- | ------------- |
-| `gdr init <rtos> <version> [--force] [--allow-unverified]` | Initialize the selected RTOS adapter; `--force` replaces adapter without restarting GDB, and `--allow-unverified` registers even when the target matches no RTOS symbol (a modified or stripped kernel) |
+| `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
 | `gdr reset` | Drop the active adapter and session caches |
 | `gdr help [topic]` | Show bootstrap or pretty-printer help |
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |
-| `<rtos> <object> <name>` | Show one object's details as a vertical `Key: Value` block (e.g. `rtt semaphore my_sem`) |
-| `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG (default `gdr-heap-<rtos>-gen<N>.png`) |
-| `frt checks [scope] [name]` | Run complete consistency checks (`frt help checks`); ordinary views show only specific problems |
+| `<rtos> <object> <name-or-address>` | Show one object's details as a vertical `Key: Value` block |
+| `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG |
+| `frt checks [scope] [name]` | Run complete consistency checks (`frt help checks`) |
 
 ## Convenience functions
 
@@ -109,7 +109,7 @@ warning: target RT-Thread version not exported; cannot verify version
 | ---------- | --------- | --------- |
 | `$gdr_task(name)` | target-native task `gdb.Value` | `p $gdr_task("worker1")` / `p $gdr_task("worker1").stat` |
 | `$gdr_tasks()` | target-native task pointer array | `p $gdr_tasks()` / `p *$gdr_tasks()[0]` |
-| `$gdr_object(kind, name)` | target-native object `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |
+| `$gdr_object(kind, target)` | target-native object `gdb.Value` | `p $gdr_object("semaphore", "my_sem")` |
 
 ## Pretty-printers
 

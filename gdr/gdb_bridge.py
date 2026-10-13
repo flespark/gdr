@@ -222,6 +222,31 @@ def is_plain_identifier(name: str) -> bool:
     return bool(_IDENTIFIER.fullmatch(name))
 
 
+def parse_user_address(text: str) -> int | None:
+    """Parse an explicit ``0x``-hex or decimal address literal.
+
+    Shared by the RTOS adapters so ``<name-or-address>`` means the same
+    everywhere: a name wins over a decimal reading (a numeric object name
+    is resolved as a symbol first), digits fall back to an address only
+    when the symbol lookup fails. Returns ``None`` for anything that is
+    not an address literal, including zero (a null selector resolves to
+    nothing, never to the null object).
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+    try:
+        if cleaned.lower().startswith("0x"):
+            address = int(cleaned, 16)
+        elif cleaned.isdecimal():
+            address = int(cleaned, 10)
+        else:
+            return None
+    except ValueError:
+        return None
+    return address or None
+
+
 def _lookup_gdb_symbol(name: str):
     """Return a ``gdb.Symbol`` for *name*, or ``None``.
 
