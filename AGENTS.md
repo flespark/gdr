@@ -42,6 +42,7 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   heapviews.py         heap snapshot record, the Blocks line and heap verdicts
   tableviews.py        typed detail-table navigation, waiter and mailbox slot cells
   version.py           RT-Thread version policy and target symbols
+  checks.py            explicit per-scope consistency checks with object addresses and evidence
   commands.py          RT-Thread command routing and completion
   help_docs.py         RT-Thread command/output help metadata
 freertos/              FreeRTOS adapter

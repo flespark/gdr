@@ -89,6 +89,7 @@ def test_build_advice_gates_smp_and_does_not_repeat_release_notes(monkeypatch):
 def test_diagnostics_report_flags_a_corrupt_or_truncated_chain(monkeypatch):
     """A corrupt chain is a failure; a bounded walk is explicitly skipped."""
     adapter = _adapter()
+    monkeypatch.setattr(diagnostics, "system_checks", lambda _layout: [])
     monkeypatch.setattr(
         adapter,
         "heap_info",
@@ -119,6 +120,7 @@ def test_diagnostics_report_flags_a_corrupt_or_truncated_chain(monkeypatch):
 def test_diagnostics_report_cross_checks_the_snapshot_counters(monkeypatch):
     """Exact walk accounting is compared against the snapshot, not restated."""
     adapter = _adapter()
+    monkeypatch.setattr(diagnostics, "system_checks", lambda _layout: [])
 
     monkeypatch.setattr(
         adapter,
@@ -157,12 +159,33 @@ def test_diagnostics_report_cross_checks_the_snapshot_counters(monkeypatch):
     assert "exceeds total" in overrun[1].detail
 
 
-def test_diagnostics_report_skips_a_build_without_a_heap():
+def test_diagnostics_report_skips_a_build_without_a_heap(monkeypatch):
     """No heap is reported as skipped rather than silently clean."""
     adapter = _adapter(heap_type="none")
+    monkeypatch.setattr(diagnostics, "system_checks", lambda _layout: [])
 
     findings = adapter.diagnostics_report()
 
     assert len(findings) == 1
     assert findings[0].verdict == "skipped"
     assert "no system heap" in findings[0].detail
+
+
+def test_diagnostics_report_leads_with_system_verdicts(monkeypatch):
+    """System identity checks ride the report ahead of the heap verdicts."""
+    adapter = _adapter()
+    monkeypatch.setattr(
+        diagnostics, "system_checks", lambda _layout: [("Tick", "ok: 100")]
+    )
+    monkeypatch.setattr(
+        adapter,
+        "heap_info",
+        lambda: HeapInfo(
+            algorithm="small_mem", used=5, total=9, walk=_walk(used_bytes=5)
+        ),
+    )
+
+    findings = adapter.diagnostics_report()
+
+    assert findings[0].name == "Tick"
+    assert findings[0].scope == "system"

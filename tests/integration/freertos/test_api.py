@@ -147,8 +147,8 @@ def test_probe_names_the_adapter_and_its_evidence(gdb):
 
 
 def test_checks_report_the_system_verdicts(gdb):
-    """``gdr api checks`` carries the same conclusions ``frt system`` prints."""
-    envelope = _envelope_line(gdb.run("gdr api checks --json", timeout=25))
+    """``gdr api check`` carries the same conclusions ``frt system`` prints."""
+    envelope = _envelope_line(gdb.run("gdr api check --json", timeout=25))
 
     assert envelope["ok"] is True
     findings = envelope["data"]["findings"]

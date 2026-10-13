@@ -126,7 +126,7 @@ def _with_width(gdb, width: int):
 
 def test_all_freertos_commands_complete_cleanly(gdb_session):
     """Every public route completes without Python or guard error output."""
-    for command in (*_PUBLIC_COMMANDS, "checks"):
+    for command in (*_PUBLIC_COMMANDS, "check"):
         output = gdb_session.run(f"freertos {command}", timeout=20)
         _assert_clean_command_output(output)
 

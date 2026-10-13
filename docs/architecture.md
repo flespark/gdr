@@ -51,10 +51,11 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `columns.py` | RT-Thread column contracts: each table's headers, `ColumnSpec` metadata, machine-value semantics and shrink priority. `adapter.py` builds the rows from these specs, and the same specs feed the capability claim, so a table and what it advertises cannot disagree. |
 | `navigation.py` | RT-Thread object navigation: registry/current-thread/tick entry symbols, type codes, timer traversal, and the halted system-heap snapshot. Returns raw `gdb.Value` objects using the layouts supplied by `layout.py`. |
 | `adapter.py` | RT-Thread intermediate object models, `gdb.Value` conversion, adapter-owned task/object tables, detail dispatch and system summaries. These models are presentation inputs, not ABI layout descriptions. |
-| `diagnostics.py` | Consumes adapter intermediate models for detail rendering and performs bounded raw mailbox/message-queue/mempool and system-heap walks and consistency diagnostics. |
+| `diagnostics.py` | Consumes adapter intermediate models for detail rendering and performs bounded raw mailbox/message-queue/mempool and system-heap walks and consistency diagnostics. Also owns the `thread`/`timer`/`system` check functions behind `rtt check`. |
 | `tableviews.py` | Preserves timer callback/parameter source navigation, waiter entry links and mailbox slot addresses in merged detail tables; vertical CLI details remain available. |
 | `version.py` | RT-Thread support ranges, exported target symbols, encoding order and RT-Thread-specific diagnostics. |
 | `commands.py` / `help_docs.py` | The `rtthread` / `rtt` router and its structured help tree. `rtt help <topic>` renders command fields, tips, configuration dependencies and implementation limits; printer subtopics are derived from active layout metadata. |
+| `checks.py` | On-demand `rtt check [scope] [target]` reports every invariant with verdict, object address and concrete evidence; normal views retain only problems. |
 
 ### `freertos/` — adapter
 
@@ -70,7 +71,7 @@ duplicating what `rust-gdb` / `gdb` already display well.
 | `adapter.py` | Task/queue/timer/event/stream models, value conversion, list tables, summaries, and the `RtosAdapter` protocol surface. |
 | `version.py` | FreeRTOS support ranges, exported target symbols, encoding order and FreeRTOS-specific diagnostics. |
 | `commands.py` / `help_docs.py` | The `freertos` / `frt` router and structured help tree for the 7 plural lists, 7 singular details, `system`/`objects`/`heap`, aliases, functions and layout-derived pretty-printers. `frt help <topic>` is rendered from metadata shared with the Markdown exporter rather than assembled output strings. |
-| `checks.py` | On-demand `frt checks [scope] [name]` reports every invariant with verdict, object address and concrete evidence; normal views retain only problems. |
+| `checks.py` | On-demand `frt check [scope] [name]` reports every invariant with verdict, object address and concrete evidence; normal views retain only problems. |
 | `details.py` | Vertical detail builders for tasks and the queue/timer/event-group/stream-buffer families; queue entries expose FIFO storage addresses without reading payload bytes. |
 | `tableviews.py` | Merges the same detail builders into typed object tables, retaining timer callback/ID navigation, waiter names and queue item addresses. |
 | `diagnostics.py` | Bounded raw list walks and consistency checks (list/task/system/queue/timer/event), each reporting `ok`/`fail`/`skipped` — never a clean short walk on corruption or truncation. |
@@ -226,7 +227,7 @@ the two views honest:
   the serializer emits those machine addresses as row `ids`, so a client keeps
   a selection or expansion state across refreshes.
 - **Verdicts.** `diagnostics_report()` returns `CheckFinding` rows for the
-  `checks` verb. A detail block keeps `pairs` as the complete flat view the
+  `check` verb. A detail block keeps `pairs` as the complete flat view the
   text renderer prints and adds `sections` built by `sections_from_pairs`,
   which classifies the two documented verdict forms (a verdict-prefixed value,
   or a `*Check` key) into `ok`/`fail`/`skipped` severity. Grouping therefore
@@ -235,9 +236,9 @@ the two views honest:
   for a verdict column), which the panel's checkbox children read. A located
   `source_rows` cell carries both `file` (GDB's resolved path) and `name` (the path
   as the debug information recorded it), because a build directory may be absent
-  on the machine that opens it. `snapshot` no longer carries `checks`: the verdicts
+  on the machine that opens it. `snapshot` no longer carries `check`: the verdicts
   ride in their table (the heap `sections`, the diagnostic columns). `gdr api
-  checks` stays a verb. Two verbs are new: `table <kind>` returns every object of
+  check` stays a verb (the pre-rename `checks` spelling remains an alias). Two verbs are new: `table <kind>` returns every object of
   a kind as one merged detail table (`ObjectTable` rows, columns as the union of
   the properties, repeating entries collapsed into one column), and `heap-dump`
   returns the block layout with its palette.
@@ -864,7 +865,7 @@ renders the `Algorithm/TotalSize/FreeSize/MinEver/Allocated/Freed/Protector/Bloc
 Holes` properties, using `N/A` for unavailable facts. `Allocated`/`Freed` are
 cumulative successful operation counts, not bytes or live block counts.
 `Check[HeapCrossCheck]` appears only for disagreements or incomplete walks;
-`frt checks heap` includes successful verdicts.
+`frt check heap` includes successful verdicts.
 
 **heap_5 without `configENABLE_HEAP_PROTECTOR` has no linear-walk bounds.**
 The kernel exports no region bases without the protector (`pucHeapLowAddress`/
@@ -943,7 +944,7 @@ timers) are simply not reachable from any channel.
 
 Automatic views show only named failures and incomplete reads/walks, retaining
 `fail:`/`skipped:` prefixes so merged diagnostic columns preserve severity.
-`frt checks [scope] [name]` is the explicit exhaustive surface (passes and
+`frt check [scope] [name]` is the explicit exhaustive surface (passes and
 structural skips included), with object addresses and observed pointer ranges,
 fields or block locations. Checks never drive the target; an interrupted kernel
 update can be transient. `frt system` uses `SystemSummary.extra_pairs` without

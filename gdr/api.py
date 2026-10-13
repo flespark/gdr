@@ -180,10 +180,10 @@ def _capabilities_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult
     return capabilities_to_dict(claims), []
 
 
-def _checks_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
+def _check_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     """The adapter's system-wide consistency conclusions, structured."""
     if args:
-        raise ApiError("bad_args", "checks takes no arguments")
+        raise ApiError("bad_args", "check takes no arguments")
     findings = adapter.diagnostics_report()
     if findings is None:
         return checks_to_dict([]), [
@@ -290,7 +290,11 @@ _VERBS: dict[str, _VerbHandler] = {
     "system": _system_verb,
     "heap": _heap_verb,
     "capabilities": _capabilities_verb,
-    "checks": _checks_verb,
+    "check": _check_verb,
+    # Reason: the pre-rename ``checks`` spelling stays an alias so clients
+    # built against earlier releases keep working; the envelope shape is
+    # unchanged, so no schema bump is owed.
+    "checks": _check_verb,
     "table": _table_verb,
     "heap-dump": _heap_dump_verb,
     "probe": _probe_verb,

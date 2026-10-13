@@ -312,7 +312,7 @@ class DetailSection:
 
 @dataclass(frozen=True)
 class CheckFinding:
-    """One consistency-check result for the ``checks`` verb.
+    """One consistency-check result for the ``check`` verb.
 
     ``verdict`` is the parsed severity and ``detail`` the reason after the
     verdict's colon, so a client renders a badge and a reason without
@@ -743,7 +743,7 @@ class RtosAdapter(Protocol):
         return None
 
     def diagnostics_report(self) -> list[CheckFinding] | None:
-        """System-wide consistency findings for the ``checks`` verb.
+        """System-wide consistency findings for the ``check`` verb.
 
         ``None`` means the adapter has no system-level checks; otherwise it
         returns the same conclusions its system view renders, structured so a

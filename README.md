@@ -100,8 +100,8 @@ warning: target RT-Thread version not exported; cannot verify version
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |
 | `<rtos> <object> <name-or-address>` | Show one object's details as a vertical `Key: Value` block |
+| `<rtos> check [scope] [name]` | Run complete consistency checks (`rtt help check`) |
 | `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG |
-| `frt checks [scope] [name]` | Run complete consistency checks (`frt help checks`) |
 
 ## Convenience functions
 

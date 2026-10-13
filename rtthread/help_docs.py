@@ -159,6 +159,29 @@ def build_help_tree(layout: KernelLayout | None = None) -> HelpTree:
             action="objects",
         ),
         CommandHelp(
+            "check",
+            "Run explicit consistency checks",
+            "Reports each pass, failure and skip with the object address and concrete evidence. Normal views show only problems.",
+            usage=(
+                "rtt check [system|heap|thread|semaphore|mutex|event|mailbox|messagequeue|mempool|timer] [target]",
+            ),
+            fields=_fields(
+                ("Object", "Object name and address or system/heap scope."),
+                (
+                    "Check/Verdict/Evidence",
+                    "Invariant, ok/fail/skipped and observed fields/locations.",
+                ),
+            ),
+            tips=(
+                "Run after kernel initialization; stops inside kernel updates can be transient.",
+            ),
+            configuration=(
+                "Unavailable fields report skipped with the missing symbol, field or config macro.",
+            ),
+            limitations=(_SNAPSHOT_LIMIT,),
+            action="check",
+        ),
+        CommandHelp(
             "system",
             "Show kernel, scheduler, object and heap summary",
             "Combines current thread, tick/state counts, object counts and system-heap status.",

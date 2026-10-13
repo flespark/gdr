@@ -24,7 +24,7 @@ _PUBLIC_ROUTES = {
     "system": ("system", None),
     "objects": ("objects", ""),
     "heap": ("heap", None),
-    "checks": ("checks", None),
+    "check": ("check", None),
     "queues": ("objects", "queue"),
     "semaphores": ("objects", "semaphore"),
     "mutexes": ("objects", "mutex"),
@@ -54,7 +54,7 @@ def test_public_commands_reach_their_semantic_renderer(command, expected, monkey
     )
     monkeypatch.setattr(commands, "render_heap", lambda: calls.append(("heap", None)))
     monkeypatch.setattr(
-        commands, "render_checks", lambda _args: calls.append(("checks", None))
+        commands, "render_checks", lambda _args: calls.append(("check", None))
     )
 
     commands._invoke_command(command)

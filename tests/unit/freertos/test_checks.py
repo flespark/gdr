@@ -20,8 +20,16 @@ def _selected(monkeypatch):
 def test_checks_route_preserves_scope_and_space_name(monkeypatch):
     captured = []
     monkeypatch.setattr(commands, "render_checks", captured.append)
-    commands._invoke_command("checks task Tmr Svc")
+    commands._invoke_command("check task Tmr Svc")
     assert captured == [["task", "Tmr", "Svc"]]
+
+
+def test_legacy_checks_alias_shares_the_check_route(monkeypatch):
+    """The pre-rename `checks` spelling still reaches the check renderer."""
+    captured = []
+    monkeypatch.setattr(commands, "render_checks", captured.append)
+    commands._invoke_command("checks heap")
+    assert captured == [["heap"]]
 
 
 def test_checks_system_keeps_passes_and_skips(monkeypatch):

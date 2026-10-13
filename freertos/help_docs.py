@@ -175,11 +175,11 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
             action="objects",
         ),
         CommandHelp(
-            "checks",
+            "check",
             "Run explicit consistency checks",
             "Reports each pass, failure and skip with the object address and concrete evidence. Normal views show only problems.",
             usage=(
-                "frt checks [system|heap|task|queue|semaphore|mutex|timer|eventgroup] [name]",
+                "frt check [system|heap|task|queue|semaphore|mutex|timer|eventgroup] [name]",
             ),
             fields=_fields(
                 ("Object", "Object name and address or system/heap scope."),
@@ -192,7 +192,8 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 "Run after kernel initialization; stops inside kernel updates can be transient.",
             ),
             limitations=(_CHECK_LIMIT,),
-            action="checks",
+            aliases=("checks",),
+            action="check",
         ),
         CommandHelp(
             "system",
@@ -213,7 +214,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 ),
                 (
                     "Check[name]",
-                    "Specific failure or incomplete-read evidence; use frt checks for all results.",
+                    "Specific failure or incomplete-read evidence; use frt check for all results.",
                 ),
             ),
             tips=("Use `frt heap` or an object command for the underlying evidence.",),
@@ -245,7 +246,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 ("Blocks/Holes", "Bounded walk counts and fragmentation."),
                 (
                     "Check[HeapCrossCheck]",
-                    "Only failure/incomplete evidence, with affected blocks or counters; absent when healthy. frt checks heap includes passes.",
+                    "Only failure/incomplete evidence, with affected blocks or counters; absent when healthy. frt check heap includes passes.",
                 ),
                 (
                     "Address/Size/State|Next",
@@ -253,7 +254,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
                 ),
             ),
             tips=(
-                "Use frt checks heap for complete consistency results; inspect reported mismatch/corrupt evidence before continuing the target.",
+                "Use frt check heap for complete consistency results; inspect reported mismatch/corrupt evidence before continuing the target.",
                 "Compare MinEver with current FreeSize to distinguish a transient peak from current pressure.",
             ),
             configuration=(

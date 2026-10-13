@@ -389,10 +389,8 @@ def get_current_thread() -> gdb.Value | None:
     return _smp_current_thread()
 
 
-def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
-    """Iterate RT-Thread timers via active lists and the object registry."""
-    seen: set[int] = set()
-
+def _iter_active_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
+    """Yield timers linked on the hard/soft active timer lists only."""
     for hook_name in ("timer_list", "soft_timer_list"):
         hook = kl.list_hooks.get(hook_name)
         if hook is None:
@@ -400,13 +398,37 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
         head = resolve_list_head(hook)
         if head is None:
             continue
-        for timer in iter_list(head, hook):
-            # Reason: ``Value.address`` is None for a non-lvalue, so the shared
-            # helper keeps a malformed iteration from raising mid-walk.
-            address = value_address(timer)
-            if address:
-                seen.add(address)
-            yield timer
+        yield from iter_list(head, hook)
+
+
+def active_timer_addresses(kl: KernelLayout) -> set[int]:
+    """Addresses on the active timer lists, for provenance and checks.
+
+    An empty set means no active timer was reachable -- either none is
+    started or the layout carries no timer-list hooks -- so callers treat
+    it as evidence, never as an error.
+    """
+    addresses: set[int] = set()
+    for timer in _iter_active_timers(kl):
+        # Reason: ``Value.address`` is None for a non-lvalue, so the shared
+        # helper keeps a malformed iteration from raising mid-walk.
+        address = value_address(timer)
+        if address:
+            addresses.add(address)
+    return addresses
+
+
+def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
+    """Iterate RT-Thread timers via active lists and the object registry."""
+    seen: set[int] = set()
+
+    for timer in _iter_active_timers(kl):
+        # Reason: ``Value.address`` is None for a non-lvalue, so the shared
+        # helper keeps a malformed iteration from raising mid-walk.
+        address = value_address(timer)
+        if address:
+            seen.add(address)
+        yield timer
 
     # Reason: some RT-Thread 4.0.x builds register timers in the object
     # container before they appear in active timer lists at our breakpoint.

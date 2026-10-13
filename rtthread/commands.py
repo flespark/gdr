@@ -25,6 +25,7 @@ from gdr.gdb_bridge import (
 )
 from gdr.help import command_aliases, command_topics, find_topic, render_terminal
 from rtthread.adapter import RtThreadAdapter
+from rtthread.checks import render_check
 from rtthread.help_docs import build_help_tree
 from rtthread.navigation import iter_object_names
 
@@ -76,7 +77,9 @@ def _invoke_command(argument: str) -> None:
         print(render_terminal(tree, path))
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
-    if command == "heap" and len(args) in (2, 3) and args[1].lower() == "dump":
+    if command == "check":
+        render_check(args[1:])
+    elif command == "heap" and len(args) in (2, 3) and args[1].lower() == "dump":
         render_heap_dump("rtthread", args[2] if len(args) == 3 else "")
     elif len(args) == 2 and command in _SINGULAR_COMMANDS:
         render_object_detail(_SINGULAR_COMMANDS[command], args[1])

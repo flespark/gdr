@@ -215,7 +215,7 @@ def test_system_heap_capabilities_and_snapshot_compose(session):
     # inside the heap section and the per-kind tables, and ``checks`` stays a verb.
     assert "checks" not in data
     assert data["tables"] == {}
-    envelope = api.api_call("checks")
+    envelope = api.api_call("check")
     assert _data(envelope)["counts"] == {"ok": 1}
 
 
@@ -329,14 +329,14 @@ def test_snapshot_rejects_unknown_flags(session):  # noqa: ARG001
     assert "--no-heap" in snapshot["error"]["message"]  # type: ignore[index]
 
 
-def test_checks_verb_reports_findings_and_counts(session):
-    """The checks verb is the structured form of the system verdicts."""
+def test_check_verb_reports_findings_and_counts(session):
+    """The check verb is the structured form of the system verdicts."""
     session.findings = [
         CheckFinding("TaskCount", "ok", scope="system"),
         CheckFinding("HeapCrossCheck", "fail", "blocks disagree", scope="system"),
     ]
 
-    envelope = api.api_call("checks")
+    envelope = api.api_call("check")
 
     assert envelope["ok"] is True
     data = _data(envelope)
@@ -344,11 +344,21 @@ def test_checks_verb_reports_findings_and_counts(session):
     assert _dict_list(data["findings"])[1]["detail"] == "blocks disagree"
 
 
-def test_checks_verb_explains_an_adapter_without_system_checks(session):
+def test_legacy_checks_verb_spelling_still_answers(session):
+    """The pre-rename ``checks`` verb stays an alias of ``check``."""
+    session.findings = [CheckFinding("Tick", "ok", scope="system")]
+
+    envelope = api.api_call("checks")
+
+    assert envelope["ok"] is True
+    assert _data(envelope)["counts"] == {"ok": 1}
+
+
+def test_check_verb_explains_an_adapter_without_system_checks(session):
     """An adapter without system checks still answers, with a capability note."""
     session.findings = None
 
-    envelope = api.api_call("checks")
+    envelope = api.api_call("check")
 
     assert envelope["ok"] is True
     assert _data(envelope)["findings"] == []

@@ -32,9 +32,11 @@ from gdr.gdb_bridge import (
     lookup_symbol_at,
     lookup_type,
     read_bytes,
+    read_cstring,
     read_int,
     read_macro_int,
     type_size,
+    value_address,
 )
 from gdr.layout import (
     KernelLayout,
@@ -43,7 +45,13 @@ from gdr.layout import (
     read_field,
     read_field_at,
 )
-from rtthread.layout import ThreadState
+from rtthread.layout import RT_TIMER_FLAG_ACTIVATED, ThreadState
+from rtthread.navigation import (
+    get_current_thread,
+    get_tick,
+    iter_objects,
+    iter_threads,
+)
 
 if TYPE_CHECKING:
     from rtthread.adapter import (
@@ -847,3 +855,183 @@ def walk_system_heap(heap_type: str, kl: KernelLayout) -> HeapWalk | None:
     if heap_type == "slab":
         return _walk_slab_pages(kl)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Explicit consistency checks (``rtt check``).
+#
+# Each check returns ``(name, status)`` with status ``ok``, ``fail: reason``
+# or ``skipped: reason`` -- the same convention as the FreeRTOS checks, so
+# the renderer and the API envelope share one severity mapping. A check that
+# cannot run names the missing symbol, field or config macro instead of
+# guessing, which keeps the output trustworthy on builds that did not enable
+# every debug aid (SMP, CPU usage, event IPC, full DWARF).
+# ---------------------------------------------------------------------------
+
+# The static-object bit OR-ed into ``rt_object.type`` (see ``object.c``
+# ``rt_object_init``); the low 7 bits carry the class code.
+_STATIC_OBJECT_FLAG = 0x80
+
+
+def object_identity_checks(
+    value, layout: KernelLayout, struct_name: str, expected_code: int | None
+) -> list[tuple[str, str]]:
+    """Type-byte and static/dynamic lifetime checks for one raw object."""
+    sl = layout.structs.get(struct_name)
+    if sl is None or "type" not in sl.fields:
+        return [("ObjectType", "skipped: type field not in debug info")]
+    if expected_code is None:
+        return [("ObjectType", "skipped: object type code unknown")]
+    raw = read_int(read_field(value, sl, "type"))
+    if raw is None:
+        return [("ObjectType", "skipped: type byte unreadable")]
+    if raw & 0x7F != expected_code:
+        return [
+            (
+                "ObjectType",
+                f"fail: type byte {raw:#x}, expected class {expected_code:#x}",
+            )
+        ]
+    if raw & _STATIC_OBJECT_FLAG:
+        return [
+            ("ObjectType", "ok"),
+            ("Lifetime", "ok: static object; confirm it outlives its scope"),
+        ]
+    return [("ObjectType", "ok"), ("Lifetime", "ok: dynamic object")]
+
+
+def thread_checks(value, layout: KernelLayout) -> list[tuple[str, str]]:
+    """Stack-pointer and priority checks for one raw thread value."""
+    sl = layout.structs.get("struct rt_thread")
+    if sl is None:
+        return [("ThreadFields", "skipped: struct rt_thread not in debug info")]
+    results: list[tuple[str, str]] = []
+    sp = read_int(read_field(value, sl, "sp"))
+    base = read_int(read_field(value, sl, "stack_addr"))
+    size = read_int(read_field(value, sl, "stack_size"))
+    if sp is None or base is None or size is None or not size:
+        results.append(("SpBounds", "skipped: sp/stack geometry unreadable"))
+    elif not base <= sp <= base + size:
+        results.append(
+            (
+                "SpBounds",
+                f"fail: sp {sp:#x} outside stack [{base:#x}, {base + size:#x})",
+            )
+        )
+    else:
+        results.append(("SpBounds", "ok"))
+    prio = read_int(read_field(value, sl, "current_priority"))
+    prio_max = read_macro_int("RT_THREAD_PRIORITY_MAX")
+    if prio is None:
+        results.append(("PriorityRange", "skipped: priority unreadable"))
+    elif prio_max is None:
+        results.append(
+            ("PriorityRange", "skipped: RT_THREAD_PRIORITY_MAX not in debug info")
+        )
+    elif prio >= prio_max:
+        results.append(
+            (
+                "PriorityRange",
+                f"fail: current priority {prio} >= max {prio_max}",
+            )
+        )
+    else:
+        results.append(("PriorityRange", "ok"))
+    return results
+
+
+def timer_checks(
+    value, layout: KernelLayout, in_active_list: bool | None
+) -> list[tuple[str, str]]:
+    """Active-flag against active-list membership for one raw timer value."""
+    sl = layout.structs.get("struct rt_timer")
+    if sl is None:
+        return [("TimerFields", "skipped: struct rt_timer not in debug info")]
+    flag = read_int(read_field(value, sl, "flag"))
+    if flag is None:
+        return [("ListMembership", "skipped: timer flag unreadable")]
+    if in_active_list is None:
+        return [("ListMembership", "skipped: active timer lists not walkable")]
+    active = bool(flag & RT_TIMER_FLAG_ACTIVATED)
+    if active and in_active_list:
+        return [("ListMembership", "ok")]
+    if active:
+        return [
+            (
+                "ListMembership",
+                "fail: flag ACTIVATED but absent from timer lists "
+                "(detached without stopping?)",
+            )
+        ]
+    if in_active_list:
+        return [("ListMembership", "fail: deactivated but still linked")]
+    return [("ListMembership", "ok")]
+
+
+def system_checks(layout: KernelLayout) -> list[tuple[str, str]]:
+    """Scheduler identity, tick and registry type-byte checks."""
+    results: list[tuple[str, str]] = []
+    current = get_current_thread()
+    if current is None:
+        results.append(
+            (
+                "CurrentThread",
+                "fail: no current thread "
+                "(before scheduler start or a corrupt current pointer)",
+            )
+        )
+    else:
+        thread_layout = layout.structs.get("struct rt_thread")
+        name = (
+            read_cstring(read_field(current, thread_layout, "name"))
+            if thread_layout is not None
+            else None
+        )
+        registered = {value_address(thread) for thread in iter_threads(layout)} - {0}
+        address = value_address(current)
+        if address in registered:
+            results.append(("CurrentThread", f"ok: {name or '?'}@{address:#x}"))
+        else:
+            results.append(
+                (
+                    "CurrentThread",
+                    f"fail: current thread {address:#x} not in the registry",
+                )
+            )
+    tick = get_tick()
+    if tick is None:
+        results.append(
+            (
+                "Tick",
+                "skipped: rt_tick unreadable (symbols stripped or pre-kernel halt)",
+            )
+        )
+    else:
+        results.append(("Tick", f"ok: {tick}"))
+    results.extend(_registry_type_checks(layout))
+    return results
+
+
+def _registry_type_checks(layout: KernelLayout) -> list[tuple[str, str]]:
+    """Every registered object's type byte against its container's class."""
+    total = 0
+    for type_code, info in layout.object_types.items():
+        if not info.enabled:
+            continue
+        sl = layout.structs.get(info.struct_name)
+        if sl is None or "type" not in sl.fields:
+            continue
+        for value in iter_objects(type_code, layout):
+            total += 1
+            raw = read_int(read_field(value, sl, "type"))
+            if raw is not None and raw & 0x7F != type_code:
+                return [
+                    (
+                        "RegistryTypes",
+                        f"fail: {info.name} {value_address(value):#x} "
+                        f"has type byte {raw:#x}",
+                    )
+                ]
+    if not total:
+        return [("RegistryTypes", "skipped: object registry unreadable (no objects)")]
+    return [("RegistryTypes", f"ok: {total} objects")]

@@ -59,7 +59,7 @@ def test_heap_help_matches_summary_and_problem_fields():
     output = render_terminal(tree, ("heap",))
     assert "Allocs/Frees" not in output
     assert "operation counts" in output
-    assert "frt checks heap" in output
+    assert "frt check heap" in output
 
 
 def test_free_rtos_detail_help_uses_single_object_problem_and_entry_fields():

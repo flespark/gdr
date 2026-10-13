@@ -41,7 +41,7 @@ All notable changes to GDR are documented in this file.
   names its identity column, so a client can sort, right-align and key rows
   without re-parsing `N/A`/`0x` strings. `gdr api capabilities` reports each
   kind's columns and the configuration that would enable a missing one, and
-  `gdr api checks` reports the system verdicts as structured findings.
+  `gdr api check` reports the system verdicts as structured findings.
 - Detail blocks carry a `sections` view of their consistency verdicts with
   per-row `ok`/`fail`/`skipped` severity; the flat text output is unchanged.
 - `gdr reset` and `gdr init --force` replace the active adapter without
@@ -54,6 +54,15 @@ All notable changes to GDR are documented in this file.
   blocks and one colour per owner. Inline in iTerm2 or Kitty; otherwise a PNG
   (`gdr-heap-<rtos>-gen<N>.png`). The panel's heap card draws the same map with a
   hover readout.
+- `rtt check [scope] [target]` runs explicit consistency checks (thread stack/priority,
+  timer flag-vs-list membership, current-thread/tick/registry types, heap chain) with
+  `ok`/`fail`/`skipped` verdicts and object addresses; unavailable fields report the
+  missing symbol, field or config macro instead of guessing. `gdr api check` now
+  covers the RT-Thread system verdicts as well as the heap ones.
+- The check command is singular everywhere: `frt checks` is now `frt check` and
+  `gdr api checks` is now `gdr api check` (both old spellings stay as aliases).
+- The `rtt timers` table gains a `Src` column recording registry and/or active-list
+  evidence per timer, so a dormant timer and a detached-but-linked one are told apart.
 - Singular object details accept a name, an explicit address or a symbol:
   `<rtos> <object> <name-or-address>` (and the `detail` API verb plus
   `$gdr_task`/`$gdr_object`) resolve a name first, then match an address
@@ -76,7 +85,7 @@ All notable changes to GDR are documented in this file.
   table's shape. Kernel version is gone from `rtt system` and the panel.
 - `rtt heap` drops the Holes line and the per-thread occupancy table; its
   verdicts move into the table as diagnostic columns. The Checks card is gone
-  from the panel. `gdr api checks` stays.
+  from the panel. `gdr api check` stays.
 - The task table's `Addr` column is now `TCB`, the thread control block address.
   It is the row identity, last in the table. A new `PC` column after `BasePrio`
   shows the thread's last PC, proven from its saved switch frame or `N/A`.

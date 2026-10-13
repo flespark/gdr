@@ -42,6 +42,7 @@ from gdr.adapter_api import (
     RtosAdapter,
     SystemSummary,
     address_cell,
+    check_findings,
     count_cell,
     merged_detail_table,
     number_cell,
@@ -53,6 +54,7 @@ from gdr.adapter_api import (
 )
 from gdr.derive import timer_expires_in as derive_timer_expires_in
 from gdr.gdb_bridge import (
+    TARGET_ACCESS_ERRORS,
     arch_or_default,
     eval_identifier,
     lookup_symbol_at,
@@ -98,9 +100,7 @@ from rtthread.layout import (
     resolve_object_type_code,
 )
 from rtthread.navigation import (
-    find_object as find_rt_object,
-)
-from rtthread.navigation import (
+    active_timer_addresses,
     find_thread,
     find_timer_by_target,
     get_current_thread,
@@ -113,6 +113,9 @@ from rtthread.navigation import (
     read_irq_nest,
     read_scheduler_lock_nest,
     suspend_thread_names,
+)
+from rtthread.navigation import (
+    find_object as find_rt_object,
 )
 from rtthread.stackpc import SavedPcLayout, decode_saved_pc, saved_pc_layout
 from rtthread.tableviews import DETAIL_SPECS, detail_cells
@@ -882,6 +885,20 @@ class RtThreadAdapter(RtosAdapter):
         if kind == "timer":
             rows = []
             current_tick = get_tick()
+            # Reason: the registry and the active skip-lists are independent
+            # evidence -- a registered-only timer is dormant, an active-only
+            # one was detached without stopping -- so the Src column records
+            # which source(s) proved each timer instead of merging silently.
+            active_addrs = active_timer_addresses(self.layout)
+            timer_code = self.layout.object_codes.get("timer")
+            registered_addrs = (
+                {
+                    value_address(value)
+                    for value in iter_objects(timer_code, self.layout)
+                }
+                if timer_code is not None
+                else set()
+            )
             for value in iter_timers(self.layout):
                 timer = value_to_timer(value, self.layout)
                 callback = lookup_symbol_at(timer.callback) if timer.callback else None
@@ -889,6 +906,14 @@ class RtThreadAdapter(RtosAdapter):
                     _timer_expires_in(timer.timeout_tick, current_tick)
                     if timer.active
                     else "N/A"
+                )
+                sources = "+".join(
+                    source
+                    for source, present in (
+                        ("registry", timer.address in registered_addrs),
+                        ("active-list", timer.address in active_addrs),
+                    )
+                    if present
                 )
                 rows.append(
                     [
@@ -910,6 +935,7 @@ class RtThreadAdapter(RtosAdapter):
                             f"<{callback}>" if callback else hex(timer.callback),
                             timer.callback,
                         ),
+                        text_cell(sources or "?"),
                         address_cell(timer.address),
                     ]
                 )
@@ -1336,13 +1362,23 @@ class RtThreadAdapter(RtosAdapter):
         )
 
     def diagnostics_report(self) -> list[CheckFinding]:
-        """System-wide verdicts: the heap chain and its counter accounting.
+        """System-wide verdicts: scheduler identity plus heap accounting.
 
-        Per-object verdicts stay in the detail verbs; what is system-wide here
-        is whether the block chain walked cleanly and whether the snapshot
-        counters agree with the exact chain accounting.
+        Per-object verdicts stay in the detail verbs and ``rtt check``; what
+        is system-wide here is the current-thread/tick/registry-type state
+        plus whether the heap block chain walked cleanly and the
+        snapshot counters agree with the exact chain accounting.
         """
-        return self._heap_findings(
+        try:
+            findings = check_findings(
+                diagnostics.system_checks(self.layout), scope="system"
+            )
+        except TARGET_ACCESS_ERRORS as exc:
+            # Reason: the checks are best-effort exactly like the system
+            # summary they mirror, so an unreadable target degrades to one
+            # skipped finding instead of failing the whole verb.
+            findings = [CheckFinding("SystemChecks", "skipped", str(exc), "system")]
+        return findings + self._heap_findings(
             self.heap_info() if self.heap_type != "none" else None
         )
 

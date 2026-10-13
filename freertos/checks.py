@@ -44,7 +44,7 @@ def render_checks(arguments: list[str]) -> None:
     name = " ".join(arguments[1:])
     if kind not in CHECK_KINDS or (name and kind in ("system", "heap")):
         warn(
-            "usage: frt checks [system|heap|task|queue|semaphore|mutex|timer|eventgroup] [name]"
+            "usage: frt check [system|heap|task|queue|semaphore|mutex|timer|eventgroup] [name]"
         )
         return
     layout = selected.layout

@@ -142,7 +142,7 @@ def test_tasks_envelope_carries_the_column_contract(gdb):
 def test_capabilities_and_checks_answer_on_a_live_target(gdb):
     """The capability claim and the system verdicts are reachable verbs."""
     capabilities = _envelope_line(gdb.run("gdr api capabilities --json", timeout=20))
-    checks = _envelope_line(gdb.run("gdr api checks --json", timeout=20))
+    checks = _envelope_line(gdb.run("gdr api check --json", timeout=20))
 
     task = capabilities["data"]["kinds"]["task"]
     assert task["enumerable"] is True

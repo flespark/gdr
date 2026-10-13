@@ -78,7 +78,7 @@ def _invoke_command(argument: str) -> None:
         print(render_terminal(tree, path))
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
-    if command == "checks":
+    if command == "check":
         render_checks(args[1:])
     elif command == "heap" and len(args) in (2, 3) and args[1].lower() == "dump":
         render_heap_dump("freertos", args[2] if len(args) == 3 else "")

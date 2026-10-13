@@ -87,6 +87,7 @@ TIMER_SPECS = (
     ColumnSpec("TimeoutTick", kind="int", align="right"),
     ColumnSpec("ExpiresIn", kind="int", align="right"),
     ColumnSpec("Callback", kind="symbol", elastic=True),
+    ColumnSpec("Src", doc="registry and/or active-list evidence"),
     ColumnSpec("Addr", kind="addr"),
 )
 

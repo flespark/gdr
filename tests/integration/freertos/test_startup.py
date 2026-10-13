@@ -58,7 +58,7 @@ print('PRE_TASK_CREATION')
         system = session.run("frt system", timeout=25)
         assert "Check[NextUnblockTime]" not in system, system
         assert "Checks:" not in system, system
-        checks = session.run("frt checks", timeout=25)
+        checks = session.run("frt check", timeout=25)
         assert "scheduler not started" in checks, checks
         watermark = session.run_python(
             """
