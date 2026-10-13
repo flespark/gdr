@@ -143,9 +143,21 @@ async function withSession<T>(body: (port: number) => T): Promise<T> {
 	const qemu: ChildProcess = spawn(
 		QEMU,
 		['-M', MACHINE, '-kernel', ELF, '-nographic', '-monitor', 'none', '-gdb', `tcp::${port}`],
-		{ stdio: 'ignore' }
+		{ stdio: ['ignore', 'pipe', 'pipe'] }
 	);
+	let bootOutput = '';
+	qemu.stdout?.on('data', (chunk: Buffer) => { bootOutput += chunk.toString(); });
+	qemu.stderr?.on('data', (chunk: Buffer) => { bootOutput += chunk.toString(); });
 	try {
+		// Reason: an open gdbstub does not prove kernel initialization; stopping
+		// immediately can produce a valid empty snapshot before tasks exist.
+		const deadline = Date.now() + 15000;
+		while (!bootOutput.includes('GDR test fixture ready.')) {
+			if (qemu.exitCode !== null || Date.now() > deadline) {
+				throw new Error(`QEMU fixture did not become ready: ${bootOutput}`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
 		await waitForPort(port);
 		return await body(port);
 	} finally {
