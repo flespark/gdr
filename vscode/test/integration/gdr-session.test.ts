@@ -291,7 +291,7 @@ test('probe answers with real evidence before any adapter exists', { skip: reaso
 		const envelope = mustEnvelope(text);
 
 		assert.equal(envelope.ok, true, 'the probe must answer before initialization');
-		assert.equal(envelope.schema_version, 1);
+		assert.equal(envelope.schema_version, 2);
 		assert.equal(envelope.rtos, null, 'no adapter is initialized at this point');
 
 		const payload = must(parseProbePayload(envelope.data), 'the probe payload must be readable');
