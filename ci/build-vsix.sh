@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# Build the release VSIX from the checked-out tag.
+# Build the release VSIX from the checked-out tree.
 #
 # The extension version tracks GDR's own year.serial release (GDR `2026.4`
 # ships as extension `2026.4.0`), so the file name comes from
-# `vscode/package.json`, never from the tag string: a tag cannot spell the
-# semver patch.  The tag still has to agree with the extension version, which
-# this script checks after normalizing both sides (`2026.04` and `2026.4`
-# name the same release).  `ci/check-vendored-schema.py` separately enforces
-# that the vendored runtime and its envelope schema match this checkout.
+# `ci/vsix-artifact-name.sh`, never from the tag string: a tag cannot spell
+# the semver patch. A tag release always ships patch `0`; an extension-only
+# fix (packaging or UI, same runtime) bumps the patch and is built with
+# `--patch` instead, then attached to the existing release by hand or by the
+# release workflow's manual dispatch. `ci/check-vendored-schema.py` separately
+# enforces that the vendored runtime and its envelope schema match this
+# checkout.
 set -euo pipefail
 
+patch_release=0
+if [[ "${1:-}" == "--patch" ]]; then
+    patch_release=1
+    shift
+fi
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-    echo "usage: $0 <release-tag> [output-directory]" >&2
+    echo "usage: $0 [--patch] <release-tag> [output-directory]" >&2
     exit 2
 fi
 
@@ -46,20 +53,31 @@ normalize_version() {
 
 extension_version="$(node -e 'process.stdout.write(require(process.argv[1]).version)' \
     "$repo_root/vscode/package.json")"
-if [[ -z "$extension_version" ]]; then
-    echo "build-vsix: could not read the extension version" >&2
+if [[ ! "$extension_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "build-vsix: package.json declares no semver version" >&2
     exit 1
 fi
 
 normalized_tag="$(normalize_version "$release_tag")"
-if [[ "$extension_version" != "$normalized_tag" &&
-    "$extension_version" != "$normalized_tag".* ]]; then
-    echo "build-vsix: extension $extension_version does not track release $release_tag" >&2
+if [[ "$patch_release" -eq 1 ]]; then
+    # Reason: a patch VSIX reuses the release tag (the runtime is unchanged)
+    # and says so in its own patch number; anything else is a mistagged tree.
+    if [[ "$extension_version" != "$normalized_tag".* ||
+        "$extension_version" == "$normalized_tag".0 ]]; then
+        echo "build-vsix: --patch needs extension ${normalized_tag}.<nonzero-patch>," \
+            "got $extension_version" >&2
+        exit 1
+    fi
+elif [[ "$extension_version" != "$normalized_tag".0 ]]; then
+    # Reason: tag releases always ship patch 0; a nonzero patch means an
+    # extension-only fix is in flight and must go out through --patch (or the
+    # workflow dispatch), never as the release's main artifact.
+    echo "build-vsix: release $release_tag needs extension ${normalized_tag}.0," \
+        "got $extension_version (use --patch for an extension-only fix)" >&2
     exit 1
 fi
 
-vsix_name="gdb-rtos-views-${extension_version}.vsix"
-vsix_path="$output_dir/$vsix_name"
+vsix_path="$("$script_dir/vsix-artifact-name.sh" "$output_dir")"
 if [[ -e "$vsix_path" ]]; then
     echo "refusing to overwrite existing VSIX: $vsix_path" >&2
     exit 1

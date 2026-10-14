@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "20*.*"
+  workflow_dispatch:
+    inputs:
+      gdr_tag:
+        description: "GDR release tag the patch VSIX belongs to (e.g. 2026.04)"
+        required: true
 
 permissions:
   contents: write
@@ -41,10 +46,10 @@ jobs:
           # lockfile is hermetic without it.
           node-version: "24"
       - name: Build the release VSIX
-        # Reason: the file name carries the extension version from
-        # vscode/package.json (GDR `2026.4` ships as extension `2026.4.0`),
-        # and the script refuses a tag the extension does not track, so a
-        # mistagged release fails here instead of shipping a wrong VSIX.
+        # Reason: a tag release always ships patch 0 (GDR `2026.4` as
+        # extension `2026.4.0`); the script refuses anything else, so a
+        # mistagged tree or a patch in flight fails here instead of shipping
+        # a wrong VSIX. Extension-only fixes go through --patch (see below).
         env:
           TAG: ${{ github.ref_name }}
         run: bash ci/build-vsix.sh "$TAG"
@@ -55,10 +60,12 @@ jobs:
         run: |
           notes_file="$(mktemp)"
           bash ci/extract-changelog.sh "$TAG" >"$notes_file"
-          shopt -s nullglob
-          vsix_files=(dist/gdb-rtos-views-*.vsix)
-          if [[ ${#vsix_files[@]} -ne 1 ]]; then
-            echo "expected exactly one release VSIX in dist/" >&2
+          # Reason: the VSIX name is derived from vscode/package.json by
+          # ci/vsix-artifact-name.sh, the same authority ci/build-vsix.sh
+          # packages under -- globbing dist/ could pick up a stale file.
+          vsix_file="$(bash ci/vsix-artifact-name.sh)"
+          if [[ ! -f "$vsix_file" ]]; then
+            echo "missing expected VSIX: $vsix_file" >&2
             exit 1
           fi
           gh release create "$TAG" \
@@ -68,4 +75,55 @@ jobs:
             "dist/gdr-$TAG.zip" \
             "dist/gdr-latest.tar.gz" \
             "dist/gdr-latest.zip" \
-            "${vsix_files[0]}"
+            "$vsix_file"
+
+  # Manual channel for an extension-only fix (packaging or UI against an
+  # unchanged runtime): bump vscode/package.json to <gdr-ver>.<nonzero-patch>
+  # on main, then dispatch with the GDR tag the patch belongs to. The tag
+  # flow above always ships patch 0; only this job builds with --patch, and
+  # it uploads onto the existing release instead of creating one.
+  publish-patch:
+    name: Publish patch VSIX to an existing release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the calendar release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.gdr_tag }}
+        run: |
+          case "$TAG" in
+            20[0-9][0-9].[0-9][0-9]) ;;
+            *)
+              echo "expected a YYYY.MM release tag, got: $TAG" >&2
+              exit 1
+              ;;
+          esac
+          if ! gh release view "$TAG" >/dev/null; then
+            echo "no GitHub Release for tag: $TAG" >&2
+            exit 1
+          fi
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          # Reason: same no-cache rule as the tag job -- the VSIX built here
+          # is published, so its dependencies come from the lockfile only.
+          node-version: "24"
+      - name: Build the patch VSIX
+        env:
+          TAG: ${{ inputs.gdr_tag }}
+        run: bash ci/build-vsix.sh --patch "$TAG"
+      - name: Upload the patch VSIX onto the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.gdr_tag }}
+        run: |
+          vsix_file="$(bash ci/vsix-artifact-name.sh)"
+          if [[ ! -f "$vsix_file" ]]; then
+            echo "missing expected VSIX: $vsix_file" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "$vsix_file" --clobber

@@ -192,15 +192,6 @@ unambiguous exact result, and otherwise asks — with the evidence attached. A
 resolved answer is cached per launch configuration, so a reflash in place does
 not ask again.
 
-## Versioning
-
-The extension version tracks GDR's own year.serial release (the `__version__` in
-`gdr/__init__.py`), with the semver patch left free for extension-only fixes:
-GDR `2026.4` ships as extension `2026.4.0`, and a packaging or UI fix may
-publish `2026.4.1` against the same runtime. `ci/check-vendored-schema.py` fails
-when the two disagree, so a bundle never claims a runtime it was not built
-from.
-
 ## Development
 
 ```bash
@@ -226,15 +217,29 @@ by hand. CI never publishes, because Marketplace versions are immutable and the
 credentials would be a leak in the open-lane config.
 
 Every release tag additionally builds a versioned VSIX with
-`ci/build-vsix.sh <tag>` (name from `package.json`, tag-vs-version checked)
-and attaches it to both the GitHub Release and the CNB Release, next to the
-source archives. Publish that exact file to the Marketplace by hand; never
+`ci/build-vsix.sh <tag>` (exact name from `ci/vsix-artifact-name.sh`, tag-vs-version
+checked) and attaches it to both the GitHub Release and the CNB Release, next
+to the source archives. A tag release always ships patch `0` (`2026.4.0`);
+the script refuses anything else, so a patch in flight can never leak into the
+main artifact. Publish that exact file to the Marketplace by hand; never
 repackage locally, or the checksums diverge. `categories` must stay within the
 Marketplace allowlist -- an unknown entry fails upload validation.
 
 `ci/check-vendored-schema.py` checks the generated bundle's version and schema
 against the source checkout, and enforces the version rule
 (`GDR x.y` ships as extension `x.y.0`).
+
+An extension-only fix (packaging or UI against an unchanged runtime) ships as
+a nonzero patch without a new GDR tag: bump `package.json` to `2026.4.1`,
+commit to main, then run the release workflow's manual dispatch with
+`gdr_tag: 2026.04`, which builds with `ci/build-vsix.sh --patch` and uploads
+onto the existing GitHub Release (`--clobber`). For the CNB Release, run the
+scripts locally from that tree:
+`ci/create-release-archives.sh <tag>` (archives the tag's runtime, unchanged
+by the patch), `ci/build-vsix.sh --patch <tag>`, then
+`ci/publish-cnb-release.sh <tag>`, which overwrite-uploads the new VSIX onto
+the existing release. Upload the resulting file to the Marketplace
+by hand, as usual.
 
 ## Known limits
 

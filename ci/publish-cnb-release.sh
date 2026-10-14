@@ -38,12 +38,14 @@ if [[ ${#archives[@]} -ne 2 ]]; then
     echo "expected one versioned archive in each format" >&2
     exit 1
 fi
-vsix_files=("$archive_dir"/gdb-rtos-views-*.vsix)
+vsix_file="$("$script_dir/vsix-artifact-name.sh" "$archive_dir")"
 # Reason: unlike the source archives, the VSIX file name carries the extension
 # version (`vscode/package.json`, e.g. `gdb-rtos-views-2026.4.0.vsix`), which
-# is what installers and the Marketplace expect -- keep it versioned.
-if [[ ${#vsix_files[@]} -ne 1 ]]; then
-    echo "expected exactly one release VSIX in $archive_dir" >&2
+# is what installers and the Marketplace expect -- keep it versioned, and
+# resolve it from the same authority that built it instead of globbing the
+# directory, where a stale file could slip in.
+if [[ ! -f "$vsix_file" ]]; then
+    echo "missing expected release VSIX: $vsix_file" >&2
     exit 1
 fi
 
@@ -186,7 +188,7 @@ upload_asset() {
         --ttl 0 >/dev/null
 }
 
-for archive in "${archives[@]}" "${vsix_files[@]}"; do
+for archive in "${archives[@]}" "$vsix_file"; do
     upload_asset "$archive"
 done
 printf 'published CNB Release %s with stable source archives and the release VSIX\n' "$release_tag"
