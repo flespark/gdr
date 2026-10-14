@@ -1,0 +1,14 @@
+flowchart TB
+    ext["VSCode panel<br/>session lifecycle, transport, rendering"]
+    da["Debug Adapter<br/>cortex-debug, cppdbg, gdbtarget, ..."]
+    subgraph gdbproc["GDB"]
+        gdb["GDB<br/>symbols, DWARF, memory, run/halt"]
+        gdr["GDR (gdr.py, embedded Python)<br/>RTOS decoding, checks, envelope"]
+        gdb <-->|"Python API"| gdr
+    end
+    target["Target<br/>halted while anything is read"]
+
+    ext -->|"DAP evaluate request"| da
+    da -.->|"JSON envelope (text or file)"| ext
+    da <-->|"GDB/MI"| gdb
+    gdb <-->|"remote protocol (OpenOCD, J-Link, pyOCD, QEMU gdbstub, ...)"| target

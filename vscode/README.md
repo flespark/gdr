@@ -16,22 +16,9 @@ The data flow is: VS Code panel → debug adapter → GDB/GDR → halted target;
 GDR returns a versioned JSON envelope through GDB, and the panel renders that
 response.
 
-```mermaid
-flowchart TB
-    ext["VS Code panel (this extension)<br/>session lifecycle, transport, rendering"]
-    da["Debug Adapter<br/>cortex-debug, cppdbg, gdbtarget, ..."]
-    subgraph gdbproc["GDB"]
-        gdb["GDB<br/>symbols, DWARF, memory, run/halt"]
-        gdr["GDR (gdr.py, embedded Python)<br/>RTOS decoding, checks, envelope"]
-        gdb <-->|"Python API"| gdr
-    end
-    target["Target<br/>halted while anything is read"]
-
-    ext -->|"DAP evaluate request"| da
-    da -.->|"JSON envelope (text or file)"| ext
-    da <-->|"GDB/MI"| gdb
-    gdb <-->|"remote protocol (OpenOCD, J-Link, pyOCD, QEMU gdbstub, ...)"| target
-```
+<!-- Layers diagram: source is vscode/media/architecture.mmd; re-render with
+     mermaid.ink `/img` (type=png, bgColor=FFFFFF) before editing this file. -->
+![Layered architecture](https://raw.githubusercontent.com/flespark/gdr/main/vscode/media/architecture.png)
 
 - **GDB** is the debugger itself. It owns the connection to the target, the
   ELF symbols and DWARF types, memory reads, and run/halt control. It also
