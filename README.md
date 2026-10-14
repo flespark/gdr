@@ -71,23 +71,76 @@ Set-Location .\gdr
 ### Load and init
 
 ```gdb
-(gdb) source gdr.py
+(gdb) source ~/Project/gdr/gdr.py
 [gdr] GDR loaded. Run `gdr init <rtos> <version>` to initialise support.
-(gdb) gdr init rtthread 4.0.5
-warning: target RT-Thread version not exported; cannot verify version
+(gdb) source gdr.py
+(gdb) gdr init rtt 4.0.5
 [gdr] setting up RT-Thread v4.0.5...
-[gdr]   config: smp=True heap=small_mem sem=True mutex=True mb=True mq=True
-[gdr]   layout: 10 structs, 2 list hooks
+[gdr]   config: smp: enable, cores: 2, heap: small_mem, semaphore: enable, mutex: enable, event: enable, mailbox: enable, messagequeue: enable, mempool: enable, timer-soft: enable, memtrace: enable
+[gdr]   layout: 11 structs, 2 list hooks
 [gdr] rtthread commands registered (alias: rtt)
 [gdr] RT-Thread support ready. Type 'rtt help' for commands.
-(gdb) rtt threads
-...
 (gdb) rtt system
-...
-(gdb) rtt event test_event
-...
-(gdb) p test_mutex
-...
+   Current task: main
+    Task number: 24
+     Tick count: 103
+Scheduler state: Unlocked
+          Ready: 17
+        Suspend: 6
+        Running: 1
+         device: 4
+          event: 2
+        mailbox: 8
+        memheap: 0
+        mempool: 3
+       msgqueue: 3
+          mutex: 6
+      semaphore: 8
+           task: 24
+          timer: 25
+ Heap allocator: small_mem
+      Heap used: 16108 B
+     Heap total: 7630516 B
+    Heap status: good
+(gdb) rtt tasks
+Name          State    Prio  BasePrio  PC                      SP          Stack  Used  HighWater  Entry                      CPU  Bind  Addr
+------------  -------  ----  --------  ----------------------  ----------  -----  ----  ---------  -------------------------  ---  ----  ----------
+locker        Ready    20    20        <locker_entry>          0x600a1498  1024   76    76         <locker_entry>             N/A  N/A   0x600a40e4
+tshell        Ready    20    20        <finsh_thread_entry>    0x600bcbe8  4096   76    76         <finsh_thread_entry>       N/A  N/A   0x600bbb78
+aio           Suspend  16    16        <rt_schedule+584>       0x600bb4a0  2048   140   140        <_workqueue_thread_entry>  N/A  N/A   0x600bac70
+sys_work      Suspend  23    23        <rt_schedule+584>       0x600baa80  2048   140   140        <_workqueue_thread_entry>  N/A  N/A   0x600ba250
+mmcsd_detect  Suspend  22    22        <rt_schedule+584>       0x600b7a90  1024   184   476        <mmcsd_detect>             N/A  N/A   0x600b769c
+tcpip         Suspend  10    10        <rt_schedule+584>       0x600b9f40  1024   660   716        <tcpip_thread>             N/A  N/A   0x600b9d18
+etx           Ready    12    12        <rt_schedule+584>       0x600b6ad8  1024   180   264        <eth_tx_thread_entry>      N/A  N/A   0x600b66c0
+erx           Ready    12    12        <rt_schedule+584>       0x600b6f80  1024   272   648        <eth_rx_thread_entry>      N/A  N/A   0x600b6bc4
+tsystem       Suspend  30    30        <rt_schedule+584>       0x600a5d48  1024   164   180        <rt_thread_system_entry>   N/A  N/A   0x600a5940
+tidle1        Ready    31    31        <rt_thread_idle_entry>  0x600a58f8  1024   72    72         <rt_thread_idle_entry>     N/A  1     0x600a5094
+tidle0        Ready    31    31        <idle_wfi+12>           0x600a54dc  1024   100   212        <rt_thread_idle_entry>     N/A  0     0x600a4fe8
+timer         Suspend  4     4         <rt_schedule+584>       0x600a4f28  1024   180   180        <_timer_thread_entry>      N/A  N/A   0x600a4b30
+main *        Running  10    10        <main+2556>             0x600b9b80  2048   212   752        <main_thread_entry>        0    N/A   0x600b9398
+(gdb) rtt heap
+Algorithm: small_mem
+TotalSize: 7630516 B
+ UsedSize: 16108 B
+  MaxUsed: 16108 B
+ MemTrace: enabled
+   Blocks: 36 used, 2 free, 38 total
+(gdb) rtt heap dump
+[gdr] small_mem: 38 blocks, 16108 B used, 7614424 B free, arena 7630532 B
+[gdr]   owner:main  12228 B  #e15e3a
+[gdr]   owner:NONE  2856 B  #3aa66c
+[gdr]   owner:erx  628 B  #9b59b6
+[gdr]   owner:tcpi  396 B  #e8b11c
+[gdr] heap map written to /Users/simon/Source/rt-thread/gdr-heap-rtthread-gen0.png (5131 bytes)
+(gdb) rtt mtxs
+Name         Value  Hold  OrigPrio  Owner  Policy  Waiters  Addr
+-----------  -----  ----  --------  -----  ------  -------  ----------
+wait_mutex   1      0     255       N/A    PRIO    0        0x600a0994
+test_mutex   1      0     255       N/A    PRIO    0        0x600a0968
+sal_lock     1      0     255       N/A    PRIO    0        0x600acb1c
+sd_bus_lock  1      0     255       N/A    PRIO    0        0x600bab54
+fslock       1      0     255       N/A    PRIO    0        0x600b7238
+mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 ```
 
 ## Commands
@@ -129,7 +182,7 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 
 ## Note
 
-GDR insist on data struct **keep align** between code and runtime memory. But there
+GDR insist on data struct **keep align** between RTOS code and runtime memory. But there
 maybe bias due to compiler optimization. GDR also infer RTOS version, component/feature
 enable from macros in ELF DWARF. Fellow debug optimized compilation options is recommend:
 
