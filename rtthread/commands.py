@@ -13,6 +13,7 @@ from gdr.commands import (
     complete_command_tree,
     render_heap,
     render_heap_dump,
+    render_heap_dump_options,
     render_object_detail,
     render_objects,
     render_system,
@@ -103,8 +104,18 @@ def _invoke_command(argument: str) -> None:
         _invoke_watch(args[1:])
     elif command == "unwatch":
         _invoke_unwatch(args[1:])
-    elif command == "heap" and len(args) in (2, 3) and args[1].lower() == "dump":
-        render_heap_dump("rtthread", args[2] if len(args) == 3 else "")
+    elif command == "heap" and len(args) >= 2 and args[1].lower() == "dump":
+        options, error = render_heap_dump_options(args[2:], _USAGE)
+        if error is not None:
+            warn(error)
+        else:
+            render_heap_dump(
+                "rtthread",
+                options.path,
+                cell_px=options.cell_px,
+                max_px=options.max_px,
+                row_bytes=options.row_bytes,
+            )
     elif len(args) == 2 and command in _SINGULAR_COMMANDS:
         render_object_detail(_SINGULAR_COMMANDS[command], args[1])
     elif len(args) != 1:

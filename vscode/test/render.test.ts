@@ -186,13 +186,16 @@ test('message block contains only actionable build configuration hints', () => {
 	assert.ok(!html.includes('reflash detected'));
 });
 
-test('the checks card is gone: verdicts render as the heap diagnostic columns', () => {
+test('the checks card is gone: verdicts ride the heap table row itself', () => {
 	const html = renderApp(state());
 	assert.ok(!html.includes('<h2>Checks</h2>'), 'no standalone checks card');
-	assert.ok(html.includes('class="gdr-table gdr-verdict-table"'));
+	assert.ok(!html.includes('gdr-verdict-table'), 'no standalone verdicts table');
+	assert.ok(html.includes('<table class="gdr-table gdr-heap-table">'));
 	assert.ok(html.includes('<th class="gdr-diag-col" data-col="HeapAccounting" draggable="true">HeapAccounting<span class="gdr-col-grip" aria-hidden="true"></span></th>'));
 	assert.ok(html.includes('gdr-verdict gdr-verdict-fail'));
 	assert.ok(html.includes('snapshot used 9 B != walk 8 B'));
+	const head = html.split('<table class="gdr-table gdr-heap-table">')[1].split('</thead>')[0];
+	assert.ok(head.indexOf('data-col="Blocks"') < head.indexOf('data-col="HeapChain"'), 'basics keep ahead of the checks');
 });
 
 test('the system summary is one header row and one value row, without a kernel version', () => {
@@ -216,14 +219,24 @@ test('the heap card shows its basics in a header/value row and the block count',
 
 test('the heap card offers the heap map on demand and draws a canvas once asked', () => {
 	const html = renderApp(state());
-	assert.ok(html.includes('data-heap-dump="1">Draw heap map</button>'));
+	assert.ok(html.includes('data-disclosure="heap-map"'), 'the section shell is always present');
+	assert.ok(!html.includes('data-heap-dump'), 'no draw button remains');
 	assert.ok(!html.includes('data-heap-canvas'), 'nothing is drawn until requested');
+	assert.ok(html.includes('<details class="gdr-heap-fold" data-disclosure="heap-map">'), 'unrequested starts collapsed');
 
 	const drawn = renderApp(state(), { heapCanvas: true });
 	assert.ok(drawn.includes('data-heap-canvas="1"'));
 	assert.ok(!drawn.includes('data-heap-readout'), 'no fixed readout below the bitmap');
 	assert.ok(!drawn.includes('heap-hover-readout'), 'no dangling readout accessibility reference');
 	assert.ok(drawn.includes('data-heap-tooltip="1"'));
+	assert.ok(drawn.includes('data-heap-addr-start="1"'), 'the start label ships as a shell');
+	assert.ok(drawn.includes('data-heap-addr-end="1"'), 'the end label ships as a shell');
+	assert.ok(drawn.includes('data-heap-legend="1"'), 'the ranking legend ships as a shell');
+	assert.ok(drawn.includes('data-heap-grip="1"'), 'the resize grip ships as a shell');
+	assert.ok(drawn.includes('data-heap-resize="1"'), 'the live row-bytes label ships as a shell');
+	assert.ok(drawn.includes('data-heap-corner="1"'), 'the scale corner ships as a shell');
+	assert.ok(!drawn.includes('data-heap-zoom'), 'no zoom controls remain');
+	assert.ok(!drawn.includes('data-heap-axis'), 'no gutter canvas remains');
 });
 
 test('the heap card explains a cost-switched-off heap', () => {
@@ -430,9 +443,9 @@ test('System removes redundant heap counters without changing its remaining fiel
  for (const key of ['Heap used', 'Heap total', 'Heap status']) { assert.ok(!html.includes(key)); }
 });
 
-test('heap map is an initially open collapsible disclosure', () => {
+test('heap map stays folded until the reader opens it', () => {
  const html = renderApp(state(), { heapCanvas: true });
- assert.ok(html.includes('data-disclosure="heap-map" open'));
+ assert.ok(!html.includes('data-disclosure="heap-map" open'));
  assert.ok(html.includes('data-heap-tooltip="1"'));
  assert.ok(html.includes('data-heap-canvas="1" draggable="false"'));
 });

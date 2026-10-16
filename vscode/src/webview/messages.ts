@@ -40,6 +40,8 @@ export type WebviewMessage =
 	  }
 	| { type: 'selectSession'; sessionId: string }
 	| { type: 'heapDump'; sessionId?: string }
+	| { type: 'resizeHeap'; columns: number; sessionId?: string }
+	| { type: 'resetHeapSize'; sessionId?: string }
 	| { type: 'layout'; layout: PanelLayout }
 	| { type: 'refresh'; sessionId?: string };
 
@@ -129,6 +131,12 @@ export function decodeWebviewMessage(value: unknown): WebviewMessage | null {
 	}
 	if (value.type === 'heapDump') {
 		return { type: 'heapDump', ...session };
+	}
+	if (value.type === 'resizeHeap' && typeof value.columns === 'number' && Number.isInteger(value.columns) && value.columns > 0) {
+		return { type: 'resizeHeap', columns: value.columns, ...session };
+	}
+	if (value.type === 'resetHeapSize') {
+		return { type: 'resetHeapSize', ...session };
 	}
 	if (value.type === 'refresh') {
 		return { type: 'refresh', ...session };

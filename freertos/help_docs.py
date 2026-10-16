@@ -42,11 +42,23 @@ _HEAP_DUMP = HelpTopic(
         "neutral colour for allocated blocks (FreeRTOS keeps no owner names). Inline "
         "in iTerm2 or Kitty; otherwise written to a PNG file."
     ),
-    usage=("frt heap dump [path]",),
+    usage=("frt heap dump [path] [--cell-pixel N] [--width W] [--row-bytes N]",),
     fields=_fields(
         (
             "Cells",
             "The arena split evenly into a fixed grid, row by row; a block paints every cell it touches.",
+        ),
+        (
+            "Cell size",
+            "--cell-pixel N draws N-pixel cells (1-64, default 10).",
+        ),
+        (
+            "Width",
+            "--width W caps the bitmap pixel width (default 800); it must fit at least one cell.",
+        ),
+        (
+            "Row bytes",
+            "--row-bytes N tiles every row with exactly N arena bytes (no folding); too small a value errors past 4096 rows.",
         ),
         (
             "File",

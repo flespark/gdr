@@ -101,12 +101,24 @@ export interface HeapPalette {
 	unknown: string;
 }
 
+/** One collapsed unused range: hatched bands drawn before grid `row`. */
+export interface HeapFold {
+	row: number;
+	rows: number;
+	height: number;
+	bytes: number;
+	kind: string;
+	start: number;
+	end: number;
+}
+
 /** The heap block layout behind `<rtos> heap dump`, drawn on demand. */
 export interface HeapGrid {
 	width: number;
 	height: number;
 	scale: number;
 	runs: [number, number, number][];
+	folds?: HeapFold[];
 }
 
 export interface HeapMapData {
@@ -370,18 +382,58 @@ function parseHeapBlock(value: unknown): HeapMapEntry | null {
  * The blocks are the only data the hover readout needs; the palette is what
  * the canvas paints with, so both come from the same envelope.
  */
+/** Narrow one divider record; a malformed record rejects the grid, never guessed. */
+function parseHeapFold(value: unknown, height: number): HeapFold | null {
+	if (!isRecord(value)) { return null; }
+	const { row, rows, height: foldHeight, bytes, kind, start, end } = value;
+	if (!Number.isInteger(row) || (row as number) < 0 || (row as number) > height) { return null; }
+	// Reason: older envelopes carry no row count; one folded row each.
+	const covered = rows === undefined ? 1 : rows;
+	if (!Number.isInteger(covered) || (covered as number) < 1 ||
+		(row as number) + (covered as number) > height) { return null; }
+	if (!Number.isInteger(foldHeight) || (foldHeight as number) < 1) { return null; }
+	if (!Number.isInteger(bytes) || (bytes as number) < 0) { return null; }
+	if (typeof kind !== 'string' || !Number.isInteger(start) || !Number.isInteger(end) ||
+		(start as number) < 0 || (end as number) < (start as number)) { return null; }
+	return { row: row as number, rows: covered as number, height: foldHeight as number, bytes: bytes as number, kind, start: start as number, end: end as number };
+}
+
+/** Narrow the divider list; bands must arrive sorted with strictly rising rows. */
+function parseHeapFolds(value: unknown, height: number): HeapFold[] | null {
+	if (!Array.isArray(value)) { return null; }
+	const folds: HeapFold[] = [];
+	let lastEnd = -1;
+	for (const raw of value) {
+		const fold = parseHeapFold(raw, height);
+		if (fold === null || fold.row <= lastEnd) { return null; }
+		lastEnd = fold.row + fold.rows;
+		folds.push(fold);
+	}
+	return folds;
+}
+
 function parseHeapGrid(value: unknown): HeapGrid | null {
 	if (!isRecord(value)) { return null; }
 	const { width, height, scale, runs } = value;
 	if (typeof width !== 'number' || typeof height !== 'number' || typeof scale !== 'number' ||
 		!Number.isInteger(width) || !Number.isInteger(height) || !Number.isInteger(scale) ||
-		width < 0 || height < 0 || width * height > 65536 || scale < 6 || scale > 12 || !Array.isArray(runs)) { return null; }
+		width < 0 || height < 0 || width * height > 65536 || scale < 1 || scale > 64 || !Array.isArray(runs)) { return null; }
 	let cursor = 0;
 	for (const run of runs) {
 		if (!Array.isArray(run) || run.length !== 3 || !run.every(Number.isInteger) || run[0] !== cursor || run[1] <= cursor || run[1] > width * height || run[2] < -1) { return null; }
 		cursor = run[1];
 	}
-	return cursor === width * height ? { width, height, scale, runs: runs as [number, number, number][] } : null;
+	if (cursor !== width * height) { return null; }
+	const grid: HeapGrid = { width, height, scale, runs: runs as [number, number, number][] };
+	// Reason: divider bands arrive sorted with strictly rising rows; an
+	// out-of-order band would paint over the wrong cells, so it rejects the
+	// grid. Retired gutter ticks stay ignored so an older envelope still draws.
+	if (value.folds !== undefined) {
+		const folds = parseHeapFolds(value.folds, height);
+		if (folds === null) { return null; }
+		grid.folds = folds;
+	}
+	return grid;
 }
 
 export function parseHeapMap(data: unknown): HeapMapData | null {

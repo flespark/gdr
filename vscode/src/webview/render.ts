@@ -24,8 +24,7 @@ import type {
 	HeapData,
 	ObjectTableData,
 	PanelSnapshot,
-	SourceRef,
-	VerdictSection
+	SourceRef
 } from '../snapshot.ts';
 /** One adapter-owned actionable build configuration hint. */
 export interface Hint {
@@ -518,9 +517,9 @@ export function renderCheckboxTree(tree: TableNode[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The heap card: the basics as a header row and a value row, the block count,
- * and the verdict rows as diagnostic columns. With the heap switched off the
- * card says so; a heap-dump button asks for the bitmap on demand.
+ * The heap card: basics and verdict rows as one header row and one value
+ * row, the block count included. With the heap switched off the card says
+ * so; a heap-dump button asks for the bitmap on demand.
  */
 function renderHeap(snapshot: PanelSnapshot, options: RenderOptions): string {
 	const heap = snapshot.data.heap;
@@ -538,24 +537,34 @@ function renderHeap(snapshot: PanelSnapshot, options: RenderOptions): string {
 		`<section class="gdr-card" data-kind="heap">` +
 		`<h2 class="gdr-card-title" draggable="true" title="Drag to reorder tables">Heap</h2>` +
 		renderHeapTable(heap, options) +
-		renderVerdictColumns(heap.sections, options) +
 		renderHeapDump(options) +
 		`</section>`
 	);
 }
 
-/** The basics as one header row and one value row, like the system summary. */
+/**
+ * The basics plus the verdict rows as one header row and one value row,
+ * like the system summary with its checks inline. Basics keep their
+ * position ahead of the checks; a saved column order applies across both.
+ */
 function renderHeapTable(heap: HeapData, options: RenderOptions): string {
 	const order = options.layout?.tables.heap?.columnOrder ?? [];
 	const hidden = hiddenColumnsOf('heap', options);
 	const shown = heap.pairs.filter(([key, value]) => key !== undefined && value !== undefined && !hidden.has(key))
 		.sort(([a], [b]) => (order.indexOf(a ?? '') < 0 ? order.length : order.indexOf(a ?? '')) - (order.indexOf(b ?? '') < 0 ? order.length : order.indexOf(b ?? '')));
-	if (shown.length === 0) {
+	const verdicts = heap.sections.flatMap((section) => section.rows).filter((row) => !hidden.has(row.key))
+		.sort((a, b) => (order.indexOf(a.key) < 0 ? order.length : order.indexOf(a.key)) - (order.indexOf(b.key) < 0 ? order.length : order.indexOf(b.key)));
+	if (shown.length === 0 && verdicts.length === 0) {
 		return '';
 	}
 	const widths = options.layout?.tables.heap?.widths ?? {};
-	const head = shown.map(([key]) => `<th data-col="${escapeHtml(key ?? '')}"${widths[key ?? ''] !== undefined ? ` data-width="${widths[key ?? '']}"` : ''} draggable="true">${escapeHtml(key ?? '')}<span class="gdr-col-grip" aria-hidden="true"></span></th>`).join('');
-	const body = shown.map(([key, value]) => `<td${classAttr([options.changed?.has(changeKey('heap', '', key ?? '')) ? 'gdr-changed' : ''])}>${escapeHtml(value ?? '')}</td>`).join('');
+	const head = shown.map(([key]) => `<th data-col="${escapeHtml(key ?? '')}"${widths[key ?? ''] !== undefined ? ` data-width="${widths[key ?? '']}"` : ''} draggable="true">${escapeHtml(key ?? '')}<span class="gdr-col-grip" aria-hidden="true"></span></th>`).join('') +
+		verdicts.map((row) => `<th class="gdr-diag-col" data-col="${escapeHtml(row.key)}"${widths[row.key] !== undefined ? ` data-width="${widths[row.key]}"` : ''} draggable="true">${escapeHtml(row.key)}<span class="gdr-col-grip" aria-hidden="true"></span></th>`).join('');
+	const body = shown.map(([key, value]) => `<td${classAttr([options.changed?.has(changeKey('heap', '', key ?? '')) ? 'gdr-changed' : ''])}>${escapeHtml(value ?? '')}</td>`).join('') +
+		verdicts.map((row) =>
+			`<td class="gdr-diag-col gdr-verdict gdr-verdict-${escapeHtml(row.severity)}${options.changed?.has(changeKey('heap', '', row.key)) ? ' gdr-changed' : ''}">` +
+			`${escapeHtml(row.value)}</td>`
+		).join('');
 	// Reason: runtime/allocator messages are not actionable build advice.
 
 	return (
@@ -567,46 +576,36 @@ function renderHeapTable(heap: HeapData, options: RenderOptions): string {
 }
 
 /**
- * The verdict rows as diagnostic columns: one column per check, its value and
- * severity in the cell, so a failing check reads in the heap table itself.
+ * The on-demand heap bitmap keeps one section shape: the details shell is
+ * always present with a bare summary, and expanding it requests the draw
+ * when no bitmap is there yet. The labels and the legend are shells the
+ * client fills after the heap map arrives; the markup carries no inline
+ * handlers for the CSP.
  */
-function renderVerdictColumns(sections: VerdictSection[], options: RenderOptions): string {
-	const hidden = hiddenColumnsOf('heap', options);
-	const order = options.layout?.tables.heap?.columnOrder ?? [];
-	const rows = sections.flatMap((section) => section.rows).filter((row) => !hidden.has(row.key))
-		.sort((a, b) => (order.indexOf(a.key) < 0 ? order.length : order.indexOf(a.key)) - (order.indexOf(b.key) < 0 ? order.length : order.indexOf(b.key)));
-	if (rows.length === 0) {
-		return '';
-	}
-	const widths = options.layout?.tables.heap?.widths ?? {};
-	const head = rows
-		.map((row) => `<th class="gdr-diag-col" data-col="${escapeHtml(row.key)}"${widths[row.key] !== undefined ? ` data-width="${widths[row.key]}"` : ''} draggable="true">${escapeHtml(row.key)}<span class="gdr-col-grip" aria-hidden="true"></span></th>`)
-		.join('');
-	const body = rows
-		.map(
-			(row) =>
-				`<td class="gdr-diag-col gdr-verdict gdr-verdict-${escapeHtml(row.severity)}${options.changed?.has(changeKey('heap', '', row.key)) ? ' gdr-changed' : ''}">` +
-				`${escapeHtml(row.value)}</td>`
-		)
-		.join('');
-	return (
-		`<div class="gdr-scroll">` +
-		`<table class="gdr-table gdr-verdict-table"><thead><tr>${head}</tr></thead>` +
-		`<tbody><tr>${body}</tr></tbody></table>` +
-		`</div>`
-	);
-}
-
-/** The on-demand heap bitmap: a button, and a canvas once the bitmap has been asked for. */
 function renderHeapDump(options: RenderOptions): string {
-	if (options.heapCanvas !== true) {
-		return `<button type="button" class="gdr-heap-dump" data-heap-dump="1">Draw heap map</button>`;
-	}
+	// Reason: the map stays folded until the reader opens it; the client
+	// disclosure memory keeps the choice per session, so a stop refresh
+	// never springs it back open. Expanding still requests the draw.
+	const requested = options.heapCanvas === true;
+	const badge = requested ? ` <span class="gdr-tree-badge">hover for block details</span>` : '';
+	const body = !requested
+		? ``
+		: `<div class="gdr-heap-addr" data-heap-addr-start="1"></div>` +
+			`<div class="gdr-heap-body">` +
+			`<div class="gdr-heap-map"><canvas class="gdr-heap-canvas" data-heap-canvas="1" draggable="false"></canvas></div>` +
+			`<div class="gdr-heap-side">` +
+			`<div class="gdr-heap-grip" data-heap-grip="1"></div>` +
+			`<div class="gdr-heap-corner" data-heap-corner="1"></div>` +
+			`</div>` +
+			`<div class="gdr-heap-legend" data-heap-legend="1"></div>` +
+			`</div>` +
+			`<div class="gdr-heap-addr" data-heap-addr-end="1"></div>`;
 	return (
-		`<details class="gdr-heap-fold" data-disclosure="heap-map" open>` +
-		`<summary>Heap map <span class="gdr-tree-badge">hover for block details</span></summary>` +
-		`<div class="gdr-heap-map"><canvas class="gdr-heap-canvas" data-heap-canvas="1" draggable="false"></canvas></div>` +
+		`<details class="gdr-heap-fold" data-disclosure="heap-map">` +
+		`<summary>Heap map${badge}</summary>` +
+		`<div class="gdr-heap-view">${body}</div>` +
 		`<div class="gdr-heap-tooltip" data-heap-tooltip="1" role="tooltip" hidden></div>` +
+		`<div class="gdr-heap-resize" data-heap-resize="1" hidden></div>` +
 		`</details>`
 	);
 }

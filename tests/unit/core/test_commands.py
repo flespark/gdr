@@ -425,3 +425,52 @@ def test_object_detail_warns_for_an_empty_name(monkeypatch):
     commands.render_object_detail("semaphore", "  ")
 
     assert warnings == ["object name or address must not be empty"]
+
+
+def test_heap_dump_options_defaults_to_bare_dump():
+    """No tail words mean the default bitmap with no output path."""
+    options, error = commands.render_heap_dump_options([], "usage: x")
+
+    assert error is None
+    assert options == commands.HeapDumpOptions(path="", cell_px=None, max_px=None)
+
+
+def test_heap_dump_options_takes_path_and_both_flag_spellings():
+    """A bare path plus space- and equals-form flags parse together."""
+    options, error = commands.render_heap_dump_options(
+        ["out.png", "--cell-pixel", "20", "--width=1600"], "usage: x"
+    )
+
+    assert error is None
+    assert options == commands.HeapDumpOptions(path="out.png", cell_px=20, max_px=1600)
+
+
+def test_heap_dump_options_rejects_shapes_values_and_mismatches():
+    """Unknown flags, missing values and a width narrower than one cell fail."""
+    usage = "usage: x"
+    assert commands.render_heap_dump_options(["--bogus"], usage) == (None, usage)
+    assert commands.render_heap_dump_options(["--cell-pixel"], usage) == (None, usage)
+    assert commands.render_heap_dump_options(["a.png", "b.png"], usage) == (None, usage)
+    assert commands.render_heap_dump_options(["--width", "x"], usage)[0] is None
+    assert commands.render_heap_dump_options(["--cell-pixel", "0"], usage)[0] is None
+    assert commands.render_heap_dump_options(["--cell-pixel", "65"], usage)[0] is None
+    options, error = commands.render_heap_dump_options(
+        ["--width", "5", "--cell-pixel", "10"], usage
+    )
+    assert options is None
+    assert error == "heap bitmap width 5 is narrower than one 10-pixel cell"
+
+
+def test_heap_dump_options_takes_row_bytes():
+    """Row-exact tiling composes with the other sizing flags."""
+    options, error = commands.render_heap_dump_options(
+        ["--row-bytes", "1024"], "usage: x"
+    )
+
+    assert error is None
+    assert options == commands.HeapDumpOptions(
+        path="", cell_px=None, max_px=None, row_bytes=1024
+    )
+    bad, error = commands.render_heap_dump_options(["--row-bytes", "0"], "usage: x")
+    assert bad is None
+    assert error is not None

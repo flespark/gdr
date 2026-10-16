@@ -6,6 +6,13 @@ All notable changes to GDR are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- improve heap dump CLI and bitmap render. CLI add `--cell-pixel`, `--width`,
+  `--row-bytes option`. Bitmap add outline for allocate blocks, add start/end
+  text label around bitmap, legend rows read `name: sizeB, start-end`, free
+  blocks span auto folds.
+
 ## [2026.04] - 2026-10-13
 
 ### Added

@@ -633,8 +633,115 @@ body {
 	image-rendering: pixelated;
 }
 
+.gdr-heap-view {
+	border-top: 1px solid var(--gdr-border);
+}
+
+.gdr-heap-addr {
+	font-size: 12px;
+	color: var(--gdr-muted);
+	font-family: var(--vscode-editor-font-family, monospace);
+	padding: 2px 12px;
+}
+
+.gdr-heap-body {
+	display: flex;
+	align-items: flex-start;
+	gap: 0;
+	padding: 0 12px;
+}
+
+.gdr-heap-view > .gdr-heap-addr:last-child {
+	padding-bottom: 12px;
+}
+
 .gdr-heap-map {
-	overflow-x: auto;
+	overflow: auto;
+	max-height: 480px;
+	min-width: 0;
+	cursor: grab;
+}
+
+.gdr-heap-side {
+	display: flex;
+	flex-direction: column;
+	flex: none;
+	align-items: stretch;
+	align-self: stretch;
+}
+
+.gdr-heap-side > .gdr-heap-grip {
+	flex: 1;
+}
+
+/* Reason: both bitmap grips stay invisible; the cursor change on hover is
+   the only hint, so nothing competes with the bitmap edge they hug. */
+.gdr-heap-corner {
+	flex: none;
+	width: 10px;
+	height: 14px;
+	cursor: nwse-resize;
+	background: transparent;
+}
+
+.gdr-heap-map.gdr-heap-panning {
+	cursor: grabbing;
+}
+
+.gdr-heap-legend {
+	display: flex;
+	flex-direction: row;
+	align-items: flex-start;
+	gap: 16px;
+	flex: none;
+	font-size: 12px;
+	margin-left: 12px;
+}
+
+.gdr-heap-legend-col {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.gdr-heap-legend-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 20px;
+	white-space: nowrap;
+}
+
+.gdr-heap-legend-swatch {
+	width: 12px;
+	height: 14px;
+	flex: none;
+}
+
+.gdr-heap-grip {
+	flex: none;
+	align-self: stretch;
+	width: 10px;
+	cursor: ew-resize;
+	background: transparent;
+}
+
+.gdr-heap-resize {
+	position: fixed;
+	z-index: 100;
+	pointer-events: none;
+	white-space: pre-line;
+	padding: 6px 10px;
+	border-radius: 5px;
+	color: var(--vscode-editorHoverWidget-foreground, var(--gdr-fg));
+	background: var(--vscode-editorHoverWidget-background, var(--gdr-bg));
+	border: 1px solid var(--vscode-editorHoverWidget-border, var(--gdr-border));
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
+	font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.gdr-heap-resize[hidden] {
+	display: none;
 }
 
 .gdr-tree-root {
@@ -716,7 +823,8 @@ th[draggable],
 .gdr-heap-tooltip {
 	position: fixed;
 	z-index: 100;
-	pointer-events: none;
+	user-select: text;
+	white-space: pre-line;
 	max-width: calc(100vw - 16px);
 	padding: 6px 10px;
 	border-radius: 5px;
@@ -725,6 +833,22 @@ th[draggable],
 	border: 1px solid var(--vscode-editorHoverWidget-border, var(--gdr-border));
 	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
 	font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.gdr-heap-addr-link {
+	background: none;
+	border: none;
+	padding: 0;
+	margin: 0;
+	font: inherit;
+	color: var(--vscode-textLink-foreground, var(--gdr-accent));
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.gdr-heap-addr-link:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, var(--gdr-accent));
+	outline-offset: 2px;
 }
 
 .gdr-heap-tooltip[hidden] {

@@ -34,7 +34,7 @@ _HEAP_DUMP = HelpTopic(
         "owning thread (MEMTRACE), a neutral blue when owners are unknown. Inline in "
         "iTerm2 or Kitty; otherwise written to a PNG file."
     ),
-    usage=("rtt heap dump [path]",),
+    usage=("rtt heap dump [path] [--cell-pixel N] [--width W] [--row-bytes N]",),
     fields=_fields(
         (
             "Cells",
@@ -43,6 +43,18 @@ _HEAP_DUMP = HelpTopic(
         (
             "Owner colours",
             "Assigned by allocated bytes, largest first; the summary lists owner totals.",
+        ),
+        (
+            "Cell size",
+            "--cell-pixel N draws N-pixel cells (1-64, default 10).",
+        ),
+        (
+            "Width",
+            "--width W caps the bitmap pixel width (default 800); it must fit at least one cell.",
+        ),
+        (
+            "Row bytes",
+            "--row-bytes N tiles every row with exactly N arena bytes (no folding); too small a value errors past 4096 rows.",
         ),
         (
             "File",

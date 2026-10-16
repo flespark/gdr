@@ -43,6 +43,20 @@ GDR_TABLE_TRUNCATION_SUFFIX = ".."
 
 
 # ---------------------------------------------------------------------------
+# Heap bitmap presentation: one pixel budget shared by the grid and the legend
+# ---------------------------------------------------------------------------
+
+# Upper bound on the heap-occupancy bitmap width in pixels. The grid derives
+# its column cap from it and the legend derives its line-wrap length from it,
+# so the bitmap and its colour key stay within one budget without importing
+# each other.
+GDR_HEAP_MAX_PIXEL_WIDTH = 800
+# Lower bound on the heap-occupancy bitmap width in pixels: narrow arenas
+# still draw wide enough to hover and to read block dividers.
+GDR_HEAP_MIN_PIXEL_WIDTH = 200
+
+
+# ---------------------------------------------------------------------------
 # Machine-readable API: the envelope and its evaluate transport
 # ---------------------------------------------------------------------------
 

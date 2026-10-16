@@ -100,8 +100,99 @@ def render_objects(kind: str = "") -> None:
     print_table(table.rows, table.headers, elastic=table.elastic)
 
 
+@dataclass(frozen=True)
+class HeapDumpOptions:
+    """Parsed ``heap dump`` arguments: image path plus bitmap sizing."""
+
+    path: str = ""
+    cell_px: int | None = None
+    max_px: int | None = None
+    row_bytes: int | None = None
+
+
+def render_heap_dump_options(
+    words: list[str], usage: str
+) -> tuple[HeapDumpOptions | None, str | None]:
+    """Split ``heap dump`` tail words into sizing flags.
+
+    The first bare word is the image path; each flag takes ``value`` or
+    ``=value``. Returns ``(options, None)`` on success, ``(None, reason)``
+    otherwise (shape errors carry *usage*), so both adapters share one
+    parser and one validation without depending on GDB.
+    """
+    path = ""
+    cell_px: int | None = None
+    max_px: int | None = None
+    row_bytes: int | None = None
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word.startswith("--"):
+            name, equals, value = word[2:].partition("=")
+            if not equals:
+                index += 1
+                if index >= len(words) or words[index].startswith("--"):
+                    return None, usage
+                value = words[index]
+            if name == "cell-pixel":
+                cell_px = _positive_int(value)
+                if cell_px is None:
+                    return (
+                        None,
+                        f"--cell-pixel {value!r} must be an integer 1-64: {usage}",
+                    )
+                if cell_px > 64:
+                    return None, f"--cell-pixel {cell_px} exceeds the 64-pixel maximum"
+            elif name == "width":
+                max_px = _positive_int(value)
+                if max_px is None:
+                    return (
+                        None,
+                        f"--width {value!r} must be a positive integer: {usage}",
+                    )
+            elif name == "row-bytes":
+                row_bytes = _positive_int(value)
+                if row_bytes is None:
+                    return (
+                        None,
+                        f"--row-bytes {value!r} must be a positive integer: {usage}",
+                    )
+            else:
+                return None, usage
+        elif path:
+            return None, usage
+        else:
+            path = word
+        index += 1
+    # Reason: flags may follow the path, so compatibility is checked after
+    # the whole tail parses rather than per token.
+    if max_px is not None and cell_px is not None and max_px < cell_px:
+        return (
+            None,
+            f"heap bitmap width {max_px} is narrower than one {cell_px}-pixel cell",
+        )
+    return HeapDumpOptions(
+        path=path, cell_px=cell_px, max_px=max_px, row_bytes=row_bytes
+    ), None
+
+
+def _positive_int(value: str) -> int | None:
+    """A strictly positive integer flag value, or ``None``."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 1 else None
+
+
 @gdb_command_guard
-def render_heap_dump(rtos: str, path: str = "") -> None:
+def render_heap_dump(
+    rtos: str,
+    path: str = "",
+    cell_px: int | None = None,
+    max_px: int | None = None,
+    row_bytes: int | None = None,
+) -> None:
     """Draw the heap-occupancy bitmap, inline when the terminal can show it.
 
     The bitmap goes to ``path`` (default ``gdr-heap-<rtos>-gen<N>.png`` in the
@@ -119,7 +210,17 @@ def render_heap_dump(rtos: str, path: str = "") -> None:
     for message in heap.messages:
         info(message)
     palette = heapmap.build_palette(heap)
-    png = heapmap.render_png(heap, palette)
+    try:
+        png = heapmap.render_png(
+            heap,
+            palette,
+            cell_px if cell_px is not None else heapmap.SCALE,
+            max_px if max_px is not None else heapmap.MAX_PIXEL_WIDTH,
+            row_bytes=row_bytes,
+        )
+    except ValueError as exc:
+        warn(str(exc))
+        return
     for line in heapmap.summary_lines(heap, palette):
         info(line)
     mode = heapmap.output_mode(os.environ)

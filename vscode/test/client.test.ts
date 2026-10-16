@@ -199,17 +199,18 @@ test('canvas paints six-pixel cells from serialized runs and hover names the pai
 	assert.equal(canvas.width, 12);
 	assert.equal(canvas.height, 6);
 	assert.equal(canvas.style.width, '12px');
-	assert.deepEqual(Array.from(image!.data.slice(0, 4)), [225, 94, 58, 255]);
-	assert.deepEqual(Array.from(image!.data.slice(24, 28)), [200, 200, 200, 255]);
+	// Reason: corners carry the four-side outline now; interiors prove colour.
+	assert.deepEqual(Array.from(image!.data.slice(104, 108)), [225, 94, 58, 255]);
+	assert.deepEqual(Array.from(image!.data.slice(128, 132)), [200, 200, 200, 255]);
 	canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 12, height: 6 } as DOMRect);
 	canvas.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 5, clientY: 5 }));
-	assert.equal(document.querySelector('[data-heap-tooltip]')!.textContent, 'owner:tiny, size: 1 B');
+	assert.equal(document.querySelector('[data-heap-tooltip]')!.textContent, 'owner:tiny, size: 1 B\nstart: 0x0, end: 0x1');
 	canvas.dispatchEvent(new dom.window.MouseEvent('mousemove', { clientX: 6, clientY: 5 }));
-	assert.equal(document.querySelector('[data-heap-tooltip]')!.textContent, 'owner:(free), size: 100 B');
+	assert.equal(document.querySelector('[data-heap-tooltip]')!.textContent, 'owner:(free), size: 100 B\nstart: 0x1, end: 0x65');
 	assert.equal(document.querySelector<HTMLElement>('[data-heap-tooltip]')!.hidden, false);
 	assert.equal(canvas.hasAttribute('title'), false, 'native title must not create a second hover popup');
 	canvas.dispatchEvent(new dom.window.MouseEvent('pointermove', { clientX: 3, clientY: 2 }));
-	assert.equal(document.querySelector('[data-heap-tooltip]')!.textContent, 'owner:tiny, size: 1 B');
+	assert.equal(document.querySelector('[data-heap-tooltip]')!.textContent, 'owner:tiny, size: 1 B\nstart: 0x0, end: 0x1');
 	canvas.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true, cancelable: true }));
 	assert.equal(document.querySelector('.gdr-card.gdr-dragging'), null);
 	canvas.dispatchEvent(new dom.window.MouseEvent('pointerleave'));
@@ -293,5 +294,20 @@ test('child drag cannot move a column into a different table', () => {
  document.querySelector('[data-tree-kind="task"] [data-tree-column="Addr"]')!.dispatchEvent(new dom.window.Event('dragstart', { bubbles: true }));
  document.querySelector('[data-tree-kind="semaphore"] [data-tree-column="Name"]')!.dispatchEvent(new dom.window.Event('drop', { bubbles: true, cancelable: true }));
  assert.equal(messages.length, 0);
+ dom.window.close();
+});
+
+test('switching sessions keeps each heap-map collapse choice', () => {
+ const { dom, document, apply } = setup();
+ const body = (id: string) => `<main class="gdr-body" data-session="${id}"><details data-disclosure="heap-map" open><summary>Heap map</summary></details></main>`;
+ apply(body('s1'));
+ assert.equal(document.querySelector<HTMLDetailsElement>('details')!.open, true, 'first sight follows the markup');
+ document.querySelector<HTMLDetailsElement>('details')!.open = false;
+ apply(body('s2'));
+ assert.equal(document.querySelector<HTMLDetailsElement>('details')!.open, true, 'a fresh session starts open');
+ apply(body('s1'));
+ assert.equal(document.querySelector<HTMLDetailsElement>('details')!.open, false, 'returning restores the collapse');
+ apply(body('s2'));
+ assert.equal(document.querySelector<HTMLDetailsElement>('details')!.open, true, 'the other session kept its choice');
  dom.window.close();
 });

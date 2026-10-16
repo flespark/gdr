@@ -75,6 +75,14 @@ test('a heap-dump, refresh and layout message decode to their request shapes', (
 	assert.deepEqual(decodeWebviewMessage({ type: 'refresh' }), { type: 'refresh' });
 });
 
+test('a resize message carries positive integer columns, reset carries none', () => {
+	assert.deepEqual(decodeWebviewMessage({ type: 'resizeHeap', columns: 40, sessionId: 's3' }), { type: 'resizeHeap', columns: 40, sessionId: 's3' });
+	assert.deepEqual(decodeWebviewMessage({ type: 'resetHeapSize', sessionId: 's3' }), { type: 'resetHeapSize', sessionId: 's3' });
+	assert.equal(decodeWebviewMessage({ type: 'resizeHeap', columns: 0 }), null);
+	assert.equal(decodeWebviewMessage({ type: 'resizeHeap', columns: 2.5 }), null);
+	assert.equal(decodeWebviewMessage({ type: 'resizeHeap' }), null);
+});
+
 test('a layout message keeps order, hidden tables and positive widths only', () => {
 	const decoded = decodeWebviewMessage({
 		type: 'layout',

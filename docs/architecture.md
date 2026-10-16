@@ -371,21 +371,21 @@ spellings out of the task-table consumers.
 
 ### The heap map is one grid shared by the PNG and canvas
 
-`gdr/heapmap.py` computes address-ordered, size-weighted cell runs, reserving at
-least one 6×6-pixel cell per block before distributing the remaining cells by
-largest remainder. Tiny blocks therefore remain visible; this minimum distorts
-relative area slightly, so hover and legend sizes always report the original
-bytes. Adaptive rectangular dimensions use every cell: no trailing area is
-painted outside the arena. Genuine unreadable gaps are explicit unknown runs,
-never free memory. The additive `heap-dump.grid` field carries dimensions, scale
-and block-index runs, so the PNG, canvas and hover consume one mapping rather
-than independently rounding addresses.
+Producer (`gdr/heapmap.py`) → envelope (`heap-dump.grid` + `folds`) → two
+renderers (PNG via `gdr/bitmapfont.py`, panel canvas): one mapping, so hover
+and legend always report original bytes instead of re-rounding addresses.
+Runs tile every grid cell (largest remainder, at least one 10×10 cell per
+block); rows fully covered by unused cells fold, one diagonal-hatch band
+per contiguous group; bands stretch to the legend height; the bitmap never
+narrows past 200 pixels. `--row-bytes N` switches to exact bytes per row
+with no folding. Framed-slab outlines, closed-corner dividers, start/end
+strips and the owner/free/N/A ranking ride along.
 
-The PNG is encoded with `zlib`; `gdr/bitmapfont.py` adds owner/free/N/A colour
-swatches and aggregate byte totals below the map without runtime dependencies.
-Unsupported name glyphs are losslessly escaped. Palette colours are shared with
-the canvas. Used blocks without recorded owners read `owner:N/A`; incomplete
-walks retain an explicit legend warning.
+The panel reuses the same grid: pinned hover with memory-view address
+links, drag-pan in a capped viewport, an invisible right-edge grip that
+re-lays columns on the host (double-click resets), a display-only corner
+zoom grip, per-session disclosure memory with the section folded by
+default, and heap verdicts in the heap table's own row.
 
 ### Layout and highlights are data, not style
 

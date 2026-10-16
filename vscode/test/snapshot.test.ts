@@ -211,5 +211,26 @@ test('heap grid runs must cover all cells and reference the unchanged block list
  assert.deepEqual(parseHeapMap(payload)?.grid, payload.grid);
  assert.equal(parseHeapMap({ ...payload, grid: { ...payload.grid, runs: [[0, 1, 0]] } }), null);
  assert.equal(parseHeapMap({ ...payload, grid: { ...payload.grid, runs: [[0, 2, 5]] } }), null);
- assert.equal(parseHeapMap({ ...payload, grid: { ...payload.grid, scale: 3 } }), null);
+ // Reason: the CLI cell size rides the same field from 1 to 64 pixels.
+ assert.notEqual(parseHeapMap({ ...payload, grid: { ...payload.grid, scale: 3 } }), null);
+ assert.notEqual(parseHeapMap({ ...payload, grid: { ...payload.grid, scale: 64 } }), null);
+ assert.equal(parseHeapMap({ ...payload, grid: { ...payload.grid, scale: 0 } }), null);
+ assert.equal(parseHeapMap({ ...payload, grid: { ...payload.grid, scale: 65 } }), null);
+});
+
+test('heap grid dividers ride along with heights, malformed ones reject the map', () => {
+ const grid = {
+  width: 2, height: 2, scale: 6, runs: [[0, 4, 0]],
+  folds: [{ row: 1, height: 3, bytes: 500, kind: 'free', start: 64, end: 564 }],
+  ticks: [{ unit: 0, addr: 0, major: true }]
+ };
+ const payload = { algorithm: 'small', base: 0, end: 700, blocks: [[0, 100, true, 'main']], palette: { owners: { main: '#e15e3a' }, free: '#c8c8c8', unknown: '#4f8fd6' }, grid };
+ assert.deepEqual(parseHeapMap(payload)?.grid, { width: 2, height: 2, scale: 6, runs: [[0, 4, 0]], folds: [{ ...grid.folds[0], rows: 1 }] });
+ assert.equal(parseHeapMap({ ...payload, grid: { ...grid, folds: [{ ...grid.folds[0], row: 5 }] } }), null);
+ assert.equal(parseHeapMap({ ...payload, grid: { ...grid, folds: [{ ...grid.folds[0], height: 0 }] } }), null);
+ assert.equal(parseHeapMap({ ...payload, grid: { ...grid, folds: 'free' } }), null);
+ assert.deepEqual(parseHeapMap({ ...payload, grid: { ...grid, folds: [{ ...grid.folds[0], rows: 1 }] } })?.grid?.folds, [{ ...grid.folds[0], rows: 1 }]);
+ assert.equal(parseHeapMap({ ...payload, grid: { ...grid, folds: [{ ...grid.folds[0], rows: 0 }] } }), null);
+ assert.equal(parseHeapMap({ ...payload, grid: { ...grid, folds: [{ ...grid.folds[0], rows: 2 }] } }), null, 'a band covering past the grid is rejected');
+ assert.equal(parseHeapMap({ ...payload, grid: { ...grid, folds: [{ ...grid.folds[0], rows: 1 }, { ...grid.folds[0], rows: 1 }] } }), null, 'overlapping bands are rejected');
 });

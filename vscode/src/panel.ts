@@ -26,6 +26,7 @@ import {
 	memoryViewUri
 } from './memoryNav.ts';
 import { renderApp, renderShell, type ShellArgs } from './webview/render.ts';
+import { planHeapGrid } from './webview/heapCanvas.ts';
 import { decodeWebviewMessage, type PanelLayout } from './webview/messages.ts';
 import { changedKeys } from './diff.ts';
 import { NotificationGate, snapshotWarnings, type NotificationLevel } from './notifications.ts';
@@ -84,6 +85,8 @@ interface SessionEntry {
 	heapRequested: boolean;
 	/** The last heap map fetched for the session, drawn on its canvas. */
 	heapMap: HeapMapData | null;
+	/** Drag-resized bitmap columns; null follows the envelope grid. */
+	viewColumns: number | null;
 }
 
 export class RtosViewsPanel implements vscode.WebviewViewProvider {
@@ -156,7 +159,8 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			debounce: null,
 			changed: new Set<string>(),
 			heapRequested: false,
-			heapMap: null
+			heapMap: null,
+			viewColumns: null
 		};
 		this.sessions.set(sessionId, entry);
 		this.activate(sessionId);
@@ -351,6 +355,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		}
 		entry.heapMap = map;
 		void this.view?.webview.postMessage({ type: 'heapMap', sessionId, map });
+		this.sendSizedGrid(sessionId, entry);
 	}
 
 	/**
@@ -420,6 +425,12 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 				// Reason: the bitmap is requested on demand (plan D6); the request is
 				// answered by the heap-map fetch wired in the canvas step.
 				void this.heapDumpRequested(decoded.sessionId).catch((error) => this.notify(decoded.sessionId, 'error', `heap map request failed: ${String(error)}`));
+				return;
+			case 'resizeHeap':
+				this.resizeHeapMap(decoded.sessionId, decoded.columns);
+				return;
+			case 'resetHeapSize':
+				this.resetHeapSize(decoded.sessionId);
 				return;
 			case 'layout':
 				this.layoutChanged(decoded.layout);
@@ -507,6 +518,68 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		entry.heapMap = map;
 		this.broadcast();
 		void this.view?.webview.postMessage({ type: 'heapMap', sessionId: id, map });
+		this.sendSizedGrid(id, entry);
+	}
+
+	/**
+	 * Re-lay the bitmap at the dragged column count, replaying the producer
+	 * layout over the fetched blocks: folds track the width, so the folded
+	 * free bytes follow the drag. Panel view state only; the envelope grid
+	 * stays the source of truth for reset and the PNG.
+	 */
+	private resizeHeapMap(sessionId: string | undefined, columns: number): void {
+		const id = sessionId ?? this.activeId;
+		if (id === null) {
+			return;
+		}
+		const entry = this.sessions.get(id);
+		const map = entry?.heapMap;
+		const grid = map?.grid;
+		if (entry === undefined || map === undefined || map === null || grid === undefined) {
+			return;
+		}
+		const scale = Math.max(6, grid.scale);
+		entry.viewColumns = Math.max(Math.ceil(200 / scale), Math.round(columns));
+		this.sendSizedGrid(id, entry);
+	}
+
+	/** Forget the drag width; the next broadcast redraws the envelope grid. */
+	private resetHeapSize(sessionId: string | undefined): void {
+		const id = sessionId ?? this.activeId;
+		if (id === null) {
+			return;
+		}
+		const entry = this.sessions.get(id);
+		if (entry === undefined) {
+			return;
+		}
+		entry.viewColumns = null;
+		this.broadcast();
+		void this.view?.webview.postMessage({ type: 'heapGrid', sessionId: id, grid: null });
+	}
+
+	/** Recompute the sized grid for fresh heap data and push it to the view. */
+	private sendSizedGrid(id: string, entry: SessionEntry): void {
+		const map = entry.heapMap;
+		const grid = map?.grid;
+		if (entry.viewColumns === null || map === null || map === undefined || grid === undefined) {
+			return;
+		}
+		const scale = Math.max(6, grid.scale);
+		const sized = planHeapGrid({
+			blocks: map.blocks,
+			base: map.base,
+			end: map.end,
+			truncated: map.truncated,
+			palette: map.palette,
+			columns: entry.viewColumns,
+			scale
+		});
+		const foldedBytes = (sized.folds ?? []).reduce((sum, fold) => sum + fold.bytes, 0);
+		// Reason: kept bytes per row stay near-uniform under proportional
+		// fill, so the average names what a row holds at the dragged width.
+		const rowBytes = sized.height > 0 ? Math.round(((map.end - map.base) - foldedBytes) / sized.height) : 0;
+		void this.view?.webview.postMessage({ type: 'heapGrid', sessionId: id, grid: sized, rowBytes });
 	}
 
 	/**

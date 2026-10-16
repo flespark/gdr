@@ -44,7 +44,7 @@ test('numeric runtime row IDs remain distinct and raw PC changes highlight symbo
  assert.ok(doc.querySelector('[data-id="8192"] td.gdr-changed a.gdr-source'));
  assert.ok(doc.querySelector('.gdr-system-table td.gdr-changed'));
  assert.ok(doc.querySelector('.gdr-heap-table td.gdr-changed'));
- assert.ok(doc.querySelector('.gdr-verdict-table td.gdr-changed'));
+ assert.ok(doc.querySelector('.gdr-heap-table td.gdr-verdict.gdr-changed'))
  const header = doc.querySelector('.gdr-session-header')!;
  assert.deepEqual(Array.from(header.children).map(n=>n.className), ['gdr-identity','gdr-tabs','gdr-meta']);
  dom.window.close();
