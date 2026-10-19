@@ -32,14 +32,14 @@ archives=(
     "$archive_dir"/gdr-${release_tag}.tar.gz
     "$archive_dir"/gdr-${release_tag}.zip
 )
-# Reason: CNB release URLs already scope assets by release tag; upload stable
+# NOTE: CNB release URLs already scope assets by release tag; upload stable
 # names so download commands do not need to include a release version.
 if [[ ${#archives[@]} -ne 2 ]]; then
     echo "expected one versioned archive in each format" >&2
     exit 1
 fi
 vsix_file="$("$script_dir/vsix-artifact-name.sh" "$archive_dir")"
-# Reason: unlike the source archives, the VSIX file name carries the extension
+# NOTE: unlike the source archives, the VSIX file name carries the extension
 # version (`vscode/package.json`, e.g. `gdb-rtos-views-2026.4.0.vsix`), which
 # is what installers and the Marketplace expect -- keep it versioned, and
 # resolve it from the same authority that built it instead of globbing the
@@ -58,7 +58,7 @@ existing_release_json="$("${cnb_cli[@]}" releases get-release-by-tag \
     --repo "$repository" \
     --tag "$release_tag" \
     --verbose)"
-# Reason: cnb-cli returns HTTP error payloads on stdout without a non-zero exit status.
+# NOTE: cnb-cli returns HTTP error payloads on stdout without a non-zero exit status.
 release_id="$(node -e '
     const response = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
     const status = Number(response.status);
@@ -119,7 +119,7 @@ upload_asset() {
     *.zip)
         asset_name="${asset_name%-$release_tag.zip}.zip"
         ;;
-        # Reason: the VSIX name already carries the extension version and
+        # NOTE: the VSIX name already carries the extension version and
         # must stay versioned; only the source archives get stable names.
     esac
     asset_size="$(wc -c <"$archive_path" | tr -d '[:space:]')"

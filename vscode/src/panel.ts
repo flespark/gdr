@@ -110,7 +110,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		this.view = webviewView;
 		const webview = webviewView.webview;
 		webview.options = {
-			// Reason: the panel keeps its rendered markup while the debug
+			// NOTE: the panel keeps its rendered markup while the debug
 			// session steals focus; a rebuild on every switch would re-inject
 			// the same HTML for no gain.
 			enableScripts: true,
@@ -335,7 +335,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		this.revealOnce(sessionId);
 		this.broadcast();
 		if (entry.heapRequested) {
-			// Reason: the bitmap follows the stop the reader is looking at; a drawn
+			// NOTE: the bitmap follows the stop the reader is looking at; a drawn
 			// map from an earlier stop would name blocks that have since moved.
 			void this.refreshHeapMap(sessionId, entry).catch((error) => this.notify(sessionId, 'error', `heap map refresh failed: ${String(error)}`));
 		}
@@ -390,7 +390,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			fs.mkdirSync(directory, { recursive: true });
 			const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 			const file = path.join(directory, `gdr-snapshot-${stamp}-${sessionId.slice(0, 8)}.json`);
-			// Reason: write next to the target and rename, so a crash mid-write
+			// NOTE: write next to the target and rename, so a crash mid-write
 			// never leaves a half-written record that would parse as garbage.
 			const temp = `${file}.tmp`;
 			fs.writeFileSync(temp, JSON.stringify(envelope, null, 1), 'utf8');
@@ -422,7 +422,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 				this.refreshNow(decoded.sessionId);
 				return;
 			case 'heapDump':
-				// Reason: the bitmap is requested on demand (plan D6); the request is
+				// NOTE: the bitmap is requested on demand (plan D6); the request is
 				// answered by the heap-map fetch wired in the canvas step.
 				void this.heapDumpRequested(decoded.sessionId).catch((error) => this.notify(decoded.sessionId, 'error', `heap map request failed: ${String(error)}`));
 				return;
@@ -576,7 +576,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			scale
 		});
 		const foldedBytes = (sized.folds ?? []).reduce((sum, fold) => sum + fold.bytes, 0);
-		// Reason: kept bytes per row stay near-uniform under proportional
+		// NOTE: kept bytes per row stay near-uniform under proportional
 		// fill, so the average names what a row holds at the dragged width.
 		const rowBytes = sized.height > 0 ? Math.round(((map.end - map.base) - foldedBytes) / sized.height) : 0;
 		void this.view?.webview.postMessage({ type: 'heapGrid', sessionId: id, grid: sized, rowBytes });
@@ -608,7 +608,7 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			options.sessionId = sessionId;
 		}
 		const uri = memoryViewUri(vscode.env.uriScheme, address, options);
-		// Reason: the memory viewer registers a URI handler that evaluates the
+		// NOTE: the memory viewer registers a URI handler that evaluates the
 		// bare address literal in the (stopped) session it was started from --
 		// an address constant, never an inferior call.
 		const opened = await vscode.env.openExternal(vscode.Uri.parse(uri));

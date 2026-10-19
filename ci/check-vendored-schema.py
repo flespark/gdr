@@ -69,8 +69,8 @@ def main(argv: list[str]) -> int:
         print(f"check-vendored-schema: unreadable manifest: {exc}", file=sys.stderr)
         return 1
 
-    version = _read_version((repo_root / "gdr" / "__init__.py").read_text("utf-8"))
-    schema = _read_schema((repo_root / "gdr" / "constants.py").read_text("utf-8"))
+    version = _read_version((repo_root / "core" / "__init__.py").read_text("utf-8"))
+    schema = _read_schema((repo_root / "core" / "constants.py").read_text("utf-8"))
     if version is None or schema is None:
         print(
             "check-vendored-schema: could not read the runtime version or schema",

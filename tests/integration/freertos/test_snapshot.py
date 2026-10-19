@@ -189,7 +189,7 @@ def test_overflow_timer_expires_in_uses_next_epoch(snapshot_session):
     """The overflow-list timer's ExpiresIn is (2^tick_bits - tick) + expiry.
 
     Live fixtures cannot run ~2^32 ticks, so the overflow epoch formula
-    (freertos.timers.timer_expires_in) gets its live evidence here: the value
+    (freertos.objects.timer_expires_in) gets its live evidence here: the value
     must be the wrapped-epoch number, never ``expiry - tick`` (-37) nor the
     bare wrapped ``expiry`` (5) read as if it were still in the current epoch.
     """

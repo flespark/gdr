@@ -184,7 +184,7 @@ export function cacheKey(identity: LaunchIdentity | undefined): string | null {
 	if (!identity) {
 		return null;
 	}
-	// Reason: only the two spellings the supported adapters actually declare --
+	// NOTE: only the two spellings the supported adapters actually declare --
 	// `executable` for cortex-debug and `program` for cppdbg/cppvsdbg (verified
 	// against their published launch schemas). A third guess would silently
 	// never match, so an unknown key degrades to "no cache", which only costs a

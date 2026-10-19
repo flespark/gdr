@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+import core.layout as printers
 import freertos.layout as layout_module
-from freertos.layout import FreeRtosConfig, build_layout
+import freertos.layout as probe_module
+import freertos.layout as version
+from freertos.layout import (
+    PROBE_MARKERS,
+    SMP_ERA_FIELD,
+    FreeRtosConfig,
+    build_layout,
+)
+from tests.support.freertos_fixture_profiles import (
+    get_freertos_test_profile,
+    list_freertos_boards,
+    list_freertos_variants,
+)
 
 
 class _FakeArrayType:
@@ -619,3 +634,418 @@ def test_unbounded_core_array_without_macro_falls_back_to_two(monkeypatch):
     )
 
     assert cfg.number_of_cores == 2
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("10.3.0", "10.3.1", "10.4.0", "10.5.0", "11.1.0", "11.2.0", "11.3.0", "11.3.1"),
+)
+def test_validate_version_accepts_supported_ranges(value, monkeypatch):
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+    assert version.validate_version(value) == tuple(map(int, value.split(".")))
+
+
+def test_validate_version_rejects_invalid_and_unsupported_values(monkeypatch):
+    """Policy failures warn and return None; SystemExit would kill GDB."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+
+    assert version.validate_version("10.3") is None
+    assert version.validate_version("11.4.0") is None
+    assert version.validate_version("12.0.0") is None
+
+    assert "invalid FreeRTOS version" in warnings[0]
+    assert (
+        sum(1 for message in warnings if "unsupported FreeRTOS version" in message) == 2
+    )
+
+
+def _stub_cu_fallback(monkeypatch) -> None:
+    """Keep CU-scoped fallback off unless a test is exercising it."""
+    monkeypatch.setattr(version, "read_macro_text_in_source", lambda *_a, **_k: None)
+
+
+def test_detect_version_from_macro_triplet(monkeypatch):
+    """The tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD int macros win when present."""
+    values = {
+        "tskKERNEL_VERSION_MAJOR": 10,
+        "tskKERNEL_VERSION_MINOR": 3,
+        "tskKERNEL_VERSION_BUILD": 1,
+    }
+    monkeypatch.setattr(version, "read_macro_int", lambda name: values.get(name))
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+
+    assert version.detect_target_version() == (10, 3, 1)
+
+
+def test_detect_version_switches_to_kernel_source_context(monkeypatch):
+    """A non-kernel CU is repaired by selecting the kernel source context."""
+    values = {
+        "tskKERNEL_VERSION_MAJOR": "11",
+        "tskKERNEL_VERSION_MINOR": "1",
+        "tskKERNEL_VERSION_BUILD": "0",
+    }
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(
+        version,
+        "read_macro_text_in_source",
+        lambda name, source: values[name] if source == "vTaskStartScheduler" else None,
+    )
+    monkeypatch.setattr(version, "read_macro_text", lambda _name: None)
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+
+    assert version.detect_target_version() == (11, 1, 0)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("V11.1.0+", (11, 1, 0)),
+        ("V10.3.1", (10, 3, 1)),
+        ("10.5.0", (10, 5, 0)),
+    ],
+)
+def test_detect_version_from_version_number_string(monkeypatch, text, expected):
+    """The tskKERNEL_VERSION_NUMBER string macro is parsed with the V/+ forms."""
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: text)
+    _stub_cu_fallback(monkeypatch)
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+
+    assert version.detect_target_version() == expected
+
+
+def test_detect_version_rejects_invalid_string(monkeypatch):
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: "unknown")
+    _stub_cu_fallback(monkeypatch)
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+
+    assert version.detect_target_version() is None
+
+
+def test_detect_version_from_gdr_symbol_decimal_fallback(monkeypatch):
+    """gdr_freertos_version_num (decimal MMmmpp) is the last-resort escape hatch."""
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
+    monkeypatch.setattr(
+        version,
+        "lookup_symbol",
+        lambda name: 100301 if name == "gdr_freertos_version_num" else None,
+    )
+
+    assert version.detect_target_version() == (10, 3, 1)
+
+
+def test_detect_version_from_gdr_symbol_packed_hex_fallback(monkeypatch):
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
+    monkeypatch.setattr(
+        version,
+        "lookup_symbol",
+        lambda name: 0xA0301 if name == "gdr_freertos_version_num" else None,
+    )
+
+    assert version.detect_target_version() == (10, 3, 1)
+
+
+def test_detect_version_returns_none_when_nothing_exported(monkeypatch):
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(version, "read_macro_text", lambda _name, **_kwargs: None)
+    _stub_cu_fallback(monkeypatch)
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+
+    assert version.detect_target_version() is None
+
+
+def test_check_target_rejects_a_target_mismatch(monkeypatch):
+    """A mismatch refuses registration; the GDB session keeps running."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "detect_target_version", lambda: (10, 5, 0))
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
+
+    verdict = version.check_target("10.3.1")
+
+    assert not verdict.accepted
+    assert verdict.code == "version_mismatch"
+    assert "version mismatch" in warnings[-1]
+
+
+def test_check_target_refuses_a_target_without_any_marker(monkeypatch):
+    """No FreeRTOS symbol means no adapter: every read would come back empty."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+    monkeypatch.setattr(version, "loaded_object_path", lambda: "/fw/freertos.elf")
+
+    verdict = version.check_target("10.3.1")
+
+    assert not verdict.accepted
+    assert verdict.code == "no_target_evidence"
+    assert "--allow-unverified" in warnings[-1]
+
+
+def test_check_target_without_a_symbol_file_names_file(monkeypatch):
+    """`load` without `file` gets the actionable hint, not the load hint."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+    monkeypatch.setattr(version, "loaded_object_path", lambda: None)
+
+    verdict = version.check_target("10.3.1")
+
+    assert not verdict.accepted
+    assert verdict.code == "no_target_evidence"
+    assert "`file <elf>`" in warnings[-1]
+
+
+def test_allow_unverified_keeps_the_escape_hatch_open(monkeypatch):
+    """A modified or stripped kernel must still be debuggable on request."""
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("10.3.1", allow_unverified=True)
+
+    assert verdict.accepted
+    assert verdict.version == (10, 3, 1)
+    assert verdict.note is not None and "--allow-unverified" in verdict.note
+
+
+def test_check_target_accepts_markers_without_an_exported_version(monkeypatch):
+    """The user asserts the version here; that is the plugin's confirm flow."""
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("10.3.1")
+
+    assert verdict.accepted
+    assert verdict.note is not None and "unverified" in verdict.note
+    assert verdict.markers == version.PROBE_MARKERS
+
+
+def _stub(monkeypatch, *, present: tuple[str, ...], version, tcb_fields=()):
+    """Resolve only *present* markers, pin the version, pin the TCB fields."""
+    monkeypatch.setattr(probe_module, "symbol_exists", lambda name: name in present)
+    monkeypatch.setattr(probe_module, "detect_target_version", lambda: version)
+    monkeypatch.setattr(
+        probe_module, "type_field_names", lambda _type_name: frozenset(tcb_fields)
+    )
+
+
+def test_probe_returns_none_when_no_marker_matches(monkeypatch):
+    """An adapter with nothing to claim must not appear in the report."""
+    _stub(monkeypatch, present=(), version=None)
+
+    assert probe_module.probe() is None
+
+
+def test_probe_reports_an_exact_version_with_its_evidence(monkeypatch):
+    """A resolvable version is ``exact`` and names the macros behind it."""
+    _stub(monkeypatch, present=PROBE_MARKERS[:2], version=(10, 3, 1))
+
+    candidate = probe_module.probe()
+
+    assert candidate is not None
+    assert candidate.confidence == "exact"
+    assert candidate.version == "10.3.1"
+    assert "tskKERNEL_VERSION_MAJOR" in candidate.evidence[-1]
+
+
+def test_probe_narrows_the_era_when_the_version_macros_are_absent(monkeypatch):
+    """A -g2 build still yields a range, with the fingerprint as evidence."""
+    _stub(
+        monkeypatch,
+        present=PROBE_MARKERS[:1],
+        version=None,
+        tcb_fields=(SMP_ERA_FIELD,),
+    )
+
+    candidate = probe_module.probe()
+
+    assert candidate is not None
+    assert candidate.confidence == "range"
+    assert candidate.version is None
+    assert any(SMP_ERA_FIELD in line for line in candidate.evidence)
+    assert "confirmed by the user" in candidate.detail
+
+    _stub(monkeypatch, present=PROBE_MARKERS[:1], version=None)
+
+    pre_smp = probe_module.probe()
+
+    assert pre_smp is not None
+    assert pre_smp.confidence == "range"
+    assert any("absent" in line for line in pre_smp.evidence)
+
+
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def test_variant_names_are_unique():
+    names = list_freertos_variants()
+    assert len(names) == len(set(names))
+    assert names
+
+
+def test_every_variant_has_config_directory():
+    for variant in list_freertos_variants():
+        path = _REPO / "ci" / "freertos" / "fixture" / "config" / variant
+        assert path.is_dir(), path
+        assert (path / "FreeRTOSConfig.h").is_file(), path
+
+
+def test_every_board_has_port_directory():
+    for board in list_freertos_boards():
+        path = _REPO / "ci" / "freertos" / "fixture" / "board" / board
+        assert path.is_dir(), path
+        assert (path / "gdr_board.h").is_file(), path
+
+
+def test_version_ranges_monotonic_with_capabilities():
+    """Later kernel versions never drop notification-array / mini-list / batching."""
+    earlier = get_freertos_test_profile("base", "10.3.1")
+    mid = get_freertos_test_profile("base", "10.4.6")
+    later = get_freertos_test_profile("base", "10.5.1")
+    v11 = get_freertos_test_profile("base", "11.1.0")
+    assert earlier.notification_array is False
+    assert mid.notification_array is True
+    assert later.notification_array is True
+    assert later.mini_list_item is True
+    assert v11.batching_buffer is True
+    assert earlier.batching_buffer is False
+
+
+def test_static_only_and_static_dynamic_are_distinct():
+    only = get_freertos_test_profile("static-only", "10.3.1")
+    both = get_freertos_test_profile("static-dynamic", "10.3.1")
+    assert only.static_allocation is True
+    assert only.static_and_dynamic is False
+    assert both.static_allocation is True
+    assert both.static_and_dynamic is True
+
+
+def test_heap_variants_map_to_independent_kinds():
+    assert get_freertos_test_profile("heap-1", "10.3.1").heap_kind == 1
+    assert get_freertos_test_profile("heap-2", "10.3.1").heap_kind == 2
+    assert get_freertos_test_profile("heap-3", "10.3.1").heap_kind is None
+    assert get_freertos_test_profile("base", "10.3.1").heap_kind == 4
+    assert get_freertos_test_profile("heap-5", "10.3.1").heap_kind == 5
+
+
+def test_static_only_has_no_heap_manager():
+    """static-only links no MemMang source, so detection reports None."""
+    assert get_freertos_test_profile("static-only", "10.3.1").heap_kind is None
+
+
+def test_mpu_pool_has_a_live_variant():
+    """The mpu variant (single-core CM33 with configENABLE_MPU) is registered
+    and boots live on mps2-an521 (the xKernelObjectPool channel's first live
+    fixture); it is not the old 'mpu-pool' name -- the pool symbol is reached
+    through the mpu variant's build.  The MPU wrappers v2 TCB declares
+    ucStaticallyAllocated whenever dynamic allocation is on, so the probed
+    static_and_dynamic is True even though the fixture never creates a
+    static task."""
+    assert "mpu" in list_freertos_variants()
+    assert "mpu-pool" not in list_freertos_variants()
+    profile = get_freertos_test_profile("mpu", "11.3.1", "mps2-an521")
+    assert profile.static_and_dynamic is True
+    assert profile.static_allocation is False
+
+
+def test_tick_widths_by_variant():
+    """Only tick16 declares a 16-bit tick; rv64 is 64-bit (RISC-V port)."""
+    assert get_freertos_test_profile("tick16", "10.3.1").tick_bits == 16
+    assert get_freertos_test_profile("tick16", "11.1.0", "mps2-an385").tick_bits == 16
+    assert get_freertos_test_profile("rv64", "11.1.0", "qemu-virt-rv64").tick_bits == 64
+    for variant in list_freertos_variants():
+        if variant in {"tick16", "rv64"}:
+            continue
+        profile = get_freertos_test_profile(variant, "11.1.0")
+        assert profile.tick_bits == 32, variant
+
+
+def test_stack_watermark_is_off_only_without_trace_facility():
+    """Only trace-off drops the 0xa5 prefill, hence the HighWater column."""
+    assert get_freertos_test_profile("trace-off", "10.3.1").stack_watermark is False
+    for variant in list_freertos_variants():
+        if variant == "trace-off":
+            continue
+        profile = get_freertos_test_profile(variant, "10.3.1")
+        assert profile.stack_watermark is True, variant
+
+
+def _fold(
+    monkeypatch,
+    struct_name: str,
+    values: dict[str, object],
+    config: FreeRtosConfig | None = None,
+) -> str:
+    """Render the one-line fold for *struct_name* with fake field values."""
+    layout = build_layout(config or FreeRtosConfig(), (10, 3, 1))
+    sl = layout.structs[struct_name]
+
+    monkeypatch.setattr(printers, "read_field", lambda _v, _l, f: values.get(f))
+    monkeypatch.setattr(printers, "read_cstring", lambda value: value)
+    return printers.LayoutPrinter(object(), sl).to_string()
+
+
+def test_task_fold_is_nonempty_and_names_expected_fields(monkeypatch):
+    text = _fold(
+        monkeypatch,
+        "struct tskTaskControlBlock",
+        {"name": "worker", "current_priority": 4},
+    )
+    assert text.startswith("Task(")
+    assert "name=" in text
+    assert "current_priority=" in text
+    assert "worker" in text
+    assert text != "Task()"
+
+
+def test_queue_fold_is_nonempty_and_names_expected_fields(monkeypatch):
+    text = _fold(
+        monkeypatch,
+        "struct QueueDefinition",
+        {"length": 10, "count": 3, "type": 2},
+        config=FreeRtosConfig(trace_facility=True),
+    )
+    assert text.startswith("Queue(")
+    assert "length=" in text
+    assert "count=" in text
+    assert "type=counting-sem" in text
+    assert text != "Queue()"
+
+
+def test_queue_fold_omits_the_type_key_without_trace_facility(monkeypatch):
+    """``ucQueueType`` is absent when configUSE_TRACE_FACILITY is 0.
+
+    Describing it anyway would fold every queue as ``type=N/A`` on the default
+    (trace-off) configuration instead of simply not claiming a type.
+    """
+    text = _fold(
+        monkeypatch,
+        "struct QueueDefinition",
+        {"length": 10, "count": 3},
+        config=FreeRtosConfig(trace_facility=False),
+    )
+    assert text == "Queue(length=10, count=3)"
+
+
+def test_timer_fold_is_nonempty_and_names_expected_fields(monkeypatch):
+    text = _fold(
+        monkeypatch,
+        "struct tmrTimerControl",
+        {"name": "blink", "period": 1000},
+    )
+    assert text.startswith("Timer(")
+    assert "name=" in text
+    assert "period=" in text
+    assert text != "Timer()"

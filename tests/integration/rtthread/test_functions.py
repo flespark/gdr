@@ -41,7 +41,7 @@ def test_gdr_task_returns_zero_for_an_unknown_name(gdb_session):
 def _assert_no_python_noise(output: str) -> None:
     """Reject GDB/Python failure markers in convenience-function output.
 
-    The function guard (:func:`gdr.gdb_bridge.gdb_function_guard`) is what
+    The function guard (:func:`core.gdb_bridge.gdb_function_guard`) is what
     keeps a failing $gdr_* call from surfacing as raw GDB "Python Exception"
     noise; these assertions pin that contract on a live target.
     """
@@ -236,7 +236,7 @@ def test_target_pointer_width_matches_the_qemu_profile(gdb_session):
 def test_arch_info_matches_the_connected_target(gdb_session):
     output = gdb_session.run_python(
         """
-from gdr.gdb_bridge import get_arch_info
+from core.gdb_bridge import get_arch_info
 
 arch = get_arch_info()
 print(f"arch_found={arch is not None}")

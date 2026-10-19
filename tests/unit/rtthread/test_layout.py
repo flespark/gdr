@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
+
 import rtthread.layout as layout_module
+import rtthread.layout as probe_module
+import rtthread.layout as version
 from rtthread.layout import (
     RT_OBJECT_CLASS_THREAD,
     RtConfig,
     ThreadState,
     build_layouts,
 )
+from rtthread.navigation import PROBE_MARKERS
+from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
 
 
 class _FakeGdb:
@@ -236,7 +242,7 @@ def test_system_heap_allocator_defaults_to_small_mem_for_memory_pointer(monkeypa
 
 def test_detect_config_uses_heap_end_for_40_small_mem(monkeypatch):
     """4.0 kernels expose the system heap as static globals, not a handle."""
-    import gdr.gdb_bridge as bridge
+    import core.gdb_bridge as bridge
 
     present = {"heap_end", "heap_ptr", "used_mem"}
     monkeypatch.setattr(bridge, "symbol_exists", lambda name: name in present)
@@ -259,7 +265,7 @@ def test_detect_config_prefers_system_heap_type_over_init_symbols(monkeypatch):
     ``rt_memheap_init`` together, so the init symbols alone cannot select the
     active ``*_AS_HEAP``; the ``system_heap`` handle must decide.
     """
-    import gdr.gdb_bridge as bridge
+    import core.gdb_bridge as bridge
 
     present = {"rt_smem_init", "rt_slab_init", "rt_memheap_init"}
     handle = _typedef_ptr_handle("rt_smem_t")
@@ -278,7 +284,7 @@ def test_detect_config_prefers_system_heap_type_over_init_symbols(monkeypatch):
 
 def test_detect_config_classifies_slab_typedef_despite_smem_init(monkeypatch):
     """``rt_slab_t system_heap`` wins even when ``rt_smem_init`` is also linked."""
-    import gdr.gdb_bridge as bridge
+    import core.gdb_bridge as bridge
 
     present = {"rt_smem_init", "rt_slab_init", "rt_memheap_init"}
     handle = _typedef_ptr_handle("rt_slab_t")
@@ -297,7 +303,7 @@ def test_detect_config_classifies_slab_typedef_despite_smem_init(monkeypatch):
 
 def test_detect_config_probes_memtrace_from_block_header(monkeypatch):
     """MEMTRACE is proven by a block-header owner field, not a FINSH symbol."""
-    import gdr.gdb_bridge as bridge
+    import core.gdb_bridge as bridge
 
     present = {"heap_end"}
     monkeypatch.setattr(bridge, "symbol_exists", lambda name: name in present)
@@ -358,3 +364,240 @@ def test_build_layouts_adds_heap_block_headers_for_the_probed_algorithm():
     assert "struct heap_mem" not in unused.structs
     assert "struct rt_memheap_item" not in unused.structs
     assert "struct rt_slab" not in unused.structs
+
+
+@pytest.mark.parametrize("value", ("3.1.0", "3.1.5", "4.0.0", "4.1.1"))
+def test_validate_version_accepts_supported_interval_endpoints(value, monkeypatch):
+    """Both explicitly verified intervals accept their boundary releases."""
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+
+    assert version.validate_version(value) == tuple(map(int, value.split(".")))
+
+
+@pytest.mark.parametrize("value", ("3.0.9", "3.1.6", "3.2.0", "4.1.2"))
+def test_validate_version_rejects_unverified_gaps(value, monkeypatch):
+    """Adjacent and intermediate releases are not implied by range support."""
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+
+    assert version.validate_version(value) is None
+
+
+def test_check_target_returns_the_parsed_target_profile(monkeypatch):
+    """Bootstrap receives the parsed version the layout factory needs."""
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
+
+    verdict = version.check_target("3.1.3")
+
+    assert verdict.accepted
+    assert verdict.version == (3, 1, 3)
+    assert verdict.note is not None, "an unexported version is recorded, not hidden"
+    assert verdict.markers == PROBE_MARKERS
+
+
+def test_detect_target_version_uses_declared_packed_hex_encoding(monkeypatch):
+    monkeypatch.setattr(
+        version,
+        "lookup_symbol",
+        lambda name: 0x40005 if name == "RT_VER_NUM" else None,
+    )
+    monkeypatch.setattr(version, "read_macro_int", lambda _name: None)
+    monkeypatch.setattr(
+        version, "read_macro_int_in_source", lambda _name, _source: None
+    )
+    monkeypatch.setattr(version, "read_int", lambda value: value)
+
+    assert version.detect_target_version() == (4, 0, 5)
+
+
+def test_detect_target_version_uses_macros_when_symbols_are_absent(monkeypatch):
+    """Version macros are read through ``info macro``, not inferior evaluation."""
+    monkeypatch.setattr(version, "lookup_symbol", lambda _name: None)
+    monkeypatch.setattr(
+        version,
+        "read_macro_int",
+        lambda name: 0x40005 if name == "RT_VER_NUM" else None,
+    )
+    monkeypatch.setattr(
+        version, "read_macro_int_in_source", lambda _name, _source: None
+    )
+    monkeypatch.setattr(version, "read_int", lambda value: value)
+
+    assert version.detect_target_version() == (4, 0, 5)
+
+
+def test_check_target_rejects_a_target_mismatch(monkeypatch):
+    """A mismatch refuses registration; the GDB session keeps running."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "detect_target_version", lambda: (4, 0, 5))
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: True)
+
+    verdict = version.check_target("3.1.3")
+
+    assert not verdict.accepted
+    assert verdict.code == "version_mismatch"
+    assert "version mismatch" in warnings[-1]
+
+
+def test_check_target_refuses_a_target_without_any_marker(monkeypatch):
+    """No RT-Thread symbol means no adapter: every read would come back empty."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+    monkeypatch.setattr(version, "loaded_object_path", lambda: "/fw/rtthread.elf")
+
+    verdict = version.check_target("4.0.5")
+
+    assert not verdict.accepted
+    assert verdict.code == "no_target_evidence"
+    assert "--allow-unverified" in warnings[-1]
+
+
+def test_check_target_without_a_symbol_file_names_file(monkeypatch):
+    """`load` without `file` gets the actionable hint, not the load hint."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+    monkeypatch.setattr(version, "loaded_object_path", lambda: None)
+
+    verdict = version.check_target("4.0.5")
+
+    assert not verdict.accepted
+    assert verdict.code == "no_target_evidence"
+    assert "`file <elf>`" in warnings[-1]
+    assert "`load` only writes the target memory" in warnings[-1]
+
+
+def test_allow_unverified_keeps_the_escape_hatch_open(monkeypatch):
+    """A modified or stripped kernel must still be debuggable on request."""
+    warnings: list[str] = []
+    monkeypatch.setattr(version, "warn", warnings.append)
+    monkeypatch.setattr(version, "symbol_exists", lambda _name: False)
+    monkeypatch.setattr(version, "detect_target_version", lambda: None)
+
+    verdict = version.check_target("4.0.5", allow_unverified=True)
+
+    assert verdict.accepted
+    assert verdict.version == (4, 0, 5)
+    assert verdict.markers == ()
+    assert verdict.note is not None and "--allow-unverified" in verdict.note
+
+
+def test_check_target_rejects_an_unsupported_version_argument(monkeypatch):
+    monkeypatch.setattr(version, "warn", lambda _message: None)
+
+    verdict = version.check_target("9.9.9")
+
+    assert not verdict.accepted
+    assert verdict.code == "unsupported_version"
+
+
+def _stub(monkeypatch, *, present: tuple[str, ...], version):
+    """Make only *present* markers resolve, and pin the version detection."""
+    monkeypatch.setattr(probe_module, "symbol_exists", lambda name: name in present)
+    monkeypatch.setattr(probe_module, "detect_target_version", lambda: version)
+
+
+def test_probe_returns_none_when_no_marker_matches(monkeypatch):
+    """An adapter with nothing to claim must not appear in the report."""
+    _stub(monkeypatch, present=(), version=None)
+
+    assert probe_module.probe() is None
+
+
+def test_probe_reports_an_exact_version_with_its_evidence(monkeypatch):
+    """A resolvable version is ``exact``, and the evidence names its source."""
+    _stub(monkeypatch, present=PROBE_MARKERS[:2], version=(4, 0, 5))
+
+    candidate = probe_module.probe()
+
+    assert candidate is not None
+    assert candidate.confidence == "exact"
+    assert candidate.version == "4.0.5"
+    assert candidate.evidence[0] == f"symbol: {PROBE_MARKERS[0]}"
+    assert "RT_VER_NUM" in candidate.evidence[-1]
+
+
+def test_probe_reports_an_unreadable_version_as_undetected(monkeypatch):
+    """Detected, but versionless: the caller must ask, and is told how to fix it."""
+    _stub(monkeypatch, present=PROBE_MARKERS[:1], version=None)
+
+    candidate = probe_module.probe()
+
+    assert candidate is not None
+    assert candidate.confidence == "undetected"
+    assert candidate.version is None
+    assert "readable" in candidate.evidence[-1]
+    assert "-g3" in candidate.detail
+
+
+def test_legacy_31_profile_has_pre_null_object_codes():
+    """3.1.0-3.1.2 use object codes before the Null enum entry."""
+    profile = get_rtthread_test_profile("3.1.2", "cortex-a9")
+
+    assert profile.semaphore_code == 0x01
+    assert profile.mutex_code == 0x02
+    assert profile.event_code == 0x03
+    assert profile.mailbox_code == 0x04
+    assert profile.msgqueue_code == 0x05
+    assert profile.mempool_code == 0x07
+    assert profile.timer_code == 0x09
+    assert profile.semaphore_name == "test_sem"
+    assert profile.mutex_name == "test_mutex"
+    assert profile.event_name == "test_event"
+    assert profile.mailbox_name == "test_mailbox"
+    assert profile.msgqueue_name == "test_msgqueue"
+    assert profile.mempool_name == "test_mempool"
+    assert profile.timer_name == "test_timer"
+    assert profile.current_thread_expression == "rt_current_thread"
+
+
+def test_modern_31_profile_has_null_shifted_object_codes():
+    """3.1.3 inserted the Null object enum member at zero."""
+    profile = get_rtthread_test_profile("3.1.3", "cortex-a9")
+
+    assert profile.semaphore_code == 0x02
+    assert profile.mutex_code == 0x03
+    assert profile.event_code == 0x04
+    assert profile.mailbox_code == 0x05
+    assert profile.msgqueue_code == 0x06
+    assert profile.mempool_code == 0x08
+    assert profile.timer_code == 0x0A
+    assert profile.current_thread_expression == "rt_current_thread"
+
+
+def test_modern_profile_has_null_shifted_codes_and_smp_current_thread():
+    """Cortex-A9 4.x uses shifted codes and the per-CPU table as current thread."""
+    profile = get_rtthread_test_profile("4.0.5", "cortex-a9")
+
+    assert profile.semaphore_code == 0x02
+    assert profile.mutex_code == 0x03
+    assert profile.event_code == 0x04
+    assert profile.mailbox_code == 0x05
+    assert profile.msgqueue_code == 0x06
+    assert profile.mempool_code == 0x08
+    assert profile.timer_code == 0x0A
+    assert profile.semaphore_name == "test_sem"
+    assert profile.mutex_name == "test_mutex"
+    assert profile.timer_name == "test_timer"
+    assert profile.current_thread_expression == "_cpus"
+
+
+def test_rv64_profile_uses_global_current_thread():
+    """The RV64 fixture keeps the global current-thread handle."""
+    profile = get_rtthread_test_profile("4.1.1", "rv64")
+
+    assert profile.semaphore_code == 0x02
+    assert profile.mutex_code == 0x03
+    assert profile.event_code == 0x04
+    assert profile.mailbox_code == 0x05
+    assert profile.msgqueue_code == 0x06
+    assert profile.mempool_code == 0x08
+    assert profile.timer_code == 0x0A
+    assert profile.mutex_name == "test_mutex"
+    assert profile.timer_name == "test_timer"
+    assert profile.current_thread_expression == "rt_current_thread"

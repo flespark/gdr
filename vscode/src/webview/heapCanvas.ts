@@ -1,7 +1,7 @@
 /** Pure heap-grid math: lookups over the grid, plus the layout planner. */
 import type { HeapFold, HeapGrid, HeapMapEntry, HeapPalette } from '../snapshot.ts';
 
-// Reason: the interactive resize replays the producer layout locally, so
+// NOTE: the interactive resize replays the producer layout locally, so
 // these mirror gdr/heapmap.py and gdr/bitmapfont.py one by one. Parity is
 // pinned by planHeapGrid tests against producer vectors.
 const PLANNER_MAX_CELLS = 16384;
@@ -14,7 +14,7 @@ const PLANNER_LEGEND_ADVANCE = 12;
 const PLANNER_LEGEND_MAX_CHARS = 63;
 const PLANNER_LEGEND_MIN_CHARS = 24;
 const PLANNER_WRAP_MIN_LINES = 8;
-// Reason: exactly gdr/bitmapfont.py `_PATTERNS` keys; anything else escapes
+// NOTE: exactly gdr/bitmapfont.py `_PATTERNS` keys; anything else escapes
 // to `\uXXXX` when measuring wrapped legend lines, like the PNG does.
 const PLANNER_PRINTABLE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 :,.-_/()?\\';
 
@@ -53,7 +53,7 @@ export function unitRows(grid: HeapGrid): HeapUnit[] {
 			for (const fold of bands) {
 				for (let span = 0; span < fold.height; span += 1) { units.push({ type: 'fold', fold }); }
 			}
-			// Reason: older envelopes carry no row count; one folded row each.
+			// NOTE: older envelopes carry no row count; one folded row each.
 			const covered = Math.max(...bands.map((fold) => fold.rows ?? 1));
 			row += covered;
 		} else {
@@ -195,7 +195,7 @@ export function legendEntries(
 		const [start, end] = spanOf(free, () => true);
 		entries.push({ colour: palette.free, text: `(free): ${sumSizes(free, () => true)}B, ${formatAddress(start)}-${formatAddress(end)}` });
 	}
-	// Reason: notes carry no block colour; a mid grey stays visible on both
+	// NOTE: notes carry no block colour; a mid grey stays visible on both
 	// the dark canvas and a light panel theme, unlike the PNG's dark swatch.
 	if (hasUnknown) {
 		entries.push({ colour: '#808080', text: 'unknown/unreadable arena span' });
@@ -341,14 +341,14 @@ export interface HeapPlanInput {
  */
 export function planHeapGrid(input: HeapPlanInput): HeapGrid {
 	const { blocks, base, end, truncated, palette, scale } = input;
-	// Reason: only the minimum is clamped; the drag sets whatever width the
+	// NOTE: only the minimum is clamped; the drag sets whatever width the
 	// reader pulls, and the viewport scrolls past the old budget.
 	let columns = Math.max(Math.ceil(PLANNER_MIN_PIXEL_WIDTH / scale), Math.round(input.columns));
 	const spans = heapSpans(blocks, base, end);
 	if (spans.length === 0) { return { width: 0, height: 0, scale, runs: [] }; }
 	const arena = spans.reduce((sum, span) => sum + span.size, 0);
 	const sizes = spans.map((span) => span.size);
-	// Reason: the derived layout is the contract: redoing the envelope width
+	// NOTE: the derived layout is the contract: redoing the envelope width
 	// must reproduce the envelope grid exactly, or releasing the drag would jump.
 	const derived = distribute(sizes, arena, scale);
 	let rows: number;
@@ -393,7 +393,7 @@ export function planHeapGrid(input: HeapPlanInput): HeapGrid {
 		if (covered) { folded.push(row); }
 	}
 	if (folded.length === rows) {
-		// Reason: an all-unused arena has nothing to emphasize; folding every
+		// NOTE: an all-unused arena has nothing to emphasize; folding every
 		// row would leave an empty grid.
 		folded.length = 0;
 	}
@@ -433,7 +433,7 @@ export function planHeapGrid(input: HeapPlanInput): HeapGrid {
 	if (folds.length > 0) {
 		const hasUnknown = runs.some((run) => run[2] < 0) || folds.some((fold) => fold.kind !== 'free');
 		const texts = legendEntries(blocks, palette, truncated, hasUnknown).map((entry) => entry.text);
-		// Reason: each folded group paints as one band, so the base is the
+		// NOTE: each folded group paints as one band, so the base is the
 		// kept rows plus one unit per group.
 		const legendUnits = measureLegendUnits(texts, columns * scale, rows * scale, scale);
 		const base = rows - folded.length + folds.length;

@@ -9,17 +9,34 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import (
+import re
+
+from core.gdb_bridge import (
     array_bound,
     get_arch_info,
+    loaded_object_path,
     lookup_symbol,
     lookup_type,
+    read_int,
     read_macro_int,
+    read_macro_text,
+    read_macro_text_in_source,
     symbol_exists,
     type_field_names,
     type_size,
+    warn,
 )
-from gdr.layout import StructField, StructLayout
+from core.layout import StructField, StructLayout
+from core.version import (
+    ProbeCandidate,
+    TargetVerdict,
+    Version,
+    VersionRange,
+    decode_version,
+    format_version,
+    parse_version,
+    version_in_ranges,
+)
 
 # DWARF probe failures we degrade from during config detection.  Module scope
 # keeps the tuple computable outside GDB (where ``gdb`` is ``None``); anything
@@ -29,7 +46,7 @@ if gdb is not None:
 else:
     _PROBE_ERRORS = (TypeError, ValueError, AttributeError)
 
-# Reason: ``gdr probe`` reports presence before any layout exists, so the marker
+# NOTE: ``gdr probe`` reports presence before any layout exists, so the marker
 # names stay here with the rest of the kernel symbol table instead of being
 # re-spelled by a consumer (the boundary test enforces one lookup table per
 # domain).
@@ -106,7 +123,7 @@ def _array_bound(name: str) -> int | None:
     type is not a decodable array (including an unbounded ``extern T
     sym[]`` declaration, whose ``(0, -1)`` range means unknown, not a real
     zero-length array).  The bounds decode lives in the bridge
-    (:func:`gdr.gdb_bridge.array_bound`); this thin name is kept because
+    (:func:`core.gdb_bridge.array_bound`); this thin name is kept because
     config probing reads symbols by name.
     """
     value = lookup_symbol(name)
@@ -175,12 +192,12 @@ def _detect_heap_kind() -> int | None:
         matches.append(4)
     if has_next_free:
         matches.append(1)
-    # Reason: heap_2's xEnd is a BlockLink_t *value*; heap_4/5 use pxEnd as a
+    # NOTE: heap_2's xEnd is a BlockLink_t *value*; heap_4/5 use pxEnd as a
     # pointer and must not also match heap_2 when a test fixture (or a
     # corrupted symbol table) happens to expose both names.
     if has_x_start and has_x_end and has_block_link and not has_px_end:
         matches.append(2)
-    # Reason: heap_5.c reuses heap_4's xStart/pxEnd plus vPortDefineHeapRegions,
+    # NOTE: heap_5.c reuses heap_4's xStart/pxEnd plus vPortDefineHeapRegions,
     # so a real heap_5 always matches 4 as well. Drop the dominated 4; any
     # leftover overlap (heap_1 symbols next to a BlockLink heap, etc.) is
     # ambiguous and must not silently pick the priority-chain winner.
@@ -199,7 +216,7 @@ def detect_config() -> FreeRtosConfig:
 
     cfg.smp = lookup_symbol("pxCurrentTCBs") is not None
     if cfg.smp:
-        # Reason: pxCurrentTCBs[TASK_CORE_ID] bound is authoritative for the
+        # NOTE: pxCurrentTCBs[TASK_CORE_ID] bound is authoritative for the
         # core count; the configNUMBER_OF_CORES macro is only a fallback.
         bound = _array_bound("pxCurrentTCBs")
         if bound is not None:
@@ -241,7 +258,7 @@ def detect_config() -> FreeRtosConfig:
         (name for name in ("xTLSBlock", "xNewLib_reent") if name in fields),
         None,
     )
-    # Reason: configENABLE_BACKWARD_COMPATIBILITY defaults to 1, which
+    # NOTE: configENABLE_BACKWARD_COMPATIBILITY defaults to 1, which
     # ``#define pxContainer pvContainer`` (FreeRTOS.h). The default build's
     # DWARF member is therefore named ``pvContainer``; a non-compatible build
     # (or a kernel that dropped the macro) uses ``pxContainer``. Access has to
@@ -261,14 +278,14 @@ def detect_config() -> FreeRtosConfig:
     )
 
     # --- queue family (type / sets / support) -----------------------
-    # Reason: trace facility (queue type classification) is proven by the
+    # NOTE: trace facility (queue type classification) is proven by the
     # ucQueueType member. Some GDB/DWARF spellings expose the struct tag
     # (``struct QueueDefinition``) while others only expose the typedef
     # (``xQUEUE``); ``_fields`` already strip_typedefs() so either works.
     queue_fields = _fields("struct QueueDefinition") or _fields("xQUEUE")
     cfg.trace_facility = "ucQueueType" in queue_fields
     cfg.queue_sets = "pxQueueSetContainer" in queue_fields
-    # Reason: the queue family is only offered when the kernel actually
+    # NOTE: the queue family is only offered when the kernel actually
     # compiles Queue_t (queue.c); some GDB/DWARF spellings expose the struct
     # tagged ``QueueDefinition`` while others only the typedef ``xQUEUE``,
     # and ``_fields`` already strip_typedefs so either spelling counts.
@@ -277,7 +294,7 @@ def detect_config() -> FreeRtosConfig:
         or lookup_type("xQUEUE") is not None
     )
     # --- stack width -------------------------------------------------
-    # Reason: StackType_t is a port typedef (uint32_t on ARMv7-M, uint64_t on
+    # NOTE: StackType_t is a port typedef (uint32_t on ARMv7-M, uint64_t on
     # RV64); the watermark scan needs the stack word width, which comes from
     # DWARF or falls back to the target pointer width.
     stack_type = lookup_type("StackType_t")
@@ -285,7 +302,7 @@ def detect_config() -> FreeRtosConfig:
         stack_bytes = type_size(stack_type)
         cfg.stack_word_bytes = stack_bytes if stack_bytes is not None else 4
     else:
-        # Reason: get_arch_info raises outside GDB (unit tests mock it); on
+        # NOTE: get_arch_info raises outside GDB (unit tests mock it); on
         # a live target an unreadable probe bubbles to the guard.  The
         # fallback keeps the previously probed width (default 4).
         stack_arch = get_arch_info()
@@ -298,7 +315,7 @@ def detect_config() -> FreeRtosConfig:
         lookup_symbol("xTimerTaskHandle") is not None
         or lookup_symbol("xTimerQueue") is not None
     )
-    # Reason: tskSTATIC_AND_DYNAMIC_ALLOCATION_POSSIBLE (FreeRTOS.h) is what
+    # NOTE: tskSTATIC_AND_DYNAMIC_ALLOCATION_POSSIBLE (FreeRTOS.h) is what
     # actually emits ucStaticallyAllocated; that is only true when *both*
     # static and dynamic allocation are possible. static-only builds still
     # export xTaskCreateStatic but have no TCB marker, so the two facts are
@@ -539,14 +556,14 @@ def build_layout(
         ),
     }
     if cfg.queue_sets:
-        # Reason: pxQueueSetContainer only exists under
+        # NOTE: pxQueueSetContainer only exists under
         # configUSE_QUEUE_SETS (queue.h); describing it unconditionally
         # would fabricate a Set column on builds without queue sets.
         queue_fields["set_container"] = StructField(
             "set_container", ("pxQueueSetContainer",), kind="ptr"
         )
     if cfg.trace_facility:
-        # Reason: ucQueueType only exists under configUSE_TRACE_FACILITY == 1
+        # NOTE: ucQueueType only exists under configUSE_TRACE_FACILITY == 1
         # (queue.c). configUSE_TRACE_FACILITY defaults to 0, so describing the
         # field unconditionally would fold every queue as ``type=N/A``.
         queue_fields["type"] = StructField(
@@ -577,7 +594,7 @@ def build_layout(
                 "next": StructField("next", ("pxNext",)),
                 "previous": StructField("previous", ("pxPrevious",)),
                 "owner": StructField("owner", ("pvOwner",), kind="ptr", summary=True),
-                # Reason: member name follows the probed spelling (pvContainer
+                # NOTE: member name follows the probed spelling (pvContainer
                 # under the default backward-compat build, pxContainer
                 # otherwise); falling back to pxContainer when unknown.
                 "container": StructField(
@@ -763,7 +780,7 @@ def build_layout(
             },
         )
     if cfg.trace_facility:
-        # Reason: uxTimerNumber only exists under configUSE_TRACE_FACILITY
+        # NOTE: uxTimerNumber only exists under configUSE_TRACE_FACILITY
         # (timers.c) and prvInitialiseNewTimer never writes it, so it is not
         # usable as an identifier (only vTimerSetTimerNumber or a trace tool
         # sets it); gating on the same probe as ucQueueType keeps a trace-off
@@ -771,7 +788,7 @@ def build_layout(
         structs["struct tmrTimerControl"].fields["number"] = StructField(
             "number", ("uxTimerNumber",)
         )
-        # Reason: uxEventGroupNumber / uxStreamBufferNumber only exist under
+        # NOTE: uxEventGroupNumber / uxStreamBufferNumber only exist under
         # configUSE_TRACE_FACILITY and, like uxTimerNumber, are never written
         # by prvInitialiseNewStreamBuffer / prvINITIALISE_EVENT_GROUP, so they
         # are not usable as identifiers; gating keeps a trace-off build from
@@ -784,14 +801,14 @@ def build_layout(
             "number", ("uxStreamBufferNumber",)
         )
     if cfg.static_and_dynamic:
-        # Reason: ucStaticallyAllocated only exists when both static and
+        # NOTE: ucStaticallyAllocated only exists when both static and
         # dynamic allocation are possible (FreeRTOS.h tstSTATIC_AND_DYNAMIC_
         # ALLOCATION_POSSIBLE), mirroring the TCB probe in detect_config.
         structs["struct EventGroupDef_t"].fields["static_alloc"] = StructField(
             "static_alloc", ("ucStaticallyAllocated",)
         )
     if cfg.stream_buffer_notification_index:
-        # Reason: uxNotificationIndex only exists from V11.1.0 (stream_buffer.c);
+        # NOTE: uxNotificationIndex only exists from V11.1.0 (stream_buffer.c);
         # declaring it unconditionally would fabricate a silent N/A on older
         # kernels instead of surfacing the version gate.
         structs["struct StreamBufferDef_t"].fields["notification_index"] = StructField(
@@ -804,4 +821,246 @@ def build_layout(
         symbols=symbols,
         config=cfg,
         version=version,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Version policy and target-version probing.
+# ---------------------------------------------------------------------------
+# NOTE: V11.3.1 introduced ARMv8-M SMP support (History.txt, V11.3.1), and
+# the six kernel header structs are identical between V11.2.0 and V11.3.1, so
+# the public range extends through 11.3.x without new layout branches.
+SUPPORTED_RANGES: tuple[VersionRange, ...] = (((10, 3, 0), (11, 3, 99)),)
+
+# Matches the tskKERNEL_VERSION_NUMBER string macro, e.g. "V10.3.1" or
+# "V11.1.0+": an optional leading V, three decimal components, and an
+# optional trailing '+' (dirty builds).
+_VERSION_STRING_RE = re.compile(r"^V?(\d+)\.(\d+)\.(\d+)\+?$")
+
+# The integer macro triplet that FreeRTOS-Kernel exports (task.h).
+_VERSION_TRIPLET = (
+    "tskKERNEL_VERSION_MAJOR",
+    "tskKERNEL_VERSION_MINOR",
+    "tskKERNEL_VERSION_BUILD",
+)
+
+# Every source ``detect_target_version`` consults, in priority order.  The probe
+# reports them as the evidence when no version could be read, so the list stays
+# here rather than being re-spelled by a consumer.
+VERSION_SOURCES: tuple[str, ...] = (
+    *_VERSION_TRIPLET,
+    "tskKERNEL_VERSION_NUMBER",
+    "gdr_freertos_version_num",
+)
+
+
+def _range_text() -> str:
+    return ", ".join(
+        f"{format_version(lower)}-{format_version(upper)}"
+        for lower, upper in SUPPORTED_RANGES
+    )
+
+
+def validate_version(value: str) -> Version | None:
+    """Validate the version argument; ``None`` (already warned) on failure.
+
+    Callers abort the init on ``None`` instead of raising ``SystemExit``,
+    which would kill the whole GDB session on a typo'd version.
+    """
+    parsed = parse_version(value)
+    if parsed is None:
+        warn(f"invalid FreeRTOS version: {value!r}; expected X.Y.Z")
+        return None
+    if not version_in_ranges(parsed, SUPPORTED_RANGES):
+        warn(f"unsupported FreeRTOS version: {value!r}")
+        warn(f"supported public ranges: {_range_text()}")
+        return None
+    return parsed
+
+
+def _macro_int_in_kernel_cu(name: str) -> int | None:
+    """Read an integer macro from the FreeRTOS kernel compilation unit."""
+    value = read_macro_int(name)
+    if value is not None:
+        return value
+    text = read_macro_text_in_source(name, "vTaskStartScheduler")
+    if text is None:
+        return None
+    try:
+        return int(text, 0)
+    except ValueError:
+        return None
+
+
+def _macro_triplet() -> Version | None:
+    """Read the tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD integer macros.
+
+    The first attempt uses the current CU. If the selected source is outside
+    the kernel, the fallback temporarily lists ``vTaskStartScheduler`` to
+    select a kernel CU, reads the macro, and restores the user's source view.
+    """
+    components: list[int] = []
+    for name in _VERSION_TRIPLET:
+        value = _macro_int_in_kernel_cu(name)
+        if value is None:
+            return None
+        components.append(value)
+    return (components[0], components[1], components[2])
+
+
+def _version_number_string() -> Version | None:
+    """Parse the tskKERNEL_VERSION_NUMBER string macro, or ``None``."""
+    text = read_macro_text("tskKERNEL_VERSION_NUMBER")
+    if text is None:
+        text = read_macro_text_in_source(
+            "tskKERNEL_VERSION_NUMBER", "vTaskStartScheduler"
+        )
+    if text is None:
+        return None
+    match = _VERSION_STRING_RE.match(text.strip())
+    if match is None:
+        return None
+    # NOTE: the regex normally guarantees decimal groups, but keep target
+    # macro text untrusted at this GDB boundary.
+    try:
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def detect_target_version() -> Version | None:
+    """Best-effort FreeRTOS version detection from exported constants.
+
+    Priority:
+    1. the ``tskKERNEL_VERSION_MAJOR/_MINOR/_BUILD`` integer-macro triplet;
+    2. the ``tskKERNEL_VERSION_NUMBER`` string macro (``"V10.3.1"`` / ``+``);
+    3. the project-injected ``gdr_freertos_version_num`` symbol
+       (decimal or packed-hex encoding).
+
+    The upstream kernel exports no single numeric version symbol, so the
+    ``gdr_freertos_version_num`` fallback exists for builds that link a
+    helper symbol instead of relying on macro debug info.
+    """
+    triplet = _macro_triplet()
+    if triplet is not None:
+        return triplet
+    string_version = _version_number_string()
+    if string_version is not None:
+        return string_version
+    numeric = read_int(lookup_symbol("gdr_freertos_version_num"))
+    if numeric is None:
+        return None
+    return decode_version(numeric, ("decimal", "packed-hex"), SUPPORTED_RANGES)
+
+
+def check_target(value: str, *, allow_unverified: bool = False) -> TargetVerdict:
+    """Decide whether *value* may register this adapter on this target.
+
+    The presence markers are ``layout.PROBE_MARKERS``, the same table
+    ``gdr probe`` matches, so the probe and this gate cannot disagree about
+    what counts as evidence for "this target runs FreeRTOS".
+
+    Refused when the argument is invalid or unsupported, when the target
+    exports a different version, or when no marker matched at all -- the last
+    one keeps a symbol-less or wrong-target session from registering an adapter
+    whose every read would be empty. *allow_unverified* is the escape hatch for
+    a deliberately modified kernel, and it records the override as the verdict's
+    note rather than hiding it. Markers without an exported version are
+    *accepted* with a note: the user asserted the version, which is the flow the
+    plugin's detection wizard needs.
+    """
+    expected = validate_version(value)
+    if expected is None:
+        return TargetVerdict(
+            code="unsupported_version",
+            message=f"invalid or unsupported FreeRTOS version: {value!r}",
+        )
+    markers = tuple(name for name in PROBE_MARKERS if symbol_exists(name))
+    actual = detect_target_version()
+    if actual is not None and actual != expected:
+        message = (
+            f"FreeRTOS version mismatch: requested {value}, "
+            f"but target exports {format_version(actual)}"
+        )
+        warn(message)
+        return TargetVerdict(code="version_mismatch", message=message)
+    if not markers:
+        if not allow_unverified:
+            # NOTE: same `load`-without-symbols trap as the RT-Thread gate
+            # (see rtthread.version.check_target): name `file` only when GDB
+            # really has no symbol file loaded.
+            if loaded_object_path() is None:
+                message = (
+                    "no FreeRTOS symbol matched on this target; GDB has no "
+                    "symbol file loaded -- run `file <elf>` first (`load` "
+                    "only writes the target memory), or pass "
+                    "--allow-unverified to register anyway"
+                )
+            else:
+                message = (
+                    "no FreeRTOS symbol matched on this target; load the image "
+                    "first, or pass --allow-unverified to register anyway"
+                )
+            warn(message)
+            return TargetVerdict(code="no_target_evidence", message=message)
+        note = (
+            "no FreeRTOS symbol matched; registration was forced with "
+            "--allow-unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    if actual is None:
+        note = (
+            "target FreeRTOS version is not exported; the requested version is "
+            "unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    return TargetVerdict(version=expected, markers=markers)
+
+
+# ---------------------------------------------------------------------------
+# Presence and version evidence for ``gdr probe``.
+# ---------------------------------------------------------------------------
+def probe() -> ProbeCandidate | None:
+    """Report whether this target runs FreeRTOS, and which version it exports.
+
+    ``None`` means no marker matched, i.e. this adapter has nothing to claim.
+    """
+    matched = tuple(name for name in PROBE_MARKERS if symbol_exists(name))
+    if not matched:
+        return None
+
+    evidence = [f"symbol: {name}" for name in matched]
+    version = detect_target_version()
+    if version is not None:
+        evidence.append(
+            f"version: {format_version(version)} from {'/'.join(VERSION_SOURCES)}"
+        )
+        return ProbeCandidate(
+            rtos="freertos",
+            confidence="exact",
+            version=format_version(version),
+            evidence=tuple(evidence),
+        )
+
+    evidence.append("version: none of " + ", ".join(VERSION_SOURCES) + " is readable")
+    smp_era = symbol_exists(SMP_ERA_SYMBOL) or SMP_ERA_FIELD in type_field_names(
+        "struct tskTaskControlBlock"
+    )
+    if smp_era:
+        evidence.append(f"layout: {SMP_ERA_FIELD}/{SMP_ERA_SYMBOL} present")
+        era = "the V11 SMP-era layout"
+    else:
+        evidence.append(f"layout: {SMP_ERA_FIELD} absent")
+        era = "the pre-SMP V10.x layout"
+    return ProbeCandidate(
+        rtos="freertos",
+        confidence="range",
+        evidence=tuple(evidence),
+        detail=(
+            f"FreeRTOS is present but exports no version macro; the TCB matches "
+            f"{era}, so the exact version must be confirmed by the user. "
+            "Building with -g3 makes the version macros available"
+        ),
     )

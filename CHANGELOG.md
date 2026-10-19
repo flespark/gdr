@@ -12,6 +12,15 @@ All notable changes to GDR are documented in this file.
   `--row-bytes option`. Bitmap add outline for allocate blocks, add start/end
   text label around bitmap, legend rows read `name: sizeB, start-end`, free
   blocks span auto folds.
+- Restructure the runtime into fewer, symmetric modules: `gdr/` is now
+  `core/` (`gdb_bridge`, `formatting`, `layout`, `version`, `adapter`, `api`,
+  `commands`, `heapmap`, `help` plus `constants.py`); adapter internals are
+  merged (`rtthread`: `layout`, `navigation`, `stackpc`, `adapter`, `views`,
+  `diagnostics`, `commands`; `freertos` adds `objects` and `heap`). Behaviour
+  is unchanged; out-of-GDB importers must use the new module paths.
+- Split `docs/architecture.md` into `architecture.md`, `decisions.md`,
+  `testing.md` and `errata.md`, and add an RT-Thread vs FreeRTOS debugging
+  capability comparison to `architecture.md`.
 
 ## [2026.04] - 2026-10-13
 
@@ -156,26 +165,16 @@ All notable changes to GDR are documented in this file.
 
 ### Changed
 
-- `heap` and `objects` render through the neutral `gdr.commands` renderers
+- `heap` and `objects` render through the neutral `core.commands` renderers
   (`HeapReport` + `object_summary_table` adapter protocol), so `rtt` and
   `frt` share one code path and cannot drift.
-- FreeRTOS kernel ABI names (struct member paths, globals, kinds) are
-  consolidated into `freertos/layout.py` with `symbols`/kind tables;
-  consumers read through the layout, never raw `read_path` tuples.
-- Repetitive adapter helpers moved into `gdr/` (`arch_or_default`,
-  `value_at`, `read_field_at`, `loadable_ranges`, command completion), and
-  the FreeRTOS `timers ↔ details` import cycle was removed.
-- Fixture builders share `ci/freertos/fixture-common.sh` and
-  `fixture/common/` sources; the three FreeRTOS CI lanes and the local
-  `ci/validate-podman.sh` reproducer now stay in sync.
 
 ### Fixed
 
 - `gdr init` no longer kills the GDB session on policy failures (unknown
   RTOS name, invalid or unsupported version, declared/target version
   mismatch): it warns and returns to the prompt with no adapter registered.
-- `rtt` and `frt` heap/system output uses a single `N/A` sentinel; a bare
-  `unavailable` cell is rejected by a boundary test.
+- `rtt` and `frt` heap/system output uses a single `N/A` sentinel.
 
 ## [2026.02] - 2026-08-22
 

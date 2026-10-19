@@ -16,7 +16,7 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import (
+from core.gdb_bridge import (
     is_plain_identifier,
     lookup_symbol,
     parse_user_address,
@@ -25,7 +25,7 @@ from gdr.gdb_bridge import (
     safe_int,
     value_address,
 )
-from gdr.layout import (
+from core.layout import (
     KernelLayout,
     ListHook,
     StructLayout,
@@ -71,7 +71,7 @@ def get_object_information(type_code: int, kl: KernelLayout) -> gdb.Value | None
     if container is None:
         return None
     try:
-        # Reason: the array length is config-dependent (conditional enum), so
+        # NOTE: the array length is config-dependent (conditional enum), so
         # iterate until an unknown type or the end of the array is reached.
         for index in range(16):
             entry = container[index]
@@ -163,7 +163,7 @@ def iter_suspend_threads(
     Each wait-list node is a ``struct rt_thread.tlist`` embedded node, so
     ``container_of`` recovers the containing thread. Traversal is bounded by
     :data:`MAX_SUSPEND_THREADS` and inherits cycle / bad-pointer / node-limit
-    protection from :func:`gdr.layout.iter_list`.
+    protection from :func:`core.layout.iter_list`.
     """
     hook = ListHook(
         head_symbol="",
@@ -363,7 +363,7 @@ def _smp_current_thread() -> gdb.Value | None:
     if cpu_id < 0:
         return None
 
-    # Reason: backing storage changed from rt_cpus[] / rt_cpu_table to _cpus[]
+    # NOTE: backing storage changed from rt_cpus[] / rt_cpu_table to _cpus[]
     # across 3.1 and 4.x; rt_cpu_index() is not called because that would
     # resume the inferior.
     for symbol in ("_cpus", "rt_cpus", "rt_cpu_table", "_rt_cpus"):
@@ -384,8 +384,6 @@ def get_current_thread() -> gdb.Value | None:
     if current is not None:
         return current
 
-    # Reason: FreeRTOS stores current handles in pxCurrentTCBs[] and Zephyr
-    # uses _kernel.cpus[].current; their layouts must stay in their adapters.
     return _smp_current_thread()
 
 
@@ -410,8 +408,6 @@ def active_timer_addresses(kl: KernelLayout) -> set[int]:
     """
     addresses: set[int] = set()
     for timer in _iter_active_timers(kl):
-        # Reason: ``Value.address`` is None for a non-lvalue, so the shared
-        # helper keeps a malformed iteration from raising mid-walk.
         address = value_address(timer)
         if address:
             addresses.add(address)
@@ -423,14 +419,12 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
     seen: set[int] = set()
 
     for timer in _iter_active_timers(kl):
-        # Reason: ``Value.address`` is None for a non-lvalue, so the shared
-        # helper keeps a malformed iteration from raising mid-walk.
         address = value_address(timer)
         if address:
             seen.add(address)
         yield timer
 
-    # Reason: some RT-Thread 4.0.x builds register timers in the object
+    # NOTE: some RT-Thread 4.0.x builds register timers in the object
     # container before they appear in active timer lists at our breakpoint.
     timer_type = _object_code(kl, "timer")
     if timer_type is None:
@@ -441,7 +435,7 @@ def iter_timers(kl: KernelLayout) -> Iterator[gdb.Value]:
             yield timer
 
 
-# Reason: ``gdr probe`` runs before any adapter is initialized, so the markers
+# NOTE: ``gdr probe`` runs before any adapter is initialized, so the markers
 # it checks live here with the scheduler and tick symbols this module already
 # owns rather than being re-spelled by a consumer (one lookup table per domain).
 PROBE_MARKERS: tuple[str, ...] = (
@@ -452,7 +446,7 @@ PROBE_MARKERS: tuple[str, ...] = (
 )
 
 
-# Reason: RT-Thread names its per-CPU table differently across ports and
+# NOTE: RT-Thread names its per-CPU table differently across ports and
 # releases; the tick and the interrupt nest read the same candidate list.
 _CPU_TABLE_SYMBOLS: tuple[str, ...] = ("_cpus", "rt_cpus", "rt_cpu_table", "_rt_cpus")
 
@@ -509,7 +503,7 @@ def get_tick() -> int | None:
         except (gdb.error, TypeError, ValueError):
             pass
 
-    # Reason: SMP builds alias rt_tick to rt_cpu_index(0)->tick; the UP
+    # NOTE: SMP builds alias rt_tick to rt_cpu_index(0)->tick; the UP
     # symbol is absent, so read CPU0's tick field from the per-CPU table.
     for symbol in _CPU_TABLE_SYMBOLS:
         cpu = _cpu_from_table(lookup_symbol(symbol), 0)

@@ -155,7 +155,7 @@ def test_rtt_threads_render_normalized_fixture_tasks(gdb, rtt_outputs):
     converted = gdb.run_python(
         """
 import gdb
-from gdr.adapter_api import active
+from core.adapter import active
 from rtthread import adapter
 
 thread = gdb.parse_and_eval('$gdr_task("worker1")')

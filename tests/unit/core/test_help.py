@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from freertos.columns import task_specs
+from core.help import find_topic, render_markdown, render_terminal
+from freertos.commands import build_help_tree
 from freertos.heap import HeapGeometry, HeapSnapshot, heap_pairs
-from freertos.help_docs import build_help_tree
 from freertos.layout import FreeRtosConfig, build_layout
-from gdr.help import find_topic, render_markdown, render_terminal
+from freertos.views import task_specs
 
 
 def test_nested_pretty_printer_topic_comes_from_layout_metadata():

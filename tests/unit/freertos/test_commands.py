@@ -8,7 +8,10 @@ import pytest
 
 import freertos.adapter as adapter_module
 import freertos.commands as commands
-from freertos.layout import FreeRtosConfig, build_layout
+from freertos.layout import (
+    FreeRtosConfig,
+    build_layout,
+)
 from freertos.navigation import DiscoveredObject
 
 
@@ -284,7 +287,7 @@ def test_complete_plural_list_command_does_not_walk_objects(monkeypatch):
 
 def test_command_entry_guard_contains_unexpected_renderer_errors(monkeypatch):
     """A broken renderer cannot leak a Python exception out of the command edge."""
-    from gdr import gdb_bridge as bridge
+    from core import gdb_bridge as bridge
 
     errors: list[str] = []
     monkeypatch.setattr(bridge, "err", errors.append)
@@ -407,8 +410,8 @@ def test_objects_summary_headers_and_sources(monkeypatch):
     The core renderer only knows Kind/Count; the FreeRTOS summary owns the
     provenance model, so the table must carry the per-channel source counts.
     """
-    from gdr import commands as gdr_commands
-    from gdr.adapter_api import ObjectTable
+    from core import commands as gdr_commands
+    from core.adapter import ObjectTable
 
     class _SummaryAdapter:
         def object_summary_table(self) -> ObjectTable:
@@ -428,7 +431,7 @@ def test_objects_summary_headers_and_sources(monkeypatch):
     # The neutral renderer reads the active adapter itself.
     monkeypatch.setattr(gdr_commands, "active", lambda: _SummaryAdapter())
     # The provenance summary renders through the neutral renderer (C1), so
-    # info/print_table live in gdr.commands.
+    # info/print_table live in core.commands.
     monkeypatch.setattr(gdr_commands, "info", messages.append)
     monkeypatch.setattr(
         gdr_commands,
@@ -693,3 +696,38 @@ def test_semaphores_and_mutexes_table_headers(monkeypatch):
     assert sb_table is not None
     assert sb_table.rows == []
     assert any("no stream buffers" in message for message in sb_table.messages)
+
+
+def test_register_commands_resumes_after_alias_failure(monkeypatch):
+    calls: list[str] = []
+    alias_attempts = 0
+
+    def execute(command: str):
+        nonlocal alias_attempts
+        alias_attempts += 1
+        calls.append(command)
+        if alias_attempts == 1:
+            raise RuntimeError("alias registration interrupted")
+
+    fake_gdb = type("FakeGdb", (), {"execute": staticmethod(execute)})()
+    monkeypatch.setattr(commands, "gdb", fake_gdb)
+    monkeypatch.setattr(
+        commands,
+        "FreeRtosCommand",
+        lambda: calls.append("command"),
+        raising=False,
+    )
+    monkeypatch.setattr(commands, "info", lambda _message: None)
+    monkeypatch.setattr(commands, "_command_registered", False)
+    monkeypatch.setattr(commands, "_alias_registered", False)
+
+    with pytest.raises(RuntimeError, match="alias registration interrupted"):
+        commands.register_commands()
+    commands.register_commands()
+    commands.register_commands()
+
+    assert calls == [
+        "command",
+        "alias frt = freertos",
+        "alias frt = freertos",
+    ]

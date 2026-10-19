@@ -221,7 +221,7 @@ body {
 /* --- table cards ------------------------------------------------------- */
 
 .gdr-card {
-	/* Reason: the frame must follow the table too; shrinking only the table
+	/* NOTE: the frame must follow the table too; shrinking only the table
 	 * leaves its row rules disconnected from a viewport-wide right border. */
 	width: fit-content;
 	max-width: 100%;
@@ -251,7 +251,7 @@ body {
 }
 
 .gdr-table {
-	/* Reason: narrow tables must end at their content/column widths, not the
+	/* NOTE: narrow tables must end at their content/column widths, not the
 	 * viewport edge. Separate borders keep sticky/clipped cells from losing
 	 * collapsed half-pixel row rules at the last column. */
 	border-collapse: separate;
@@ -280,13 +280,13 @@ body {
 	text-align: right;
 }
 
-/* Reason: a rule between columns makes wide tables readable across the gap. */
+/* NOTE: a rule between columns makes wide tables readable across the gap. */
 .gdr-table th + th,
 .gdr-table td + td {
 	border-left: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
 }
 
-/* Reason: Heap has independently sized basics/verdict tables; each needs
+/* NOTE: Heap has independently sized basics/verdict tables; each needs
  * its own closing edge rather than relying on the wider card's border. */
 .gdr-table th:last-child,
 .gdr-table td:last-child {
@@ -317,7 +317,7 @@ body {
 }
 
 .gdr-bar-cell {
-	/* Reason: a bar needs room to read; these two columns start wide enough for one. */
+	/* NOTE: a bar needs room to read; these two columns start wide enough for one. */
 	min-width: 12ch;
 }
 
@@ -516,7 +516,7 @@ body {
 	opacity: 0.5;
 }
 
-/* Reason: empty inline grips can have zero height; anchor a full-height hit
+/* NOTE: empty inline grips can have zero height; anchor a full-height hit
  * area to the actual column boundary instead of the end of the header text. */
 .gdr-col-grip {
 	position: absolute;
@@ -674,7 +674,7 @@ body {
 	flex: 1;
 }
 
-/* Reason: both bitmap grips stay invisible; the cursor change on hover is
+/* NOTE: both bitmap grips stay invisible; the cursor change on hover is
    the only hint, so nothing competes with the bitmap edge they hug. */
 .gdr-heap-corner {
 	flex: none;

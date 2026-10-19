@@ -65,8 +65,8 @@ print('PRE_TASK_CREATION')
 import gdb
 from freertos.adapter import value_to_task
 from freertos.navigation import iter_tasks
-from gdr.adapter_api import active
-from gdr.gdb_bridge import eval_identifier
+from core.adapter import active
+from core.gdb_bridge import eval_identifier
 layout = active().layout
 assert int(eval_identifier('xSchedulerRunning')) == 0
 watermarks = {}

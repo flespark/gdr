@@ -26,12 +26,10 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from freertos.columns import HEAP_FREE_LIST_SPECS, HEAP_LINEAR_SPECS
-from freertos.layout import FreeRtosLayout
-from gdr.adapter_api import ObjectTable, address_cell, number_cell, raw_cell
-from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
-from gdr.formatting import format_optional_bytes
-from gdr.gdb_bridge import (
+from core.adapter import ObjectTable, address_cell, number_cell, raw_cell
+from core.constants import GDR_MAX_TRAVERSAL_COUNT
+from core.formatting import format_optional_bytes
+from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     _gdb_execute,
     get_arch_info,
@@ -44,7 +42,9 @@ from gdr.gdb_bridge import (
     type_size,
     value_address,
 )
-from gdr.layout import read_field_at
+from core.layout import read_field_at
+from freertos.layout import FreeRtosLayout
+from freertos.views import HEAP_FREE_LIST_SPECS, HEAP_LINEAR_SPECS
 
 # heap_2 only tracks allocation with the size_t MSB from V10.5.0
 # (heap_2.c heapBLOCK_ALLOCATED_BITMASK); the V10.3.x/V10.4.x releases store
@@ -350,7 +350,7 @@ def _struct_size(
     size = type_size("BlockLink_t") or type_size("struct A_BLOCK_LINK")
     if size is None:
         return None
-    # Reason: ``sizeof(BlockLink_t)`` is already a multiple of the natural
+    # NOTE: ``sizeof(BlockLink_t)`` is already a multiple of the natural
     # alignment and on the GCC ports ``portBYTE_ALIGNMENT`` never exceeds it,
     # so using it as the rounding modulus when the macro is missing yields
     # the same result without inventing a port constant.
@@ -421,7 +421,7 @@ def heap_geometry(layout: FreeRtosLayout) -> HeapGeometry:
     version = layout.version
     kind = cfg.heap_kind
     if kind is None:
-        # Reason: the layout discriminator reports None for both heap_3
+        # NOTE: the layout discriminator reports None for both heap_3
         # (wraps malloc, exports no kernel heap symbol) and a build with no
         # allocator at all; pvPortMalloc presence is the only split
         # (heap_3.c defines it, a static-only build does not).
@@ -445,7 +445,7 @@ def heap_geometry(layout: FreeRtosLayout) -> HeapGeometry:
         if kind == 4:
             heap_limit = px_end
             total = _heap_array_size()
-            # Reason: heap_4 carves every allocation from the FRONT of the
+            # NOTE: heap_4 carves every allocation from the FRONT of the
             # first free block (heap_4.c pvPortMalloc: the remainder replaces
             # the block in the list), so after any allocation the free-list
             # head sits above allocated blocks at the heap base. The linear
@@ -504,7 +504,7 @@ def _heap_initialised(geom: HeapGeometry) -> bool:
         flag = read_int(lookup_symbol("xHeapHasBeenInitialised"))
         if flag is not None:
             return bool(flag)
-        # Reason: at -Og the kernel's -g3 fixtures can fold the static guard
+        # NOTE: at -Og the kernel's -g3 fixtures can fold the static guard
         # into a non-debugging symbol (``xHeapHasBeenInitialised.0``), so the
         # flag is frequently unreadable; xEnd.xBlockSize is written by
         # prvHeapInit to configADJUSTED_HEAP_SIZE and reads 0 pre-init, and
@@ -568,7 +568,7 @@ def walk_free_list(geom: HeapGeometry, block_layout=None) -> HeapWalk:
             walk.corrupt_reason = f"unreadable block header at {cur:#x}"
             return walk
         raw_next, raw_size = values
-        # Reason: a free-list member must never carry the allocation bit --
+        # NOTE: a free-list member must never carry the allocation bit --
         # the kernel clears it on free before insertion (heapFREE_BLOCK), so
         # a set bit is corruption, not a hint.
         if geom.allocated_bitmask and (raw_size & geom.allocated_bitmask):
@@ -680,7 +680,7 @@ def walk_linear(
         if geom.allocated_bitmask:
             allocated = bool(raw_size & geom.allocated_bitmask)
         else:
-            # Reason: without the MSB the block header is identical for free
+            # NOTE: without the MSB the block header is identical for free
             # and allocated blocks, so free-list membership is the only
             # signal (heap_2 < V10.5.0).
             allocated = free_addresses is not None and cur not in free_addresses
@@ -748,7 +748,7 @@ def cross_validate(
     }
     location = ""
     if geom.allocated_bitmask and free_list_addresses != linear_free_addresses:
-        # Reason: report the concrete missing/unexpected block headers, not
+        # NOTE: report the concrete missing/unexpected block headers, not
         # just equal-length address-set counts. Bound output on corrupt heaps.
         def addresses(items: set[int]) -> str:
             ordered = sorted(items)
@@ -803,7 +803,7 @@ def heap_snapshot(layout: FreeRtosLayout) -> HeapSnapshot:
         return snap
     snap = HeapSnapshot(geometry=geom, total=geom.total)
     if not _heap_initialised(geom):
-        # Reason: pre-init the counter still holds its static initializer
+        # NOTE: pre-init the counter still holds its static initializer
         # (0 for heap_4/5, configADJUSTED_HEAP_SIZE for heap_2), so
         # TotalSize/FreeSize stay as statically-known values while the block
         # structure is explicitly marked uninitialised.
@@ -831,7 +831,7 @@ def heap_snapshot(layout: FreeRtosLayout) -> HeapSnapshot:
     linear = walk_linear(geom, free_list=free_list, block_layout=block_layout)
     snap.free_list = free_list
     snap.linear = linear
-    # Reason: heap_5's total is not a kernel symbol -- under the protector
+    # NOTE: heap_5's total is not a kernel symbol -- under the protector
     # only the region extremes exist, and the extremes cover *all* regions,
     # so the difference is a real size only for a single-region heap.  The
     # linear walk decides single-region-ness: a complete walk reaches pxEnd
@@ -901,7 +901,7 @@ def heap_pairs(snap: HeapSnapshot) -> list[tuple[str, str]]:
     geom = snap.geometry
     algorithm = geom.algorithm
     if geom.kind == 1:
-        # Reason: heap_1 is a bump allocator; Algorithm names it as such so
+        # NOTE: heap_1 is a bump allocator; Algorithm names it as such so
         # the absence of blocks never reads as a bug.
         algorithm = "heap_1 (bump pointer)"
     pairs: list[tuple[str, str]] = [
@@ -927,7 +927,7 @@ def heap_pairs(snap: HeapSnapshot) -> list[tuple[str, str]]:
         pairs += [("Blocks", blocks), ("Holes", holes)]
     else:
         pairs += [("Blocks", "N/A"), ("Holes", "N/A")]
-    # Reason: normal refreshes show evidence/problems, not an always-ok
+    # NOTE: normal refreshes show evidence/problems, not an always-ok
     # column. ``frt checks heap`` is the explicit complete verdict surface.
     if snap.cross_check != "ok":
         verdict = snap.cross_check

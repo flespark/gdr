@@ -88,7 +88,7 @@ export function renderApp(state: PanelState, options: RenderOptions = {}): strin
 	const active = state.sessions.find((session) => session.id === state.activeId) ?? null;
 	const nav = `<nav class="gdr-tabs" aria-label="Debug sessions">${tabs}</nav>`;
 	const body = active === null ? renderEmpty() : renderSession(active, options, nav);
-	// Reason: the client keeps the body's scroll position across a refresh, but
+	// NOTE: the client keeps the body's scroll position across a refresh, but
 	// only for the session it was showing; the tag tells it which one that is.
 	const session = active === null ? '' : ` data-session="${escapeHtml(active.id)}"`;
 
@@ -237,7 +237,7 @@ function renderHints(snapshot: PanelSnapshot): string {
  * scrolls sideways in its card instead of wrapping into a list.
  */
 export function renderSystem(pairs: string[][], options: RenderOptions = {}): string {
-	// Reason: object counts and heap counters already have dedicated tables.
+	// NOTE: object counts and heap counters already have dedicated tables.
 	const kinds = new Set(['device', 'event', 'mailbox', 'memheap', 'mempool', 'msgqueue', 'mutex', 'semaphore', 'task', 'timer', 'task (walked)', 'Heap used', 'Heap total', 'Heap status']);
 	const shown = pairs.filter(([key, value]) => key !== undefined && value !== undefined && !kinds.has(key));
 	if (shown.length === 0) {
@@ -316,11 +316,11 @@ function renderTableCard(
 			const header = table.headers[index] ?? '';
 			const spec = table.columns?.[index];
 			const doc = spec?.doc !== undefined && spec.doc !== '' ? ` title="${escapeHtml(spec.doc)}"` : '';
-			// Reason: every header reads left-aligned, whatever its column's data
+			// NOTE: every header reads left-aligned, whatever its column's data
 			// alignment; only the data cells below are right-aligned.
 			const bar = isStackFraction(table, index) ? 'gdr-bar-cell' : '';
 			const diag = isDiagColumn(table, index) ? 'gdr-diag-col' : '';
-			// Reason: widths are data, not style: the client applies them after the
+			// NOTE: widths are data, not style: the client applies them after the
 			// render because the CSP refuses inline style attributes.
 			const width = widths[header] !== undefined ? ` data-width="${widths[header]}"` : '';
 			return `<th${classAttr([bar, diag])} data-col="${escapeHtml(header)}"${width}${doc} draggable="true">${escapeHtml(header)}<span class="gdr-col-grip" aria-hidden="true"></span></th>`;
@@ -369,18 +369,18 @@ function renderTableRows(
 					}
 					const source = sources[columnIndex];
 					if (source !== undefined && source !== null) {
-						// Reason: a PC or Entry cell is a source link when GDR resolved a line;
+						// NOTE: a PC or Entry cell is a source link when GDR resolved a line;
 						// the text stays the symbol the table shows.
 						return `<td${classAttr([align, changed])}>${renderSourceLink(text, source, addressLiteral(values[columnIndex]))}</td>`;
 					}
 					if ((spec?.kind === 'pc' || spec?.kind === 'symbol') && addressLiteral(values[columnIndex]) !== undefined) {
-						// Reason: a PC with no source line is still an address to inspect.
+						// NOTE: a PC with no source line is still an address to inspect.
 						return `<td${classAttr([align, 'gdr-addr', changed])}>${renderAddress(text, addressLiteral(values[columnIndex]))}</td>`;
 					}
 					if (stackIndex >= 0 && isStackFraction(table, columnIndex)) {
 						const percent = stackPercent(numeric(values[columnIndex]), numeric(values[stackIndex]));
 						if (percent !== null) {
-							// Reason: the bar is a background class picked here, not an inline
+							// NOTE: the bar is a background class picked here, not an inline
 							// style: the panel's CSP refuses style attributes outright.
 							const hot = percent >= 90 ? 'gdr-pct-hot' : '';
 							const cls = classAttr([align, 'gdr-bar-cell', `gdr-pct-${percent}`, hot, changed]);
@@ -565,7 +565,7 @@ function renderHeapTable(heap: HeapData, options: RenderOptions): string {
 			`<td class="gdr-diag-col gdr-verdict gdr-verdict-${escapeHtml(row.severity)}${options.changed?.has(changeKey('heap', '', row.key)) ? ' gdr-changed' : ''}">` +
 			`${escapeHtml(row.value)}</td>`
 		).join('');
-	// Reason: runtime/allocator messages are not actionable build advice.
+	// NOTE: runtime/allocator messages are not actionable build advice.
 
 	return (
 		`<div class="gdr-scroll">` +
@@ -583,7 +583,7 @@ function renderHeapTable(heap: HeapData, options: RenderOptions): string {
  * handlers for the CSP.
  */
 function renderHeapDump(options: RenderOptions): string {
-	// Reason: the map stays folded until the reader opens it; the client
+	// NOTE: the map stays folded until the reader opens it; the client
 	// disclosure memory keeps the choice per session, so a stop refresh
 	// never springs it back open. Expanding still requests the draw.
 	const requested = options.heapCanvas === true;

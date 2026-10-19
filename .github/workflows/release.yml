@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           fetch-depth: 0
-          # Reason: this job publishes through `gh release create` with
+          # NOTE: this job publishes through `gh release create` with
           # GH_TOKEN, so the checkout token is not needed in .git/config.
           persist-credentials: false
       - name: Verify the calendar release tag
@@ -41,12 +41,12 @@ jobs:
         run: bash ci/create-release-archives.sh "$TAG"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          # Reason: no dependency cache on a release job -- a poisoned cache
+          # NOTE: no dependency cache on a release job -- a poisoned cache
           # would flow into the published VSIX, and `npm ci` from the
           # lockfile is hermetic without it.
           node-version: "24"
       - name: Build the release VSIX
-        # Reason: a tag release always ships patch 0 (GDR `2026.4` as
+        # NOTE: a tag release always ships patch 0 (GDR `2026.4` as
         # extension `2026.4.0`); the script refuses anything else, so a
         # mistagged tree or a patch in flight fails here instead of shipping
         # a wrong VSIX. Extension-only fixes go through --patch (see below).
@@ -60,7 +60,7 @@ jobs:
         run: |
           notes_file="$(mktemp)"
           bash ci/extract-changelog.sh "$TAG" >"$notes_file"
-          # Reason: the VSIX name is derived from vscode/package.json by
+          # NOTE: the VSIX name is derived from vscode/package.json by
           # ci/vsix-artifact-name.sh, the same authority ci/build-vsix.sh
           # packages under -- globbing dist/ could pick up a stale file.
           vsix_file="$(bash ci/vsix-artifact-name.sh)"
@@ -109,7 +109,7 @@ jobs:
           fi
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          # Reason: same no-cache rule as the tag job -- the VSIX built here
+          # NOTE: same no-cache rule as the tag job -- the VSIX built here
           # is published, so its dependencies come from the lockfile only.
           node-version: "24"
       - name: Build the patch VSIX

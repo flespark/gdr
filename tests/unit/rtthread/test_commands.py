@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+import rtthread.adapter as adapter_module
 import rtthread.commands as commands
-from gdr import commands as core_commands
+from core import commands as core_commands
+from core.layout import KernelLayout
 
 
 class _FakeAdapter:
@@ -349,7 +351,7 @@ def test_complete_object_names_degrades_on_traversal_failure(monkeypatch):
 
 def test_command_entry_guard_contains_unexpected_renderer_errors(monkeypatch):
     """A broken renderer cannot leak a Python exception out of the command edge."""
-    from gdr import gdb_bridge as bridge
+    from core import gdb_bridge as bridge
 
     errors: list[str] = []
     monkeypatch.setattr(bridge, "err", errors.append)
@@ -399,7 +401,7 @@ class _FakeHeapAdapter(commands.RtThreadAdapter):
 
 def test_render_heap_prints_basics_and_verdict_free_of_removed_rows(monkeypatch):
     """``rtt heap`` prints the basics and Blocks line; no Holes or occupancy rows."""
-    from gdr.adapter_api import HeapReport
+    from core.adapter import HeapReport
 
     adapter = _FakeHeapAdapter(
         HeapReport(
@@ -427,7 +429,7 @@ def test_render_heap_prints_basics_and_verdict_free_of_removed_rows(monkeypatch)
 
 def test_render_heap_degrades_to_na_without_a_walk(monkeypatch):
     """An unresolvable block chain keeps the basics and marks the Blocks line N/A."""
-    from gdr.adapter_api import HeapReport
+    from core.adapter import HeapReport
 
     adapter = _FakeHeapAdapter(
         HeapReport(pairs=[("Algorithm", "small_mem"), ("Blocks", "N/A")])
@@ -449,7 +451,7 @@ def test_render_heap_degrades_an_adapter_without_heap_report(monkeypatch):
     per-RTOS isinstance guard is gone: an active adapter missing the protocol
     method degrades through the command guard instead of a custom warning.
     """
-    from gdr import gdb_bridge as bridge
+    from core import gdb_bridge as bridge
 
     errors: list[str] = []
     monkeypatch.setattr(bridge, "err", errors.append)
@@ -459,3 +461,46 @@ def test_render_heap_degrades_an_adapter_without_heap_report(monkeypatch):
     commands.render_heap()
 
     assert errors and "render_heap" in errors[0]
+
+
+def test_adapter_owns_its_layout():
+    layout = KernelLayout()
+    selected = adapter_module.RtThreadAdapter(layout)
+
+    assert selected.layout is layout
+    assert isinstance(selected, adapter_module.RtThreadAdapter)
+
+
+def test_register_commands_resumes_after_alias_failure(monkeypatch):
+    calls: list[str] = []
+    alias_attempts = 0
+
+    def execute(command: str):
+        nonlocal alias_attempts
+        alias_attempts += 1
+        calls.append(command)
+        if alias_attempts == 1:
+            raise RuntimeError("alias registration interrupted")
+
+    fake_gdb = type("FakeGdb", (), {"execute": staticmethod(execute)})()
+    monkeypatch.setattr(commands, "gdb", fake_gdb)
+    monkeypatch.setattr(
+        commands,
+        "RtThreadCommand",
+        lambda: calls.append("command"),
+        raising=False,
+    )
+    monkeypatch.setattr(commands, "info", lambda _message: None)
+    monkeypatch.setattr(commands, "_command_registered", False)
+    monkeypatch.setattr(commands, "_alias_registered", False)
+
+    with pytest.raises(RuntimeError, match="alias registration interrupted"):
+        commands.register_commands()
+    commands.register_commands()
+    commands.register_commands()
+
+    assert calls == [
+        "command",
+        "alias rtt = rtthread",
+        "alias rtt = rtthread",
+    ]

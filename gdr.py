@@ -20,9 +20,9 @@ import os
 import sys
 from dataclasses import replace
 
-# Reason: GDB's Python interpreter does not add the script directory to
+# NOTE: GDB's Python interpreter does not add the script directory to
 # sys.path, so `source gdr.py` from an arbitrary cwd would fail on the first
-# `import gdr.*`. Prepend this file's directory so the project packages are
+# `import core.*`. Prepend this file's directory so the project packages are
 # importable without requiring PYTHONPATH or a cwd change.
 _GDR_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _GDR_ROOT not in sys.path:
@@ -33,13 +33,13 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import (  # noqa: E402
+from core.gdb_bridge import (  # noqa: E402
     gdb_command_guard,
     info,
     print_table,
     warn,
 )
-from gdr.help import (  # noqa: E402
+from core.help import (  # noqa: E402
     CommandHelp,
     HelpField,
     HelpTopic,
@@ -48,8 +48,8 @@ from gdr.help import (  # noqa: E402
     pretty_printer_topic,
     render_terminal,
 )
-from gdr.printers import register_printers  # noqa: E402
-from gdr.version import TargetVerdict  # noqa: E402
+from core.layout import register_printers  # noqa: E402
+from core.version import TargetVerdict  # noqa: E402
 
 
 def _root_help_tree() -> HelpTree:
@@ -179,14 +179,10 @@ def _print_usage(path: tuple[str, ...] = ()) -> None:
 def _report_unknown_command(token: str) -> None:
     """Report an unrecognized ``gdr`` subcommand without blaming initialization.
 
-    Reason: every unknown word used to print the ``gdr init`` usage, so a user who
-    spelled a kernel object as a ``gdr`` subcommand (``gdr heap``) read the message
-    as "this session is not initialized" and went looking in the wrong place, while
-    the session was in fact initialized and the command was simply not GDR's.
     Kernel state is listed by the RTOS command tree, which is a different GDB
     command, and a documented ``gdr`` topic is not a command at all.
     """
-    from gdr.adapter_api import session_meta
+    from core.adapter import session_meta
 
     documented = {topic.name for topic in _root_help_tree().topics}
     if token.lower() in documented:
@@ -210,7 +206,7 @@ def _report_unknown_command(token: str) -> None:
 
 def _complete(text: str, word: str | None) -> list[str]:
     """Tab-complete bootstrap subcommands and structured help topics."""
-    from gdr.commands import prefix_candidates
+    from core.commands import prefix_candidates
 
     parts = text.split()
     if parts and parts[0].lower() == "help" and " " in text:
@@ -288,8 +284,8 @@ def _init_command(rest: list[str]) -> None:
     ``--json`` is the machine channel a plugin uses to read one structured
     result instead of parsing log lines, so it is not advertised in help.
     """
-    from gdr.adapter_api import is_initialized
-    from gdr.constants import GDR_API_SCHEMA_VERSION
+    from core.adapter import is_initialized
+    from core.constants import GDR_API_SCHEMA_VERSION
 
     force = "--force" in rest
     allow_unverified = "--allow-unverified" in rest
@@ -354,7 +350,7 @@ def _init_refusal(
     if not json_mode:
         warn(message)
         return
-    from gdr.constants import GDR_API_SCHEMA_VERSION
+    from core.constants import GDR_API_SCHEMA_VERSION
 
     _write_json(
         {
@@ -385,7 +381,7 @@ def _api_command(argv: list[str]) -> None:
     """
     import json
 
-    from gdr.api import envelope_json
+    from core.api import envelope_json
 
     out_path: str | None = None
     compact = False
@@ -439,7 +435,7 @@ def _probe_command(argv: list[str]) -> None:
     decision on auto-detection).  ``--json`` is the machine channel a client
     reads; the default is the same evidence as a human table.
     """
-    from gdr.api import api_call
+    from core.api import api_call
 
     unknown = [token for token in argv if token != "--json"]
     if unknown:
@@ -491,7 +487,7 @@ def _resolve_auto(rtos: str) -> str | None:
     version or two matching adapters must reach the user as a question, with
     the probe report carrying the evidence for their answer.
     """
-    from gdr.probe import collect_candidates
+    from core.version import collect_candidates
 
     aliases = {"rt-thread": "rtthread", "rtt": "rtthread", "frt": "freertos"}
     wanted = aliases.get(rtos, rtos)
@@ -505,9 +501,9 @@ def _resolve_auto(rtos: str) -> str | None:
 
 def _register_probes() -> None:
     """Register every adapter probe so ``gdr probe`` works before ``init``."""
-    from freertos.probe import probe as freertos_probe
-    from gdr.probe import register_probe
-    from rtthread.probe import probe as rtthread_probe
+    from core.version import register_probe
+    from freertos.layout import probe as freertos_probe
+    from rtthread.layout import probe as rtthread_probe
 
     register_probe(rtthread_probe)
     register_probe(freertos_probe)
@@ -522,7 +518,7 @@ def _register_transport_functions() -> None:
     human convenience functions (which return target values and need an active
     adapter) stay in the setup path.
     """
-    from gdr.functions import register_api_functions
+    from core.commands import register_api_functions
 
     register_api_functions()
 
@@ -534,11 +530,11 @@ def _reset_command() -> None:
     layout-derived lookup per session, so a re-init into a different RTOS
     would otherwise fold objects through the previous adapter's layout.
     """
-    from gdr.adapter_api import active, is_initialized, reset
-    from gdr.api import next_generation
-    from gdr.gdb_bridge import reset_loadable_ranges
-    from gdr.printers import unregister_printers
-    from gdr.watch import clear as clear_watches
+    from core.adapter import active, is_initialized, reset
+    from core.api import next_generation
+    from core.commands import clear as clear_watches
+    from core.gdb_bridge import reset_loadable_ranges
+    from core.layout import unregister_printers
 
     if not is_initialized():
         warn("no active RTOS adapter to reset")
@@ -572,25 +568,25 @@ def _register_session_events() -> None:
 
     def on_stop(_event: object = None) -> None:
         try:
-            from gdr.api import next_generation
-            from gdr.watch import render_watches
+            from core.api import next_generation
+            from core.commands import render_watches
 
             next_generation()
-            # Reason: watch printing rides the same guarded hook so a second
+            # NOTE: watch printing rides the same guarded hook so a second
             # connection cannot interleave handlers; render_watches never
             # raises itself, and this guard covers the import boundary too.
             render_watches()
         except Exception:  # pragma: no cover - defensive event-loop guard
-            # Reason: an event hook that raises aborts GDB's event dispatch
+            # NOTE: an event hook that raises aborts GDB's event dispatch
             # and prints a raw traceback into the prompt; generation is a
             # cache hint, so losing one bump is preferable to that.
             return
 
     def on_new_objfile(_event: object = None) -> None:
         try:
-            from gdr.adapter_api import active
-            from gdr.api import next_generation
-            from gdr.gdb_bridge import reset_loadable_ranges
+            from core.adapter import active
+            from core.api import next_generation
+            from core.gdb_bridge import reset_loadable_ranges
 
             next_generation()
             reset_loadable_ranges()
@@ -599,7 +595,7 @@ def _register_session_events() -> None:
             if reset_adapter is not None:
                 reset_adapter()
         except Exception:  # pragma: no cover - defensive event-loop guard
-            # Reason: same as on_stop; a reflash must not crash the session
+            # NOTE: same as on_stop; a reflash must not crash the session
             # if one cache clear fails.
             return
 
@@ -607,7 +603,7 @@ def _register_session_events() -> None:
         gdb.events.stop.connect(on_stop)
         gdb.events.new_objfile.connect(on_new_objfile)
     except Exception:  # pragma: no cover - older GDB event API
-        # Reason: gdb.events exists from GDB 7.9; a build without it still
+        # NOTE: gdb.events exists from GDB 7.9; a build without it still
         # serves every command, it just cannot auto-invalidate caches.
         return
 
@@ -652,17 +648,16 @@ def _setup_rtthread(version: str, *, allow_unverified: bool = False) -> TargetVe
     Args:
         version: Full RT-Thread version string (e.g. ``"4.0.5"``).
         allow_unverified: Register even when the target matched no RT-Thread
-            symbol (see ``rtthread.version.check_target``).
+            symbol (see ``rtthread.layout.check_target``).
 
     Returns:
         The target verdict; ``accepted`` is false when nothing was registered.
     """
-    from gdr.adapter_api import is_initialized, register
-    from gdr.functions import register_api_functions, register_functions
+    from core.adapter import is_initialized, register
+    from core.commands import register_api_functions, register_functions
     from rtthread.adapter import RtThreadAdapter
     from rtthread.commands import register_commands
-    from rtthread.layout import build_layouts, detect_config
-    from rtthread.version import check_target
+    from rtthread.layout import build_layouts, check_target, detect_config
 
     if is_initialized():
         message = (
@@ -744,17 +739,16 @@ def _setup_freertos(version: str, *, allow_unverified: bool = False) -> TargetVe
     Args:
         version: Full FreeRTOS version string.
         allow_unverified: Register even when the target matched no FreeRTOS
-            symbol (see ``freertos.version.check_target``).
+            symbol (see ``freertos.layout.check_target``).
 
     Returns:
         The target verdict; ``accepted`` is false when nothing was registered.
     """
+    from core.adapter import is_initialized, register
+    from core.commands import register_api_functions, register_functions
     from freertos.adapter import FreeRtosAdapter
     from freertos.commands import register_commands
-    from freertos.layout import build_layout, detect_config
-    from freertos.version import check_target
-    from gdr.adapter_api import is_initialized, register
-    from gdr.functions import register_api_functions, register_functions
+    from freertos.layout import build_layout, check_target, detect_config
 
     if is_initialized():
         message = (
@@ -836,7 +830,7 @@ def initialize() -> None:
         _print_usage()
         return
 
-    from gdr.adapter_api import is_initialized
+    from core.adapter import is_initialized
 
     _setup_rtos(rtos, version)
     if not is_initialized():

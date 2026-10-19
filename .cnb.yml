@@ -71,7 +71,7 @@
       cd vscode
       npm ci --no-audit --no-fund
   - name: vendor the runtime and verify the schema handshake
-    # Reason: CNB runs `script:` blocks with the image's POSIX shell (`sh`,
+    # NOTE: CNB runs `script:` blocks with the image's POSIX shell (`sh`,
     # dash on Debian), so only POSIX `set` flags are allowed: the bash-only
     # pipeline-failure flag would abort the whole stage, and there is no
     # pipeline here to guard. Fail-fast is `set -eu`.
@@ -89,7 +89,7 @@
   - name: unit tests
     script: cd vscode && npm test
   - name: package the VSIX and attach it to this commit
-    # Reason: a release-grade `.vsix` must be reproducible from a clean tree:
+    # NOTE: a release-grade `.vsix` must be reproducible from a clean tree:
     # `npm ci` + vendored runtime + `vsce package`, and the artifact goes out as
     # a commit attachment for manual verification and manual marketplace
     # upload -- CI holds no publishing credentials.  `npm test` runs the
@@ -153,7 +153,7 @@
   RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
   FREERTOS_FIXTURE_CACHE: /tmp/freertos-fixture
 
-# Reason: probe the exact tools each lane needs before pytest; a missing gcc
+# NOTE: probe the exact tools each lane needs before pytest; a missing gcc
 # would otherwise pytest.skip the whole lane and report green.
 .gdb-python-qemu-sanity: &gdb-python-qemu-sanity
   name: toolchain sanity (no green-by-skip)
@@ -214,7 +214,7 @@
     - name: pytest RV64 matrix (QEMU closed-loop)
       script: bash ci/rt-thread/run-qemu-matrix.sh rv64
 
-# Reason: one freertos lane — every cell builds from FreeRTOS-Kernel at a tag
+# NOTE: one freertos lane — every cell builds from FreeRTOS-Kernel at a tag
 # with build-fixture-kernel.sh, so one kernel-source volume serves the config
 # matrix (10.3.1), the version sweep, SMP/MPU, RISC-V and the snapshot alike.
 .freertos-kernel-scope: &freertos-kernel-scope
@@ -236,7 +236,7 @@
           base full static-only static-dynamic trace-off \
           heap-1 heap-2 heap-3 heap-5 heap-protector \
           registry-0 pend-callback streams tick16
-    # Reason: the config axis pins 10.3.1 (the V10.3.1-kernel-only tag); the
+    # NOTE: the config axis pins 10.3.1 (the V10.3.1-kernel-only tag); the
     # version axis sweeps the newer ABI generations on the same board.
     - name: FreeRTOS kernel version matrix (mps2-an385)
       script: |
@@ -245,7 +245,7 @@
         bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 \
           base heap-protector heap-2 heap-5-protector streams \
           pend-callback tick16
-    # Reason: kept a separate stage so a dual-core failure is attributable at a
+    # NOTE: kept a separate stage so a dual-core failure is attributable at a
     # glance. ARMv8-M SMP exists only from 11.3.1, so this cannot fold into the
     # single-core version sweep above.  The mpu variant (single-core
     # configENABLE_MPU on the same board) shares the board's linker script:
@@ -256,12 +256,12 @@
     # fails this stage.
     - name: FreeRTOS dual-core SMP + MPU wrappers (mps2-an521, kernel 11.3.1)
       script: bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp mpu
-    # Reason: the 64-bit lane is a separate stage so a RISC-V failure is not
+    # NOTE: the 64-bit lane is a separate stage so a RISC-V failure is not
     # conflated with the 32-bit sweep; gdb-multiarch speaks riscv:rv64 and the
     # container env provides XPACK_RISCV_TOOLCHAIN_PATH.
     - name: FreeRTOS 64-bit RISC-V (qemu-virt-rv64, kernel 11.1.0)
       script: bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
-    # Reason: the static snapshot (file-only ELF, no QEMU) is the
+    # NOTE: the static snapshot (file-only ELF, no QEMU) is the
     # negative-testing arm of the FreeRTOS matrix — the data-corruption
     # states a healthy kernel cannot produce (corrupt scheduler lists, a
     # timer on the overflow list, mismatched heap counters). It builds from
@@ -369,7 +369,7 @@ $:
         - name: create source archives
           script: bash ci/create-release-archives.sh "$CNB_BRANCH"
         - name: build the release VSIX
-          # Reason: same versioned `ci/build-vsix.sh` the GitHub release
+          # NOTE: same versioned `ci/build-vsix.sh` the GitHub release
           # runs, so both forges attach the identical file name; the tag
           # check fails the pipeline on a mistagged release.
           script: bash ci/build-vsix.sh "$CNB_BRANCH"

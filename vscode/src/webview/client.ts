@@ -9,7 +9,7 @@
  */
 
 /// <reference lib="dom" />
-// Reason: the main tsconfig targets the extension host (lib ES2022 only);
+// NOTE: the main tsconfig targets the extension host (lib ES2022 only);
 // this file runs inside the webview where the DOM is the runtime, so it
 // pulls the DOM lib in locally rather than loosening the whole project.
 
@@ -62,7 +62,7 @@ if (root === null) {
 }
 
 window.addEventListener('message', (event: MessageEvent) => {
-	// Reason: the host is the only legitimate sender. VS Code relays it through
+	// NOTE: the host is the only legitimate sender. VS Code relays it through
 	// the parent frame that shares this webview's origin, so the VS Code team's
 	// own guidance for webviews is an exact origin match (`e.origin ===
 	// window.origin`); a foreign frame that got a handle on this window must
@@ -92,7 +92,7 @@ window.addEventListener('message', (event: MessageEvent) => {
 		if (sessionId !== bodyOf(root)?.dataset.session) { return; }
 		const sized = narrowSizedGrid((payload as { grid?: unknown }).grid);
 		if (sized === null) { return; }
-		// Reason: the host replays the producer layout for the drag width;
+		// NOTE: the host replays the producer layout for the drag width;
 		// the envelope grid stays untouched for reset and the PNG.
 		heapViewGrid = sized;
 		const rowBytes = (payload as { rowBytes?: unknown }).rowBytes;
@@ -169,7 +169,7 @@ function bodyOf(container: HTMLElement): HTMLElement | null {
 }
 
 function tablesOf(container: HTMLElement): HTMLElement[] {
-	// Reason: Array.from rather than spread: the DOM iterable lib is not loaded.
+	// NOTE: Array.from rather than spread: the DOM iterable lib is not loaded.
 	return Array.from(container.querySelectorAll<HTMLElement>('.gdr-scroll, .gdr-heap-map'));
 }
 
@@ -224,7 +224,7 @@ function applyTrustedHostMarkup(container: HTMLElement, html: string): void {
 	hidePointerLabel();
 	const memory = captureScroll(container);
 	const session = bodyOf(container)?.dataset.session ?? '';
-	// Reason: the outgoing session's choices are saved first, so switching
+	// NOTE: the outgoing session's choices are saved first, so switching
 	// tabs keeps every disclosure (including the heap map) as the reader
 	// left it instead of springing back to the markup default.
 	container.querySelectorAll<HTMLDetailsElement>('details[data-disclosure]').forEach((node) => {
@@ -274,7 +274,7 @@ function showPointerLabel(anchor: HTMLElement): void {
 	pointerLabel.style.left = `${Math.max(8, Math.min(bounds.left, window.innerWidth - pointerLabel.offsetWidth - 8))}px`;
 	const below = bounds.bottom + pointerLabel.offsetHeight + 8 <= window.innerHeight;
 	pointerLabel.style.top = `${Math.max(8, below ? bounds.bottom + 4 : bounds.top - pointerLabel.offsetHeight - 4)}px`;
-	// Reason: placing a waiter label below its link covers the next waiter,
+	// NOTE: placing a waiter label below its link covers the next waiter,
 	// making that link impossible to click. Prefer beside the entire menu.
 	const menu = anchor.closest<HTMLElement>('.gdr-waiter-menu')?.getBoundingClientRect();
 	if (menu !== undefined) {
@@ -310,14 +310,14 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { 
 document.addEventListener('scroll', hidePointerLabel, true);
 window.addEventListener('resize', hidePointerLabel);
 
-// Reason: the grip drag posts column counts while the host replays the
+// NOTE: the grip drag posts column counts while the host replays the
 // producer layout; local listeners stay on window so a redraw mid-drag
 // cannot strand them on a replaced grip element.
 window.addEventListener('pointermove', (event: PointerEvent) => {
 	if (heapResize === null) { return; }
 	heapResize.x = event.clientX;
 	heapResize.y = event.clientY;
-	// Reason: only the minimum is clamped; the drag sets whatever width the
+	// NOTE: only the minimum is clamped; the drag sets whatever width the
 	// reader pulls, and the viewport scrolls past the old budget.
 	const columns = Math.max(heapResize.minCols, heapResize.startColumns + Math.round((event.clientX - heapResize.startX) / heapResize.cellPx));
 	const request: ClickMessage = { type: 'resizeHeap', columns };
@@ -333,7 +333,7 @@ window.addEventListener('pointerup', () => {
 	hideHeapResize(container);
 });
 
-// Reason: the corner zoom is a pure display transform, so tracking lives on
+// NOTE: the corner zoom is a pure display transform, so tracking lives on
 // window beside the column drag: a redraw mid-drag cannot strand it.
 window.addEventListener('pointermove', (event: PointerEvent) => {
 	if (heapCornerDrag === null) { return; }
@@ -451,7 +451,7 @@ function wireHints(container: HTMLElement): void {
 // Layout gestures: table order, column widths, and the checkbox tree
 // ---------------------------------------------------------------------------
 
-// Reason: these rules restate `layoutEdits.ts` (the tested source). This file
+// NOTE: these rules restate `layoutEdits.ts` (the tested source). This file
 // cannot import it: the webview loads it as a classic script with no bundler.
 // Keep the bounds and the move rule in step with that module.
 const MIN_WIDTH = 40;
@@ -479,7 +479,7 @@ function applySavedWidths(container: HTMLElement): void {
 /** Fixed col tracks keep automatic table layout from overriding a dragged width. */
 function applyColumnWidths(table: HTMLTableElement): void {
 	const headers = Array.from(table.querySelectorAll<HTMLElement>('thead th[data-col]'));
-	// Reason: measure all natural widths before changing layout; otherwise the
+	// NOTE: measure all natural widths before changing layout; otherwise the
 	// first fixed column can distort the widths measured for its neighbours.
 	const widths = headers.map((header) => clampWidth(Number(header.dataset.width) || header.getBoundingClientRect().width));
 	const group = document.createElement('colgroup');
@@ -502,7 +502,7 @@ function applyColumnWidths(table: HTMLTableElement): void {
 function layoutFromDom(container: HTMLElement): ClientLayout {
 	const visibleOrder = Array.from(container.querySelectorAll<HTMLElement>('section.gdr-card[data-kind]')).map((card) => card.dataset.kind ?? '');
 	const treeOrder = Array.from(container.querySelectorAll<HTMLElement>('[data-tree-kind]')).map((node) => node.dataset.treeKind ?? '');
-	// Reason: retain hidden/unavailable tables in their slots while visible cards move.
+	// NOTE: retain hidden/unavailable tables in their slots while visible cards move.
 	let next = 0;
 	const order = treeOrder.map((kind) => visibleOrder.includes(kind) ? visibleOrder[next++] : kind);
 	const hiddenTables: string[] = [];
@@ -589,7 +589,7 @@ function moveTable(container: HTMLElement, kind: string, targetKind: string, aft
 	if (source === undefined || target === undefined || target.parentElement === null) { return; }
 	target.parentElement.insertBefore(source, after ? target.nextSibling : target);
 	const cards = Array.from(container.querySelectorAll<HTMLElement>('section[data-kind]'));
-	// Reason: moving hidden tables still changes their saved slot, not visibility.
+	// NOTE: moving hidden tables still changes their saved slot, not visibility.
 	for (const node of Array.from(target.parentElement.children)) {
 		const card = cards.find((candidate) => candidate.dataset.kind === (node as HTMLElement).dataset.treeKind);
 		if (card !== undefined) { card.parentElement?.appendChild(card); }
@@ -600,7 +600,7 @@ function moveTable(container: HTMLElement, kind: string, targetKind: string, aft
 function canMoveColumn(source: HTMLElement, target: HTMLElement): boolean {
 	const parent = source.closest<HTMLElement>('[data-tree-kind]');
 	if (source === target || parent === null || parent !== target.closest('[data-tree-kind]')) { return false; }
-	// Reason: heap properties and verdicts are separate tables; keep each group's
+	// NOTE: heap properties and verdicts are separate tables; keep each group's
 	// ordering within its real table instead of promising a cross-table move.
 	return parent.dataset.treeKind !== 'heap' || source.classList.contains('gdr-tree-diag') === target.classList.contains('gdr-tree-diag');
 }
@@ -743,7 +743,7 @@ function wireLayout(container: HTMLElement): void {
 	});
 
 	container.querySelectorAll<HTMLElement>('.gdr-col-grip').forEach((grip) => {
-		// Reason: prevent the draggable header's native mouse drag as well as
+		// NOTE: prevent the draggable header's native mouse drag as well as
 		// the pointer gesture; resizing and column reordering are independent.
 		grip.addEventListener('mousedown', (event) => { event.preventDefault(); event.stopPropagation(); });
 		grip.addEventListener('dragstart', (event) => { event.preventDefault(); event.stopPropagation(); });
@@ -794,17 +794,17 @@ function wireLayout(container: HTMLElement): void {
 // Heap canvas: paint the block layout, and read the block under the pointer
 // ---------------------------------------------------------------------------
 
-// Reason: the serialized grid is the single source for painting and hover.
+// NOTE: the serialized grid is the single source for painting and hover.
 const HEAP_BACKGROUND: [number, number, number] = [0x1e, 0x1e, 0x1e];
 const HEAP_FALLBACK_FREE = '#c8c8c8';
 const HEAP_FALLBACK_UNKNOWN = '#4f8fd6';
-// Reason: fold hatches are 2-pixel 45-degree stripes, crisp at any cell size
+// NOTE: fold hatches are 2-pixel 45-degree stripes, crisp at any cell size
 // where a soft shadow blurred into mud on low-density exports.
 const HEAP_FOLD_HATCH: [number, number, number] = [0x90, 0x90, 0x90];
-// Reason: notes carry no block colour; a mid grey stays visible on both the
+// NOTE: notes carry no block colour; a mid grey stays visible on both the
 // dark canvas and a light panel theme, unlike the PNG's dark swatch.
 const HEAP_NOTE_SWATCH = '#808080';
-// Reason: short rankings stay in one column like the PNG below eight rows;
+// NOTE: short rankings stay in one column like the PNG below eight rows;
 // wrapping only pays off past that, where two columns stay narrower.
 const HEAP_LEGEND_WRAP_MIN = 8;
 
@@ -991,7 +991,7 @@ function heapUnits(rows: number, folds: ClientFold[]): HeapUnit[] {
 			for (const fold of bands) {
 				for (let span = 0; span < fold.height; span += 1) { units.push({ type: 'fold', fold }); }
 			}
-			// Reason: older envelopes carry no row count; one folded row each.
+			// NOTE: older envelopes carry no row count; one folded row each.
 			const covered = Math.max(...bands.map((fold) => fold.rows ?? 1));
 			row += covered;
 		} else {
@@ -1100,7 +1100,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 	const addrEnd = container.querySelector<HTMLElement>('[data-heap-addr-end]');
 	const tooltip = container.querySelector<HTMLElement>('[data-heap-tooltip]');
 	const map = heapMapData;
-	// Reason: assigned handlers outlive an early return (the empty section
+	// NOTE: assigned handlers outlive an early return (the empty section
 	// wires its toggle before any canvas exists), so shared state is
 	// declared up front and never sits in the temporal dead zone.
 	let pan: { x: number; y: number; left: number; top: number; moved: boolean } | null = null;
@@ -1108,7 +1108,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 	const hideTooltip = (): void => { pinnedKey = null; if (tooltip !== null) { tooltip.hidden = true; } };
 	const fold = container.querySelector<HTMLDetailsElement>('.gdr-heap-fold');
 	if (fold !== null) {
-		// Reason: expanding the empty section requests the bitmap, so the
+		// NOTE: expanding the empty section requests the bitmap, so the
 		// summary itself is the draw control; assigning replaces any older
 		// handler, so a redraw never stacks listeners on the same fold.
 		fold.ontoggle = (): void => {
@@ -1129,7 +1129,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 	}
 	const grid = heapViewGrid ?? map.grid;
 	if (grid === undefined || grid.width <= 0 || grid.height <= 0) {
-		// Reason: an empty grid must not leave the previous map's shells behind.
+		// NOTE: an empty grid must not leave the previous map's shells behind.
 		legend?.replaceChildren();
 		if (addrStart !== null) { addrStart.textContent = ''; }
 		if (addrEnd !== null) { addrEnd.textContent = ''; }
@@ -1139,7 +1139,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 	const rows = grid.height;
 	const folds = [...(grid.folds ?? [])].sort((a, b) => a.row - b.row);
 	const scale = Math.max(6, grid.scale);
-	// Reason: the hatch period tracks the cell size, so a coarser envelope
+	// NOTE: the hatch period tracks the cell size, so a coarser envelope
 	// scale keeps the same 2-on-2-off diagonal rhythm as the PNG.
 	const period = Math.max(2, Math.round(scale * 2 / 3));
 	const half = period / 2;
@@ -1147,7 +1147,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 	const cells = columns * rows;
 	const owner = new Int32Array(cells).fill(-1);
 
-	// Reason: consume the exact Python allocation, not a second rasterizer whose
+	// NOTE: consume the exact Python allocation, not a second rasterizer whose
 	// rounding can overwrite tiny blocks and disagree with PNG/hover.
 	for (const [start, stop, index] of grid.runs) { owner.fill(index, start, stop); }
 	canvas.width = columns * scale;
@@ -1171,7 +1171,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 				const cell = entry.row * columns + column;
 			const index = owner[cell];
 			const [red, green, blue] = index < 0 ? HEAP_BACKGROUND : colourOf(map.blocks[index] ?? [0, 0, false, null], map);
-				// Reason: each shared edge is owned by its right/lower cell
+				// NOTE: each shared edge is owned by its right/lower cell
 				// alone, mirroring the PNG rule, so the line stays two pixels
 				// and every right angle it meets stays closed.
 				const left = column > 0 ? owner[cell - 1] : -1;
@@ -1186,7 +1186,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 			}
 		}
 	}
-	// Reason: a wrapping block's inner corner joins a left bar from above
+	// NOTE: a wrapping block's inner corner joins a left bar from above
 	// with a top bar from the left; without this pixel the two meet only
 	// diagonally and the right angle reads open. Mirrors `cornerPoints`.
 	const atCell = (r: number, c: number): number => {
@@ -1224,7 +1224,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 	paintHeapLegend(legend, map, rows, scale);
 	paintHeapAddrs(addrStart, addrEnd, map);
 
-	// Reason: assigning the handler replaces the previous one, so a redraw never
+	// NOTE: assigning the handler replaces the previous one, so a redraw never
 	// stacks listeners on the same canvas.
 	wireHeapGrip(container, grip, grid);
 	canvas.onmousemove = (event: MouseEvent): void => {
@@ -1266,7 +1266,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 		}
 		if (key === pinnedKey) { return; }
 		pinnedKey = key;
-		// Reason: the custom floating tooltip is the single hover surface. A
+		// NOTE: the custom floating tooltip is the single hover surface. A
 		// native `title` here would make Chromium show a second label beside it.
 		canvas.removeAttribute('title');
 		tooltip.hidden = false;
@@ -1278,7 +1278,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 		tooltip.style.top = `${Math.max(4, Math.min(anchorTop, window.innerHeight - labelHeight - 8))}px`;
 	};
 	canvas.onmouseleave = (event: MouseEvent): void => {
-		// Reason: travelling onto the pinned label must not hide it; the
+		// NOTE: travelling onto the pinned label must not hide it; the
 		// label covers canvas cells whose hover would otherwise take over.
 		if (event.relatedTarget instanceof Node && tooltip !== null && tooltip.contains(event.relatedTarget)) { return; }
 		hideTooltip();
@@ -1292,7 +1292,7 @@ function drawHeapCanvas(container: HTMLElement): void {
 	canvas.onpointermove = canvas.onmousemove;
 	canvas.onpointerleave = canvas.onmouseleave;
 	if (viewport !== null) {
-		// Reason: tall bitmaps scroll inside the capped viewport; dragging
+		// NOTE: tall bitmaps scroll inside the capped viewport; dragging
 		// pans them without moving the surrounding card.
 		viewport.onpointerdown = (event: PointerEvent): void => {
 			if (event.button !== 0) { return; }
@@ -1415,7 +1415,7 @@ function hideHeapResize(container: HTMLElement): void {
 
 /** Used-area start/end labels above and below the bitmap, mirroring the PNG strips. */
 function paintHeapAddrs(start: HTMLElement | null, end: HTMLElement | null, map: ClientHeapMap): void {
-	// Reason: textContent, never innerHTML: addresses ride target data paths.
+	// NOTE: textContent, never innerHTML: addresses ride target data paths.
 	if (start !== null) { start.textContent = `start: ${heapAddress(map.base)}`; }
 	if (end !== null) { end.textContent = `end: ${heapAddress(map.end)}`; }
 }
@@ -1428,7 +1428,7 @@ function paintHeapLegend(legend: HTMLElement | null, map: ClientHeapMap, rows: n
 	if (legend === null) { return; }
 	legend.replaceChildren();
 	const entries = heapLegend(map);
-	// Reason: the wrap budget follows the base cell size; 20px rows match
+	// NOTE: the wrap budget follows the base cell size; 20px rows match
 	// the PNG legend's line step exactly, and
 	// short rankings stay in one column like the PNG below eight rows.
 	const budget = 2 * rows * baseScale;
@@ -1450,9 +1450,9 @@ function heapLegendRow(entry: HeapLegendRow): HTMLElement {
 	row.className = 'gdr-heap-legend-row';
 	const swatch = document.createElement('span');
 	swatch.className = 'gdr-heap-legend-swatch';
-	// Reason: element.style is not markup, so the CSP does not block it.
+	// NOTE: element.style is not markup, so the CSP does not block it.
 	swatch.style.background = entry.colour;
-	// Reason: textContent, never innerHTML: an owner name is target data.
+	// NOTE: textContent, never innerHTML: an owner name is target data.
 	const text = document.createElement('span');
 	text.textContent = entry.text;
 	row.append(swatch, text);

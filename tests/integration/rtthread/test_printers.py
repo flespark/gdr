@@ -35,7 +35,7 @@ class TestPrinters:
         """A thread folds with its name and a symbolic state.
 
         Regression guard for the enum_map feature in
-        ``gdr.printers._format_field``: before the map the fold showed
+        ``core.layout._format_field``: before the map the fold showed
         ``stat=2``; afterwards it shows ``stat=SUSPEND``.
         """
         out = gdb_session.run('p $gdr_task("worker1")')
@@ -75,8 +75,8 @@ class TestPrinters:
         out = gdb_session.run_python(
             """
 import gdb
-from gdr.printers import _format_field
-from gdr.layout import StructField
+from core.layout import _format_field
+from core.layout import StructField
 
 entry = gdb.parse_and_eval('$gdr_task("worker1").entry')
 print(_format_field(entry, StructField("entry", ("entry",), kind="ptr")))

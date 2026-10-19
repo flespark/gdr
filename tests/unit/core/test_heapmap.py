@@ -7,8 +7,8 @@ import random
 import struct
 import zlib
 
-from gdr import heapmap
-from gdr.adapter_api import HeapMap, HeapMapBlock
+from core import heapmap
+from core.adapter import HeapMap, HeapMapBlock
 
 
 def _map(blocks, *, base=0, end=65536, owners=True) -> HeapMap:
@@ -252,7 +252,7 @@ def test_grid_has_no_padding_and_reserves_six_pixel_cells_for_tiny_blocks():
 
 
 def test_png_contains_swatches_and_legend_text_right_of_the_map():
-    from gdr.bitmapfont import append_endpoint_labels, append_legend, printable
+    from core.heapmap import append_endpoint_labels, append_legend, printable
 
     heap = _map(
         [HeapMapBlock(0, 16, True, "main"), HeapMapBlock(16, 16, False)], end=32
@@ -286,7 +286,7 @@ def test_png_contains_swatches_and_legend_text_right_of_the_map():
 
 
 def test_wrap_label_breaks_after_commas_then_words():
-    from gdr.bitmapfont import _wrap_label
+    from core.heapmap import _wrap_label
 
     assert _wrap_label("owner:main, size: 16 B, start: 0x0", 24) == [
         "owner:main, size: 16 B",
@@ -381,7 +381,7 @@ def test_gap_and_canvas_sides_draw_no_divider():
 
 def test_endpoint_strips_label_the_used_area_start_and_end():
     """The start/end strips span the full width above and below the bitmap."""
-    from gdr.bitmapfont import append_endpoint_labels
+    from core.heapmap import append_endpoint_labels
 
     rgb, width, height = b"\xff\xff\xff" * 10, 10, 1
     out, out_width, out_height = append_endpoint_labels(
@@ -403,7 +403,7 @@ def test_legend_wraps_ten_rows_into_two_lanes():
     layout = heapmap.grid_layout(heap)
     entries = heapmap.legend_entries(heap, heapmap.build_palette(heap))
     rgb, width, height = heapmap.rasterize(heap, heapmap.build_palette(heap), layout)
-    from gdr.bitmapfont import append_legend
+    from core.heapmap import append_legend
 
     expanded, out_width, out_height = append_legend(rgb, width, height, entries)
     # Reason: ten rows split five and five; the second lane starts one column

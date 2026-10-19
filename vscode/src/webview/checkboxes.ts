@@ -147,7 +147,7 @@ export function buildTableTree(snapshot: PanelSnapshot, layout: PanelLayout | un
 		const defaultKeys = kind === 'heap' ? all.map((column) => column.key) : tableOf(kind, snapshot)?.headers ?? [];
 		const keys = [...new Set([...(layout?.tables[kind]?.columnOrder ?? []), ...defaultKeys])];
 		const ordered = keys.flatMap((key) => all.filter((column) => column.key === key));
-		// Reason: heap properties and checks render in two separate tables.
+		// NOTE: heap properties and checks render in two separate tables.
 		const columns = kind === 'heap' ? [...ordered.filter((column) => column.group === 'basic'), ...ordered.filter((column) => column.group === 'diag')] : ordered;
 		return {
 			kind,

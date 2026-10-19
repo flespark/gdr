@@ -116,12 +116,12 @@ collect_patch_dirs() {
             PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.3-3.1.5")
             ;;
         esac
-        # Reason: v3.1.5 has a different main.c baseline, but still needs the
+        # NOTE: v3.1.5 has a different main.c baseline, but still needs the
         # non-fixture compatibility patches shared by the full 3.1 series.
         if [[ "$REF" == "v3.1.5" ]]; then
             PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.x")
         fi
-        # Reason: only 3.1.0 predates the DFS _EXFUN guard needed by xPack's
+        # NOTE: only 3.1.0 predates the DFS _EXFUN guard needed by xPack's
         # modern newlib; it was incorporated upstream in 3.1.1.
         if [[ "$REF" == "v3.1.0" ]]; then
             PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.0")
@@ -130,7 +130,7 @@ collect_patch_dirs() {
 }
 
 checkout_source() {
-    # Reason: always re-checkout the ref so stale changes do not survive CI reruns.
+    # NOTE: always re-checkout the ref so stale changes do not survive CI reruns.
     if [[ -d "$BUILD_DIR/.git" ]]; then
         echo "[gdr-ci] existing clone found; reusing"
         git -C "$BUILD_DIR" fetch --depth=1 origin "$REF"
@@ -202,12 +202,12 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-# Reason: the version macros live in the kernel headers, so version detection
+# NOTE: the version macros live in the kernel headers, so version detection
 # needs -g3's macro section, and the BSP default (-gdwarf-2) cannot carry one.
 if "-g3" in text:
     print("[gdr-ci] debug macros: already -g3")
 else:
-    # Reason: the BSPs spell their debug flags differently -- the ARM BSP uses
+    # NOTE: the BSPs spell their debug flags differently -- the ARM BSP uses
     # "-g -gdwarf-2", the RISC-V ones "-ggdb" -- and version detection needs the
     # macro section either way, so both forms are rewritten.
     updated, count = text, 0
@@ -236,7 +236,7 @@ build_bsp() {
         export RTT_EXEC_PATH="$TOOLCHAIN_PATH"
         echo "[gdr-ci] scons (may take a minute)..."
         jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
-        # Reason: RT-Thread 3.1.x's tools/building.py has Python 2 syntax, while
+        # NOTE: RT-Thread 3.1.x's tools/building.py has Python 2 syntax, while
         # 4.x is verified with the default Python 3/SCons 4 environment.
         if [[ -n "${SCONS_BIN:-}" ]]; then
             echo "[gdr-ci] scons command: $SCONS_BIN"
@@ -244,7 +244,7 @@ build_bsp() {
         elif [[ "$REF" == v3.1.* ]]; then
             python2="${PYTHON2_BIN:-/opt/python2/bin/python}"
             scons="${PYTHON2_SCONS:-/opt/python2/bin/scons}"
-            # Reason: the relocated /opt/python2 interpreter needs its private
+            # NOTE: the relocated /opt/python2 interpreter needs its private
             # libpython/OpenSSL path only for this process, not the whole container.
             python2_lib="$(cd "$(dirname "$python2")/../lib" && pwd)"
             echo "[gdr-ci] scons command: $python2 $scons"

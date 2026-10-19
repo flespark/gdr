@@ -37,7 +37,7 @@ DEFAULT_TARGET="mps2-an385"
 DEFAULT_VARIANT="base"
 DEFAULT_BUILD_DIR="/tmp/gdr-freertos-kernel-build"
 TOOLCHAIN_PREFIX="arm-none-eabi-"
-# Reason: the RISC-V lane compiles with the riscv-none-elf- toolchain; the
+# NOTE: the RISC-V lane compiles with the riscv-none-elf- toolchain; the
 # prefix is resolved after --target is parsed (setup_toolchain runs in main).
 toolchain_prefix_for() {
     case "$TARGET" in
@@ -55,7 +55,7 @@ version_from_tag() {
 prepare_kernel() {
     local source="$KERNEL_DIR"
     if [[ "${KERNEL_DIR_EXPLICIT:-0}" == 1 ]]; then
-        # Reason: never checkout a caller-owned reference tree. The build uses
+        # NOTE: never checkout a caller-owned reference tree. The build uses
         # a private clone whose worktree may safely be detached at TAG.
         KERNEL_DIR="$BUILD_DIR/kernel-source"
         rm -rf "$KERNEL_DIR"
@@ -79,12 +79,12 @@ board_flags() {
         echo "-mcpu=cortex-m3 -mthumb"
         ;;
     mps2-an521)
-        # Reason: the AN521 runs two Cortex-M33s; pin the FPU off to match
+        # NOTE: the AN521 runs two Cortex-M33s; pin the FPU off to match
         # configENABLE_FPU 0 so the lazy-stacking path stays out of the build.
         echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=soft"
         ;;
     qemu-virt-rv64)
-        # Reason: integer-only rv64imac keeps portContext.h's FPU sections out
+        # NOTE: integer-only rv64imac keeps portContext.h's FPU sections out
         # (configENABLE_FPU 0); medany makes every RAM address reachable from
         # the 0x80000000 load base.  The explicit _zicsr suffix is required by
         # the xPack 15.2 assembler, which splits the I extension and rejects
@@ -122,7 +122,7 @@ compile_fixture() {
     local -a chip_include_paths=()
     case "$TARGET" in
     mps2-an521)
-        # Reason: the CM33_NTZ port keeps context switching and the SVC/
+        # NOTE: the CM33_NTZ port keeps context switching and the SVC/
         # PendSV handler in portasm.c -- ARM_CM3 has only port.c, so the
         # kernel-direct lane used to compile exactly one port file.  Omitting
         # portasm.c fails only at link time (missing SVC_Handler /
@@ -131,7 +131,7 @@ compile_fixture() {
         # bootstrap and lives alongside the other board sources.
         port_sources+=("$port_dir/portasm.c" "$board_dir/cpu1_start.c")
         if [[ "$VARIANT" == "mpu" ]]; then
-            # Reason: the MPU wrappers v2 (portable/Common/mpu_wrappers_v2.c
+            # NOTE: the MPU wrappers v2 (portable/Common/mpu_wrappers_v2.c
             # + this port's mpu_wrappers_v2_asm.c) implement the SVC gate;
             # without them a configENABLE_MPU build fails to link on the
             # MPU_xQueueGenericCreate / MPU_GetFreeIndexInKernelObjectPool
@@ -143,7 +143,7 @@ compile_fixture() {
         fi
         ;;
     qemu-virt-rv64)
-        # Reason: the RISC-V port keeps the context switch and M-mode trap
+        # NOTE: the RISC-V port keeps the context switch and M-mode trap
         # handler in portASM.S (port.c alone would link but never switch
         # tasks).  The chip-specific extension header (mtime/CLINT macros)
         # is found through the preprocessor include path of the assembler
@@ -172,21 +172,21 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
-    # Reason: set -u treats "${chip_include_paths[@]}" on an empty array as
+    # NOTE: set -u treats "${chip_include_paths[@]}" on an empty array as
     # an unbound-variable error on older bash (the same reason port_sources
     # is gated below), so only expand when the target added paths.
     if [[ ${#chip_include_paths[@]} -gt 0 ]]; then
         cflags+=("${chip_include_paths[@]}")
     fi
     if [[ "$VARIANT" == "mpu" ]]; then
-        # Reason: upstream portable/Common/mpu_wrappers_v2.c and the CM33
+        # NOTE: upstream portable/Common/mpu_wrappers_v2.c and the CM33
         # mpu_wrappers_v2_asm.c are not -Werror-clean (unused parameters in
         # the wrapper thunks that only mirror their FreeRTOS.h prototypes);
         # the -Werror flag is ours, so the suppression is scoped to the
         # variant that links those files.
         cflags+=(-Wno-unused-parameter)
     fi
-    # Reason: set -u treats "${port_sources[@]}" on an empty array as an
+    # NOTE: set -u treats "${port_sources[@]}" on an empty array as an
     # unbound-variable error on older bash, so gate the expansion on length.
     if [[ ${#port_sources[@]} -gt 0 ]]; then
         sources=(
@@ -218,7 +218,7 @@ compile_fixture() {
         sources+=("$heap")
     fi
 
-    # Reason: --specs=nano.specs/nosys.specs are ARM multilib specs; the
+    # NOTE: --specs=nano.specs/nosys.specs are ARM multilib specs; the
     # RISC-V toolchain carries its own nano/nosys variants, so gate the
     # specs flags per target.  The empty-array expansion must also be gated
     # (set -u on bash 3.2 errors on an empty "${specs_flags[@]}").
@@ -245,7 +245,7 @@ compile_fixture() {
     echo "[gdr-ci] built BIN: $OUT_BIN"
 }
 
-# Reason: the static snapshot is the negative-testing variant — a single
+# NOTE: the static snapshot is the negative-testing variant — a single
 # hand-written TU whose .data holds corrupt scheduler structures a healthy
 # kernel cannot produce. It needs only kernel *headers* (no kernel sources,
 # no port, no board), compiles freestanding with the portmacro.h/linker.ld

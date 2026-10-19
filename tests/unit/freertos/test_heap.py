@@ -15,6 +15,7 @@ through module-level helpers, following ``test_timers.py``.
 from __future__ import annotations
 
 import struct
+import types
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -23,8 +24,16 @@ import pytest
 import freertos.adapter as adapter_module
 import freertos.commands as commands
 import freertos.heap as heap
-from freertos.heap import HeapBlock, HeapGeometry, HeapSnapshot, HeapWalk
-from freertos.layout import FreeRtosConfig, build_layout
+from freertos.heap import (
+    HeapBlock,
+    HeapGeometry,
+    HeapSnapshot,
+    HeapWalk,
+)
+from freertos.layout import (
+    FreeRtosConfig,
+    build_layout,
+)
 
 _ARCH = SimpleNamespace(ptrsize=4, endian="little")
 
@@ -947,7 +956,7 @@ def test_heap_block_table_shapes():
 
 
 def test_render_heap_prints_pairs_and_table(monkeypatch):
-    from gdr import commands as gdr_commands
+    from core import commands as gdr_commands
 
     adapter = adapter_module.FreeRtosAdapter(
         build_layout(FreeRtosConfig(heap_kind=4), (10, 3, 1))
@@ -966,7 +975,7 @@ def test_render_heap_prints_pairs_and_table(monkeypatch):
     )
     monkeypatch.setattr(heap, "heap_snapshot", lambda _layout: snap)
     # The neutral renderer (C1) calls the adapter's HeapReport and prints
-    # through the gdr.commands namespace.
+    # through the core.commands namespace.
     monkeypatch.setattr(gdr_commands, "active", lambda: adapter)
     rendered_pairs: dict[str, str] = {}
     rendered_table: dict[str, object] = {}
@@ -988,7 +997,7 @@ def test_render_heap_prints_pairs_and_table(monkeypatch):
 
 
 def test_render_heap_warns_without_adapter(monkeypatch):
-    from gdr import commands as gdr_commands
+    from core import commands as gdr_commands
 
     monkeypatch.setattr(gdr_commands, "active", lambda: None)
     warnings: list[str] = []
@@ -1041,7 +1050,7 @@ def test_system_summary_exposes_heap_fields(monkeypatch):
     assert summary.heap_status == "good"
 
     # An untrustworthy free leaves heap_used None so the renderer omits it
-    # (gdr.commands only prints Heap used/total when not None).
+    # (core.commands only prints Heap used/total when not None).
     snap.free = None
     summary = adapter.system_summary()
     assert summary.heap_used is None
@@ -1080,3 +1089,66 @@ def test_system_summary_heap3_allocator_label(monkeypatch):
 
     snap.geometry = HeapGeometry(kind=None, algorithm="none")
     assert adapter.system_summary().heap_allocator is None
+
+
+def _adapter():
+    return adapter_module.FreeRtosAdapter(
+        adapter_module.FreeRtosLayout(version=(10, 3, 1))
+    )
+
+
+def _snapshot(linear, algorithm="heap_4"):
+    return types.SimpleNamespace(
+        linear=linear, geometry=types.SimpleNamespace(algorithm=algorithm)
+    )
+
+
+def test_heap_map_draws_the_linear_walk_with_no_owners(monkeypatch):
+    """Allocated and free blocks come from the linear walk; no owner names."""
+    walk = HeapWalk(
+        blocks=[
+            HeapBlock(address=0x2000, size=64, allocated=True),
+            HeapBlock(address=0x2040, size=32, allocated=False),
+        ]
+    )
+    monkeypatch.setattr(
+        adapter_module.heap_module,
+        "heap_snapshot",
+        lambda _layout: _snapshot(walk),
+    )
+
+    heap = _adapter().heap_map()
+
+    assert heap is not None
+    assert (heap.algorithm, heap.base, heap.end) == ("heap_4", 0x2000, 0x2060)
+    assert [(b.address, b.size, b.used, b.owner) for b in heap.blocks] == [
+        (0x2000, 64, True, None),
+        (0x2040, 32, False, None),
+    ]
+    assert heap.owners is False
+
+
+def test_heap_map_is_none_without_a_linear_walk(monkeypatch):
+    """heap_3 and free-list-only walks have no allocated-block layout to draw."""
+    monkeypatch.setattr(
+        adapter_module.heap_module,
+        "heap_snapshot",
+        lambda _layout: _snapshot(None, algorithm="heap_3"),
+    )
+    assert _adapter().heap_map() is None
+
+
+def test_heap_map_flags_a_truncated_walk(monkeypatch):
+    """A bounded walk keeps its blocks and tells the reader later ones are missing."""
+    walk = HeapWalk(
+        blocks=[HeapBlock(address=0x2000, size=64, allocated=True)], truncated=True
+    )
+    monkeypatch.setattr(
+        adapter_module.heap_module, "heap_snapshot", lambda _layout: _snapshot(walk)
+    )
+
+    heap = _adapter().heap_map()
+
+    assert heap is not None
+    assert heap.truncated is True
+    assert "bound" in heap.messages[0]

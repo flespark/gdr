@@ -19,14 +19,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from gdr.formatting import format_optional_bytes, format_optional_int
+from core.formatting import format_optional_bytes, format_optional_int
 
 try:
     import gdb
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.adapter_api import (
+from core.adapter import (
     Capabilities,
     Cell,
     CheckFinding,
@@ -52,8 +52,8 @@ from gdr.adapter_api import (
     text_cell,
     waiters_cell,
 )
-from gdr.derive import timer_expires_in as derive_timer_expires_in
-from gdr.gdb_bridge import (
+from core.formatting import timer_expires_in as derive_timer_expires_in
+from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     arch_or_default,
     eval_identifier,
@@ -64,28 +64,8 @@ from gdr.gdb_bridge import (
     source_location_at,
     value_address,
 )
-from gdr.layout import KernelLayout, read_field
+from core.layout import KernelLayout, read_field
 from rtthread import diagnostics
-from rtthread.columns import (
-    EVENT_SPECS,
-    KIND_SPECS,
-    MAILBOX_SPECS,
-    MEMPOOL_SPECS,
-    MSGQUEUE_SPECS,
-    MUTEX_SPECS,
-    SEMAPHORE_SPECS,
-    TIMER_SPECS,
-    smp_columns_present,
-    task_specs,
-)
-from rtthread.heapviews import (
-    HeapDetail,
-    HeapInfo,
-    _heap_accounting_finding,
-    _heap_chain_finding,
-    _heap_detail_from_walk,
-    _heap_status,
-)
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
     RT_EVENT_FLAG_CLEAR,
@@ -118,7 +98,26 @@ from rtthread.navigation import (
     find_object as find_rt_object,
 )
 from rtthread.stackpc import SavedPcLayout, decode_saved_pc, saved_pc_layout
-from rtthread.tableviews import DETAIL_SPECS, detail_cells
+from rtthread.views import (
+    DETAIL_SPECS,
+    EVENT_SPECS,
+    KIND_SPECS,
+    MAILBOX_SPECS,
+    MEMPOOL_SPECS,
+    MSGQUEUE_SPECS,
+    MUTEX_SPECS,
+    SEMAPHORE_SPECS,
+    TIMER_SPECS,
+    HeapDetail,
+    HeapInfo,
+    _heap_accounting_finding,
+    _heap_chain_finding,
+    _heap_detail_from_walk,
+    _heap_status,
+    detail_cells,
+    smp_columns_present,
+    task_specs,
+)
 
 # ---------------------------------------------------------------------------
 # Adapter-owned intermediate objects. These are semantic values assembled from
@@ -420,7 +419,7 @@ def _timer_expires_in(timeout_tick: int, current_tick: int | None) -> str | None
     RT-Thread ticks are 32-bit unsigned; ``timeout_tick - current_tick`` is
     valid across wraparound, so no signed overflow handling is needed. ``None``
     means the timer is inactive or the kernel tick is unavailable.  The
-    wrapped-unsigned arithmetic lives in :func:`gdr.derive.timer_expires_in`
+    wrapped-unsigned arithmetic lives in :func:`core.formatting.timer_expires_in`
     (with ``overdue=False`` so an expired-but-linked timer keeps the wrapped
     value, matching RT-Thread's semantics); this name normalises the shared
     ``N/A`` back to the adapter's ``None`` contract.
@@ -599,11 +598,11 @@ class RtThreadAdapter(RtosAdapter):
         self.layout = layout
         self.heap_type = heap_type
         self.version = version
-        # Reason: the saved-PC layout is resolved on first use, so building the
+        # NOTE: the saved-PC layout is resolved on first use, so building the
         # adapter never reads target memory (tests build it without GDB).
         self._saved_pc: tuple[SavedPcLayout, int] | None = None
         self._saved_pc_resolved = False
-        # Reason: IPC policy decoding lives in ``_ipc_policy``; expose it to the
+        # NOTE: IPC policy decoding lives in ``_ipc_policy``; expose it to the
         # RTOS-neutral pretty-printer through the layout's formatter hook so the
         # core reuses the same decoder rather than a duplicated enum_map.
         for struct in layout.structs.values():
@@ -813,7 +812,7 @@ class RtThreadAdapter(RtosAdapter):
             if values is None:
                 return None
             mq_layout = self.layout.structs.get("struct rt_messagequeue")
-            # Reason: the sender wait list is absent on versions that predate
+            # NOTE: the sender wait list is absent on versions that predate
             # v3.1.4 or fall in v4.0.0-v4.0.1; N/A must not become a fake 0.
             sender_available = (
                 mq_layout is not None and "suspend_sender_thread" in mq_layout.fields
@@ -885,7 +884,7 @@ class RtThreadAdapter(RtosAdapter):
         if kind == "timer":
             rows = []
             current_tick = get_tick()
-            # Reason: the registry and the active skip-lists are independent
+            # NOTE: the registry and the active skip-lists are independent
             # evidence -- a registered-only timer is dormant, an active-only
             # one was detached without stopping -- so the Src column records
             # which source(s) proved each timer instead of merging silently.
@@ -1059,7 +1058,7 @@ class RtThreadAdapter(RtosAdapter):
             pairs = self._detail_pairs_for(kind, value)
             if pairs is None:
                 return None
-            # Reason: kind and tick are already identified by the table/System;
+            # NOTE: kind and tick are already identified by the table/System;
             # keep CLI detail prose but omit those redundant table columns.
             pairs = [
                 (key, text)
@@ -1267,7 +1266,7 @@ class RtThreadAdapter(RtosAdapter):
         used = snap.used
         total = snap.total
         from_walk = False
-        # Reason: only a closed, uncorrupted small_mem/memheap walk yields
+        # NOTE: only a closed, uncorrupted small_mem/memheap walk yields
         # exact used/total. Truncated walks and slab page counts are estimates
         # and must not fill command counters.
         if (
@@ -1374,7 +1373,7 @@ class RtThreadAdapter(RtosAdapter):
                 diagnostics.system_checks(self.layout), scope="system"
             )
         except TARGET_ACCESS_ERRORS as exc:
-            # Reason: the checks are best-effort exactly like the system
+            # NOTE: the checks are best-effort exactly like the system
             # summary they mirror, so an unreadable target degrades to one
             # skipped finding instead of failing the whole verb.
             findings = [CheckFinding("SystemChecks", "skipped", str(exc), "system")]

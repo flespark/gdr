@@ -12,7 +12,7 @@
  */
 
 /// <reference types="node" />
-// Reason: this subproject keeps its own node_modules, so an editor or `tsc`
+// NOTE: this subproject keeps its own node_modules, so an editor or `tsc`
 // invocation whose analysis root is the repository root would otherwise not
 // resolve the Node builtins this file uses.
 
@@ -154,7 +154,7 @@ export class GdrSession {
 			}
 			const loader = launchLoaderPath(this.session.configuration);
 			if (loader === null) {
-				// Reason: without the loader path no result file can ever be read, so
+				// NOTE: without the loader path no result file can ever be read, so
 				// waiting would only hide the missing injection behind a 3-minute stall.
 				this.state.errorMessage =
 					'this launch configuration carries no GDR loader path, so GDR was not injected into it';
@@ -268,7 +268,7 @@ export class GdrSession {
 			target = {
 				rtos: picked.option.rtos,
 				version: picked.option.version,
-				// Reason: the options came from the probe's evidence, so this is
+				// NOTE: the options came from the probe's evidence, so this is
 				// a confirmed probe answer, not a manual assertion. The
 				// distinction decides whether GDR's --allow-unverified escape
 				// hatch is passed below.
@@ -276,7 +276,7 @@ export class GdrSession {
 			};
 		}
 		this.log(`initializing ${target.rtos} ${target.version} (${target.source})`);
-		// Reason: a manual gdr.rtos/gdr.version is the user's own assertion about
+		// NOTE: a manual gdr.rtos/gdr.version is the user's own assertion about
 		// a target that may show no RTOS symbol at all (a modified or stripped
 		// kernel), so it carries GDR's --allow-unverified. A probe answer does
 		// not: GDR should refuse it if the target disagrees.
@@ -348,7 +348,7 @@ export class GdrSession {
 		}
 		if (plan.kind === 'invalid') {
 			if (isArraySummary(plan.payload)) {
-				// Reason: cortex-debug answers `evaluate` through an MI varobj, whose
+				// NOTE: cortex-debug answers `evaluate` through an MI varobj, whose
 				// value for a `char[N]` is only the element count (`[405]`), so the
 				// string never reaches the extension. GDR can write the same envelope
 				// to a file instead -- that is a capability of the adapter, not a user

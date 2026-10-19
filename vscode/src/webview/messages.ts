@@ -123,7 +123,7 @@ export function decodeWebviewMessage(value: unknown): WebviewMessage | null {
 		Number.isInteger(value.line) &&
 		value.line >= 1
 	) {
-		// Reason: the name is the path as the debug information recorded it; an
+		// NOTE: the name is the path as the debug information recorded it; an
 		// absent or non-string name falls back to the GDB file, never to nothing.
 		const name = typeof value.name === 'string' && value.name !== '' ? value.name : value.file;
 		const fallback = typeof value.fallbackAddress === 'string' ? { fallbackAddress: value.fallbackAddress } : {};

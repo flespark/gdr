@@ -10,9 +10,15 @@ from __future__ import annotations
 
 import struct
 import types
+from types import SimpleNamespace
 
 import freertos.diagnostics as diagnostics
-from freertos.layout import FreeRtosConfig, build_layout
+from core.adapter import merged_detail_table
+from freertos import adapter, commands, heap
+from freertos.layout import (
+    FreeRtosConfig,
+    build_layout,
+)
 
 # 32-bit little-endian standard layout (mini list items, no integrity bytes):
 #   List_t:        uxNumberOfItems@0, pxIndex@4, xListEnd@8
@@ -1013,3 +1019,176 @@ def test_event_waiter_satisfied_skips_on_unreadable_bits(monkeypatch):
     results = dict(diagnostics.event_checks(object(), layout))
 
     assert results["EventWaiterSatisfied"] == "skipped: unreadable"
+
+
+def _selected(monkeypatch):
+    selected = adapter.FreeRtosAdapter(build_layout(FreeRtosConfig()))
+    monkeypatch.setattr(diagnostics, "active", lambda: selected)
+    monkeypatch.setattr(diagnostics, "info", lambda _message: None)
+    captured = []
+    monkeypatch.setattr(
+        diagnostics,
+        "print_table",
+        lambda rows, headers: captured.append((rows, headers)),
+    )
+    return captured
+
+
+def test_checks_route_preserves_scope_and_space_name(monkeypatch):
+    captured = []
+    monkeypatch.setattr(commands, "render_checks", captured.append)
+    commands._invoke_command("check task Tmr Svc")
+    assert captured == [["task", "Tmr", "Svc"]]
+
+
+def test_legacy_checks_alias_shares_the_check_route(monkeypatch):
+    """The pre-rename `checks` spelling still reaches the check renderer."""
+    captured = []
+    monkeypatch.setattr(commands, "render_checks", captured.append)
+    commands._invoke_command("checks heap")
+    assert captured == [["heap"]]
+
+
+def test_checks_system_keeps_passes_and_skips(monkeypatch):
+    captured = _selected(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics,
+        "system_checks",
+        lambda _layout: [
+            ("TaskCount", "ok"),
+            ("NextUnblockTime", "skipped: scheduler not started"),
+        ],
+    )
+    diagnostics.render_checks([])
+    assert captured[0][0] == [
+        ["system", "TaskCount", "ok", "-"],
+        ["system", "NextUnblockTime", "skipped", "scheduler not started"],
+    ]
+
+
+def test_checks_task_unpacks_scheduler_records_and_keeps_address(monkeypatch):
+    captured = _selected(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics, "iter_tasks", lambda _layout: [(object(), "Ready", None)]
+    )
+    monkeypatch.setattr(diagnostics, "value_address", lambda _value: 0x2000)
+    monkeypatch.setattr(diagnostics, "task_name_at", lambda *_args: "Tmr Svc")
+    monkeypatch.setattr(
+        diagnostics,
+        "task_checks",
+        lambda *_args: [("ItemOwner", "fail: owner=0x3000, expected 0x2000")],
+    )
+    diagnostics.render_checks(["task", "Tmr", "Svc"])
+    assert captured[0][0][0][0] == "Tmr Svc@0x2000"
+    assert captured[0][0][0][2] == "fail"
+
+
+def test_checks_queue_names_and_pointer_evidence(monkeypatch):
+    captured = _selected(monkeypatch)
+    found = SimpleNamespace(name="q", address=0x2000, kind="queue", inferred_kind=False)
+    monkeypatch.setattr(diagnostics, "discover", lambda *_args: [found])
+    monkeypatch.setattr(diagnostics, "_refine_queue_object", lambda obj, _layout: obj)
+    monkeypatch.setattr(adapter, "_cast_object", lambda *_args: object())
+    monkeypatch.setattr(
+        diagnostics,
+        "queue_checks",
+        lambda *_args: [
+            ("WritePtr", "fail: pcWriteTo=0x3000 outside [0x2100, 0x2200)")
+        ],
+    )
+    diagnostics.render_checks(["queue", "q"])
+    assert captured[0][0][0][0] == "q@0x2000"
+    assert "0x3000" in captured[0][0][0][3]
+
+
+def test_checks_heap_ok_remains_explicit(monkeypatch):
+    captured = _selected(monkeypatch)
+    monkeypatch.setattr(
+        diagnostics, "heap_snapshot", lambda _layout: SimpleNamespace(cross_check="ok")
+    )
+    diagnostics.render_checks(["heap"])
+    assert captured[0][0] == [["heap", "CrossCheck", "ok", "-"]]
+
+
+def test_checks_wrong_kind_refuses_union_decode(monkeypatch):
+    captured = _selected(monkeypatch)
+    found = SimpleNamespace(name="m", address=0x2000, kind="mutex", inferred_kind=False)
+    warnings = []
+    monkeypatch.setattr(diagnostics, "warn", warnings.append)
+    monkeypatch.setattr(diagnostics, "discover", lambda *_args: [])
+    monkeypatch.setattr(diagnostics, "resolve_object", lambda *_args: found)
+    monkeypatch.setattr(diagnostics, "_refine_queue_object", lambda obj, _layout: obj)
+    diagnostics.render_checks(["semaphore", "m"])
+    assert warnings == ["'m' is a mutex, not a semaphore"]
+    assert not captured
+
+
+def test_next_unblock_is_not_checked_before_scheduler_start(monkeypatch):
+    layout = _patch_system(
+        monkeypatch, {"xSchedulerRunning": 0, "xNextTaskUnblockTime": 0}, 0, {}, None
+    )
+    assert diagnostics._next_unblock_check(layout) == (
+        "NextUnblockTime",
+        "skipped: scheduler not started",
+    )
+
+
+def test_earlier_next_unblock_cache_is_legitimate(monkeypatch):
+    mem = _list_mem(0x3000, 1, [0x3200], item_values=[10])
+    layout = _patch_system(
+        monkeypatch,
+        {
+            "uxSchedulerSuspended": 0,
+            "xNextTaskUnblockTime": 5,
+            "pxDelayedTaskList": object(),
+        },
+        1,
+        mem,
+        0x3000,
+    )
+    assert diagnostics._next_unblock_check(layout) == ("NextUnblockTime", "ok")
+
+
+def test_late_next_unblock_locates_the_delayed_item(monkeypatch):
+    mem = _list_mem(0x3000, 1, [0x3200], item_values=[10])
+    layout = _patch_system(
+        monkeypatch,
+        {
+            "uxSchedulerSuspended": 0,
+            "xNextTaskUnblockTime": 42,
+            "pxDelayedTaskList": object(),
+        },
+        1,
+        mem,
+        0x3000,
+    )
+    result = diagnostics._next_unblock_check(layout)[1]
+    assert "42 ticks" in result and "10 ticks" in result and "0x3200" in result
+    assert "miss this deadline" in result
+
+
+def test_problem_columns_keep_diagnostic_group():
+    table = merged_detail_table(
+        "queue", [[("Name", "q"), ("Check[WritePtr]", "fail: pcWriteTo=0x2000")]]
+    )
+    assert table.column_specs[-1].group == "diag"
+
+
+def test_heap_address_mismatch_names_missing_blocks():
+    geom = heap.HeapGeometry(kind=4, algorithm="heap_4", allocated_bitmask=0x80000000)
+    free_list = heap.HeapWalk(
+        blocks=[heap.HeapBlock(0x2000, 16, False)], free_bytes=16, free_blocks=1
+    )
+    linear = heap.HeapWalk(
+        blocks=[heap.HeapBlock(0x2100, 16, False)], free_bytes=16, free_blocks=1
+    )
+    result = heap.cross_validate(free_list, linear, 16, geom)
+    assert "missing from free-list=0x2100" in result
+    assert "unexpected on free-list=0x2000" in result
+
+
+def test_heap_corrupt_reason_survives_cross_validation():
+    geom = heap.HeapGeometry(kind=4, algorithm="heap_4")
+    free_list = heap.HeapWalk(corrupt=True, corrupt_reason="free-list cycle at 0x2000")
+    result = heap.cross_validate(free_list, heap.HeapWalk(), 0, geom)
+    assert "free-list cycle at 0x2000" in result

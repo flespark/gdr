@@ -53,7 +53,7 @@ kernel_tag_for_version() {
 # different directories; the caller's env provides the one matching the lane).
 toolchain_path_for() {
     case "$1" in
-    # Reason: RTOS_TOOLCHAIN_PATH is env-set to the ARM xPack dir (it is the
+    # NOTE: RTOS_TOOLCHAIN_PATH is env-set to the ARM xPack dir (it is the
     # default for every other lane); the RISC-V-specific variable must win
     # so the rv64 lane cannot silently compile with the ARM compiler.
     qemu-virt-rv64) echo "${XPACK_RISCV_TOOLCHAIN_PATH:-${RTOS_TOOLCHAIN_PATH:-}}" ;;
@@ -76,7 +76,7 @@ gdb_architecture_for() {
 # and firmware paths are derived on the Python side from that tuple.
 run_pytest() {
     local target="$1" version="$2" variant="$3"
-    # Reason: the runner already decided whether to rebuild; leaving
+    # NOTE: the runner already decided whether to rebuild; leaving
     # GDR_FORCE_BUILD set would make the snapshot tests compile twice.
     local -a runner=(
         env -u GDR_ELF_PATH -u GDR_FORCE_BUILD
@@ -111,7 +111,7 @@ build_one() {
         --out-bin "$bin_path"
         --cache-dir "$cache_dir"
     )
-    # Reason: only an explicitly configured checkout is trusted; the build
+    # NOTE: only an explicitly configured checkout is trusted; the build
     # script clones the tag itself otherwise, so no developer-specific path
     # is baked into the lane.
     if [[ -d "${FREERTOS_KERNEL_DIR:-}" ]]; then
@@ -126,7 +126,7 @@ build_one() {
 }
 
 # Newest mtime among the fixture sources that end up inside a firmware image.
-# Reason: a cached ELF built before a fixture edit boots the *old* objects, so
+# NOTE: a cached ELF built before a fixture edit boots the *old* objects, so
 # assertions about new fixture state fail (or worse, stale state silently
 # passes) with nothing in the output pointing at the cache. Compare timestamps
 # and rebuild instead of trusting mere file existence.

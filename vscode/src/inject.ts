@@ -51,7 +51,7 @@ const GDB_ADAPTERS: Record<string, string> = {
 	cppdbg: 'setupCommands',
 	gdbtarget: 'initCommands',
 	stlinkgdbtarget: 'initCommands',
-	// Reason: this adapter's launch keys are not verified against its source.
+	// NOTE: this adapter's launch keys are not verified against its source.
 	jlinkgdbtarget: 'setupCommands'
 };
 
@@ -209,7 +209,7 @@ export function setupCommands(
  * The prefix each adapter's Debug Console (the `repl` evaluate) needs before a
  * GDB CLI command. Without it the text is evaluated as an expression.
  *
- * Reason: cppdbg documents `-exec` for that (plain `gdr init ...` would be
+ * NOTE: cppdbg documents `-exec` for that (plain `gdr init ...` would be
  * evaluated as an expression and never run). The cdt-gdb family (`gdbtarget`,
  * `stlinkgdbtarget`) takes `>` on the same line instead, and rejects a bare
  * command with `Error: could not evaluate expression`.
@@ -233,7 +233,7 @@ export function consoleCommand(debugType: string, command: string): string {
 /**
  * Spell *expression* so the adapter's `evaluate` reaches GDB for a variable.
  *
- * Reason: a cdt-gdb adapter interpolates the expression into an MI c-string
+ * NOTE: a cdt-gdb adapter interpolates the expression into an MI c-string
  * without escaping it (`quote(expression)`), so a `$gdr_json("probe")` with its
  * own quotes arrives as `"$gdr_json("probe")"` and GDB answers `Problem parsing
  * arguments`. Writing the quotes as `\"` lets MI's own unescaping restore them.
@@ -339,7 +339,7 @@ function launchEntries(key: string, commands: string[]): InjectValue {
 		return commands.map((text, index) => ({
 			description: descriptions[index] ?? 'GDR',
 			text,
-			// Reason: the gate command succeeds when Python is missing (it
+			// NOTE: the gate command succeeds when Python is missing (it
 			// records `absent` instead of sourcing). A later real failure, such
 			// as a missing gdr.py, still stops the launch.
 			ignoreFailures: false

@@ -3,7 +3,7 @@
 Produces vertical ``(key, value)`` pairs for the ``rtt <object> <name>``
 detail commands. It consumes intermediate models owned by ``adapter.py``;
 field names and version conditionals stay in the RT-Thread package, while the
-generic renderer in ``gdr.commands`` only prints the pairs.
+generic renderer in ``core.commands`` only prints the pairs.
 
 The advanced builders (mailbox slots, message-queue nodes, memory-pool free
 list) take the raw ``gdb.Value`` plus the active ``KernelLayout`` so they can
@@ -21,24 +21,29 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
-from gdr.formatting import (
+from core.adapter import active, verdict_severity
+from core.constants import GDR_MAX_TRAVERSAL_COUNT
+from core.formatting import (
     format_optional_bytes,
     format_symbol_or_address,
 )
-from gdr.gdb_bridge import (
+from core.gdb_bridge import (
     arch_or_default,
+    gdb_command_guard,
+    info,
     lookup_symbol,
     lookup_symbol_at,
     lookup_type,
+    print_table,
     read_bytes,
     read_cstring,
     read_int,
     read_macro_int,
     type_size,
     value_address,
+    warn,
 )
-from gdr.layout import (
+from core.layout import (
     KernelLayout,
     StructLayout,
     member_offset,
@@ -47,10 +52,13 @@ from gdr.layout import (
 )
 from rtthread.layout import RT_TIMER_FLAG_ACTIVATED, ThreadState
 from rtthread.navigation import (
+    active_timer_addresses,
+    find_object,
     get_current_thread,
     get_tick,
     iter_objects,
     iter_threads,
+    iter_timers,
 )
 
 if TYPE_CHECKING:
@@ -462,7 +470,7 @@ def _header_size(type_name: str) -> int | None:
         return None
     align = read_macro_int("RT_ALIGN_SIZE")
     if align is None or align <= 0:
-        # Reason: ``-g`` without ``-g3`` omits macros. RT_ALIGN_SIZE matches
+        # NOTE: ``-g`` without ``-g3`` omits macros. RT_ALIGN_SIZE matches
         # the ABI pointer width (4 on 32-bit, 8 on 64-bit), not a fixed 8.
         align = arch_or_default()[0]
     size = type_size(t)
@@ -537,12 +545,12 @@ def _walk_small_mem_chain(
             if magic is not None and magic != HEAP_MAGIC:
                 corrupt = True
                 break
-        # Reason: kernel memcheck rejects ``position > mem_size_aligned``. A
+        # NOTE: kernel memcheck rejects ``position > mem_size_aligned``. A
         # next offset that lands past ``heap_end`` must not keep walking.
         if next_off is None or next_off <= offset or heap_ptr + next_off > heap_end:
             corrupt = True
             break
-        # Reason: the kernel's ``used_mem`` counts each used block's full span,
+        # NOTE: the kernel's ``used_mem`` counts each used block's full span,
         # header included (mem.c ``used_mem += size + SIZEOF_STRUCT_MEM``), so
         # the walk counts the same span to be comparable with the snapshot.
         # Holes stay payload-only: that is the allocatable size of a free block.
@@ -571,7 +579,7 @@ def _walk_small_mem_chain(
         addr = heap_ptr + next_off
     if items == 0:
         return None
-    # Reason: ``heap_end`` is the end sentinel, which the kernel's ``total``
+    # NOTE: ``heap_end`` is the end sentinel, which the kernel's ``total``
     # excludes (mem.c: ``mem_size_aligned`` is ``heap_end - heap_ptr - header``).
     exact_used, exact_total = _exact_byte_counts(
         truncated=truncated,
@@ -699,7 +707,7 @@ def _walk_memheap(kl: KernelLayout) -> HeapWalk | None:
         if magic & ~0x1 != MEMHEAP_MAGIC:
             corrupt = True
             break
-        # Reason: kernel list_memheap/memtrace stop before the tailer, whose
+        # NOTE: kernel list_memheap/memtrace stop before the tailer, whose
         # ``next`` points back at ``block_list``. Counting it inflates used
         # by one (typically a 0-size used sentinel).
         if next_addr == head:
@@ -1015,10 +1023,10 @@ def system_checks(layout: KernelLayout) -> list[tuple[str, str]]:
 def _registry_type_checks(layout: KernelLayout) -> list[tuple[str, str]]:
     """Every registered object's type byte against its container's class."""
     total = 0
-    for type_code, info in layout.object_types.items():
-        if not info.enabled:
+    for type_code, type_info in layout.object_types.items():
+        if not type_info.enabled:
             continue
-        sl = layout.structs.get(info.struct_name)
+        sl = layout.structs.get(type_info.struct_name)
         if sl is None or "type" not in sl.fields:
             continue
         for value in iter_objects(type_code, layout):
@@ -1028,10 +1036,228 @@ def _registry_type_checks(layout: KernelLayout) -> list[tuple[str, str]]:
                 return [
                     (
                         "RegistryTypes",
-                        f"fail: {info.name} {value_address(value):#x} "
+                        f"fail: {type_info.name} {value_address(value):#x} "
                         f"has type byte {raw:#x}",
                     )
                 ]
     if not total:
         return [("RegistryTypes", "skipped: object registry unreadable (no objects)")]
     return [("RegistryTypes", f"ok: {total} objects")]
+
+
+# ---------------------------------------------------------------------------
+# On-demand exhaustive checks.
+# ---------------------------------------------------------------------------
+CHECK_SCOPES = (
+    "system",
+    "heap",
+    "thread",
+    "semaphore",
+    "mutex",
+    "event",
+    "mailbox",
+    "messagequeue",
+    "mempool",
+    "timer",
+)
+
+_IPC_STRUCTS = {
+    "semaphore": "struct rt_semaphore",
+    "mutex": "struct rt_mutex",
+    "event": "struct rt_event",
+    "mailbox": "struct rt_mailbox",
+    "msgqueue": "struct rt_messagequeue",
+    "mempool": "struct rt_mempool",
+}
+
+
+def _verdict_statuses(
+    pairs: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Keep only verdict rows, normalized to ``ok``/``fail:``/``skipped:``.
+
+    Detail builders render failures as bare reasons (``OffsetCheck``) or
+    verdict-prefixed values; both are normalized here so the table's Verdict
+    column always carries the bare verdict word.
+    """
+    statuses: list[tuple[str, str]] = []
+    for key, text in pairs:
+        severity = verdict_severity(key, text)
+        if severity == "info":
+            continue
+        if severity == "ok":
+            statuses.append((key, "ok"))
+            continue
+        head = text.partition(":")[0].strip().lower()
+        if head in ("fail", "skipped"):
+            statuses.append((key, text))
+        else:
+            statuses.append((key, f"{severity}: {text}"))
+    return statuses
+
+
+def _name_uniqueness(
+    names: dict[int, str], address: int, name: str
+) -> tuple[str, str] | None:
+    """One ``NameUnique`` row flagging truncated-name collisions, if any.
+
+    ``RT_NAME_MAX`` truncates (8 by default), so two live objects can share
+    one name; the check names every address so the ``<name-or-address>``
+    selector stays usable. Nameless rows carry no name to collide on.
+    """
+    if not name:
+        return None
+    dupes = sorted(
+        addr for addr, other in names.items() if other == name and addr != address
+    )
+    if not dupes:
+        return ("NameUnique", "ok")
+    shared = ", ".join(f"{addr:#x}" for addr in [address, *dupes])
+    return (
+        "NameUnique",
+        f"fail: {len(dupes) + 1} objects share name {name!r}: {shared}",
+    )
+
+
+@gdb_command_guard
+def render_check(arguments: list[str]) -> None:
+    """Print every result for the requested scope, including skips and passes."""
+    from rtthread.adapter import RtThreadAdapter, value_to_timer
+    from rtthread.layout import resolve_object_type_code
+
+    selected = active()
+    if not isinstance(selected, RtThreadAdapter):
+        warn("run `gdr init rtthread <version>` first")
+        return
+    scope = arguments[0].lower() if arguments else "system"
+    if scope == "task":
+        # NOTE: the machine/API kind is ``task`` while the ``rtt`` command
+        # vocabulary names it ``thread``; accept both spellings here rather
+        # than failing a user who guessed the wrong one.
+        scope = "thread"
+    target = " ".join(arguments[1:])
+    if scope not in CHECK_SCOPES or (target and scope in ("system", "heap")):
+        warn(
+            "usage: rtt check "
+            "[system|heap|thread|semaphore|mutex|event|mailbox|"
+            "messagequeue|mempool|timer] [target]"
+        )
+        return
+    layout = selected.layout
+    rows: list[list[str]] = []
+
+    def append(scope_label: str, results: list[tuple[str, str]]) -> None:
+        for check, status in results:
+            verdict, _, reason = status.partition(":")
+            rows.append([scope_label, check, verdict, reason.strip() or "-"])
+
+    if scope == "system":
+        append("system", system_checks(layout))
+    elif scope == "heap":
+        for finding in selected._heap_findings(
+            selected.heap_info() if selected.heap_type != "none" else None
+        ):
+            status = (
+                finding.verdict
+                if finding.verdict == "ok" or not finding.detail
+                else f"{finding.verdict}: {finding.detail}"
+            )
+            append("heap", [(finding.name, status)])
+    elif scope == "thread":
+        thread_code = layout.object_codes.get("thread")
+        names = {value_address(value): name for value, name in _thread_names(layout)}
+        for value in iter_threads(layout):
+            address = value_address(value)
+            name = names.get(address, "")
+            if target and target != name and target != f"{address:#x}":
+                continue
+            results = thread_checks(value, layout)
+            results += object_identity_checks(
+                value, layout, "struct rt_thread", thread_code
+            )
+            unique = _name_uniqueness(names, address, name)
+            if unique is not None:
+                results.append(unique)
+            append(f"{name or '-'}@{address:#x}", results)
+    elif scope == "timer":
+        active_addrs = active_timer_addresses(layout)
+        timer_code = layout.object_codes.get("timer")
+        registered_addrs = (
+            {value_address(value) for value in iter_objects(timer_code, layout)}
+            if timer_code is not None
+            else set()
+        )
+        names = {}
+        for value in iter_timers(layout):
+            names[value_address(value)] = value_to_timer(value, layout).name
+        for value in iter_timers(layout):
+            address = value_address(value)
+            name = names.get(address, "")
+            if target and target != name and target != f"{address:#x}":
+                continue
+            in_active: bool | None = address in active_addrs
+            if address not in active_addrs and address not in registered_addrs:
+                # NOTE: the two walks raced a live update (a detach between
+                # them); failing here would indict a transient, so the
+                # membership verdict is skipped instead of guessed.
+                in_active = None
+            results = timer_checks(value, layout, in_active)
+            results += object_identity_checks(
+                value, layout, "struct rt_timer", timer_code
+            )
+            unique = _name_uniqueness(names, address, name)
+            if unique is not None:
+                results.append(unique)
+            append(f"{name or '-'}@{address:#x}", results)
+    else:
+        type_code = resolve_object_type_code(scope, layout)
+        if type_code is None:
+            warn(f"object kind {scope!r} is not reliably enumerable")
+            return
+        struct_name = _IPC_STRUCTS[scope]
+        sl = layout.structs.get(struct_name)
+        names: dict[int, str] = {}
+        if sl is not None:
+            for value in iter_objects(type_code, layout):
+                names[value_address(value)] = (
+                    read_cstring(read_field(value, sl, "name")) or ""
+                )
+        objects = list(iter_objects(type_code, layout))
+        if target:
+            objects = [
+                obj
+                for obj in objects
+                if names.get(value_address(obj), "") == target
+                or f"{value_address(obj):#x}" == target
+            ]
+            if not objects:
+                obj = find_object(type_code, target, layout)
+                objects = [obj] if obj is not None else []
+        for obj in objects:
+            address = value_address(obj)
+            name = names.get(address, "")
+            pairs = selected._detail_pairs_for(scope, obj) or []
+            results = _verdict_statuses(pairs)
+            results += object_identity_checks(obj, layout, struct_name, type_code)
+            unique = _name_uniqueness(names, address, name)
+            if unique is not None:
+                results.append(unique)
+            append(f"{name or '-'}@{address:#x}", results)
+    if not rows:
+        info(f"no {scope} objects matched {target!r}")
+        return
+    info(
+        "check inspects one halted snapshot; an in-progress kernel update can be transient"
+    )
+    print_table(rows, ["Object", "Check", "Verdict", "Evidence"])
+
+
+def _thread_names(layout) -> list[tuple[object, str]]:
+    """Pairs of raw thread values with their registry names."""
+    thread_layout = layout.structs.get("struct rt_thread")
+    if thread_layout is None:
+        return []
+    return [
+        (value, read_cstring(read_field(value, thread_layout, "name")) or "")
+        for value in iter_threads(layout)
+    ]

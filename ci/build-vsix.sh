@@ -38,7 +38,7 @@ if [[ "$output_dir" != /* ]]; then
     output_dir="$repo_root/$output_dir"
 fi
 
-# Reason: release tags pad the month (`2026.04`) while semver does not
+# NOTE: release tags pad the month (`2026.04`) while semver does not
 # (`2026.4.0`); strip leading zeros per component before comparing.
 normalize_version() {
     local normalized=""
@@ -60,7 +60,7 @@ fi
 
 normalized_tag="$(normalize_version "$release_tag")"
 if [[ "$patch_release" -eq 1 ]]; then
-    # Reason: a patch VSIX reuses the release tag (the runtime is unchanged)
+    # NOTE: a patch VSIX reuses the release tag (the runtime is unchanged)
     # and says so in its own patch number; anything else is a mistagged tree.
     if [[ "$extension_version" != "$normalized_tag".* ||
         "$extension_version" == "$normalized_tag".0 ]]; then
@@ -69,7 +69,7 @@ if [[ "$patch_release" -eq 1 ]]; then
         exit 1
     fi
 elif [[ "$extension_version" != "$normalized_tag".0 ]]; then
-    # Reason: tag releases always ship patch 0; a nonzero patch means an
+    # NOTE: tag releases always ship patch 0; a nonzero patch means an
     # extension-only fix is in flight and must go out through --patch (or the
     # workflow dispatch), never as the release's main artifact.
     echo "build-vsix: release $release_tag needs extension ${normalized_tag}.0," \

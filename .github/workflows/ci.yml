@@ -53,7 +53,7 @@ jobs:
       - name: Test
         run: npm test
       - name: Package the VSIX
-        # Reason: a release-grade `.vsix` must be reproducible from a clean
+        # NOTE: a release-grade `.vsix` must be reproducible from a clean
         # tree (`npm ci` + vendored runtime + `vsce package`); the artifact is
         # for manual verification and manual publishing, never auto-release --
         # CI holds no marketplace credentials. `npm test` runs the TypeScript

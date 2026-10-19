@@ -8,7 +8,7 @@
  */
 
 /// <reference types="node" />
-// Reason: this subproject keeps its own node_modules, so an editor or `tsc`
+// NOTE: this subproject keeps its own node_modules, so an editor or `tsc`
 // invocation whose analysis root is the repository root would otherwise not
 // resolve the Node builtins this file uses.
 

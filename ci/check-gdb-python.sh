@@ -22,7 +22,7 @@ if [[ -n "$EXPECTED_GDB_MAJOR" ]] &&
     exit 1
 fi
 
-# Reason: GDB's version and the host `python3` do not identify the linked
+# NOTE: GDB's version and the host `python3` do not identify the linked
 # CPython ABI. Query the interpreter that will actually import GDR instead.
 # Do the comparison in this shell: an exception raised by `python` in GDB's
 # batch mode can still leave GDB with a successful process status.
@@ -46,7 +46,7 @@ if [[ -n "$EXPECTED_PYTHON" && "$embedded_major.$embedded_minor" != "$EXPECTED_P
 fi
 echo "[gdr-ci] embedded Python: $embedded_version"
 
-# Reason: a GDB can exist and embed Python yet lack the lane's target
+# NOTE: a GDB can exist and embed Python yet lack the lane's target
 # architecture (an ARM-only build on the RISC-V lane); that used to surface
 # as every closed-loop test failing on a half-initialised session instead of
 # a clear pre-flight error. Match the success message rather than the exit

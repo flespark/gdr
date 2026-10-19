@@ -33,7 +33,7 @@ FROM debian:trixie-slim
 ARG TARGETARCH=amd64
 
 COPY --from=legacy-scons /usr/local /opt/python2
-# Reason: the legacy-scons stage runs on both x86_64 and arm64; pick the
+# NOTE: the legacy-scons stage runs on both x86_64 and arm64; pick the
 # matching libcrypto/libssl from its image filesystem instead of hard-coding
 # one /usr/lib/<triplet> path.
 RUN --mount=type=bind,from=legacy-scons,target=/opt/legacy-scons \
@@ -74,7 +74,7 @@ ARG XPACK_ARM_SHA256=da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9
 ARG XPACK_RISCV_VERSION=15.2.0-1
 ARG XPACK_RISCV_SHA256=aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758
 ARG XPACK_ARCH=linux-x64
-# Reason: xPack publishes per-arch linux archives (linux-x64 / linux-arm64);
+# NOTE: xPack publishes per-arch linux archives (linux-x64 / linux-arm64);
 # the CNB runner builds amd64, while local Apple-Silicon podman builds arm64.
 #
 # A local build can skip the slow GitHub download by pre-seeding
@@ -83,7 +83,7 @@ ARG XPACK_ARCH=linux-x64
 # archive is already present. sha256 still verifies integrity either way.
 # ci/gdr-xpack/ always exists (its .gitkeep is committed), so the COPY is never
 # the failure point; the RUN decides between local archives and curl+check.
-# Reason: RT-Thread's RV64 BSP hard-codes the legacy riscv64-unknown-elf prefix.
+# NOTE: RT-Thread's RV64 BSP hard-codes the legacy riscv64-unknown-elf prefix.
 COPY ci/gdr-xpack/ /opt/gdr-xpack/
 RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-${XPACK_ARCH}.tar.gz" \
     && riscv_archive="xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-${XPACK_ARCH}.tar.gz" \
@@ -122,7 +122,7 @@ ENV XPACK_ARM_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
 
 # Fail the image build if the isolated Python 2 runtime cannot load the
 # matching OpenSSL 1.1 extension modules copied from the Buster stage.
-# Reason: keep /opt/python2/lib off the image-wide LD_LIBRARY_PATH; only this
+# NOTE: keep /opt/python2/lib off the image-wide LD_LIBRARY_PATH; only this
 # smoke check and build-rtt.sh's 3.1.x scons path need it.
 RUN LD_LIBRARY_PATH=/opt/python2/lib \
     /opt/python2/bin/python -c 'import hashlib; assert hashlib.md5("gdr").hexdigest() == "fff7c7603b50cc39962ecf42277c0d0d"'

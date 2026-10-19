@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from gdr.constants import GDR_API_SCHEMA_VERSION
+from core.constants import GDR_API_SCHEMA_VERSION
 from tests.support.freertos_fixture_profiles import get_freertos_test_profile
 from tests.support.loader import load_integration_spec
 

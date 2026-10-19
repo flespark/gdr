@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import rtthread.navigation as navigation
-from gdr.layout import StructLayout
+from core.layout import (
+    KernelLayout,
+    ObjectTypeInfo,
+    StructLayout,
+)
 
 
 class _FakeType:
@@ -174,7 +178,7 @@ def test_iter_object_names_skips_missing_type_code():
 
 def test_iter_object_names_disabled_type_yields_nothing(monkeypatch):
     """A type the target does not compile is skipped for completion."""
-    from gdr.layout import ObjectTypeInfo
+    from core.layout import ObjectTypeInfo
 
     layout = navigation.KernelLayout(
         object_codes={"semaphore": 2},
@@ -200,7 +204,7 @@ def test_iter_object_names_disabled_type_yields_nothing(monkeypatch):
 
 def test_iter_object_names_walks_the_object_registry(monkeypatch):
     """Completion names come from a live kernel-registry traversal."""
-    from gdr.layout import ObjectTypeInfo
+    from core.layout import ObjectTypeInfo
 
     layout = navigation.KernelLayout(
         object_codes={"semaphore": 2},
@@ -235,7 +239,7 @@ def test_iter_object_names_walks_the_object_registry(monkeypatch):
 
 def test_iter_object_names_filters_unreadable_and_task_mapping(monkeypatch):
     """Task maps to thread and unreadable names are dropped."""
-    from gdr.layout import ObjectTypeInfo
+    from core.layout import ObjectTypeInfo
 
     layout = navigation.KernelLayout(
         object_codes={"thread": 1},
@@ -338,7 +342,7 @@ class _Thread:
 
 def test_get_object_information_scans_the_static_container(monkeypatch):
     """Object registry lookup never calls ``rt_object_get_information()``."""
-    from gdr.layout import KernelLayout, StructField, StructLayout
+    from core.layout import KernelLayout, StructField, StructLayout
 
     class _Entry:
         def __init__(self, type_code: int):
@@ -377,7 +381,7 @@ def test_get_object_information_scans_the_static_container(monkeypatch):
 
 def test_get_object_information_falls_back_to_31_container_symbol(monkeypatch):
     """3.1.x keeps the historical ``rt_object_container`` registry spelling."""
-    from gdr.layout import KernelLayout, StructField, StructLayout
+    from core.layout import KernelLayout, StructField, StructLayout
 
     class _Entry:
         def __init__(self, type_code: int):
@@ -491,7 +495,7 @@ def test_get_current_thread_reads_selected_cpu_from_table(monkeypatch):
 
 def test_iter_timers_uses_resolved_list_heads(monkeypatch):
     """Active timer walks look up the array symbol, then index in Python."""
-    from gdr.layout import KernelLayout, ListHook
+    from core.layout import KernelLayout, ListHook
 
     hook = ListHook(
         head_symbol="_timer_list",
@@ -518,7 +522,7 @@ def test_iter_timers_uses_resolved_list_heads(monkeypatch):
 
 def test_get_heap_snapshot_reads_40_small_mem_globals(monkeypatch):
     """4.0 small_mem usage comes from ``used_mem``/``mem_size_aligned``."""
-    from gdr.layout import KernelLayout
+    from core.layout import KernelLayout
 
     def lookup(name: str):
         return {
@@ -540,7 +544,7 @@ def test_get_heap_snapshot_reads_40_small_mem_globals(monkeypatch):
 
 def test_get_heap_snapshot_reads_slab_total_from_heap_bounds(monkeypatch):
     """slab total falls back to ``heap_end - heap_start`` when unaligned."""
-    from gdr.layout import KernelLayout
+    from core.layout import KernelLayout
 
     def lookup(name: str):
         return {
@@ -563,7 +567,7 @@ def test_get_heap_snapshot_reads_slab_total_from_heap_bounds(monkeypatch):
 
 def test_get_heap_snapshot_reads_40_memheap_pool_fields(monkeypatch):
     """4.0 memheap-as-heap usage is ``pool_size - available_size`` on ``_heap``."""
-    from gdr.layout import KernelLayout, StructField, StructLayout
+    from core.layout import KernelLayout, StructField, StructLayout
 
     heap = object()
     layout = KernelLayout(
@@ -604,7 +608,7 @@ def test_get_heap_snapshot_reads_40_memheap_pool_fields(monkeypatch):
 
 def test_get_heap_snapshot_reads_41_system_heap_rt_memory(monkeypatch):
     """4.1 small_mem/slab read ``system_heap->total/used/max``."""
-    from gdr.layout import KernelLayout
+    from core.layout import KernelLayout
 
     class _FakeSystemHeap:
         def __getitem__(self, key: str):
@@ -624,7 +628,7 @@ def test_get_heap_snapshot_reads_41_system_heap_rt_memory(monkeypatch):
 
 def test_get_heap_snapshot_reads_41_system_heap_memheap(monkeypatch):
     """4.1 memheap-as-heap reads ``system_heap`` as a ``struct rt_memheap``."""
-    from gdr.layout import KernelLayout, StructField, StructLayout
+    from core.layout import KernelLayout, StructField, StructLayout
 
     heap = object()
     layout = KernelLayout(
@@ -664,7 +668,7 @@ def test_get_heap_snapshot_reads_41_system_heap_memheap(monkeypatch):
 
 def test_get_heap_snapshot_degrades_without_memheap_layout(monkeypatch):
     """A memheap handle without ``struct rt_memheap`` layout is not a crash."""
-    from gdr.layout import KernelLayout
+    from core.layout import KernelLayout
 
     monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: object())
     monkeypatch.setattr(navigation, "_deref_system_heap", lambda: object())
@@ -679,7 +683,7 @@ def test_get_heap_snapshot_degrades_without_memheap_layout(monkeypatch):
 
 def test_get_heap_snapshot_is_unavailable_without_target_state(monkeypatch):
     """Missing heap symbols do not fall back to calling ``rt_memory_info``."""
-    from gdr.layout import KernelLayout
+    from core.layout import KernelLayout
 
     monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
     monkeypatch.setattr(navigation, "_deref_system_heap", lambda: None)
@@ -690,3 +694,118 @@ def test_get_heap_snapshot_is_unavailable_without_target_state(monkeypatch):
     assert snap.used is None
     assert snap.total is None
     assert snap.max_used is None
+
+
+def _registry_layout() -> KernelLayout:
+    return KernelLayout(
+        structs={"struct rt_semaphore": StructLayout("struct rt_semaphore")},
+        object_types={
+            1: ObjectTypeInfo(
+                type_code=1,
+                struct_name="struct rt_semaphore",
+                list_path=("parent", "list"),
+                next_path=("next",),
+                name="semaphore",
+            )
+        },
+        object_codes={"semaphore": 1, "thread": 1},
+    )
+
+
+class _Obj:
+    def __init__(self, address: int):
+        self._address = address
+
+
+def _install_registry(monkeypatch, names: dict[int, str]):
+    objects = [_Obj(address) for address in names]
+
+    def fake_iter_objects(_type_code, _kl):
+        return iter(objects)
+
+    def fake_read_field(value, _layout, field_name):
+        assert field_name == "name"
+        return names[value._address]
+
+    def fake_read_cstring(value):
+        return value
+
+    monkeypatch.setattr(navigation, "iter_objects", fake_iter_objects)
+    monkeypatch.setattr(navigation, "read_field", fake_read_field)
+    monkeypatch.setattr(navigation, "read_cstring", fake_read_cstring)
+    monkeypatch.setattr(navigation, "value_address", lambda value: value._address)
+    return objects
+
+
+def test_find_object_prefers_registry_name(monkeypatch):
+    layout = _registry_layout()
+    _install_registry(monkeypatch, {0x1000: "work_sem", 0x2000: "other"})
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
+
+    found = navigation.find_object(1, "work_sem", layout)
+
+    assert found is not None and found._address == 0x1000
+
+
+def test_find_object_matches_explicit_hex_address(monkeypatch):
+    layout = _registry_layout()
+    _install_registry(monkeypatch, {0x1000: "work_sem", 0x2000: "other"})
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
+
+    found = navigation.find_object(1, "0x2000", layout)
+
+    assert found is not None and found._address == 0x2000
+
+
+def test_find_object_matches_symbol_address(monkeypatch):
+    layout = _registry_layout()
+    objects = _install_registry(monkeypatch, {0x1000: "work_sem"})
+
+    class _Sym:
+        pass
+
+    monkeypatch.setattr(
+        navigation,
+        "lookup_symbol",
+        lambda name: _Sym() if name == "work_sem_sym" else None,
+    )
+    monkeypatch.setattr(navigation, "safe_int", lambda _value: None)
+    monkeypatch.setattr(
+        navigation,
+        "value_address",
+        lambda value: 0x1000 if isinstance(value, _Sym) else value._address,
+    )
+
+    found = navigation.find_object(1, "work_sem_sym", layout)
+
+    assert found is objects[0]
+
+
+def test_find_object_rejects_unknown_name_and_null_address(monkeypatch):
+    layout = _registry_layout()
+    _install_registry(monkeypatch, {0x1000: "work_sem"})
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
+
+    assert navigation.find_object(1, "missing", layout) is None
+    assert navigation.find_object(1, "0x0", layout) is None
+    assert navigation.find_object(1, "   ", layout) is None
+
+
+def test_find_timer_by_target_matches_name_then_address(monkeypatch):
+    layout = KernelLayout(structs={"struct rt_timer": StructLayout("struct rt_timer")})
+    first, second = _Obj(0x1000), _Obj(0x2000)
+
+    monkeypatch.setattr(navigation, "iter_timers", lambda _kl: iter([first, second]))
+    monkeypatch.setattr(navigation, "read_field", lambda value, _l, _f: value)
+    names = {id(first): "heartbeat", id(second): "other"}
+    monkeypatch.setattr(
+        navigation,
+        "read_cstring",
+        lambda value: names.get(id(value)),
+    )
+    monkeypatch.setattr(navigation, "value_address", lambda value: value._address)
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
+
+    assert navigation.find_timer_by_target("heartbeat", layout) is first
+    assert navigation.find_timer_by_target("0x2000", layout) is second
+    assert navigation.find_timer_by_target("missing", layout) is None

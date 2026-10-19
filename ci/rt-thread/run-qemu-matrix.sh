@@ -129,7 +129,7 @@ build_fixture() {
         --out-bin "$build_dir/$bsp/rtthread.bin"
         --toolchain-prefix "$TOOLCHAIN_PREFIX"
     )
-    # Reason: the lanes need the version macros; GDR_RTTHREAD_G3=0 keeps the old
+    # NOTE: the lanes need the version macros; GDR_RTTHREAD_G3=0 keeps the old
     # behaviour available for bisecting a build problem.
     if [[ "${GDR_RTTHREAD_G3:-1}" != "0" ]]; then
         build_args+=(--g3)
@@ -155,7 +155,7 @@ collect_fixture() {
     if [[ "$target" == "rv64" && -n "$firmware" ]]; then
         cp "$firmware" "$dst/rtthread.bin"
     fi
-    # Reason: the marker is what makes a cached fixture trustworthy for the
+    # NOTE: the marker is what makes a cached fixture trustworthy for the
     # lanes' exact-version assertions; see the cache check in main().
     printf -- '-g3 -gdwarf-4\n' >"$dst/.debug-macros"
     echo "[gdr-ci] fixture collected: $dst/rtthread.elf (debug macros on)"
@@ -208,7 +208,7 @@ main() {
     # fixture. This is deliberately in the shared runner so all GDB/QEMU jobs use
     # the same compatibility gate.
     bash "$SCRIPT_DIR/../check-gdb-python.sh" "$(gdb_architecture_for "$target")"
-    # Reason: keep local container runs from creating a Linux virtualenv in the mounted repo.
+    # NOTE: keep local container runs from creating a Linux virtualenv in the mounted repo.
     export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/gdr-venv}"
     uv sync --group dev
 
@@ -216,7 +216,7 @@ main() {
         source_repo="${RT_THREAD_REPO:-$DEFAULT_REPO}"
         source_cache="${RT_THREAD_SOURCE_CACHE:-$DEFAULT_SOURCE_CACHE}"
         prepare_source_cache "$source_repo" "$source_cache" "${REFS[@]}"
-        # Reason: each version clone reads the cached tag locally instead of GitHub.
+        # NOTE: each version clone reads the cached tag locally instead of GitHub.
         repo="file://$source_cache"
     fi
 

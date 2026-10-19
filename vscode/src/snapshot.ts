@@ -243,7 +243,7 @@ function parseSourceRef(value: unknown): SourceRef | null {
 	if (typeof value.line !== 'number' || !Number.isInteger(value.line) || value.line < 1) {
 		return null;
 	}
-	// Reason: an older runtime omits `name`; the file is then the only path there is.
+	// NOTE: an older runtime omits `name`; the file is then the only path there is.
 	const name = typeof value.name === 'string' ? value.name : value.file;
 	return { file: value.file, name, line: value.line };
 }
@@ -387,7 +387,7 @@ function parseHeapFold(value: unknown, height: number): HeapFold | null {
 	if (!isRecord(value)) { return null; }
 	const { row, rows, height: foldHeight, bytes, kind, start, end } = value;
 	if (!Number.isInteger(row) || (row as number) < 0 || (row as number) > height) { return null; }
-	// Reason: older envelopes carry no row count; one folded row each.
+	// NOTE: older envelopes carry no row count; one folded row each.
 	const covered = rows === undefined ? 1 : rows;
 	if (!Number.isInteger(covered) || (covered as number) < 1 ||
 		(row as number) + (covered as number) > height) { return null; }
@@ -425,7 +425,7 @@ function parseHeapGrid(value: unknown): HeapGrid | null {
 	}
 	if (cursor !== width * height) { return null; }
 	const grid: HeapGrid = { width, height, scale, runs: runs as [number, number, number][] };
-	// Reason: divider bands arrive sorted with strictly rising rows; an
+	// NOTE: divider bands arrive sorted with strictly rising rows; an
 	// out-of-order band would paint over the wrong cells, so it rejects the
 	// grid. Retired gutter ticks stay ignored so an older envelope still draws.
 	if (value.folds !== undefined) {
@@ -455,7 +455,7 @@ export function parseHeapMap(data: unknown): HeapMapData | null {
 		}
 	}
 	const grid = parseHeapGrid(data.grid);
-	// Reason: dropping a malformed block changes indexes; never use a run map
+	// NOTE: dropping a malformed block changes indexes; never use a run map
 	// against a different list than the producer used.
 	if (data.grid !== undefined && (grid === null || blocks.length !== data.blocks.length || grid.runs.some((run) => run[2] >= blocks.length))) { return null; }
 	return {
@@ -490,7 +490,7 @@ export function parseSnapshot(data: unknown): SnapshotData | null {
 		capabilities: parseCapabilities(data.capabilities),
 		buildHints: asStringList(data.build_hints)
 	};
-	// Reason: the snapshot verb always serializes every section (some maybe
+	// NOTE: the snapshot verb always serializes every section (some maybe
 	// empty), so an envelope whose data carries none of them is not a
 	// snapshot at all -- a probe result or an error payload, which the caller
 	// must not render as an empty panel.

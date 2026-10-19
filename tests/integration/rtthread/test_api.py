@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from gdr.constants import GDR_API_SCHEMA_VERSION
+from core.constants import GDR_API_SCHEMA_VERSION
 from tests.support.loader import load_integration_spec
 
 SPEC = load_integration_spec()
@@ -188,7 +188,7 @@ def test_gdr_json_transport_delivers_the_envelope_through_evaluate(gdb):
 import gdb
 import json
 
-from gdr.serialize import reassemble_chunks
+from core.api import reassemble_chunks
 
 body = gdb.parse_and_eval('$gdr_json("tasks")').string()
 if body.startswith('{{"kind": "chunks"'):

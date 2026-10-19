@@ -37,23 +37,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from freertos.events import iter_waiters
-from freertos.heap import heap_snapshot
-from freertos.navigation import iter_tasks, mapped_ranges
-from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
-from gdr.gdb_bridge import (
+from core.adapter import active
+from core.constants import GDR_MAX_TRAVERSAL_COUNT
+from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     arch_or_default,
+    info,
     lookup_symbol,
     lookup_type,
+    print_table,
     read_bytes,
     read_int,
     read_uint_at,
     safe_dereference,
     type_size,
     value_address,
+    warn,
 )
-from gdr.layout import member_offset, read_field
+from core.layout import member_offset, read_field
+from freertos.heap import heap_snapshot
+from freertos.navigation import (
+    _refine_queue_object,
+    discover,
+    iter_tasks,
+    mapped_ranges,
+    resolve_object,
+    task_name_at,
+)
+from freertos.objects import iter_waiters
 
 if TYPE_CHECKING:
     from freertos.layout import FreeRtosLayout
@@ -83,7 +94,7 @@ def queue_checks(
     item_size = read_int(read_field(value, ql, "item_size"))
     length = read_int(read_field(value, ql, "length"))
     count = read_int(read_field(value, ql, "count"))
-    # Reason: the pointer/span invariants only exist for real data queues;
+    # NOTE: the pointer/span invariants only exist for real data queues;
     # a semaphore's pcReadFrom equals pcTail and a mutex's pcWriteTo is the
     # leftover reset value behind a NULL pcHead (queue.c prvInitialiseMutex).
     data_queue = pc_head not in (None, 0) and item_size not in (None, 0)
@@ -163,7 +174,7 @@ def queue_checks(
             and length is not None
             and item_size is not None
         ):
-            # Reason: a free mutex holds count=1 with no holder; taking it
+            # NOTE: a free mutex holds count=1 with no holder; taking it
             # decrements the count and records the holder, so the sum stays
             # 1 (recursive takes only bump uxRecursiveCallCount, queue.c).
             accounting = count + (1 if holder else 0)
@@ -215,11 +226,11 @@ def queue_checks(
     if rx_lock is None or tx_lock is None:
         results.append(("QueueLock", "skipped: unreadable"))
     else:
-        # Reason: int8_t queueUNLOCKED (-1) can read back as 255 through an
+        # NOTE: int8_t queueUNLOCKED (-1) can read back as 255 through an
         # unsigned-typed probe; normalize so both spellings compare equal.
         rx = rx_lock if rx_lock < 128 else rx_lock - 256
         tx = tx_lock if tx_lock < 128 else tx_lock - 256
-        # Reason: outside GDB (unit tests) the suspend state is unknown and
+        # NOTE: outside GDB (unit tests) the suspend state is unknown and
         # lookup_symbol raises; the tests mock it, and a live target read
         # failure bubbles to the command guard while the scheduler's
         # suspend counter stays a documented unknown -> stale locks are
@@ -228,7 +239,7 @@ def queue_checks(
         if (rx == -1 and tx == -1) or suspended not in (None, 0):
             results.append(("QueueLock", "ok"))
         else:
-            # Reason: "not suspended" is only claimable when the counter was
+            # NOTE: "not suspended" is only claimable when the counter was
             # actually read as 0; an unreadable uxSchedulerSuspended must not
             # be silently upgraded into a definite statement.
             state = (
@@ -289,7 +300,7 @@ class _ListOffsets:
 
 def _list_offsets(layout: FreeRtosLayout) -> _ListOffsets | None:
     """Resolve List_t / ListItem_t raw member offsets, or None."""
-    # Reason: member_offset refuses to run outside GDB; unit tests drive
+    # NOTE: member_offset refuses to run outside GDB; unit tests drive
     # the walk by monkeypatching the module-level helper, so one unreadable
     # offset is handled by the None checks below, not a RuntimeError catch.
     count = member_offset("struct xLIST", ("uxNumberOfItems",))
@@ -361,7 +372,7 @@ def walk_list_raw(
         if steps >= max_count:
             walk.truncated = True
             return walk
-        # Reason: a healthy chain never holds a NULL pxNext -- vListInsert
+        # NOTE: a healthy chain never holds a NULL pxNext -- vListInsert
         # always links back toward xListEnd -- so a zero read is a cut chain,
         # not the end of the list; reporting it as a clean short walk would
         # fabricate a healthy-looking count.
@@ -370,7 +381,7 @@ def walk_list_raw(
             source = walk.items[-1] if walk.items else end_addr
             walk.corrupt_reason = f"null pxNext from {source:#x}"
             return walk
-        # Reason: a corrupt next pointer into the NULL page or outside every
+        # NOTE: a corrupt next pointer into the NULL page or outside every
         # loadable section is not a list node; stop before reading it.  Skip
         # the check when no map is available so unit tests with synthetic
         # addresses still exercise the walk.
@@ -437,7 +448,7 @@ def list_checks(
             (name, "skipped: list offsets unavailable") for name in _LIST_CHECK_NAMES
         ]
     ptrsize, _endian = arch_or_default()
-    # Reason: xItemValue is a TickType_t, whose width follows the tick
+    # NOTE: xItemValue is a TickType_t, whose width follows the tick
     # configuration (configTICK_TYPE_WIDTH_IN_BITS): 2 bytes on a 16-bit
     # build.  Reading it at pointer width pulls the two padding bytes after
     # the value into the comparison, so a 16-bit lane would fail ListInit
@@ -487,7 +498,7 @@ def list_checks(
         results.append(("ListCount", "ok"))
 
     if not layout.config.smp:
-        # Reason: on single-core builds pxIndex legitimately stops on a
+        # NOTE: on single-core builds pxIndex legitimately stops on a
         # rotation cursor, so "pxIndex != &xListEnd" is normal scheduling.
         results.append(
             ("ListIndex", "skipped: single core (pxIndex is a rotation cursor)")
@@ -553,7 +564,7 @@ def _build_prefills_stacks(layout: FreeRtosLayout) -> bool:
     try:
         tasks = list(iter_tasks(layout))
     except TARGET_ACCESS_ERRORS:
-        # Reason: an unreadable scheduler list must not prove the prefill
+        # NOTE: an unreadable scheduler list must not prove the prefill
         # off (that would turn a fill-less population into a corruption);
         # unknown degrades to the conservative false.
         return False
@@ -627,7 +638,7 @@ def task_checks(
     else:
         owner = read_int(read_field(state_item, item_layout, "owner"))
         container = read_int(read_field(state_item, item_layout, "container"))
-        # Reason: the kernel stamps both list items with the TCB owner at
+        # NOTE: the kernel stamps both list items with the TCB owner at
         # creation (tasks.c prvInitialiseNewTask listSET_LIST_ITEM_OWNER)
         # and vListRemove only clears pxContainer, so a wrong or NULL owner
         # on either item is a corruption.  Checking both keeps the negative
@@ -655,7 +666,7 @@ def task_checks(
         if container is None:
             results.append(("ItemContainer", "skipped: unreadable"))
         elif not container:
-            # Reason: vListRemove clears pxContainer when the item is unlinked
+            # NOTE: vListRemove clears pxContainer when the item is unlinked
             # (list.c), so a NULL container is a legitimate unlinked item.
             results.append(("ItemContainer", "skipped: not linked"))
         else:
@@ -723,7 +734,7 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
     offsets = _list_offsets(layout)
     if offsets is None:
         return ("NextUnblockTime", "skipped: list offsets unavailable")
-    # Reason: xItemValue is a TickType_t -- on a 16-bit tick build a raw
+    # NOTE: xItemValue is a TickType_t -- on a 16-bit tick build a raw
     # pointer-width read would fold the padding bytes after each item value
     # into the minimum and falsely fail NextUnblockTime.
     tick_bytes = layout.config.tick_bits // 8
@@ -739,7 +750,7 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
         minimum = (1 << layout.config.tick_bits) - 1
     if expected is None:
         return ("NextUnblockTime", "skipped: unreadable")
-    # Reason: tasks.c permits a stale EARLIER cache after an event unblocks
+    # NOTE: tasks.c permits a stale EARLIER cache after an event unblocks
     # a task. The tick ISR refreshes it on the next check; only a later cache
     # can miss a deadline. portMAX_DELAY means no scheduled timeout.
     if expected <= minimum:
@@ -883,7 +894,7 @@ def timer_checks(
         if linked == active:
             results.append(("StatusListSync", "ok"))
         else:
-            # Reason: the daemon clears IS_ACTIVE and unlinks in one command
+            # NOTE: the daemon clears IS_ACTIVE and unlinks in one command
             # (timers.c prvProcessReceivedCommands), so a mismatch means a
             # queued command is still pending, not corruption -- but it must
             # be surfaced, not silently absorbed by the State cell.
@@ -934,3 +945,103 @@ def timer_checks(
             )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# On-demand exhaustive checks.
+# ---------------------------------------------------------------------------
+CHECK_KINDS = (
+    "system",
+    "heap",
+    "task",
+    "queue",
+    "semaphore",
+    "mutex",
+    "timer",
+    "eventgroup",
+)
+
+
+def render_checks(arguments: list[str]) -> None:
+    """Print every result for the requested scope, including skips and passes."""
+    from freertos.adapter import FreeRtosAdapter, _cast_object
+
+    selected = active()
+    if not isinstance(selected, FreeRtosAdapter):
+        warn("run `gdr init freertos <version>` first")
+        return
+    kind = arguments[0].lower() if arguments else "system"
+    name = " ".join(arguments[1:])
+    if kind not in CHECK_KINDS or (name and kind in ("system", "heap")):
+        warn(
+            "usage: frt check [system|heap|task|queue|semaphore|mutex|timer|eventgroup] [name]"
+        )
+        return
+    layout = selected.layout
+    rows: list[list[str]] = []
+
+    def append(scope: str, results: list[tuple[str, str]]) -> None:
+        for check, status in results:
+            verdict, _, reason = status.partition(":")
+            rows.append([scope, check, verdict, reason.strip() or "-"])
+
+    if kind == "system":
+        append("system", system_checks(layout))
+    elif kind == "heap":
+        verdict = heap_snapshot(layout).cross_check
+        append(
+            "heap",
+            [
+                (
+                    "CrossCheck",
+                    "ok"
+                    if verdict == "ok"
+                    else (
+                        "skipped: " if verdict.startswith("unavailable") else "fail: "
+                    )
+                    + verdict,
+                )
+            ],
+        )
+    elif kind == "task":
+        for value, _state, _core in iter_tasks(layout):
+            address = value_address(value)
+            task_name = task_name_at(address, layout)
+            if name and name != task_name and name != f"{address:#x}":
+                continue
+            append(
+                f"{task_name or '-'}@{address:#x}", task_checks(value, address, layout)
+            )
+    else:
+        objects = discover(kind, layout)
+        if name:
+            objects = [
+                obj
+                for obj in objects
+                if obj.name == name or f"{obj.address:#x}" == name
+            ]
+            if not objects:
+                obj = resolve_object(kind, name, layout)
+                objects = [obj] if obj is not None else []
+        for obj in objects:
+            if kind in ("queue", "semaphore", "mutex"):
+                obj = _refine_queue_object(obj, layout)
+                if obj.kind != kind and not obj.inferred_kind:
+                    warn(f"{name!r} is a {obj.kind}, not a {kind}")
+                    continue
+            value = _cast_object(obj.address, kind, layout)
+            results = (
+                queue_checks(value, obj.kind, layout)
+                if kind in ("queue", "semaphore", "mutex")
+                else timer_checks(value, layout)
+                if kind == "timer"
+                else event_checks(value, layout)
+            )
+            append(f"{obj.name or '-'}@{obj.address:#x}", results)
+    if not rows:
+        info(f"no {kind} objects matched {name!r}")
+        return
+    info(
+        "checks inspect one halted snapshot; an in-progress kernel update can be transient"
+    )
+    print_table(rows, ["Object", "Check", "Verdict", "Evidence"])

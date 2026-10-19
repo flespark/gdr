@@ -30,13 +30,33 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from gdr.gdb_bridge import type_field_names
-from gdr.layout import (
+from core.gdb_bridge import (
+    loaded_object_path,
+    lookup_symbol,
+    read_int,
+    read_macro_int,
+    read_macro_int_in_source,
+    symbol_exists,
+    type_field_names,
+    warn,
+)
+from core.layout import (
     KernelLayout,
     ListHook,
     ObjectTypeInfo,
     StructField,
     StructLayout,
+)
+from core.version import (
+    ProbeCandidate,
+    TargetVerdict,
+    Version,
+    VersionEncoding,
+    VersionRange,
+    decode_version,
+    format_version,
+    parse_version,
+    version_in_ranges,
 )
 
 # ---------------------------------------------------------------------------
@@ -99,7 +119,7 @@ class ThreadState(IntEnum):
 
 
 # Object type code → display name (matches rt_object_class_type enum order).
-# Reason: re-using type codes as keys keeps a single source of truth; the
+# NOTE: re-using type codes as keys keeps a single source of truth; the
 # pretty-printer renders ``type=THREAD`` instead of ``type=1``.
 OBJECT_TYPE_NAMES: dict[int, str] = {
     RT_OBJECT_CLASS_THREAD: "THREAD",
@@ -179,7 +199,7 @@ def _probe_cpu_count(lookup_symbol) -> int | None:
         except (gdb.error, AttributeError, TypeError, ValueError):
             continue
 
-    from gdr.gdb_bridge import read_macro_int
+    from core.gdb_bridge import read_macro_int
 
     count = read_macro_int("RT_CPUS_NR")
     if count is not None and count > 0:
@@ -355,7 +375,7 @@ def detect_config() -> RtConfig:
     Raises:
         RuntimeError: if not running inside GDB.
     """
-    from gdr.gdb_bridge import lookup_symbol, lookup_type, macro_defined, symbol_exists
+    from core.gdb_bridge import lookup_symbol, lookup_type, macro_defined, symbol_exists
 
     cfg = RtConfig()
 
@@ -373,19 +393,19 @@ def detect_config() -> RtConfig:
     cfg.using_device = symbol_exists("rt_device_register")
     cfg.using_signals = symbol_exists("rt_signal_init")
     cfg.using_lwp = symbol_exists("lwp_pid_find")
-    # Reason: soft timers are optional and are unrelated to device support.
+    # NOTE: soft timers are optional and are unrelated to device support.
     # Their exported/list symbols are stable across the supported 3.1 and 4.x
     # branches, while the list name itself changed between those series.
     cfg.using_soft_timer = symbol_exists("rt_soft_timer_list") or symbol_exists(
         "_soft_timer_list"
     )
-    # Reason: absent macro debug information cannot prove a target stack grows
+    # NOTE: absent macro debug information cannot prove a target stack grows
     # downward. The adapter infers it from RT-Thread's stack-fill sentinels.
     cfg.stack_grows_up = True if macro_defined("ARCH_CPU_STACK_GROWS_UPWARD") else None
 
     cfg.using_memory_object = lookup_type("struct rt_memory") is not None
 
-    # Reason: heap_type prefers the 4.1 ``system_heap`` handle (a typed object
+    # NOTE: heap_type prefers the 4.1 ``system_heap`` handle (a typed object
     # or pointer typedef) so the active ``*_AS_HEAP`` allocator wins even when
     # several heap algorithms are compiled into the kernel. 4.0 kernels expose
     # the system heap as static globals instead, so they fall back to
@@ -450,7 +470,7 @@ def _ipc_fields(object_type_names: dict[int, str]) -> dict[str, StructField]:
     fields["suspend_thread"] = StructField(
         "suspend_thread", ("parent", "suspend_thread"), kind="list"
     )
-    # Reason: IPC scheduling policy lives in ``rt_object.flag`` (0=FIFO, 1=PRIO).
+    # NOTE: IPC scheduling policy lives in ``rt_object.flag`` (0=FIFO, 1=PRIO).
     # Decoding stays in the adapter's ``_ipc_policy``; the pretty-printer calls
     # it through ``StructField.formatter`` so the RTOS-neutral core reuses the
     # same decoder instead of duplicating the mapping as an enum_map.
@@ -547,7 +567,7 @@ def build_timer_layout(object_type_names: dict[int, str]) -> StructLayout:
     """Build ``rt_timer`` layout (COUPLED: rtdef.h struct rt_timer)."""
     sl = StructLayout("struct rt_timer", display_name="Timer")
     sl.fields.update(_object_fields(1, object_type_names))  # parent = rt_object
-    # Reason: ``flag`` is shared by all rt_object subclasses, but only the
+    # NOTE: ``flag`` is shared by all rt_object subclasses, but only the
     # timer interpretation is meaningful here; override the field with a
     # timer-specific bit map so the printer renders ``flag=ACTIVE|PERIODIC``.
     sl.fields["flag"] = StructField(
@@ -606,7 +626,7 @@ def build_event_layout(object_type_names: dict[int, str]) -> StructLayout:
     """Build ``rt_event`` layout (COUPLED: rtdef.h struct rt_event)."""
     sl = StructLayout("struct rt_event", display_name="Event")
     sl.fields.update(_ipc_fields(object_type_names))
-    # Reason: the event bit-set is a mask, so hex keeps the individual bits
+    # NOTE: the event bit-set is a mask, so hex keeps the individual bits
     # readable and matches the ``rtt events`` table's ``Set`` column.
     sl.fields["set"] = StructField("set", ("set",), kind="hex", summary=True)
     return sl
@@ -685,10 +705,10 @@ def build_mempool_layout(object_type_names: dict[int, str]) -> StructLayout:
     sl.fields["block_free_count"] = StructField(
         "block_free_count", ("block_free_count",), summary=True
     )
-    # Reason: block_list is the free-block singly-linked list head; it is only
+    # NOTE: block_list is the free-block singly-linked list head; it is only
     # consumed by detail diagnostics, never by the default table.
     sl.fields["block_list"] = StructField("block_list", ("block_list",), kind="ptr")
-    # Reason: waiters are counted by traversing the suspend list on every
+    # NOTE: waiters are counted by traversing the suspend list on every
     # version; the cached suspend_thread_count was removed in later releases
     # so the layout must describe the list itself.
     sl.fields["suspend_thread"] = StructField(
@@ -885,7 +905,7 @@ def build_layouts(
 
     This is the main entry point for the RT-Thread adapter. The resulting
     ``KernelLayout`` is passed to ``rtthread.navigation`` and
-    ``gdr.printers`` for traversal and pretty-printer registration.
+    ``core.layout`` for traversal and pretty-printer registration.
 
     Args:
         cfg: Probed ``RtConfig`` from ``detect_config``.
@@ -952,3 +972,205 @@ def build_layouts(
     kl.object_types = _build_object_types(cfg, object_codes)
 
     return kl
+
+
+# ---------------------------------------------------------------------------
+# Version policy and target-version probing.
+# ---------------------------------------------------------------------------
+SUPPORTED_RANGES: tuple[VersionRange, ...] = (
+    ((3, 1, 0), (3, 1, 5)),
+    ((4, 0, 0), (4, 1, 1)),
+)
+# NOTE: version constants are macros; GDB resolves them only with a CU
+# selected, so reads go through `rt_thread_init` (thread.c includes
+# rtdef.h on every supported version).
+_VERSION_MACRO_SOURCE = "rt_thread_init"
+
+# The ordinal version macros every supported release defines.  They are plain
+# single-line integers, unlike ``RTTHREAD_VERSION`` (a multi-line expression in
+# 3.1.x/4.0.x and a macro call in 4.1.x), so they are the portable source.
+_VERSION_TRIPLET = ("RT_VERSION", "RT_SUBVERSION", "RT_REVISION")
+
+TARGET_VERSION_SYMBOLS: tuple[tuple[str, tuple[VersionEncoding, ...]], ...] = (
+    ("RT_VER_NUM", ("packed-hex", "decimal")),
+    ("RTTHREAD_VERSION", ("decimal", "packed-hex")),
+    ("gdr_rtthread_version_num", ("decimal", "packed-hex")),
+)
+
+
+def validate_version(version: str) -> Version | None:
+    """Validate the RT-Thread version argument accepted by this adapter.
+
+    ``None`` (already warned) on failure; callers abort the init on ``None``
+    instead of raising ``SystemExit``, which would kill the whole session.
+    """
+    parsed = parse_version(version)
+    if parsed is None:
+        warn(f"invalid RT-Thread version: {version!r}")
+        warn("expected full RT-Thread version form, e.g. 4.0.5")
+        return None
+    if not version_in_ranges(parsed, SUPPORTED_RANGES):
+        warn(f"unsupported RT-Thread version: {version!r}")
+        warn("currently verified: 3.1.0 through 3.1.5, and 4.0.0 through 4.1.1")
+        return None
+    return parsed
+
+
+def _version_macro_int(name: str) -> int | None:
+    """Read one version macro, preferring the compilation-unit-scoped read.
+
+    Version ordinals are legitimately ``0``, so the result is tested with
+    ``is not None`` rather than truthiness.
+    """
+    value = read_macro_int(name)
+    if value is not None:
+        return value
+    return read_macro_int_in_source(name, _VERSION_MACRO_SOURCE)
+
+
+def _version_triplet() -> Version | None:
+    """The ``RT_VERSION``/``RT_SUBVERSION``/``RT_REVISION`` triplet, or ``None``.
+
+    Reading three ordinals is what makes the 3.1.x range detectable at all:
+    those releases export no packed ``RT_VER_NUM``, and their
+    ``RTTHREAD_VERSION`` is a multi-line expression.
+    """
+    components: list[int] = []
+    for name in _VERSION_TRIPLET:
+        value = _version_macro_int(name)
+        if value is None:
+            return None
+        components.append(value)
+    candidate: Version = (components[0], components[1], components[2])
+    return candidate if version_in_ranges(candidate, SUPPORTED_RANGES) else None
+
+
+def detect_target_version() -> Version | None:
+    """Best-effort RT-Thread version detection from exported constants."""
+    triplet = _version_triplet()
+    if triplet is not None:
+        return triplet
+    for expression, encodings in TARGET_VERSION_SYMBOLS:
+        detected = decode_version(
+            read_int(lookup_symbol(expression))
+            or read_macro_int(expression)
+            or read_macro_int_in_source(expression, _VERSION_MACRO_SOURCE)
+            or 0,
+            encodings,
+            SUPPORTED_RANGES,
+        )
+        if detected is not None:
+            return detected
+    return None
+
+
+def check_target(version: str, *, allow_unverified: bool = False) -> TargetVerdict:
+    """Decide whether *version* may register this adapter on this target.
+
+    The presence markers are ``navigation.PROBE_MARKERS``, the same table
+    ``gdr probe`` matches, so the probe and this gate cannot disagree about
+    what counts as evidence for "this target runs RT-Thread".
+
+    Refused when the argument is invalid or unsupported, when the target
+    exports a different version, or when no marker matched at all. That last
+    refusal is what keeps a symbol-less or wrong-target session from
+    registering an adapter whose every read would be empty; *allow_unverified*
+    is the escape hatch for a deliberately modified kernel, and it records the
+    override as the verdict's note rather than hiding it.
+
+    A target that shows markers but exports no version constant is *accepted*
+    with a note: the user asserted the version, which is exactly the flow the
+    plugin's detection wizard needs.
+    """
+    expected = validate_version(version)
+    if expected is None:
+        return TargetVerdict(
+            code="unsupported_version",
+            message=f"invalid or unsupported RT-Thread version: {version!r}",
+        )
+    from rtthread.navigation import PROBE_MARKERS
+
+    markers = tuple(name for name in PROBE_MARKERS if symbol_exists(name))
+    detected = detect_target_version()
+    if detected is not None and detected != expected:
+        message = (
+            f"RT-Thread version mismatch: requested {version}, "
+            f"but target exports {format_version(detected)}"
+        )
+        warn(message)
+        return TargetVerdict(code="version_mismatch", message=message)
+    if not markers:
+        if not allow_unverified:
+            # NOTE: `load` writes the target memory but gives GDB no symbol
+            # table, so a remote session that only ran `load` fails here with
+            # a message that reads as if loading were the fix. Name `file`
+            # only when GDB really has no symbol file; otherwise the image
+            # is most likely stripped or a different RTOS.
+            if loaded_object_path() is None:
+                message = (
+                    "no RT-Thread symbol matched on this target; GDB has no "
+                    "symbol file loaded -- run `file <elf>` first (`load` "
+                    "only writes the target memory), or pass "
+                    "--allow-unverified to register anyway"
+                )
+            else:
+                message = (
+                    "no RT-Thread symbol matched on this target; load the image "
+                    "first, or pass --allow-unverified to register anyway"
+                )
+            warn(message)
+            return TargetVerdict(code="no_target_evidence", message=message)
+        note = (
+            "no RT-Thread symbol matched; registration was forced with "
+            "--allow-unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    if detected is None:
+        note = (
+            "target RT-Thread version not exported; the requested version is unverified"
+        )
+        warn(note)
+        return TargetVerdict(version=expected, note=note, markers=markers)
+    return TargetVerdict(version=expected, markers=markers)
+
+
+# ---------------------------------------------------------------------------
+# Presence and version evidence for ``gdr probe``.
+# ---------------------------------------------------------------------------
+
+
+def probe() -> ProbeCandidate | None:
+    """Report whether this target runs RT-Thread, and which version it exports.
+
+    ``None`` means no marker matched, i.e. this adapter has nothing to claim.
+    """
+    from rtthread.navigation import PROBE_MARKERS
+
+    matched = tuple(name for name in PROBE_MARKERS if symbol_exists(name))
+    if not matched:
+        return None
+
+    evidence = [f"symbol: {name}" for name in matched]
+    sources = "/".join(name for name, _encodings in TARGET_VERSION_SYMBOLS)
+    version = detect_target_version()
+    if version is None:
+        evidence.append(f"version: none of {sources} is readable")
+        return ProbeCandidate(
+            rtos="rtthread",
+            confidence="undetected",
+            evidence=tuple(evidence),
+            detail=(
+                "RT-Thread is present but exports no supported version constant; "
+                "build with -g3 so DWARF carries RT_VER_NUM, or link a "
+                "gdr_rtthread_version_num symbol"
+            ),
+        )
+
+    evidence.append(f"version: {format_version(version)} from {sources}")
+    return ProbeCandidate(
+        rtos="rtthread",
+        confidence="exact",
+        version=format_version(version),
+        evidence=tuple(evidence),
+    )

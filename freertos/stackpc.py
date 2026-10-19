@@ -120,7 +120,7 @@ def cpu_name_from_attributes(blob: bytes) -> str | None:
                     if name_end == -1:
                         return None
                     return blob[cursor:name_end].decode("ascii", errors="replace")
-                # Reason: only the tags seen in these builds are decoded; an
+                # NOTE: only the tags seen in these builds are decoded; an
                 # unknown tag stops the scan rather than being mis-stepped.
                 return None
                 # type; only Tag_CPU_name is needed to choose the port, so an

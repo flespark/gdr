@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && /opt/scons-venv/bin/pip install --no-cache-dir "scons>=4.6,<5"
 
 # Keep the test fixture compiler identical to the regular Cortex-A9 matrix.
-# Reason: a distribution compiler can alter the fixture's stack layout and
+# NOTE: a distribution compiler can alter the fixture's stack layout and
 # confound a GDB/Python compatibility result.
 ARG XPACK_ARM_VERSION=15.2.1-1.1
 ARG XPACK_ARM_SHA256=da6a49ad4003944b823c6c93702a8787c922ab34bd7e918ec0eaf6933a9b1ff6

@@ -9,7 +9,7 @@
  */
 
 /// <reference types="node" />
-// Reason: this subproject keeps its own node_modules, so an editor or `tsc`
+// NOTE: this subproject keeps its own node_modules, so an editor or `tsc`
 // invocation whose analysis root is the repository root would otherwise not
 // resolve the Node builtins this file uses.
 
@@ -125,7 +125,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	const cache = new GdrCache(context.workspaceState);
 	const sessions = new Map<string, GdrSession>();
 
-	// Reason: the tracker addresses sessions by id and attaches the session
+	// NOTE: the tracker addresses sessions by id and attaches the session
 	// object to only some payloads (its `notifyCurrentStatus`), so the extension
 	// keeps its own id -> session map for the stop events that carry an id only.
 	const liveSessions = new Map<string, vscode.DebugSession>();
@@ -137,7 +137,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			liveSessions.delete(session.id);
 		})
 	);
-	// Reason: onDidStartDebugSession is not guaranteed to fire before the adapter's
+	// NOTE: onDidStartDebugSession is not guaranteed to fire before the adapter's
 	// first tracker events, so any payload that carries the session object also
 	// registers it; a later id-only stop event then still resolves.
 	const rememberSession = (session: vscode.DebugSession): void => {
@@ -175,7 +175,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			return null;
 		}
 		const args = costArgs(costOptions());
-		// Reason: the file is written where GDB runs, so the bypass only holds
+		// NOTE: the file is written where GDB runs, so the bypass only holds
 		// when the extension can read that same filesystem -- normally true
 		// (GDB is started locally, whatever host gdbserver is on) but not for
 		// a GDB in a separate filesystem namespace such as WSL.
@@ -185,7 +185,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		return gs.fetch('snapshot', args, frameId, { dir: recordDir() });
 	};
 
-	// Reason: the heap map is one more verb over the same session transport as the
+	// NOTE: the heap map is one more verb over the same session transport as the
 	// snapshot, so a chunked or file-routed answer is handled identically.
 	const heapMapFetcher: HeapMapFetcher = async (sessionId, frameId) => {
 		const gs = sessions.get(sessionId);
@@ -272,7 +272,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		)
 	);
 
-	// Reason: the view is hidden until a session GDR can drive exists, so the
+	// NOTE: the view is hidden until a session GDR can drive exists, so the
 	// panel is where the debugging views already live instead of a standing
 	// icon; `panel.sessionStarted`/`sessionEnded` flip this key.
 	void vscode.commands.executeCommand('setContext', 'gdrRtosViews.active', false);
@@ -306,7 +306,7 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 		startupFailure('debug-tracker-vscode is not installed; stop events will not reach GDR');
 		return;
 	}
-	// Reason: a tracker whose exports do not match what this client expects used
+	// NOTE: a tracker whose exports do not match what this client expects used
 	// to throw out of activation, which the host reports as a failed activation
 	// and leaves the panel and the output channel missing entirely. Sampling the
 	// API defensively keeps a protocol mismatch a logged degradation instead.
@@ -325,7 +325,7 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 				notifyAllEvents: false,
 				debugLevel: 0,
 				handler: (event: TrackerEvent) => {
-					// Reason: a rejection here would only reach the Extension Host console,
+					// NOTE: a rejection here would only reach the Extension Host console,
 					// so the output channel would show a stall with no cause.
 					handleTrackerEvent(event, deps).catch((error: unknown) => {
 						const reason = `${event.event}: ${error instanceof Error ? error.message : String(error)}`;
@@ -339,7 +339,7 @@ async function subscribeToTracker(deps: TrackerDeps): Promise<void> {
 				}
 			}
 		});
-		// Reason: the tracker answers a refusal with a string instead of throwing
+		// NOTE: the tracker answers a refusal with a string instead of throwing
 		// (`Unknown version`, `No handler specified`, ...), so an unchecked return
 		// would report success for a subscription that delivers nothing.
 		if (typeof grant === 'string') {
@@ -375,7 +375,7 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 	}
 	const session = resolveEventSession(event, deps.sessionById);
 	if (session === undefined) {
-		// Reason: the tracker's payloads carry the session object only on its
+		// NOTE: the tracker's payloads carry the session object only on its
 		// current-status events, so a stop event is attributed through its id and
 		// dropped (with a trace) when no live session owns that id.
 		deps.log(`tracker: ignored '${event.event}' (no live session yet)`);
@@ -388,7 +388,7 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			sessions.delete(session.id);
 			return;
 		case 'started': {
-			// Reason: a session GDR cannot host gets a tab that says why. Without
+			// NOTE: a session GDR cannot host gets a tab that says why. Without
 			// this the types are never subscribed to and the user sees nothing at
 			// all, which the README used to promise was a refusal with a reason.
 			const refused = unsupportedReason(session.type);
@@ -416,7 +416,7 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			panel.targetRunning(session.id);
 			return;
 		}
-		// Reason: the tracker resets its latch on every `stopped` event, so this
+		// NOTE: the tracker resets its latch on every `stopped` event, so this
 		// fires once per stop carrying that stop's frame id -- the frame id is
 		// what an evaluate-based read needs, and per-stop is what makes the
 		// panel refresh track the target.
@@ -425,7 +425,7 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			if (typeof frameId !== 'number') {
 				return;
 			}
-			// Reason: a refused session has no loader and no GDR to initialize;
+			// NOTE: a refused session has no loader and no GDR to initialize;
 			// the panel already carries its reason from `started`.
 			if (unsupportedReason(session.type) !== null) {
 				return;
@@ -437,7 +437,7 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 					return;
 				}
 				await sessionFactory(session, frameId);
-				// Reason: initialization can await UI/transport while termination
+				// NOTE: initialization can await UI/transport while termination
 				// removes this session. Never notify or revive its panel afterwards.
 				if (sessions.get(session.id) !== gs) { return; }
 				if (gs.initialized) {
@@ -457,7 +457,7 @@ async function handleTrackerEvent(event: TrackerEvent, deps: TrackerDeps): Promi
 			return;
 		}
 		default:
-			// Reason: `event.event` is optional and the tracker also emits names
+			// NOTE: `event.event` is optional and the tracker also emits names
 			// that carry no panel state (`capabilities`, `protocol-event`), so a
 			// payload with nothing to update is a no-op, not an error.
 			return;

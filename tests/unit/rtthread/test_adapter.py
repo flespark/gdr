@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import rtthread.adapter as adapter_module
-from gdr.layout import KernelLayout, StructField, StructLayout
+from core.layout import KernelLayout, StructField, StructLayout
 from rtthread.adapter import (
     Event,
     Mailbox,
@@ -19,7 +19,7 @@ from rtthread.adapter import (
 
 def _type_info(code: int, struct_name: str, name: str, *, enabled: bool = True):
     """Build an ObjectTypeInfo with the registry-path fields these tests ignore."""
-    from gdr.layout import ObjectTypeInfo
+    from core.layout import ObjectTypeInfo
 
     return ObjectTypeInfo(
         type_code=code,

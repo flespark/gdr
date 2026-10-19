@@ -1,0 +1,616 @@
+"""Generic kernel struct layout descriptions and accessors.
+
+Defines dataclasses for describing kernel struct fields, linked-list hooks,
+and object-container mappings in an RTOS-agnostic way. Concrete platform
+adapters use these to build a ``KernelLayout`` at startup.
+
+The dataclasses are pure Python and importable without GDB.  The accessor
+functions (``read_field``, ``iter_list``, ``container_of``) require GDB and
+are only called inside a GDB session.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from typing import Literal, Protocol, runtime_checkable
+
+from .constants import GDR_MAX_TRAVERSAL_COUNT
+from .gdb_bridge import (
+    TARGET_ACCESS_ERRORS,
+    lookup_symbol,
+    lookup_symbol_at,
+    read_bytes,
+    read_cstring,
+    read_int,
+    type_size,
+    warn,
+)
+
+try:
+    import gdb
+except ImportError:
+    gdb = None  # type: ignore[assignment]
+
+# Field/access errors we degrade from.  Stored at module scope so the tuple
+# stays evaluable when imported outside GDB (where ``gdb`` is ``None`` would
+# otherwise turn a running handler into an AttributeError).  Unexpected
+# exceptions bubble to a command/function guard for a full diagnostic.
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses (pure Python, no GDB needed)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class SupportsStructs(Protocol):
+    """Structural protocol for any adapter layout exposing a struct map.
+
+    ``KernelLayout`` and the adapter layouts produced by the RTOS packages
+    both satisfy this protocol structurally: they expose a ``structs``
+    mapping from GDB type name to :class:`StructLayout`. Pretty-printer
+    registration accepts this protocol (instead of the concrete
+    :class:`KernelLayout`) so the neutral printer can fold adapter structs
+    without those layouts inheriting from ``KernelLayout``.
+
+    ``@runtime_checkable`` stays meaningful here because ``register_printers``
+    is called from adapter setup code that runs inside GDB; a structural
+    ``isinstance`` check gives a clear diagnostic if a layout ever loses its
+    ``structs`` attribute.
+    """
+
+    structs: dict[str, StructLayout]
+
+
+@dataclass
+class StructField:
+    """A logical field within a kernel struct, with its GDB access path.
+
+    Attributes:
+        name: Logical field name (e.g. ``"name"``, ``"stat"``).
+        path: Tuple of field names and/or array indices that GDB traverses
+            to reach the value.  E.g. ``("parent", "name")`` for a field
+            inherited via an embedded ``parent`` struct, or ``("row", 0)``
+            for the first element of an array member.
+        kind: Hint for the adapter layer: ``"string"``, ``"ptr"``, ``"list"``,
+            ``"enum"``, ``"flags"``, or ``""`` (default, treated as int).
+        summary: ``True`` if this field should appear in the one-line
+            pretty-printer fold.  Selecting 2-4 key fields per struct keeps
+            ``p``/``bt full``/``info locals`` output readable.
+        enum_map: Optional mapping from raw integer value to symbolic name,
+            used by the pretty-printer when ``kind == "enum"``.  Renders
+            ``stat=READY`` instead of ``stat=3``.  ``None`` falls back to
+            the raw integer display.
+        pointee_string_path: Optional path to a C string in the dereferenced
+            value. This lets an adapter opt into useful pointer summaries
+            without teaching the generic printer a target's struct layout.
+        formatter: Optional callable that maps the field's raw integer value
+            to a display string.  Adapters attach their own decoding functions
+            here (for example an IPC policy decode) so the RTOS-neutral
+            printer can reuse existing adapter logic instead of duplicating it
+            as an ``enum_map``.
+    """
+
+    name: str
+    path: tuple[str | int, ...]
+    kind: str = ""
+    summary: bool = False
+    enum_map: dict[int, str] | None = None
+    pointee_string_path: tuple[str | int, ...] | None = None
+    formatter: Callable[[int | None], str] | None = None
+
+
+@dataclass
+class StructLayout:
+    """Describes the layout of a kernel struct for GDB access.
+
+    Attributes:
+        struct_name: GDB type name (e.g. ``"struct kernel_thread"``).
+        fields: Mapping of logical field name to ``StructField``.
+        display_name: Optional short label for folded output. The target
+            adapter supplies this label when the GDB type name is unsuitable.
+    """
+
+    struct_name: str
+    fields: dict[str, StructField] = field(default_factory=dict)
+    display_name: str | None = None
+
+
+@dataclass
+class ListHook:
+    """Describes how to iterate an intrusive doubly-linked list.
+
+    Attributes:
+        head_symbol: Identifier of the list-head symbol. Empty when the
+            caller already holds the head ``gdb.Value``.
+        node_path: Path from the container struct to its embedded list node
+            (used with ``container_of``).
+        container_type: GDB type name to cast the container to.
+        next_path: Path from a list node to its next node. This is layout
+            metadata because intrusive-list implementations vary by target.
+        head_index: Optional array index applied after looking up
+            ``head_symbol`` (for example skip-list slot 0). ``None`` means
+            the symbol itself is the head.
+    """
+
+    head_symbol: str
+    node_path: tuple[str | int, ...]
+    container_type: str
+    next_path: tuple[str | int, ...]
+    head_index: int | None = None
+
+
+@dataclass
+class ObjectTypeInfo:
+    """Maps a kernel object type code to its struct and list member path.
+
+    Attributes:
+        type_code: Numeric object type (e.g. ``0x01`` for Thread).
+        struct_name: GDB type name of the container struct.
+        list_path: Path from the container to its object-registry list node.
+        next_path: Path from that list node to its next node.
+        enabled: Whether this object type is present in the current config.
+        name: Adapter-supplied human-readable object type name.
+    """
+
+    type_code: int
+    struct_name: str
+    list_path: tuple[str | int, ...]
+    next_path: tuple[str | int, ...]
+    enabled: bool = True
+    name: str = ""
+
+
+@dataclass
+class KernelLayout:
+    """Complete layout description for a kernel.
+
+    Attributes:
+        structs: Mapping of struct name to ``StructLayout``.
+        list_hooks: Mapping of hook name to ``ListHook``.
+        object_types: Mapping of type code to ``ObjectTypeInfo``.
+        object_codes: Adapter-supplied mapping from stable semantic object
+            names to target-specific numeric type codes.
+        stack_grows_up: Whether thread stacks grow toward higher addresses, or
+            ``None`` when the target direction cannot be determined.
+        cpu_count: Number of configured CPUs for SMP kernels, or ``None`` for
+            UP targets or when the count cannot be probed. SMP capability
+            fields (e.g. ``oncpu``/``bind_cpu``) are only meaningful relative
+            to this bound.
+    """
+
+    structs: dict[str, StructLayout] = field(default_factory=dict)
+    list_hooks: dict[str, ListHook] = field(default_factory=dict)
+    object_types: dict[int, ObjectTypeInfo] = field(default_factory=dict)
+    object_codes: dict[str, int] = field(default_factory=dict)
+    stack_grows_up: bool | None = None
+    cpu_count: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# Accessors (require GDB)
+# ---------------------------------------------------------------------------
+
+
+def member_offset(type_name: str, path: tuple[str | int, ...]) -> int | None:
+    """Calculate the byte offset of a (possibly nested) struct member.
+
+    Args:
+        type_name: GDB type name.
+        path: Member access path; string elements are field names,
+            int elements are array indices.
+
+    Returns:
+        Byte offset, or ``None`` if the type or path is not found.
+    """
+    if gdb is None:
+        raise RuntimeError("not running inside GDB")
+    try:
+        t = gdb.lookup_type(type_name)
+    except gdb.error:
+        return None
+
+    offset_bits = 0
+    for part in path:
+        if isinstance(part, int):
+            if t.code != gdb.TYPE_CODE_ARRAY:
+                return None
+            target_size = type_size(t.target())
+            if target_size is None:
+                return None
+            offset_bits += part * target_size * 8
+            t = t.target()
+        else:
+            found = False
+            for f in t.fields():
+                if f.name == part:
+                    bitpos = f.bitpos
+                    if bitpos is None:
+                        return None
+                    offset_bits += bitpos
+                    t = f.type
+                    found = True
+                    break
+            if not found:
+                return None
+    return offset_bits // 8
+
+
+def container_of(
+    node_ptr: gdb.Value, container_type: str, member_path: tuple[str | int, ...]
+) -> gdb.Value:
+    """Recover the containing struct from an embedded list-node pointer.
+
+    Mirrors the common C ``container_of(ptr, type, member)`` idiom.
+
+    Args:
+        node_ptr: ``gdb.Value`` pointing to the embedded list node.
+        container_type: GDB type name of the containing struct.
+        member_path: Path from the container to the list-node member.
+
+    Returns:
+        A dereferenced ``gdb.Value`` of the containing struct.
+    """
+    if gdb is None:
+        raise RuntimeError("not running inside GDB")
+    offset = member_offset(container_type, member_path)
+    if offset is None:
+        raise ValueError(f"cannot compute offset of {member_path} in {container_type}")
+    try:
+        addr = int(node_ptr) - offset
+    except TARGET_ACCESS_ERRORS as exc:
+        raise ValueError(
+            f"cannot resolve node pointer {node_ptr!r} to an address"
+        ) from exc
+    ptr_type = gdb.lookup_type(container_type).pointer()
+    return gdb.Value(addr).cast(ptr_type).dereference()
+
+
+def value_at(address: int, struct_layout: StructLayout) -> gdb.Value | None:
+    """Cast a raw address to the layout's struct type and dereference it.
+
+    Callers holding only an object address (e.g. a TCB pointer discovered from
+    a ``pvOwner`` field) use this to rebuild the native ``gdb.Value`` before
+    reading layout fields.  The cast type always comes from
+    ``struct_layout.struct_name`` (never a caller literal), so a renamed
+    kernel struct stays correct.  Returns ``None`` when the address is
+    unusable, the type is missing, or the cast fails.
+    """
+    if gdb is None or not address:
+        return None
+    try:
+        ptr_type = gdb.lookup_type(struct_layout.struct_name).pointer()
+        return gdb.Value(address).cast(ptr_type).dereference()
+    except TARGET_ACCESS_ERRORS:
+        return None
+
+
+def read_field_at(
+    addr: int,
+    type_name: str,
+    struct_layout: StructLayout,
+    field: str,
+    width: int,
+    endian: Literal["little", "big"],
+) -> int | None:
+    """Read one fixed-width layout field from a raw struct address.
+
+    The member offset comes from the DWARF type via :func:`member_offset`,
+    never from a hard-coded literal, so config-conditional or renamed fields
+    degrade to ``None`` instead of reading a stale offset.  Raw bytes are
+    decoded with the caller-supplied *endian* (target order).
+    """
+    f = struct_layout.fields.get(field)
+    if f is None:
+        return None
+    offset = member_offset(type_name, f.path)
+    if offset is None:
+        return None
+    raw = read_bytes(addr + offset, width)
+    if raw is None:
+        return None
+    return int.from_bytes(raw, byteorder=endian)
+
+
+def read_path(value: gdb.Value, path: tuple[str | int, ...]) -> gdb.Value | None:
+    """Read a nested field path from a ``gdb.Value`` safely."""
+    try:
+        current = value
+        for part in path:
+            current = current[part]
+        return current
+    except TARGET_ACCESS_ERRORS:
+        return None
+
+
+def read_field(
+    value: gdb.Value, layout: StructLayout, field_name: str
+) -> gdb.Value | None:
+    """Read a field from a ``gdb.Value`` using a ``StructLayout`` description.
+
+    Returns ``None`` if the field is not in the layout, not present in the
+    value (config-conditional), or if GDB raises an error during access.
+    """
+    f = layout.fields.get(field_name)
+    if f is None:
+        return None
+    return read_path(value, f.path)
+
+
+def resolve_list_head(hook: ListHook):
+    """Return the list-head ``gdb.Value`` for *hook*, or ``None``.
+
+    Looks up ``head_symbol`` as a DWARF/ELF identifier and applies
+    ``head_index`` with ``gdb.Value`` indexing. Never evaluates a GDB
+    expression, so the inferior stays halted.
+    """
+    if not hook.head_symbol:
+        return None
+    value = lookup_symbol(hook.head_symbol)
+    if value is None:
+        return None
+    if hook.head_index is None:
+        return value
+    try:
+        return value[hook.head_index]
+    except TARGET_ACCESS_ERRORS:
+        return None
+
+
+def iter_list(
+    head_value: gdb.Value,
+    hook: ListHook,
+    max_count: int = GDR_MAX_TRAVERSAL_COUNT,
+) -> Iterator[gdb.Value]:
+    """Iterate a doubly-linked list, yielding container ``gdb.Value`` objects.
+
+    Args:
+        head_value: ``gdb.Value`` of the list head.
+        hook: ``ListHook`` describing the container type and node path.
+        max_count: Safety limit to prevent infinite loops on corrupted lists.
+            Emits a warning if traversal reaches the limit before the list head.
+
+    Yields:
+        Dereferenced ``gdb.Value`` of each container struct.
+    """
+    if gdb is None:
+        raise RuntimeError("not running inside GDB")
+    try:
+        head_int = int(head_value.address)
+        node = read_path(head_value, hook.next_path)
+        count = 0
+        seen_addrs: set[int] = set()
+        while node is not None:
+            node_int = int(node)
+            if node_int == head_int:
+                return
+            if node_int == 0:
+                # NOTE: before kernel startup a list head can still be zero;
+                # GDB lazily dereferences container_of(NULL - offset), so the
+                # invalid value otherwise escapes this generator's error guard.
+                warn(
+                    "list traversal stopped at NULL node "
+                    "(list not initialized or corrupted)"
+                )
+                return
+            if node_int in seen_addrs:
+                warn(
+                    f"list traversal stopped at repeated node {node_int:#x} "
+                    "(corrupted cycle)"
+                )
+                return
+            if count >= max_count:
+                warn(f"list traversal truncated after {max_count} nodes")
+                return
+            seen_addrs.add(node_int)
+            yield container_of(node, hook.container_type, hook.node_path)
+            node = read_path(node, hook.next_path)
+            count += 1
+    except TARGET_ACCESS_ERRORS:
+        return
+
+
+# ---------------------------------------------------------------------------
+# Layout-driven pretty-printer framework.
+# ---------------------------------------------------------------------------
+
+
+try:
+    import gdb
+except ImportError:
+    gdb = None  # type: ignore[assignment]
+
+
+_PRINTER_MARKER = "_gdr_layout_printer"
+
+# Errors a type inspection may raise while resolving a value's struct tag.
+# Module scope keeps the tuple computable outside GDB (where ``gdb`` is None).
+if gdb is not None:
+    _TYPE_ERRORS = (gdb.error, AttributeError, TypeError)
+else:
+    _TYPE_ERRORS = (AttributeError, TypeError)
+
+
+def _struct_tag(value) -> str | None:
+    """Return the underlying struct tag of a ``gdb.Value``, or ``None``.
+
+    Kernel APIs hand out struct values through typedef aliases, and a
+    typedef'd or cv-qualified ``gdb.Type`` reports ``tag is None`` even
+    though the value is a struct.  Resolving the tag through
+    ``strip_typedefs().unqualified()`` makes the fold trigger on the
+    spellings users actually type (``p *some_current_pointer``), not only on
+    an explicit ``struct`` cast.
+    """
+    try:
+        basic = value.type.strip_typedefs()
+        return basic.unqualified().tag
+    except _TYPE_ERRORS:
+        return None
+
+
+def _format_field(value, field: StructField) -> str:
+    """Format a ``gdb.Value`` for one-line display based on its field hint.
+
+    Args:
+        value: ``gdb.Value`` or ``None``.
+        field: ``StructField`` carrying ``kind`` and optional ``enum_map``.
+
+    Returns:
+        Human-readable string.  ``"N/A"`` for inaccessible values.
+    """
+    if value is None:
+        return "N/A"
+
+    kind = field.kind
+
+    if field.formatter is not None:
+        return field.formatter(read_int(value))
+
+    if kind == "string":
+        s = read_cstring(value)
+        return f'"{s}"' if s else "N/A"
+
+    if kind == "ptr":
+        addr = read_int(value)
+        if addr is None:
+            return "N/A"
+        if addr == 0:
+            return "NULL"
+        if field.pointee_string_path is not None:
+            try:
+                pointee = read_path(value.dereference(), field.pointee_string_path)
+                text = read_cstring(pointee)
+                if text:
+                    return f'"{text}"'
+            except (gdb.error, gdb.MemoryError, IndexError, TypeError):
+                pass
+        symbol = lookup_symbol_at(addr)
+        if symbol is not None:
+            return f"<{symbol}>"
+        return hex(addr)
+
+    if kind == "enum":
+        val = read_int(value)
+        if val is None:
+            return "N/A"
+        # NOTE: symbolic state names ("READY") beat raw ints ("3") at a
+        # glance when an adapter supplies an enum map.
+        if field.enum_map is not None:
+            name = field.enum_map.get(val)
+            if name is not None:
+                return name
+        return str(val)
+
+    if kind == "flags":
+        val = read_int(value)
+        if val is None:
+            return "N/A"
+        if field.enum_map is not None:
+            names = [n for bit, n in field.enum_map.items() if val & bit]
+            if names:
+                return "|".join(names)
+        return hex(val)
+
+    if kind == "hex":
+        val = read_int(value)
+        if val is None:
+            return "N/A"
+        return hex(val)
+
+    # Default: plain integer
+    val = read_int(value)
+    if val is None:
+        return "N/A"
+    return str(val)
+
+
+class LayoutPrinter:
+    """Pretty-printer that folds a struct into a one-line summary.
+
+    Only fields with ``summary=True`` are shown; GDB's default display
+    handles the rest when the user drills down.
+    """
+
+    def __init__(self, val: gdb.Value, layout: StructLayout):
+        self.val = val
+        self.layout = layout
+        self.display_name = layout.display_name or layout.struct_name
+
+    def to_string(self) -> str:
+        """Return the one-line folded representation."""
+        parts = []
+        for f_name, spec in self.layout.fields.items():
+            if not spec.summary:
+                continue
+            value = read_field(self.val, self.layout, f_name)
+            formatted = _format_field(value, spec)
+            parts.append(f"{f_name}={formatted}")
+        return f"{self.display_name}({', '.join(parts)})"
+
+    def display_hint(self) -> None:
+        """Return no hint so GDB prints the fold directly, unquoted.
+
+        A ``"string"`` hint would make GDB print ``to_string()`` as a quoted
+        string literal, escaping every inner quote (``name=\\"worker1\\"``).
+        Returning ``None`` keeps the fold readable: ``name="worker1"``.
+        """
+
+
+def _make_lookup_function(kl: SupportsStructs):
+    """Create a pretty-printer lookup function for GDB.
+
+    The returned function is registered with ``gdb.pretty_printers``.  GDB
+    calls it for every value it needs to display; it returns a
+    ``LayoutPrinter`` if the value's type matches a known struct, else
+    ``None``.
+    """
+
+    # Build a mapping from type tag to StructLayout for quick lookup
+    type_map: dict[str, StructLayout] = {}
+    for struct_name, layout in kl.structs.items():
+        if struct_name.startswith("struct "):
+            tag = struct_name[len("struct ") :]
+            type_map[tag] = layout
+
+    def lookup_function(val: gdb.Value) -> LayoutPrinter | None:
+        type_tag = _struct_tag(val)
+        if type_tag is None:
+            return None
+        layout = type_map.get(type_tag)
+        if layout is None:
+            return None
+        return LayoutPrinter(val, layout)
+
+    return lookup_function
+
+
+def register_printers(kl: SupportsStructs) -> None:
+    """Register layout-driven pretty-printers with GDB once.
+
+    Args:
+        kl: Layout exposing a ``structs`` map; satisfies
+            :class:`SupportsStructs`.
+    """
+    if gdb is None:
+        raise RuntimeError("not running inside GDB")
+    # NOTE: GDB retains global printer lookups across repeated `source gdr.py`.
+    if any(_is_gdr_printer(printer) for printer in gdb.pretty_printers):
+        return
+    lookup_fn = _make_lookup_function(kl)
+    setattr(lookup_fn, _PRINTER_MARKER, True)
+    gdb.pretty_printers.append(lookup_fn)
+
+
+def unregister_printers() -> None:
+    """Remove GDR printers for an explicit development reload."""
+    if gdb is None:
+        return
+    gdb.pretty_printers[:] = [
+        printer for printer in gdb.pretty_printers if not _is_gdr_printer(printer)
+    ]
+
+
+def _is_gdr_printer(printer: object) -> bool:
+    """Return whether a lookup function was created by GDR."""
+    return getattr(printer, _PRINTER_MARKER, False) is True

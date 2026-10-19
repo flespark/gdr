@@ -136,7 +136,7 @@ def test_freertos_tasks_table_matches_fixture_ground_truth(gdb_session):
     converted = gdb_session.run_python(
         """
 import gdb
-from gdr.adapter_api import active
+from core.adapter import active
 from freertos import adapter
 from freertos.navigation import task_state
 

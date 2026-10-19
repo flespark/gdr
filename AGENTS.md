@@ -12,55 +12,35 @@ pretty-printers, convenience functions and RTOS-specific command trees.
 
 ```text
 gdr.py                 entry point: parse args, load RTOS package, register
-gdr/                   RTOS-agnostic core
-  gdb_bridge.py        GDB Python API wrappers and error/output guards
-  constants.py         shared traversal, string and table defaults
-  formatting.py        pure optional/address/symbol/table formatting
-  version.py           shared version parsing and numeric decoding
-  layout.py            generic StructLayout + field/list accessors
-  printers.py          wrapper-type pretty-printer registration
+core/                  RTOS-agnostic core (≤9 modules; adapters mirror its shape)
+  gdb_bridge.py        GDB API wrappers, ELF/DWARF macro walk, error/output guards
+  constants.py         shared traversal, string/table defaults, envelope schema
+  formatting.py        pure value/table formatting + derived diagnostics helpers
+  version.py           version parsing/decoding + probe registry and verdicts
+  layout.py            generic StructLayout + accessors + pretty-printer registration
   help.py              structured help schema + terminal/Markdown renderers
-  adapter_api.py       adapter protocol, tables, details and active session
-  watch.py             stop-time watch set plus its guarded table/detail renderer
-  commands.py          shared collectors plus their guarded text renderers
-  functions.py         convenience functions incl. the $gdr_json and $gdr_dump transports
-  serialize.py         pure API envelope and chunked evaluate transport
-  api.py               neutral verb layer over the active adapter
-  derive.py            RTOS-neutral derived-value helpers (wrap-safe expiry,
-                       fill-byte watermark, waiter cell) shared by adapters
-  heapmap.py           heap-dump block layout -> grid, owner palette, PNG and
-                       iTerm2/Kitty inline frames (pure; no GDB import)
-  bitmapfont.py        dependency-free lettering and colour swatches for PNG legends
+  adapter.py           adapter protocol, tables, details and active session
+  api.py               neutral verb layer + JSON envelope and chunked transport
+  commands.py          shared collectors/renderers, watch set, convenience functions
+  heapmap.py           heap grid, owner palette, PNG/inline frames, legend lettering
 rtthread/              RT-Thread 3.1.x/4.x adapter
-  layout.py            RT-Thread ABI field descriptions + build_layouts(config)
-                       + detect_config() (symbol-presence probing)
-  columns.py           RT-Thread column contracts for every table
-  navigation.py        RT-Thread symbols, object navigation, and heap snapshot
+  layout.py            ABI layouts + build_layouts(config) + version/probe policy
+  navigation.py        symbols, object navigation, and heap snapshot
+  stackpc.py           last PC from the saved switch frame (pure; slot table + proofs)
   adapter.py           intermediate models, value converters, summaries and tables
-  diagnostics.py       bounded raw-memory walks (IPC, heap) and consistency diagnostics
-  stackpc.py           last PC of a thread from its saved switch frame (pure; the
-                       per-release slot table and the BL/JAL/entry/code checks)
-  heapviews.py         heap snapshot record, the Blocks line and heap verdicts
-  tableviews.py        typed detail-table navigation, waiter and mailbox slot cells
-  version.py           RT-Thread version policy and target symbols
-  checks.py            explicit per-scope consistency checks with object addresses and evidence
-  commands.py          RT-Thread command routing and completion
-  help_docs.py         RT-Thread command/output help metadata
+  views.py             column contracts, detail-table cells, heap views/verdicts
+  diagnostics.py       bounded raw-memory walks (IPC, heap) + `rtt check`
+  commands.py          routing, completion, and structured help tree
 freertos/              FreeRTOS adapter
-  layout.py            config/DWARF probes, ABI struct paths, symbol & kind tables
-  columns.py           FreeRTOS column contracts for every table
-  navigation.py        scheduler-list traversal, per-TCB state, six-channel object discovery
-  timers.py / events.py / streams.py / heap.py
-                       per-object-kind decode (timer daemon queue, event-group bits,
-                       stream-buffer geometry, system-heap snapshot)
+  layout.py            config/DWARF probes, struct paths, version/probe policy
+  navigation.py        scheduler lists + six-channel object discovery
+  stackpc.py           last PC from the saved frame (pure; port evidence + proofs)
+  objects.py           per-kind decode: timers, event groups, stream buffers
+  heap.py              heap_1..5 snapshot, canary, walks and cross-check verdicts
   adapter.py           task/object models, conversion, list tables, summaries
-  tableviews.py        merged detail tables with timer, waiter and queue-item navigation
-  details.py / diagnostics.py
-                       vertical detail builders and bounded raw-memory consistency checks
-  version.py           FreeRTOS version policy and target symbols
-  checks.py            explicit per-scope consistency checks with object addresses and evidence
-  commands.py          FreeRTOS command routing and completion
-  help_docs.py         FreeRTOS command/output help metadata
+  views.py             column contracts, detail builders, merged detail tables
+  diagnostics.py       bounded consistency checks + `frt check`
+  commands.py          routing, completion, and structured help tree
 vscode/                VSCode extension: a client of GDR's JSON envelope
   src/transport.ts     evaluate transport: $gdr_json, chunk reassembly, envelope
   src/probe.ts         probe payload -> init decision (never guesses a version)
@@ -93,14 +73,14 @@ Key design principles (see `docs/architecture.md`):
   RTOS or parsing version strings.
 - **Never drive target.** Target RTOS will keep halt when collect system runtime
   statuses. Inferior function calls (``foo()``) are prohibited. Identifier-only
-  ``gdb.parse_and_eval`` is allowed only through ``gdr.gdb_bridge.eval_identifier``.
+  ``gdb.parse_and_eval`` is allowed only through ``core.gdb_bridge.eval_identifier``.
 - **Layout is dataclass-driven, not YAML.** Kernel structs vary by *config*
   (SMP, heap manager, IPC toggles), not by version. A factory function
   `build_layouts(config)` assembles the right field set; small version
   deltas are handled with minimal conditional fields.
 - **Coupling is explicit.** RTOS field layouts live in `<rtos>/layout.py`;
-  RTOS symbols and traversal live in `<rtos>/navigation.py`. The `gdr/` core
-  contains no RTOS-specific names or behavior.
+  RTOS symbols and traversal live in `<rtos>/navigation.py`. The `core/`
+  package contains no RTOS-specific names or behavior.
 
 ## Setup
 
@@ -288,8 +268,12 @@ that owns the fact:
 | --- | --- | --- | --- | --- |
 | `README.md` / `README.zh-CN.md` | users | install, load, command index, output-decode notes | kernel internals, fixtures/CI, design rationale | each note ≤2 lines, mirror both languages |
 | `AGENTS.md` | contributors/agents | file map (one line per file), setup/commands, CI lane table, conventions | per-module prose (point to architecture.md), lane internals (point to ci/*/README.md) | one line per file |
-| `docs/architecture.md` | design readers | layering, key decisions, invariants, known constraints | trial-and-error history, fixture build details, per-lane evidence | module-table cells ≤1-3 sentences |
-| `CHANGELOG.md` | users | user-visible behaviour changes | fixture/CI/lane/variant internals, implementation narrative | one line per change, ≤4 lines each |
+| `docs/architecture.md` | design readers | layering, module contracts, runtime flows, core mechanisms, RTOS capability comparison | VSCode panel/DOM detail, trial-and-error history, fixture build details | module-table cells ≤1-3 sentences |
+| `docs/decisions.md` | design readers | architecture decisions and why they exist | mechanisms (→ architecture.md), limits (→ errata.md) | one decision per section, no change narration |
+| `docs/testing.md` | contributors | closed-loop harness, QEMU profiles, version/variant matrices | fixture build steps (→ ci/*/README.md) | link lane READMEs, never copy |
+| `docs/errata.md` | design readers | known limits and kernel differences by adapter | development rules (→ AGENTS.md) | one fact per bold item |
+| `docs/gdb_python_reference.md` | developers | offline GDB Python API reference for bridge/stack work | project-specific claims | reference only, never edit by hand |
+| `CHANGELOG.md` | users | user-visible behaviour changes | fixture/CI/lane/variant internals, implementation narrative, test-fix process notes | one line per change, ≤3 lines each |
 | `ci/<rtos>/README.md` | lane maintainers | measured build facts, toolchains, cache, linker traps, unreachable variants | adapter design | none |
 | `vscode/README.md` | extension users and lane maintainers | build/test/vendor commands, supported adapters, known limits | GDR internals, envelope design (link to architecture.md) | short sections, no per-file prose |
 
@@ -305,7 +289,8 @@ belongs in commit messages and run artifacts, not in repository docs.
 - No external runtime dependencies (GDB Python API only). Dev tools
   (ruff/pytest/pytest-cov/pre-commit/pexpect) live in `[dependency-groups].dev`.
   `pexpect` drives the persistent GDB session in tests.
-- Add `# Reason:` inline comments for non-obvious *why* decisions.
+- Comment sparingly: no explanatory inline comments by default. Add `# NOTE:` only for a non-obvious contract the code cannot express (a GDB API trap, kernel ABI pitfall, or ordering invariant whose removal would invite a wrong simplification); `# TODO:` for planned follow-ups, `# FIXME:` for known defects. Docstrings state the contract (inputs, outputs, side effects, failure modes), never review justifications.
+- Write current-state prose only: no `"used to"` / `"no longer"` change narration outside `CHANGELOG.md` (regression guards read `"Without X, Y happens"`), no self-justification (`"this is safe because…"`), no control-flow restatement. Preserve actor, condition, timing, `must`/`never` boundaries and failure consequences; cut adjectives and derivation transcripts. Prefer concrete technical terms over `surface`/`seam`/`shape`/`boundary`; one term per concept; bold only the clause that changes behaviour.
 - When a layout-sensitive struct field changes in `rtthread/layout.py`,
   add or update the corresponding test assertion in `tests/`.
 

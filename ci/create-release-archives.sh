@@ -31,7 +31,7 @@ if [[ "$output_dir" != /* ]]; then
 fi
 
 commit="$(git -C "$repo_root" rev-parse --verify "${release_tag}^{commit}")"
-archive_paths=(LICENSE gdr.py gdr rtthread freertos)
+archive_paths=(LICENSE gdr.py core rtthread freertos)
 for source_path in "${archive_paths[@]}"; do
     if ! git -C "$repo_root" cat-file -e "${commit}:${source_path}"; then
         echo "release reference is missing required runtime path: $source_path" >&2
@@ -54,7 +54,7 @@ for archive in "$versioned_tarball" "$versioned_zipfile" "$latest_tarball" "$lat
     fi
 done
 
-# Reason: one runtime archive keeps all supported adapters available to users
+# NOTE: one runtime archive keeps all supported adapters available to users
 # without exposing CI, tests, fixtures, or other repository-only files.
 git -C "$repo_root" archive --format=tar.gz --prefix="$archive_prefix" "$commit" \
     "${archive_paths[@]}" >"$versioned_tarball"

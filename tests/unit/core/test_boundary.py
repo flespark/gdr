@@ -6,7 +6,7 @@ import ast
 import re
 from pathlib import Path
 
-_CORE_DIR = Path(__file__).resolve().parents[3] / "gdr"
+_CORE_DIR = Path(__file__).resolve().parents[3] / "core"
 _RTTHREAD_TERMS = re.compile(
     r"\b(?:rt-?thread|rtthread|rt_[a-z0-9_]+)\b", re.IGNORECASE
 )
@@ -32,7 +32,7 @@ def test_core_source_contains_no_rtthread_coupling():
         if match is not None:
             violations.append(f"{source.name}: {match.group(0)}")
 
-    assert not violations, "RT-Thread coupling leaked into gdr/: " + ", ".join(
+    assert not violations, "RT-Thread coupling leaked into core/: " + ", ".join(
         violations
     )
 
@@ -45,7 +45,7 @@ def test_core_source_contains_no_freertos_coupling():
         if match is not None:
             violations.append(f"{source.name}: {match.group(0)}")
 
-    assert not violations, "FreeRTOS coupling leaked into gdr/: " + ", ".join(
+    assert not violations, "FreeRTOS coupling leaked into core/: " + ", ".join(
         violations
     )
 
@@ -70,7 +70,7 @@ def test_freertos_term_pattern_catches_long_identifiers():
 
 
 def test_core_never_imports_an_rtos_adapter_package():
-    """Only the composition root may select RT-Thread or FreeRTOS."""
+    """Only the composition root may select an RTOS adapter."""
     violations = []
     for source in _CORE_DIR.glob("*.py"):
         tree = ast.parse(source.read_text(), filename=str(source))
@@ -89,13 +89,13 @@ def test_core_never_imports_an_rtos_adapter_package():
                 for name in names
                 if name.split(".", 1)[0] in {"rtthread", "freertos"}
             )
-    assert not violations, "RTOS adapter imported by gdr/: " + ", ".join(violations)
+    assert not violations, "RTOS adapter imported by core/: " + ", ".join(violations)
 
 
 def test_production_files_stay_within_the_size_limit():
     """The repository keeps production modules below the 1500-line limit."""
     roots = [
-        Path(__file__).resolve().parents[3] / "gdr",
+        Path(__file__).resolve().parents[3] / "core",
         Path(__file__).resolve().parents[3] / "rtthread",
         Path(__file__).resolve().parents[3] / "freertos",
     ]
@@ -122,9 +122,7 @@ _RTTHREAD_DIR = Path(__file__).resolve().parents[3] / "rtthread"
 _FREERTOS_DOMAIN_FILES = {
     "layout.py",
     "heap.py",
-    "timers.py",
-    "streams.py",
-    "version.py",
+    "objects.py",
 }
 # rtthread has no separate heap module: the system-heap symbol subset
 # (system_heap/heap_ptr/...) lives in diagnostics.py, which owns its heap
@@ -132,7 +130,6 @@ _FREERTOS_DOMAIN_FILES = {
 _RTTHREAD_DOMAIN_FILES = {
     "layout.py",
     "navigation.py",
-    "version.py",
     "diagnostics.py",
 }
 _RAW_SYMBOL_TERMS = re.compile(r'(?:lookup_symbol|lookup_type|symbol_exists)\("')
@@ -198,10 +195,10 @@ def test_rtthread_consumers_own_only_domain_symbols():
 
 
 def test_no_raw_gdb_type_lookup_outside_the_core():
-    """Adapter casts go through gdr.layout.value_at, never gdb.lookup_type.
+    """Adapter casts go through core.layout.value_at, never gdb.lookup_type.
 
     The 7 hand-rolled ``gdb.lookup_type(...).pointer()`` casts were
-    consolidated into :func:`gdr.layout.value_at`; a raw cast in an adapter
+    consolidated into :func:`core.layout.value_at`; a raw cast in an adapter
     would bypass the layout-described type name and its error handling.
     """
     violations = []
@@ -210,7 +207,7 @@ def test_no_raw_gdb_type_lookup_outside_the_core():
             match = re.search(r"gdb\.lookup_type\(", source.read_text())
             if match is not None:
                 violations.append(f"{source.name}: {match.group(0)}")
-    assert not violations, "raw gdb.lookup_type outside gdr/: " + ", ".join(violations)
+    assert not violations, "raw gdb.lookup_type outside core/: " + ", ".join(violations)
 
 
 # ---------------------------------------------------------------------------
@@ -250,24 +247,24 @@ def test_unavailable_sentinel_only_as_a_verdict_prefix():
 # ---------------------------------------------------------------------------
 
 # Module-level error tuples that keep a locally-narrowed definition on
-# purpose (all other _*_ERRORS must resolve to gdr.gdb_bridge.TARGET_ACCESS_ERRORS):
+# purpose (all other _*_ERRORS must resolve to core.gdb_bridge.TARGET_ACCESS_ERRORS):
 #   freertos.layout._PROBE_ERRORS    config probing (gdb.error + attr errors)
 #   freertos.navigation._TRAVERSAL_ERRORS   list walks deliberately exclude
 #                                           AttributeError so a programming
 #                                           error bubbles to the guard
 #   freertos.navigation._COMMAND_ERRORS     gdb.execute probes (narrow)
-#   gdr.printers._TYPE_ERRORS               printer type probing (narrow)
+#   core.layout._TYPE_ERRORS               printer type probing (narrow)
 _KEEP_ERRORS_TUPLES = {
     "freertos/layout.py",
     "freertos/navigation.py",
-    "gdr/printers.py",
+    "core/layout.py",
 }
 # Member-name-lookup needs DWARF type / field objects (not just names), so
 # freertos.layout.py does its own .fields() traversal inside detect_config /
-# _mini_list_detected, and gdr.layout.py computes member offsets.
+# _mini_list_detected, and core.layout.py computes member offsets.
 _KEEP_DWARF_ACCESS = {
     "freertos/layout.py",
-    "gdr/layout.py",
+    "core/layout.py",
 }
 
 
@@ -276,7 +273,7 @@ def test_adapter_error_tuples_resolve_to_the_shared_set():
 
     The four modules in ``_KEEP_ERRORS_TUPLES`` narrow deliberately; every
     other freertos/rtthread module resolves expected target errors through
-    ``gdr.gdb_bridge.TARGET_ACCESS_ERRORS`` (one definition, one gdb-None
+    ``core.gdb_bridge.TARGET_ACCESS_ERRORS`` (one definition, one gdb-None
     fallback) instead of copying the near-identical tuple into yet another
     file as each patch historically did.
     """
@@ -294,7 +291,7 @@ def test_adapter_error_tuples_resolve_to_the_shared_set():
             if pattern.search(text):
                 raise AssertionError(
                     f"{source.name}: new module-level _*_ERRORS tuple; "
-                    "resolve to gdr.gdb_bridge.TARGET_ACCESS_ERRORS instead"
+                    "resolve to core.gdb_bridge.TARGET_ACCESS_ERRORS instead"
                 )
 
 
@@ -325,7 +322,7 @@ def test_no_raw_dwarf_attribute_access_outside_whitelist():
     """Raw ``.sizeof`` / ``.range()[1]`` / ``.fields()`` live in the bridge.
 
     freertos.layout.py's own ``.fields()`` traversal (member-name lookup in
-    detect_config / _mini_list_detected) and gdr.layout.py's offset math need
+    detect_config / _mini_list_detected) and core.layout.py.s offset math need
     the DWARF field objects, so they are whitelisted; every other adapter
     reads type size / array bounds / member names through the bridge
     primitives ``type_size`` / ``array_bound`` / ``type_field_names``.
@@ -341,5 +338,5 @@ def test_no_raw_dwarf_attribute_access_outside_whitelist():
             if pattern.search(source.read_text()):
                 raise AssertionError(
                     f"{source.name}: raw DWARF attribute access; use "
-                    "gdr.gdb_bridge.type_size / array_bound / type_field_names"
+                    "core.gdb_bridge.type_size / array_bound / type_field_names"
                 )

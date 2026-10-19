@@ -9,33 +9,45 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
+from core.adapter import (
+    Capabilities,
+    Cell,
+    CheckFinding,
+    HeapMap,
+    HeapMapBlock,
+    HeapReport,
+    KindCapability,
+    ObjectDetail,
+    ObjectTable,
+    RtosAdapter,
+    SystemSummary,
+    address_cell,
+    check_findings,
+    count_cell,
+    number_cell,
+    raw_cell,
+    sections_from_pairs,
+    symbol_cell,
+    text_cell,
+    waiters_cell,
+)
+from core.formatting import fill_watermark, format_address
+from core.gdb_bridge import (
+    TARGET_ACCESS_ERRORS,
+    arch_or_default,
+    lookup_symbol_at,
+    read_bytes,
+    read_cstring,
+    read_int,
+    section_payloads,
+    source_definition_at,
+    source_location_at,
+    symbol_exists,
+    value_address,
+)
+from core.layout import read_field, value_at
 from freertos import heap as heap_module
-from freertos.columns import (
-    EVENT_GROUP_SPECS,
-    MUTEX_SPECS,
-    SEMAPHORE_SPECS,
-    STREAM_BUFFER_SPECS,
-    SUMMARY_SPECS,
-    TIMER_SPECS,
-    queue_specs,
-    task_column_flags,
-    task_specs,
-)
-from freertos.details import (
-    checks_pairs,
-    event_group_detail,
-    held_cell,
-    locks_cell,
-    mutex_detail,
-    queue_detail,
-    semaphore_detail,
-    stream_buffer_detail,
-    task_detail,
-    timer_detail,
-    waiter_summary,
-)
 from freertos.diagnostics import system_checks
-from freertos.events import event_group_table, value_to_event_group_object
 from freertos.layout import (
     OBJECT_KIND_ORDER,
     PORT_PENDSV_SYMBOL,
@@ -60,6 +72,22 @@ from freertos.navigation import (
     task_name_at,
     task_state,
 )
+from freertos.objects import (
+    DAEMON_CURRENT_MESSAGE,
+    callback_cell,
+    daemon_is_current,
+    event_group_table,
+    id_cell,
+    mode_cell,
+    state_cell,
+    stream_buffer_table,
+    timer_epoch,
+    timer_expires_in,
+    timer_is_on_lists,
+    timer_subsystem_ready,
+    value_to_event_group_object,
+    value_to_stream_buffer_object,
+)
 from freertos.stackpc import (
     PORT_LAYOUTS,
     Port,
@@ -67,60 +95,28 @@ from freertos.stackpc import (
     decode_saved_pc,
     port_of,
 )
-from freertos.streams import (
-    stream_buffer_table,
-    value_to_stream_buffer_object,
+from freertos.views import (
+    EVENT_GROUP_SPECS,
+    MUTEX_SPECS,
+    SEMAPHORE_SPECS,
+    STREAM_BUFFER_SPECS,
+    SUMMARY_SPECS,
+    TIMER_SPECS,
+    checks_pairs,
+    event_group_detail,
+    held_cell,
+    locks_cell,
+    mutex_detail,
+    queue_detail,
+    queue_specs,
+    semaphore_detail,
+    stream_buffer_detail,
+    task_column_flags,
+    task_detail,
+    task_specs,
+    timer_detail,
+    waiter_summary,
 )
-from freertos.timers import (
-    DAEMON_CURRENT_MESSAGE,
-    callback_cell,
-    daemon_is_current,
-    id_cell,
-    mode_cell,
-    state_cell,
-    timer_epoch,
-    timer_expires_in,
-    timer_is_on_lists,
-    timer_subsystem_ready,
-)
-from gdr.adapter_api import (
-    Capabilities,
-    Cell,
-    CheckFinding,
-    HeapMap,
-    HeapMapBlock,
-    HeapReport,
-    KindCapability,
-    ObjectDetail,
-    ObjectTable,
-    RtosAdapter,
-    SystemSummary,
-    address_cell,
-    check_findings,
-    count_cell,
-    number_cell,
-    raw_cell,
-    sections_from_pairs,
-    symbol_cell,
-    text_cell,
-    waiters_cell,
-)
-from gdr.derive import fill_watermark
-from gdr.dwarf_macro import section_payloads
-from gdr.formatting import format_address
-from gdr.gdb_bridge import (
-    TARGET_ACCESS_ERRORS,
-    arch_or_default,
-    lookup_symbol_at,
-    read_bytes,
-    read_cstring,
-    read_int,
-    source_definition_at,
-    source_location_at,
-    symbol_exists,
-    value_address,
-)
-from gdr.layout import read_field, value_at
 
 
 @dataclass
@@ -209,7 +205,7 @@ def _high_water_mark(stack: bytes | None, stack_word_bytes: int) -> int | None:
     never overwritten. Returns ``None`` when the stack was never filled (the
     first byte is not 0xa5) or the raw read failed, which the renderer reports
     as ``unavailable`` rather than a fabricated zero.  The count lives in
-    :func:`gdr.derive.fill_watermark`; only grow-down stacks are supported
+    :func:`core.formatting.fill_watermark`; only grow-down stacks are supported
     here (the sole upstream ``portSTACK_GROWTH=+1`` port is SDCC/Cygnal 8051,
     which has no GCC toolchain and no QEMU machine, so the untouched fill
     always sits at the low end).
@@ -241,14 +237,14 @@ def value_to_task(
     base = read_int(read_field(value, sl, "stack_base")) or 0
     end = read_int(read_field(value, sl, "stack_end")) or 0
     word_bytes = _stack_type_size(layout)
-    # Reason: pxEndOfStack points at the highest usable StackType_t, not
+    # NOTE: pxEndOfStack points at the highest usable StackType_t, not
     # one-past-end. Alignment may have discarded allocation padding above it;
     # report the recorded usable span, never guess the original stack depth.
     upper = end + word_bytes if end and base and end >= base else None
     size = upper - base if upper is not None else None
     used = upper - top if upper is not None and base <= top <= upper else None
     high = None
-    # Reason: FreeRTOS's native watermark is remaining words. Matching
+    # NOTE: FreeRTOS's native watermark is remaining words. Matching
     # RT-Thread requires total - untouched bytes; saved SP cannot replace the
     # missing total because initial context slots may still contain fill.
     if size is not None and used is not None:
@@ -256,7 +252,7 @@ def value_to_task(
         if raw is not None and len(raw) == size:
             free_words = _high_water_mark(raw, word_bytes)
             if free_words is not None:
-                # Reason: initial context registers can reserve stack slots
+                # NOTE: initial context registers can reserve stack slots
                 # without replacing 0xa5. The saved SP still proves those
                 # bytes are occupied; historical usage cannot be below Used.
                 high = max(used, size - free_words * word_bytes)
@@ -290,7 +286,7 @@ def value_to_task(
         errno=read_int(read_field(value, sl, "errno")),
         delay_aborted=read_int(read_field(value, sl, "delay_aborted")),
         statically_allocated=read_int(read_field(value, sl, "statically_allocated")),
-        # Reason: xTLSBlock/xNewLib_reent is a struct on newlib and a pointer
+        # NOTE: xTLSBlock/xNewLib_reent is a struct on newlib and a pointer
         # on picolibc, so read_int() cannot decode it. Presence of the member
         # is the fact we report; None means the layout has no TLS member.
         tls_present=(tls is not None) if "tls" in sl.fields else None,
@@ -561,7 +557,7 @@ class FreeRtosAdapter(RtosAdapter):
 
     def __init__(self, layout: FreeRtosLayout) -> None:
         self.layout = layout
-        # Reason: the port is decided once per session from the image; a per-row
+        # NOTE: the port is decided once per session from the image; a per-row
         # decision would re-read the ELF for every task.
         self._port_cache: tuple[bool, Port | None] | None = None
 
@@ -575,7 +571,7 @@ class FreeRtosAdapter(RtosAdapter):
         if self._port_cache is not None:
             return self._port_cache[1]
         if gdb is None:
-            # Reason: outside GDB there is no image to decide from. Return without
+            # NOTE: outside GDB there is no image to decide from. Return without
             # caching, so a later call inside a session still decides the port.
             return None
         port: Port | None = None
@@ -633,7 +629,7 @@ class FreeRtosAdapter(RtosAdapter):
         """
         layout = self.layout
         requested = kind.strip().lower()
-        # Reason: tasks stay on the scheduler-list lookup so
+        # NOTE: tasks stay on the scheduler-list lookup so
         # $gdr_object("task", "IDLE") agrees with the task table instead of
         # requiring a static symbol for the task.
         if requested == "task":
@@ -668,7 +664,7 @@ class FreeRtosAdapter(RtosAdapter):
         enabled_kinds = [
             kind for kind in OBJECT_KIND_ORDER[1:] if _kind_enabled(kind, self.layout)
         ]
-        # Reason: the shared channel scan walks every task list, so it only
+        # NOTE: the shared channel scan walks every task list, so it only
         # runs when at least one non-task kind can actually exist; a build
         # with no such kind (or a test layout) never triggers it.
         all_found = discover_all(self.layout) if enabled_kinds else {}
@@ -870,7 +866,7 @@ class FreeRtosAdapter(RtosAdapter):
             )
             for found in discover("timer", layout)
         ]
-        # Reason: partition keeps the active (list-reachable) timers first
+        # NOTE: partition keeps the active (list-reachable) timers first
         # and the dormant ones (static buffers / global handles) after them,
         # so a reader never has to guess which rows the kernel references.
         # List membership is the active channel's signal, which on a pool-
@@ -1019,11 +1015,8 @@ class FreeRtosAdapter(RtosAdapter):
         found, value = self._find_named_object(kind, target)
         if found is None or value is None:
             return ObjectDetail(found=False)
-        # Reason: the address/symbol fallback stamps the *requested* kind on
-        # whatever it resolved, so `frt semaphore <a mutex>` used to render a
-        # semaphore block whose every consistency check failed. Refine the
-        # kind and redirect instead; an inferred kind (no trace facility)
-        # cannot justify a refusal, so it renders with the usual `?` marker.
+        # NOTE: refine through the Queue_t discriminator and redirect on a
+        # proven wrong kind; an inferred kind renders with the `?` marker.
         actual = _refine_queue_object(found, self.layout)
         if actual.kind != kind and not actual.inferred_kind:
             return ObjectDetail(
@@ -1044,7 +1037,7 @@ class FreeRtosAdapter(RtosAdapter):
 
     def detail_table(self, kind: str) -> ObjectTable | None:
         """Every discovered object with typed detail cells and diagnostics."""
-        from freertos.tableviews import detail_table
+        from freertos.views import detail_table
 
         return detail_table(self, kind)
 
@@ -1071,7 +1064,7 @@ class FreeRtosAdapter(RtosAdapter):
     def task_table(self) -> ObjectTable:
         flags = task_column_flags(self.layout)
         tasks = list(iter_converted_tasks(self.layout))
-        # Reason: HighWater is a capability column -- it appears only when at
+        # NOTE: HighWater is a capability column -- it appears only when at
         # least one task's stack was actually filled with the watermark byte;
         # an all-unavailable column would be pure noise.  The spec order then
         # places it after the optional Stack/Used pair on its own.
@@ -1129,7 +1122,7 @@ class FreeRtosAdapter(RtosAdapter):
             for spec in task_specs(
                 base_priority=flags["base_priority"],
                 stack=flags["stack"],
-                # Reason: a used-byte watermark needs recorded total size.
+                # NOTE: a used-byte watermark needs recorded total size.
                 high_water=flags["stack"],
                 runtime=flags["runtime"],
                 smp=flags["smp"],
@@ -1256,7 +1249,7 @@ class FreeRtosAdapter(RtosAdapter):
         try:
             results = system_checks(self.layout)
         except TARGET_ACCESS_ERRORS as exc:
-            # Reason: the checks are best-effort exactly like the system
+            # NOTE: the checks are best-effort exactly like the system
             # summary they mirror, so an unreadable target degrades to one
             # skipped finding instead of failing the whole verb.
             return [CheckFinding("SystemChecks", "skipped", str(exc), "system")]
@@ -1315,7 +1308,7 @@ class FreeRtosAdapter(RtosAdapter):
             )
         elif algorithm == "none":
             messages.append("no FreeRTOS heap allocator is linked (no pvPortMalloc)")
-        # Reason: the linear walk lists allocated blocks too, so only the
+        # NOTE: the linear walk lists allocated blocks too, so only the
         # free-list fallback is a list of free blocks.
         linear = snap.linear
         table_title = (
@@ -1345,7 +1338,7 @@ class FreeRtosAdapter(RtosAdapter):
         }
         scheduler = system_value("scheduler_running", self.layout)
         total = system_value("task_count", self.layout)
-        # Reason: the heap snapshot is best-effort -- outside GDB the symbol
+        # NOTE: the heap snapshot is best-effort -- outside GDB the symbol
         # probes raise RuntimeError, and a broken target heap must not take
         # down ``frt system`` -- so a snapshot failure degrades to the
         # layout-only allocator label instead of aborting the summary.
@@ -1354,7 +1347,7 @@ class FreeRtosAdapter(RtosAdapter):
         except TARGET_ACCESS_ERRORS:
             snap = None
         if snap is not None:
-            # Reason: pre-init the counters hold their static initializers
+            # NOTE: pre-init the counters hold their static initializers
             # (heap_4's xFreeBytesRemaining is 0), so total - free would
             # report the whole heap as used; used bytes are only meaningful
             # once the heap manager has initialised.
@@ -1382,7 +1375,7 @@ class FreeRtosAdapter(RtosAdapter):
                 if self.layout.config.heap_kind is not None
                 else None
             )
-        # Reason: the system checks are best-effort -- a broken heap or an
+        # NOTE: the system checks are best-effort -- a broken heap or an
         # unreadable scheduler list must not take down ``frt system``, so a
         # checks failure degrades to an empty section (the summary rows are
         # still rendered from whatever symbols did read).
@@ -1393,7 +1386,7 @@ class FreeRtosAdapter(RtosAdapter):
         return SystemSummary(
             current_task=current,
             task_count=total if total is not None else len(tasks),
-            # Reason: name the evidence source -- the kernel counter and the
+            # NOTE: name the evidence source -- the kernel counter and the
             # scheduler-list walk are independent counts that agree on a
             # healthy kernel and diverge on a corrupt one (the TaskCount
             # check compares them), so the rows must not read as duplicates.

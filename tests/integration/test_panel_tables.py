@@ -1,4 +1,4 @@
-"""Panel-facing typed tables on real halted RT-Thread/FreeRTOS fixtures."""
+"""Panel-facing typed tables on real halted RTOS fixtures."""
 
 from __future__ import annotations
 

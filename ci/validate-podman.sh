@@ -128,7 +128,7 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
         fi
 
         if [[ "$lanes" == *all* || "$lanes" == *freertos* ]]; then
-            # Reason: the FreeRTOS lane installs freshly built fixtures into
+            # NOTE: the FreeRTOS lane installs freshly built fixtures into
             # its cache root, so it must target a container-writable
             # directory -- the host FREERTOS_FIXTURE_CACHE is mounted read-only.
             # Seed the writable copy from the host cache so fixtures that are

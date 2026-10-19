@@ -18,15 +18,8 @@ try:
 except ImportError:
     gdb = None  # type: ignore[assignment]
 
-from freertos.layout import (
-    KIND_BY_HANDLE_TYPE,
-    KIND_BY_STATIC_TYPE,
-    MPU_KIND_BY_TYPE,
-    STRUCT_BY_KIND,
-    FreeRtosLayout,
-)
-from gdr.constants import GDR_MAX_TRAVERSAL_COUNT
-from gdr.gdb_bridge import (
+from core.constants import GDR_MAX_TRAVERSAL_COUNT
+from core.gdb_bridge import (
     _gdb_execute,
     array_bound,
     array_item,
@@ -43,7 +36,14 @@ from gdr.gdb_bridge import (
     value_address,
     warn,
 )
-from gdr.layout import member_offset, read_field, value_at
+from core.layout import member_offset, read_field, value_at
+from freertos.layout import (
+    KIND_BY_HANDLE_TYPE,
+    KIND_BY_STATIC_TYPE,
+    MPU_KIND_BY_TYPE,
+    STRUCT_BY_KIND,
+    FreeRtosLayout,
+)
 
 # Exception types we degrade from during scheduler-list traversal.  Stored at
 # module scope so the tuple stays computable when imported outside GDB (where
@@ -87,7 +87,7 @@ def mapped_ranges() -> tuple[tuple[int, int], ...]:
 
     Kept as a module-level name so list walks stay unit-testable without a
     target; the ``info files`` parsing itself lives in the bridge
-    (:func:`gdr.gdb_bridge.loadable_ranges`), which also caches per session.
+    (:func:`core.gdb_bridge.loadable_ranges`), which also caches per session.
     """
     return loadable_ranges()
 
@@ -118,7 +118,7 @@ def _iter_list(
             node_addr = safe_int(node)
             if not node_addr or node_addr == end_addr:
                 return
-            # Reason: a corrupt next pointer into the NULL page or outside
+            # NOTE: a corrupt next pointer into the NULL page or outside
             # every loadable section is not a list node; stop before
             # dereference. Skip the check when no map is available so unit
             # tests with synthetic addresses still exercise the walk.
@@ -151,7 +151,7 @@ def _ready_heads(layout: FreeRtosLayout) -> Iterator:
     table = lookup_symbol(layout.lists["ready"])
     if table is None:
         return
-    # Reason: the priority count come from the probed config (the DWARF array
+    # NOTE: the priority count come from the probed config (the DWARF array
     # bound of pxReadyTasksLists), never a guessed (0, 256) fallback which
     # would wastefully scan empty slots and swallow warnings on a small target.
     count = layout.config.max_priorities
@@ -234,7 +234,7 @@ def task_state(tcb, layout: FreeRtosLayout) -> tuple[str, int | None]:
     item_layout = layout.structs["struct xLIST_ITEM"]
     si = read_field(tcb, sl, "state_list_item")
     ei = read_field(tcb, sl, "event_list_item")
-    # Reason: pxContainer is a List_t * pointer member; comparing list
+    # NOTE: pxContainer is a List_t * pointer member; comparing list
     # membership needs the pointer value (the list address it points to), not
     # value_address() which yields the address of the pointer field itself.
     state_addr = safe_int(read_field(si, item_layout, "container")) if si else None
@@ -252,7 +252,7 @@ def task_state(tcb, layout: FreeRtosLayout) -> tuple[str, int | None]:
             core = core_of(tcb, layout)
             if core is not None:
                 return "Running(yielding)", core
-            # Reason: core_of() can miss a scheduled-to-yield TCB when
+            # NOTE: core_of() can miss a scheduled-to-yield TCB when
             # pxCurrentTCBs is unreadable. Do not invent Ready; fall through
             # Steps 2-6 so delayed/suspended/termination membership still
             # wins, and Step 6's default returns Ready only when nothing else
@@ -281,7 +281,7 @@ def task_state(tcb, layout: FreeRtosLayout) -> tuple[str, int | None]:
 
     # Step 5: state item null or on the termination list => deleted.
     termination = _next_global(layout.lists["termination"])
-    # Reason: only a *confirmed* NULL container (0) or the termination list
+    # NOTE: only a *confirmed* NULL container (0) or the termination list
     # means the task object is gone (eTaskGetState reports NULL as deleted,
     # tasks.c:2610-2615). An unreadable container (None) is unknown: rendering
     # it as a definite Deleted would turn every read failure into a wrong,
@@ -523,7 +523,7 @@ def classify_queue(value, layout: FreeRtosLayout) -> QueueClassification | None:
                 is_set=(code == 5),
             )
     head = read_int(read_field(value, layout.structs["struct QueueDefinition"], "head"))
-    # Reason: NULL is the mutex marker itself (queue.h), and an unreadable
+    # NOTE: NULL is the mutex marker itself (queue.h), and an unreadable
     # pcHead cannot prove otherwise, so both read as mutex and the chain
     # still terminates on an unreadable object.
     if head in (None, 0):
@@ -602,12 +602,9 @@ def source_label(source: str, extra_sources: Sequence[str] = ()) -> str:
 
     Takes the two values rather than an object so both the discovery record
     (:class:`DiscoveredObject`) and the adapter's display model can render the
-    same cell.
-
-    Reason: showing only the winning channel hid corroboration -- an object
-    seen by both the registry and the symbol scan is better evidence than one
-    seen by the heuristic waiter channel alone, and that difference matters
-    when a name or kind looks wrong.
+    same cell. Every corroborating channel is shown: an object seen by both
+    the registry and the symbol scan is stronger evidence than one seen by
+    the heuristic waiter channel alone.
     """
     if not extra_sources:
         return source
@@ -638,14 +635,14 @@ def iter_registry_entries(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
             return
         name_value = read_field(item, item_layout, "name")
         handle = read_int(read_field(item, item_layout, "handle"))
-        # Reason: an empty slot is officially pcQueueName == NULL; requiring
+        # NOTE: an empty slot is officially pcQueueName == NULL; requiring
         # a non-null handle too keeps a half-cleared slot from resurrecting.
         if name_value is None or not handle:
             continue
         name = read_cstring(name_value)
         if not name:
             continue
-        # Reason: the registry stores QueueHandle_t, which also covers
+        # NOTE: the registry stores QueueHandle_t, which also covers
         # semaphores, mutexes and queue sets; only ucQueueType
         # (configUSE_TRACE_FACILITY) tells them apart, so the precise kind
         # is refined later by _refine_queue_object.
@@ -716,7 +713,7 @@ def _scan_symbol_objects(layout: FreeRtosLayout):
         value = lookup_symbol(symbol_name)
         if value is None:
             continue
-        # Reason: a Static*_t variable IS the object buffer (tasks.c passes
+        # NOTE: a Static*_t variable IS the object buffer (tasks.c passes
         # pxTaskBuffer straight to the TCB), so its symbol address is the
         # object address; a *Handle_t variable holds a pointer to the object,
         # so the pointer value is. Mixing the two up yields fake objects in
@@ -734,7 +731,7 @@ def _scan_symbol_objects(layout: FreeRtosLayout):
         if not address:
             continue
         if kind == "timer":
-            # Reason: a timer's canonical name is the pcTimerName passed to
+            # NOTE: a timer's canonical name is the pcTimerName passed to
             # xTimerCreate / xTimerCreateStatic (timers.c); the symbol (a
             # TimerHandle_t variable or a StaticTimer_t buffer) is an
             # implementation detail.  Naming dormant timers by their symbol
@@ -827,7 +824,7 @@ def _opaque_mpu_symbol_address(handle: int, layout: FreeRtosLayout) -> int | Non
             return None
         internal = read_int(read_field(item, pool_layout, "internal_handle"))
         mask = (1 << (8 * _pointer_size())) - 1
-        # Reason: an empty slot is 0 and a slot reserved mid-create is ~0;
+        # NOTE: an empty slot is 0 and a slot reserved mid-create is ~0;
         # neither translates to an object, so the symbol is skipped instead
         # of registering a fake address.
         if not internal or internal == mask:
@@ -835,7 +832,7 @@ def _opaque_mpu_symbol_address(handle: int, layout: FreeRtosLayout) -> int | Non
         return internal
     ranges = mapped_ranges()
     if ranges and not any(low <= handle < high for low, high in ranges):
-        # Reason: on a live MPU build the only values below the pool size
+        # NOTE: on a live MPU build the only values below the pool size
         # are indices; anything outside every loadable section is not an
         # address either, so trust neither and skip.
         return None
@@ -881,7 +878,7 @@ def iter_mpu_pool_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
         kind = MPU_KIND_BY_TYPE.get(type_code)
         if kind is None:
             continue
-        # Reason: KERNEL_OBJECT_TYPE_QUEUE also covers queue sets and set
+        # NOTE: KERNEL_OBJECT_TYPE_QUEUE also covers queue sets and set
         # members (mpu_wrappers_v2.c); only the Queue_t fields can tell, so
         # that kind is flagged inferred until the queue discriminator lands.
         yield DiscoveredObject(
@@ -971,7 +968,7 @@ def _host_from_container(
     if host_address <= 0 or gdb is None:
         return None
     ranges = mapped_ranges()
-    # Reason: a container pointing outside every loadable section cannot
+    # NOTE: a container pointing outside every loadable section cannot
     # belong to a live object; reject before casting.  The check is skipped
     # when no map is available so unit tests with synthetic addresses work.
     if ranges and not any(low <= host_address < high for low, high in ranges):
@@ -994,7 +991,7 @@ def tcb_field_at(address: int, layout: FreeRtosLayout, field: str):
     if gdb is None or not address:
         return None
     try:
-        # Reason: the cast type name comes from the layout description, never
+        # NOTE: the cast type name comes from the layout description, never
         # a literal, so a renamed kernel struct stays correct.
         sl = layout.structs["struct tskTaskControlBlock"]
         task = value_at(address, sl)
@@ -1087,7 +1084,7 @@ def _plausible_waiter_host(
         bits = read_int(read_field(host, host_layout, "value"))
         if bits is None:
             return False
-        # Reason: the top byte of EventBits_t is reserved for control bits
+        # NOTE: the top byte of EventBits_t is reserved for control bits
         # (eventEVENT_BITS_CONTROL_BYTES) and a quiescent event group keeps
         # it zero, so a non-zero control byte means memory from a neighbour
         # object.  This check alone is not enough: it scales with tick width,
@@ -1114,19 +1111,19 @@ def _plausible_waiter_host(
     pc_head = read_int(read_field(host, host_layout, "head"))
     if length is None or waiting is None or item_size is None:
         return False
-    # Reason: a real queue holds 1..65536 items of at most 1 MiB each
+    # NOTE: a real queue holds 1..65536 items of at most 1 MiB each
     # (semaphores and mutexes use item size 0), and the waiting count never
     # exceeds the length; absurd neighbours therefore mean a wrong host.
     if not (
         1 <= length <= 65536 and 0 <= waiting <= length and 0 <= item_size <= 1 << 20
     ):
         return False
-    # Reason: xQueueGenericCreate allocates a storage buffer whenever the
+    # NOTE: xQueueGenericCreate allocates a storage buffer whenever the
     # item size is non-zero, so a queue with items must have a non-null
     # pcHead. Zero-size queues (semaphores/mutexes) legitimately use NULL.
     if item_size != 0 and pc_head in (None, 0):
         return False
-    # Reason: vListInitialise stamps xListEnd.xItemValue with portMAX_DELAY
+    # NOTE: vListInitialise stamps xListEnd.xItemValue with portMAX_DELAY
     # on both waiting lists and nothing ever changes it, so a host whose
     # two lists do not both carry that sentinel is really memory inside a
     # neighbour object (this separates every sibling candidate from the
@@ -1178,7 +1175,7 @@ def iter_waiter_hosts(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
         if event_item is None:
             continue
         container = safe_int(read_field(event_item, item_layout, "container"))
-        # Reason: a scheduler-owned list (xPendingReadyList, the suspended
+        # NOTE: a scheduler-owned list (xPendingReadyList, the suspended
         # list, ...) is not an object's waiter list -- the task there is
         # ready or notification-blocked, not blocked on a kernel object.
         if not container or container in scheduler_lists:
@@ -1214,15 +1211,9 @@ def _merge_corroboration(
     """Fold a later channel's finding of the same address into *record*.
 
     ``extra_sources`` accumulates; additionally, a later channel may supply
-    the display name when the record-holder has none.
-
-    Reason: on an MPU build the wrappers v2 pool is the first channel for
-    every object (every create macro-rewrites to an ``MPU_*`` entry) but its
-    ``KernelObject_t`` slots carry no name (mpu_wrappers_v2.c), so pool-
-    found objects would render a ``-`` row even though the registry or the
-    symbol channel named the same address.  Adopting is safe everywhere
-    else: no other lane has a nameless record-holder that a later channel
-    re-finds.
+    the display name when the record-holder has none (on MPU builds the
+    wrappers v2 pool finds every object first but its slots carry no name,
+    so a later channel's name is adopted instead of rendering ``-``).
     """
     merged = _merge_source(record, later.source)
     if record.name is None and later.name is not None:
@@ -1256,7 +1247,7 @@ def discover(
         iter_static_symbol_objects(layout),
     ]
     if kind in _QUEUE_FAMILY_KINDS:
-        # Reason: the waiter channel walks every task list -- the most
+        # NOTE: the waiter channel walks every task list -- the most
         # expensive channel -- so the queue family shares one per-call
         # result (see discover_all). Never cache across calls: the target is
         # live and its memory changes between commands.
@@ -1274,13 +1265,13 @@ def discover(
                 continue
             position = index.get(obj.address)
             if position is not None:
-                # Reason: a later channel seeing the same address is
+                # NOTE: a later channel seeing the same address is
                 # corroboration, not noise -- record it so provenance can
                 # show every channel while the first one stays of record.
                 found[position] = _merge_corroboration(found[position], obj)
                 continue
             if obj.address in filtered:
-                # Reason: the address already refined to a different kind, so
+                # NOTE: the address already refined to a different kind, so
                 # a later channel must not re-add it under the requested one.
                 continue
             if kind in _QUEUE_FAMILY_KINDS:
@@ -1363,7 +1354,7 @@ def resolve_object(
     text = text.strip()
     if not text:
         return None
-    # Reason: address parsing is shared with the other adapters through
+    # NOTE: address parsing is shared with the other adapters through
     # parse_user_address so `<name-or-address>` means the same everywhere;
     # a name still wins over a decimal reading -- a numeric object name
     # (e.g. ``"42"``) is looked up as a symbol first, and digits only fall
@@ -1424,7 +1415,7 @@ def iter_queue_items(
     if span <= 0:
         return
     for index in range(min(count, length, GDR_MAX_TRAVERSAL_COUNT)):
-        # Reason: wording the wrap as modulo keeps it exact at pcTail (the
+        # NOTE: wording the wrap as modulo keeps it exact at pcTail (the
         # kernel wraps with >=), so the slot right before pcTail is the
         # last usable one and pcTail is never read as item storage.
         pos = pc_head + ((pc_read + (index + 1) * item_size - pc_head) % span)

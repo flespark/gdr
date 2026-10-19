@@ -17,7 +17,7 @@ if [[ ! -f "$repo_root/gdr.py" ]]; then
     exit 1
 fi
 
-runtime_paths=(gdr.py gdr rtthread freertos LICENSE)
+runtime_paths=(gdr.py core rtthread freertos LICENSE)
 for path in "${runtime_paths[@]}"; do
     if [[ ! -e "$repo_root/$path" ]]; then
         echo "vendor-gdr: required runtime path is missing: $path" >&2
@@ -25,8 +25,8 @@ for path in "${runtime_paths[@]}"; do
     fi
 done
 
-version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo_root/gdr/__init__.py")"
-schema="$(sed -n 's/^GDR_API_SCHEMA_VERSION = \([0-9][0-9]*\)$/\1/p' "$repo_root/gdr/constants.py")"
+version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo_root/core/__init__.py")"
+schema="$(sed -n 's/^GDR_API_SCHEMA_VERSION = \([0-9][0-9]*\)$/\1/p' "$repo_root/core/constants.py")"
 if [[ -z "$version" || -z "$schema" ]]; then
     echo "vendor-gdr: could not read the runtime version or the envelope schema" >&2
     exit 1
@@ -37,7 +37,7 @@ mkdir -p "$destination"
 for path in "${runtime_paths[@]}"; do
     cp -R "$repo_root/$path" "$destination/"
 done
-# Reason: byte-compiled caches are host- and interpreter-specific; shipping one
+# NOTE: byte-compiled caches are host- and interpreter-specific; shipping one
 # could shadow a stale module inside GDB's own interpreter.
 find "$destination" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
