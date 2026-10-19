@@ -77,7 +77,7 @@ class StructField:
             ``"enum"``, ``"flags"``, or ``""`` (default, treated as int).
         summary: ``True`` if this field should appear in the one-line
             pretty-printer fold.  Selecting 2-4 key fields per struct keeps
-            ``p``/``bt full``/``info locals`` output readable.
+            ``p`` output readable.
         enum_map: Optional mapping from raw integer value to symbolic name,
             used by the pretty-printer when ``kind == "enum"``.  Renders
             ``stat=READY`` instead of ``stat=3``.  ``None`` falls back to

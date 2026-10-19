@@ -10,8 +10,8 @@ the [Asterinas GDB helper](#acknowledgements):
 
 1. **RTOS commands** — each RTOS adapter owns its command tree (for example,
    `rtt threads` and `rtt timers`) which show you intuitive system running status.
-2. **Pretty-printers** — fold noisy kernel object into one-line summaries
-   so `p ui_task`, `bt full` and `info locals` stay readable.
+2. **Pretty-printers** — fold known kernel structs into one-line summaries
+   when GDB prints the value (e.g. `p ui_task`).
 3. **Convenience functions** — `$gdr_task("main")`, `$gdr_tasks()`,
    `$gdr_object(kind, name)` return `gdb.Value` so you can keep using native
    GDB expressions for the actual field inspection.

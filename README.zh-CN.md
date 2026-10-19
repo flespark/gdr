@@ -9,8 +9,8 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 
 1. **RTOS 命令** — 每个 RTOS adapter 提供自己的命令树（例如
    `rtt threads`、`rtt timers`）用于获取直观的系统运行状态。
-2. **Pretty-printers** — 将复杂的内核对象 显示为一行摘要，使 `p ui_task`、
-   `bt full`、`info locals` 更易读。
+2. **Pretty-printers** — 将已知的内核结构体折叠为一行摘要，仅在 GDB 打印该值时生效
+  （例如 `p ui_task`）。
 3. **便捷函数** — `$gdr_task("main")`、`$gdr_tasks()`、
    `$gdr_object(kind, name)` 返回 `gdb.Value`，便于继续用原生 GDB
    表达式做字段级检查。

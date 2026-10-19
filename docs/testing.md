@@ -37,7 +37,7 @@ without raising an exception but decode the wrong kernel state. Every live
 QEMU lane exercises the same four surfaces:
 
 - **Pretty-printers** register once and fold kernel structs into one-line
-  summaries (`p`, `bt full`, `info locals`).
+  summaries (`p task_name`).
 - **Convenience functions** (`$gdr_task`, `$gdr_tasks`, `$gdr_object`) return
   non-null target-native `gdb.Value` objects with expected struct fields.
 - **Aggregate commands** (`rtt ...` / `frt ...`) render complete tables,

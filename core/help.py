@@ -265,7 +265,7 @@ def pretty_printer_topic(layout: SupportsHelpStructs | None) -> HelpTopic:
                         f"GDB values whose underlying tag is `{struct_name}` are folded "
                         f"as `{display}(...)`; typedef and const/volatile spelling is ignored."
                     ),
-                    usage=("p <value>", "info locals", "bt full"),
+                    usage=("p <value>",),
                     fields=summary_fields,
                     tips=(
                         "Use `p /r <value>` when the native unformatted value is required.",
