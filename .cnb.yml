@@ -261,6 +261,13 @@
     # container env provides XPACK_RISCV_TOOLCHAIN_PATH.
     - name: FreeRTOS 64-bit RISC-V (qemu-virt-rv64, kernel 11.1.0)
       script: bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
+    # NOTE: the first-version M0 and RV32 targets are separate stages so a
+    # 32-bit RISC-V or Thumb-1 port failure is distinguishable from the
+    # already-covered M3/M33/RV64 lanes.
+    - name: FreeRTOS Cortex-M0 (microbit, kernel 11.1.0)
+      script: bash ci/freertos/run-qemu-matrix.sh microbit 11.1.0 full
+    - name: FreeRTOS 32-bit RISC-V (qemu-virt-rv32, kernel 11.1.0)
+      script: bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv32 11.1.0 base
     # NOTE: the static snapshot (file-only ELF, no QEMU) is the
     # negative-testing arm of the FreeRTOS matrix — the data-corruption
     # states a healthy kernel cannot produce (corrupt scheduler lists, a

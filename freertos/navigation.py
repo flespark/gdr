@@ -33,6 +33,7 @@ from core.gdb_bridge import (
     read_int,
     safe_dereference,
     safe_int,
+    type_size,
     value_address,
     warn,
 )
@@ -90,6 +91,22 @@ def mapped_ranges() -> tuple[tuple[int, int], ...]:
     (:func:`core.gdb_bridge.loadable_ranges`), which also caches per session.
     """
     return loadable_ranges()
+
+
+def saved_context_bounds(
+    value, layout: FreeRtosLayout
+) -> tuple[int | None, int | None]:
+    """Return the MPU context array's DWARF span, or unavailable bounds."""
+    context = read_field(
+        value, layout.structs["struct tskTaskControlBlock"], "mpu_context"
+    )
+    if context is None:
+        return None, None
+    low = value_address(context)
+    size = type_size(context.type)
+    if not low or size is None or size <= 0:
+        return None, None
+    return low, low + size
 
 
 def _iter_list(

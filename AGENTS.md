@@ -12,7 +12,7 @@ pretty-printers, convenience functions and RTOS-specific command trees.
 
 ```text
 gdr.py                 entry point: parse args, load RTOS package, register
-core/                  RTOS-agnostic core (≤9 modules; adapters mirror its shape)
+core/                  RTOS-agnostic core (bounded modules; adapters mirror its shape)
   gdb_bridge.py        GDB API wrappers, ELF/DWARF macro walk, error/output guards
   constants.py         shared traversal, string/table defaults, envelope schema
   formatting.py        pure value/table formatting + derived diagnostics helpers
@@ -23,10 +23,16 @@ core/                  RTOS-agnostic core (≤9 modules; adapters mirror its sha
   api.py               neutral verb layer + JSON envelope and chunked transport
   commands.py          shared collectors/renderers, watch set, convenience functions
   heapmap.py           heap grid, owner palette, PNG/inline frames, legend lettering
+  unwind.py            bounded task unwind driver (seed, stack/PC validation, stop reasons)
+  unwind_meta.py       bounded ELF sections, code symbols and binary encodings
+  unwind_cfi.py        bounded DWARF CFI tables and encoded-pointer decoding
+  unwind_ehabi.py      bounded ARM EHABI tables and virtual-register unwinding
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            ABI layouts + build_layouts(config) + version/probe policy
   navigation.py        symbols, object navigation, and heap snapshot
   stackpc.py           last PC from the saved switch frame (pure; slot table + proofs)
+  backtrace.py         saved-context layouts and seed decoding (pure)
+  backtrace_gdb.py     GDB-facing thread backtrace orchestration
   adapter.py           intermediate models, value converters, summaries and tables
   views.py             column contracts, detail-table cells, heap views/verdicts
   diagnostics.py       bounded raw-memory walks (IPC, heap) + `rtt check`
@@ -35,6 +41,8 @@ freertos/              FreeRTOS adapter
   layout.py            config/DWARF probes, struct paths, version/probe policy
   navigation.py        scheduler lists + six-channel object discovery
   stackpc.py           last PC from the saved frame (pure; port evidence + proofs)
+  backtrace.py         saved-context layouts and seed decoding (pure)
+  backtrace_gdb.py     GDB-facing task backtrace orchestration
   objects.py           per-kind decode: timers, event groups, stream buffers
   heap.py              heap_1..5 snapshot, canary, walks and cross-check verdicts
   adapter.py           task/object models, conversion, list tables, summaries

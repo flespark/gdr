@@ -66,6 +66,9 @@ SMP_ERA_SYMBOL = "pxCurrentTCBs"
 # RISC-V's port has xPortStartFirstTask; Cortex-M's has PendSV_Handler, which both
 # Cortex-M3 and Cortex-M33 carry, so the ARM CPU name tells them apart.
 PORT_RISCV_SYMBOL = "xPortStartFirstTask"
+# Runtime symbol retained in the RISC-V port image even when portASM.S has no
+# DWARF; it is the fallback port evidence for the 32-bit lane.
+PORT_RISCV_TIMER_SYMBOL = "ullNextTime"
 PORT_PENDSV_SYMBOL = "PendSV_Handler"
 
 
@@ -102,6 +105,7 @@ class FreeRtosConfig:
     posix_errno: bool = False
     delay_abort: bool = False
     mpu_object_pool: bool = False
+    mpu_context: bool = False
     heap_kind: int | None = None
     heap_protector: bool = False
     tcb_fields: frozenset[str] = frozenset()
@@ -325,6 +329,7 @@ def detect_config() -> FreeRtosConfig:
 
     # --- heap & object kinds ----------------------------------------
     cfg.mpu_object_pool = symbol_exists("xKernelObjectPool")
+    cfg.mpu_context = cfg.mpu_object_pool and "xMPUSettings" in fields
     cfg.heap_kind = _detect_heap_kind()
     cfg.heap_protector = symbol_exists("xHeapCanary")
 
@@ -489,6 +494,10 @@ def build_layout(
         )
     if cfg.stack_end_field:
         tcb_fields["stack_end"] = StructField("stack_end", (cfg.stack_end_field,))
+    if cfg.mpu_context:
+        tcb_fields["mpu_context"] = StructField(
+            "mpu_context", ("xMPUSettings", "ulContext")
+        )
     if cfg.tls_field:
         tcb_fields["tls"] = StructField("tls", (cfg.tls_field,))
     if cfg.smp:

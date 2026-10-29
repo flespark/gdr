@@ -10,6 +10,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from core.adapter import (
+    BacktraceReport,
     Capabilities,
     Cell,
     CheckFinding,
@@ -46,12 +47,15 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.layout import read_field, value_at
+from core.unwind import UnwindMetadata
 from freertos import heap as heap_module
+from freertos.backtrace import context_for, decode_saved_context
 from freertos.diagnostics import system_checks
 from freertos.layout import (
     OBJECT_KIND_ORDER,
     PORT_PENDSV_SYMBOL,
     PORT_RISCV_SYMBOL,
+    PORT_RISCV_TIMER_SYMBOL,
     STRUCT_BY_KIND,
     FreeRtosLayout,
     queue_type_label,
@@ -67,6 +71,7 @@ from freertos.navigation import (
     iter_tasks,
     list_count,
     resolve_object,
+    saved_context_bounds,
     source_label,
     system_value,
     task_name_at,
@@ -89,6 +94,7 @@ from freertos.objects import (
     value_to_stream_buffer_object,
 )
 from freertos.stackpc import (
+    CORTEX_M33_SMP_LAYOUT,
     PORT_LAYOUTS,
     Port,
     cpu_name_from_attributes,
@@ -242,12 +248,33 @@ def value_to_task(
     # report the recorded usable span, never guess the original stack depth.
     upper = end + word_bytes if end and base and end >= base else None
     size = upper - base if upper is not None else None
-    used = upper - top if upper is not None and base <= top <= upper else None
+    stack_pointer = top
+    if layout.config.mpu_context:
+        stack_pointer = 0
+        if upper is not None:
+            context_low, context_high = saved_context_bounds(value, layout)
+            seed, _reason = decode_saved_context(
+                context_for("cortex-m33", mpu=True),
+                top,
+                read_bytes,
+                endian=arch_or_default()[1],
+                stack_low=base,
+                stack_high=upper,
+                context_low=context_low,
+                context_high=context_high,
+            )
+            if seed is not None:
+                stack_pointer = seed.sp
+    used = (
+        upper - stack_pointer
+        if upper is not None and base <= stack_pointer <= upper
+        else None
+    )
     high = None
     # NOTE: FreeRTOS's native watermark is remaining words. Matching
     # RT-Thread requires total - untouched bytes; saved SP cannot replace the
     # missing total because initial context slots may still contain fill.
-    if size is not None and used is not None:
+    if size is not None:
         raw = read_bytes(base, size)
         if raw is not None and len(raw) == size:
             free_words = _high_water_mark(raw, word_bytes)
@@ -255,7 +282,7 @@ def value_to_task(
                 # NOTE: initial context registers can reserve stack slots
                 # without replacing 0xa5. The saved SP still proves those
                 # bytes are occupied; historical usage cannot be below Used.
-                high = max(used, size - free_words * word_bytes)
+                high = max(used or 0, size - free_words * word_bytes)
     state_item = read_field(value, sl, "state_list_item")
     wake_tick = None
     if state_item is not None:
@@ -560,6 +587,7 @@ class FreeRtosAdapter(RtosAdapter):
         # NOTE: the port is decided once per session from the image; a per-row
         # decision would re-read the ELF for every task.
         self._port_cache: tuple[bool, Port | None] | None = None
+        self._unwind_cache: tuple[str, UnwindMetadata | None] | None = None
 
     def _port(self) -> Port | None:
         """The FreeRTOS port this image was built for, decided from its evidence.
@@ -575,13 +603,20 @@ class FreeRtosAdapter(RtosAdapter):
             # caching, so a later call inside a session still decides the port.
             return None
         port: Port | None = None
-        if symbol_exists(PORT_RISCV_SYMBOL):
-            port = port_of(has_start_first_task=True, has_pendsv=False, cpu_name=None)
+        pointer_size, _endian = arch_or_default()
+        if symbol_exists(PORT_RISCV_SYMBOL) or symbol_exists(PORT_RISCV_TIMER_SYMBOL):
+            port = port_of(
+                has_start_first_task=True,
+                has_pendsv=False,
+                cpu_name=None,
+                pointer_size=pointer_size,
+            )
         elif symbol_exists(PORT_PENDSV_SYMBOL):
             port = port_of(
                 has_start_first_task=False,
                 has_pendsv=True,
                 cpu_name=_arm_cpu_name(),
+                pointer_size=pointer_size,
             )
         self._port_cache = (True, port)
         return port
@@ -596,10 +631,13 @@ class FreeRtosAdapter(RtosAdapter):
         port = self._port()
         if port is None:
             return text_cell("N/A")
+        layout = PORT_LAYOUTS[port]
+        if port == "cortex-m33" and self.layout.config.smp:
+            layout = CORTEX_M33_SMP_LAYOUT
         decoded = decode_saved_pc(
             task.top_of_stack,
             None,
-            PORT_LAYOUTS[port],
+            layout,
             read=read_bytes,
             symbolised=lambda address: lookup_symbol_at(address) is not None,
             endian=arch_or_default()[1],
@@ -610,11 +648,18 @@ class FreeRtosAdapter(RtosAdapter):
         source = source_location_at(decoded.pc)
         return symbol_cell(decoded.pc, symbol, source)
 
+    def backtrace(self, target: str, max_depth: int = 32) -> BacktraceReport:
+        """Unwind one FreeRTOS task from its saved or live context."""
+        from freertos.backtrace_gdb import backtrace as run_backtrace
+
+        return run_backtrace(self, target, max_depth)
+
     def reset(self) -> None:
         """Drop the session symbol scan so a re-init sees the new image."""
         from freertos.navigation import reset_symbol_object_cache
 
         reset_symbol_object_cache()
+        self._unwind_cache = None
 
     def find_task(self, target: str) -> gdb.Value | None:
         return find_task(target, self.layout)

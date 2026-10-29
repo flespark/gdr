@@ -23,7 +23,7 @@ the [Asterinas GDB helper](#acknowledgements):
 | RTOS | Versions | Status |
 |------|----------|--------|
 | RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | V10.3.0–V11.3.x | implemented; verified on QEMU MPS2-AN385 (Cortex-M3, 10.3.1/10.4/10.5/11.1) and MPS2-AN521 (dual Cortex-M33, SMP, 11.3.1) |
+| FreeRTOS | V10.3.0–V11.3.x | implemented; verified on QEMU MPS2-AN385 (Cortex-M3), MPS2-AN521 (dual Cortex-M33 SMP/MPU), micro:bit (Cortex-M0), and RISC-V virt (RV32/RV64) |
 
 ## Quick start
 
@@ -153,6 +153,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |
 | `<rtos> <object> <name-or-address>` | Show one object's details as a vertical `Key: Value` block |
+| `<rtos> backtrace <task> [--max-depth N]` | Unwind one task's saved or live stack through EHABI, DWARF CFI or a validated frame-pointer chain; prints frame PC, symbol/source, method, completeness and stop reason |
 | `<rtos> check [scope] [name]` | Run complete consistency checks (`rtt help check`) |
 | `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | Print watched kinds/objects on every stop, like `display` of gdb but never stops the target |
 | `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG |

@@ -457,6 +457,24 @@ def test_mpu_object_pool_absent_without_symbol(monkeypatch):
     assert cfg.mpu_object_pool is False
 
 
+@pytest.mark.parametrize(
+    "pool,settings", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_mpu_saved_context_requires_both_pool_and_tcb_settings(
+    monkeypatch, pool, settings
+):
+    cfg = _make_config(
+        monkeypatch,
+        symbol_present={"xKernelObjectPool"} if pool else set(),
+        fields={"struct tskTaskControlBlock": {"xMPUSettings"} if settings else set()},
+    )
+    assert cfg.mpu_context is (pool and settings)
+    fields = build_layout(cfg).structs["struct tskTaskControlBlock"].fields
+    assert ("mpu_context" in fields) is (pool and settings)
+    if pool and settings:
+        assert fields["mpu_context"].path == ("xMPUSettings", "ulContext")
+
+
 def test_heap_protector_detected_via_x_heap_canary(monkeypatch):
     cfg = _make_config(monkeypatch, symbol_present={"xHeapCanary"})
     assert cfg.heap_protector is True

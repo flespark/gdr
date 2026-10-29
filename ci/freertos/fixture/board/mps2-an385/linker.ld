@@ -25,6 +25,20 @@ SECTIONS
         _etext = .;
     } > FLASH
 
+    .ARM.exidx :
+    {
+        __exidx_start = .;
+        *(.ARM.exidx*)
+        __exidx_end = .;
+        . = ALIGN(4);
+    } > FLASH
+
+    .ARM.extab :
+    {
+        *(.ARM.extab*)
+        . = ALIGN(4);
+    } > FLASH
+
     _sidata = LOADADDR(.data);
 
     .data : ALIGN(4)

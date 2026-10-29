@@ -77,12 +77,9 @@ ARG XPACK_ARCH=linux-x64
 # NOTE: xPack publishes per-arch linux archives (linux-x64 / linux-arm64);
 # the CNB runner builds amd64, while local Apple-Silicon podman builds arm64.
 #
-# A local build can skip the slow GitHub download by pre-seeding
-# ci/gdr-xpack/ with the two archives (see validate-podman.sh). They are copied
-# into the image at the same path, and the download below is replaced when the
-# archive is already present. sha256 still verifies integrity either way.
-# ci/gdr-xpack/ always exists (its .gitkeep is committed), so the COPY is never
-# the failure point; the RUN decides between local archives and curl+check.
+# validate-podman.sh stages ci/gdr-xpack in an external build context. CNB's
+# context carries only .gitkeep and downloads the archives below. Both paths
+# verify the same hashes.
 # NOTE: RT-Thread's RV64 BSP hard-codes the legacy riscv64-unknown-elf prefix.
 COPY ci/gdr-xpack/ /opt/gdr-xpack/
 RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-${XPACK_ARCH}.tar.gz" \

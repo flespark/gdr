@@ -67,6 +67,19 @@ building anything and refuses to start on an incapable GDB.
 
 ## Live lanes
 
+### Cortex-M0 (`microbit`, variant `full`)
+
+`build-fixture-kernel.sh --target microbit --variant full` links the shared
+fixture against `portable/GCC/ARM_CM0` plus `portasm.c` and the micro:bit
+startup/linker (256 KiB flash). QEMU uses `-M microbit` with
+`-global nrf51-soc.sram-size=262144`, matching the linker's 256 KiB SRAM
+region so the shared `full` configuration fits. This expanded SRAM is a
+test-fixture setting, not the physical board's capacity. `configENABLE_MPU`
+is 0 and the CLZ-based priority selection is disabled for the Thumb-1 port.
+GDB uses `arm` and the same semihosting ready marker. This lane verifies the Cortex-M0 saved-context
+offset (EXC_RETURN at the top, PC at +60, xPSR at +64) and the Thumb-1
+backtrace chain.
+
 ### Kernel-direct (`mps2-an385`)
 
 `build-fixture-kernel.sh` shallow-clones `FreeRTOS-Kernel` at a tag (default
@@ -194,6 +207,15 @@ the live cell for the tick-width-derived event-group masks, the `portMAX_DELAY`
 sentinels and the width-correct list-value raw reads on every supported lane
 (the 10.3.1 and 11.1.0 kernel-direct cells). The tick wraps every
 ~65.5 s at 1000 Hz, so no assertion may hard-code absolute tick values.
+
+### 32-bit RISC-V (`qemu-virt-rv32`, variant `base`)
+
+`build-fixture-kernel.sh --target qemu-virt-rv32 --variant base` links
+`portable/GCC/RISC-V` for `rv32imac_zicsr`/`ilp32`; QEMU machine is
+`qemu-system-riscv32 -M virt -cpu rv32 -bios freertos.bin`, GDB uses
+`riscv:rv32`.  The saved-context layout uses the same first PC slot as RV64
+with 4-byte words, and the lane verifies 32-bit pointer width and the CFI
+walk.
 
 ### 64-bit RISC-V (`qemu-virt-rv64`, variant `rv64`)
 

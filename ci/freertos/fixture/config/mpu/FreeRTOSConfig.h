@@ -14,6 +14,7 @@
 #include "gdr_board.h"
 
 #define configENABLE_MPU 1
+#define configRECORD_STACK_HIGH_ADDRESS 1
 #define configUSE_MPU_WRAPPERS_V1 0
 /* Reason: every MPU_* create records its handle in xKernelObjectPool; the
  * fixture creates 18 kernel objects + 16 tasks + daemon/idle tasks at

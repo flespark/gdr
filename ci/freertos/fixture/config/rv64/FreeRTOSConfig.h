@@ -16,6 +16,7 @@
 #define FREERTOS_CONFIG_H
 
 #include "gdr_board.h"
+#define configRECORD_STACK_HIGH_ADDRESS 1
 
 #include "gdr_fixture_common.h"
 

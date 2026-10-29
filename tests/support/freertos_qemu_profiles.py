@@ -13,10 +13,18 @@ from pathlib import Path
 from tests.support.loader import IntegrationSpec, load_integration_spec
 from tests.support.qemu_harness import QemuProfile
 
-_KNOWN_TARGETS = ("mps2-an385", "mps2-an521", "qemu-virt-rv64")
+_KNOWN_TARGETS = (
+    "mps2-an385",
+    "microbit",
+    "mps2-an521",
+    "qemu-virt-rv32",
+    "qemu-virt-rv64",
+)
 _MACHINES = {
     "mps2-an385": "mps2-an385",
+    "microbit": "microbit",
     "mps2-an521": "mps2-an521",
+    "qemu-virt-rv32": "virt",
     "qemu-virt-rv64": "virt",
 }
 
@@ -31,6 +39,8 @@ def get_freertos_qemu_profile(
         raise RuntimeError("snapshot lane has no QEMU profile")
     if spec.target not in _KNOWN_TARGETS:
         raise RuntimeError(f"unknown FreeRTOS QEMU target: {spec.target}")
+    is_riscv = spec.target in {"qemu-virt-rv32", "qemu-virt-rv64"}
+    is_rv32 = spec.target == "qemu-virt-rv32"
     is_rv64 = spec.target == "qemu-virt-rv64"
     # Reason: mps2-an521 is fixed at two CPUs (default_cpus == min == max),
     # so an explicit -smp 2 is redundant and -smp 1 would be rejected;
@@ -41,19 +51,38 @@ def get_freertos_qemu_profile(
     qemu_args = (
         ("-cpu", "rv64", "-m", "256M", "-semihosting-config", "enable=on")
         if is_rv64
+        else ("-cpu", "rv32", "-m", "256M", "-semihosting-config", "enable=on")
+        if is_rv32
+        else (
+            "-global",
+            "nrf51-soc.sram-size=262144",
+            "-semihosting-config",
+            "enable=on,target=native",
+        )
+        if spec.target == "microbit"
         else ("-semihosting-config", "enable=on,target=native")
     )
-    qemu_binary = spec.qemu or ("qemu-system-riscv64" if is_rv64 else "qemu-system-arm")
+    qemu_binary = spec.qemu or (
+        "qemu-system-riscv32"
+        if is_rv32
+        else "qemu-system-riscv64"
+        if is_riscv
+        else "qemu-system-arm"
+    )
     return QemuProfile(
         rtos="freertos",
         version=spec.version,
         target=spec.target,
         qemu_binary=qemu_binary,
         machine=_MACHINES[spec.target],
-        gdb_architecture="riscv:rv64" if is_rv64 else "arm",
+        gdb_architecture="riscv:rv32"
+        if is_rv32
+        else "riscv:rv64"
+        if is_rv64
+        else "arm",
         elf_path=spec.elf_path(),
         firmware_path=spec.firmware_path(),
-        firmware_option="-bios" if is_rv64 else "-kernel",
+        firmware_option="-bios" if is_riscv else "-kernel",
         ready_marker="GDR FreeRTOS fixture ready.",
         pointer_width=8 if is_rv64 else 4,
         init_command=f"gdr init freertos {spec.version}",

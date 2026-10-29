@@ -10,6 +10,7 @@
 #define FREERTOS_CONFIG_H
 
 #include "gdr_board.h"
+#define configRECORD_STACK_HIGH_ADDRESS 1
 #include "gdr_fixture_common.h"
 
 /* The common header defaults configUSE_PORT_OPTIMISED_TASK_SELECTION to 1,

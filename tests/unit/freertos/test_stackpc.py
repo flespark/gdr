@@ -59,6 +59,19 @@ def test_port_is_decided_by_evidence_not_by_version():
         == "cortex-m3"
     )
     assert (
+        port_of(has_start_first_task=False, has_pendsv=True, cpu_name="6S-M")
+        == "cortex-m0"
+    )
+    assert (
+        port_of(
+            has_start_first_task=True,
+            has_pendsv=False,
+            cpu_name=None,
+            pointer_size=4,
+        )
+        == "riscv32"
+    )
+    assert (
         port_of(has_start_first_task=False, has_pendsv=True, cpu_name="8-M.MAIN")
         == "cortex-m33"
     )

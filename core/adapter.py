@@ -48,6 +48,41 @@ class SystemSummary:
 
 
 @dataclass(frozen=True)
+class BacktraceFrame:
+    """One recovered task frame before symbol resolution.
+
+    ``pc`` is the even instruction address; ``method`` names the evidence
+    (``seed``, ``ehabi``, ``cfi`` or ``frame-pointer``).  The adapter fills
+    ``symbol`` and ``source`` from GDB's read-only symbol/line tables.
+    """
+
+    index: int
+    pc: int
+    method: str
+    symbol: str | None = None
+    source: SourceLoc | None = None
+
+
+@dataclass
+class BacktraceReport:
+    """One task's bounded backtrace and the exact evidence behind it."""
+
+    task: str
+    address: int
+    port: str
+    architecture: str
+    method: str
+    source: str
+    complete: bool
+    stop_reason: str
+    truncated: bool
+    max_depth: int
+    bounds: str
+    frames: list[BacktraceFrame]
+    messages: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ColumnSpec:
     """Plugin-facing metadata for one list column.
 
@@ -749,4 +784,15 @@ class RtosAdapter(Protocol):
         returns the same conclusions its system view renders, structured so a
         plugin can badge them (``core.api`` maps this onto the verb).
         """
+        return None
+
+    def backtrace(self, target: str, max_depth: int = 32) -> BacktraceReport | None:
+        """Return one task's bounded backtrace, or ``None`` when unsupported.
+
+        ``None`` means the adapter cannot decode this port at all; a task that
+        exists but has no saved context returns a report whose ``stop_reason``
+        says why.  Implementations must never call an inferior function or
+        write target memory.
+        """
+        del target, max_depth
         return None

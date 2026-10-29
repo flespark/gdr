@@ -32,8 +32,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULT_REPO="https://github.com/RT-Thread/rt-thread.git"
-DEFAULT_SOURCE_CACHE="/tmp/rt-thread-build/xpack/source"
-DEFAULT_BUILD_ROOT="/tmp/rt-thread-build/xpack"
+DEFAULT_SOURCE_CACHE="${RT_THREAD_BUILD_ROOT:-/tmp/rt-thread-build}/xpack/source"
+DEFAULT_BUILD_ROOT="${RT_THREAD_BUILD_ROOT:-/tmp/rt-thread-build}/xpack"
 
 die() {
     echo "[gdr-ci] FAILED: $*" >&2

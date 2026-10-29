@@ -1,0 +1,580 @@
+"""Bounded, read-only task stack unwinding over ELF unwind metadata (pure).
+
+The driver consumes :mod:`core.unwind_ehabi` and :mod:`core.unwind_cfi` tables and
+falls back to a validated frame-pointer chain only when those tables do not
+cover a PC.  It never calls an inferior function and never writes target
+memory. Every frame preserves or advances SP, stays inside the supplied bounds and
+is bounded by a maximum depth; a malformed or unsupported record becomes a
+stop reason, never a guessed register value.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+
+from .unwind_cfi import CfiRow, CfiTable, RegisterRule, parse_cfi_section
+from .unwind_ehabi import EhabiTable, parse_ehabi, unwind_ehabi
+from .unwind_meta import (
+    EM_RISCV,
+    MAX_FRAME_READ,
+    MAX_FRAMES,
+    Arch,
+    ElfImage,
+    Endian,
+    Method,
+    Reader,
+    cpu_name_from_attributes,  # noqa: F401 - adapter-facing re-export
+)
+
+# ---------------------------------------------------------------------------
+# Unwind driver
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SeedFrame:
+    """The first frame of a task: registers decoded by the RTOS adapter."""
+
+    pc: int
+    sp: int
+    regs: Mapping[int, int]
+    source: str = "saved"
+    root_pc: int | None = None
+    root_reason: str = "task-entry"
+
+
+@dataclass(frozen=True)
+class UnwindFrame:
+    """One recovered frame; ``method`` names the evidence that produced it."""
+
+    index: int
+    pc: int
+    method: Method
+
+
+@dataclass(frozen=True)
+class UnwindResult:
+    """A bounded backtrace and the exact reason it stopped."""
+
+    frames: tuple[UnwindFrame, ...]
+    stop_reason: str
+    complete: bool
+    truncated: bool
+    seed_source: str
+    method: str
+
+
+@dataclass(frozen=True)
+class UnwindMetadata:
+    """All metadata sources for one ELF image, in preference order."""
+
+    elf: ElfImage
+    arch: Arch
+    cfi_tables: tuple[CfiTable, ...]
+    ehabi: EhabiTable | None
+    return_register: int
+    frame_pointer_register: int | None
+
+    @classmethod
+    def from_elf(cls, elf: ElfImage) -> UnwindMetadata:
+        """Build every available source; an absent source stays ``None``."""
+        arch: Arch = "riscv" if elf.machine == EM_RISCV else "arm"
+        cfi_tables: list[CfiTable] = []
+        for name, is_eh in ((".eh_frame", True), (".debug_frame", False)):
+            section = elf.section(name)
+            if section is None or not section.data:
+                continue
+            cfi_tables.append(
+                parse_cfi_section(
+                    section.data,
+                    section_address=section.address,
+                    address_size=elf.pointer_size,
+                    endian=elf.endian,
+                    is_eh_frame=is_eh,
+                )
+            )
+        ehabi = None
+        exidx = elf.section(".ARM.exidx")
+        if arch == "arm" and exidx is not None and exidx.data:
+            ehabi = parse_ehabi(
+                exidx.data,
+                section_address=exidx.address,
+                read_at=elf.read_at,
+                text_end=elf.code_end(),
+                endian=elf.endian,
+            )
+        return cls(
+            elf=elf,
+            arch=arch,
+            cfi_tables=tuple(cfi_tables),
+            ehabi=ehabi,
+            return_register=1 if arch == "riscv" else 14,
+            frame_pointer_register=8 if arch == "riscv" else 7,
+        )
+
+    def available(self) -> bool:
+        """Whether any table can cover a PC (frame pointers may still work)."""
+        return bool(self.ehabi) or any(self.cfi_tables)
+
+
+def _read_value(
+    read: Reader,
+    address: int,
+    size: int,
+    endian: Endian,
+    *,
+    stack_low: int | None,
+    stack_high: int | None,
+) -> int | None:
+    if size <= 0 or size > 8 or address <= 0:
+        return None
+    if stack_low is not None and address < stack_low:
+        return None
+    if stack_high is not None and address + size > stack_high:
+        return None
+    raw = read(address, size)
+    if raw is None or len(raw) != size:
+        return None
+    return int.from_bytes(raw, endian)
+
+
+def _rule_value(
+    rule: RegisterRule,
+    *,
+    cfa: int,
+    regs: Mapping[int, int],
+    read: Reader,
+    ptr_size: int,
+    endian: Endian,
+    stack_low: int | None,
+    stack_high: int | None,
+) -> tuple[int | None, str | None]:
+    if rule.kind == "same":
+        return None, None
+    if rule.kind == "undefined":
+        return None, "cfi-register-undefined"
+    if rule.kind == "register":
+        source = rule.register
+        if source is None or source not in regs:
+            return None, "cfi-register-source-missing"
+        return regs[source], None
+    if rule.kind == "val_offset":
+        return cfa + rule.value, None
+    value = _read_value(
+        read,
+        cfa + rule.value,
+        ptr_size,
+        endian,
+        stack_low=stack_low,
+        stack_high=stack_high,
+    )
+    if value is None:
+        return None, "cfi-memory-error"
+    return value, None
+
+
+def _unwind_cfi(
+    row: CfiRow,
+    *,
+    regs: Mapping[int, int],
+    sp: int,
+    read: Reader,
+    ptr_size: int,
+    endian: Endian,
+    return_register: int,
+    stack_low: int | None,
+    stack_high: int | None,
+) -> tuple[dict[int, int], int, int] | str:
+    if row.error is not None:
+        return row.error
+    if row.cfa.register is None:
+        return "cfi-no-cfa"
+    cfa_base = regs.get(row.cfa.register)
+    if cfa_base is None:
+        return "cfi-cfa-register-missing"
+    cfa = cfa_base + row.cfa.offset
+    if cfa < sp:
+        return "cfi-no-progress"
+    if stack_low is not None and cfa < stack_low:
+        return "cfi-stack-underflow"
+    if stack_high is not None and cfa > stack_high:
+        return "cfi-stack-overflow"
+    new_regs = dict(regs)
+    for register, rule in row.registers.items():
+        value, failure = _rule_value(
+            rule,
+            cfa=cfa,
+            regs=regs,
+            read=read,
+            ptr_size=ptr_size,
+            endian=endian,
+            stack_low=stack_low,
+            stack_high=stack_high,
+        )
+        if failure is not None:
+            if register == return_register:
+                return failure
+            continue
+        if value is not None:
+            new_regs[register] = value
+    return_rule = row.registers.get(return_register)
+    if return_rule is None or return_rule.kind == "same":
+        caller_pc = regs.get(return_register)
+    else:
+        caller_pc, failure = _rule_value(
+            return_rule,
+            cfa=cfa,
+            regs=regs,
+            read=read,
+            ptr_size=ptr_size,
+            endian=endian,
+            stack_low=stack_low,
+            stack_high=stack_high,
+        )
+        if failure is not None:
+            return failure
+    if caller_pc is None:
+        return "cfi-return-address-missing"
+    new_regs[return_register] = caller_pc
+    new_regs[13 if return_register == 14 else 2] = cfa
+    return new_regs, cfa, caller_pc
+
+
+def _unwind_frame_pointer(
+    *,
+    arch: Arch,
+    regs: Mapping[int, int],
+    sp: int,
+    read: Reader,
+    ptr_size: int,
+    endian: Endian,
+    frame_pointer_register: int | None,
+    stack_low: int | None,
+    stack_high: int | None,
+) -> tuple[dict[int, int], int, int] | str:
+    if frame_pointer_register is None or frame_pointer_register not in regs:
+        return "fp-register-missing"
+    frame_pointer = regs[frame_pointer_register]
+    if frame_pointer <= 0 or frame_pointer % ptr_size != 0:
+        return "fp-misaligned"
+    if stack_low is not None and frame_pointer < stack_low:
+        return "fp-stack-underflow"
+    if stack_high is not None and frame_pointer + ptr_size * 2 > stack_high:
+        return "fp-stack-overflow"
+    if arch == "riscv":
+        if frame_pointer <= sp:
+            return "fp-no-progress"
+        caller_pc = _read_value(
+            read,
+            frame_pointer - ptr_size,
+            ptr_size,
+            endian,
+            stack_low=stack_low,
+            stack_high=stack_high,
+        )
+        caller_fp = _read_value(
+            read,
+            frame_pointer - 2 * ptr_size,
+            ptr_size,
+            endian,
+            stack_low=stack_low,
+            stack_high=stack_high,
+        )
+        caller_sp = frame_pointer
+    else:
+        if frame_pointer < sp:
+            return "fp-below-sp"
+        caller_fp = _read_value(
+            read,
+            frame_pointer,
+            ptr_size,
+            endian,
+            stack_low=stack_low,
+            stack_high=stack_high,
+        )
+        caller_pc = _read_value(
+            read,
+            frame_pointer + ptr_size,
+            ptr_size,
+            endian,
+            stack_low=stack_low,
+            stack_high=stack_high,
+        )
+        caller_sp = frame_pointer + 2 * ptr_size
+    if not caller_pc or caller_fp is None:
+        return "fp-memory-error"
+    if caller_sp <= sp:
+        return "fp-no-progress"
+    new_regs = dict(regs)
+    new_regs[frame_pointer_register] = caller_fp
+    new_regs[13 if arch == "arm" else 2] = caller_sp
+    return new_regs, caller_sp, caller_pc
+
+
+def unwind_chain(
+    seed: SeedFrame,
+    metadata: UnwindMetadata | None,
+    *,
+    read: Reader,
+    max_depth: int = 32,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+    allow_frame_pointer: bool = True,
+    is_code: Callable[[int], bool] | None = None,
+) -> UnwindResult:
+    """Walk a seed frame through metadata, bounded by *max_depth*.
+
+    The first frame is the seed exactly as the RTOS adapter decoded it.  Each
+    further frame must not decrease the stack pointer, must stay inside the supplied
+    bounds and be produced by a metadata rule or a validated frame-pointer
+    record. Repeated PC/SP pairs are loops. ``complete`` requires the adapter's
+    independently supplied root or exit sentinel; other termination is partial.
+
+    Args:
+        seed: Decoded PC/SP/registers and the optional task entry.
+        metadata: Parsed ELF tables; ``None`` permits only a frame-pointer walk.
+        read: Bounded target-memory reader ``(address, size) -> bytes|None``.
+        max_depth: Maximum returned frames, clamped to ``1..MAX_FRAMES``.
+        stack_low: Lowest valid stack byte, or ``None`` when unknown.
+        stack_high: One-past-highest valid stack byte, or ``None``.
+        allow_frame_pointer: Permit the validated frame-pointer fallback.
+        is_code: Executable-address predicate; defaults to the ELF text ranges.
+
+    Returns:
+        Frames, the exact stop reason, completeness and truncation state.
+    """
+    if max_depth < 1:
+        max_depth = 1
+    max_depth = min(max_depth, MAX_FRAMES)
+    arch: Arch = metadata.arch if metadata is not None else "arm"
+    ptr_size = metadata.elf.pointer_size if metadata is not None else 4
+    endian: Endian = metadata.elf.endian if metadata is not None else "little"
+    code = is_code or (metadata.elf.is_code if metadata is not None else None)
+    if code is None:
+        # Without an ELF text range there is no proof that a recovered return
+        # address is executable; refuse further frames rather than guessing.
+        code = lambda _address: False  # noqa: E731
+    fp_register = (
+        metadata.frame_pointer_register
+        if metadata is not None
+        else (8 if arch == "riscv" else 7)
+    )
+    return_register = metadata.return_register if metadata is not None else 14
+
+    pc = seed.pc & ~1 if arch == "arm" else seed.pc
+    sp = seed.sp
+    regs = dict(seed.regs)
+    if pc <= 0:
+        return UnwindResult(
+            (), "seed-pc-invalid", False, False, seed.source, seed.source
+        )
+    if stack_low is not None and sp < stack_low:
+        return UnwindResult(
+            (), "seed-stack-underflow", False, False, seed.source, seed.source
+        )
+    if stack_high is not None and sp > stack_high:
+        return UnwindResult(
+            (), "seed-stack-overflow", False, False, seed.source, seed.source
+        )
+    if metadata is not None and not metadata.elf.is_code(pc):
+        return UnwindResult(
+            (), "seed-pc-outside-code", False, False, seed.source, seed.source
+        )
+    if arch == "arm":
+        regs[15] = pc
+        regs[13] = sp
+    else:
+        regs[2] = sp
+    frames: list[UnwindFrame] = [UnwindFrame(0, pc, "seed")]
+    seen: set[tuple[int, int]] = {(pc, sp)}
+    method = seed.source
+    stop_reason = "no-unwind-info"
+    complete = False
+    truncated = False
+    if seed.root_pc is not None and (pc & ~1 if arch == "arm" else pc) == (
+        seed.root_pc & ~1 if arch == "arm" else seed.root_pc
+    ):
+        return UnwindResult(
+            frames=tuple(frames),
+            stop_reason=seed.root_reason,
+            complete=True,
+            truncated=False,
+            seed_source=seed.source,
+            method=method,
+        )
+    for index in range(1, max_depth):
+        attempts: list[str] = []
+        has_metadata = False
+        if metadata is not None and metadata.ehabi is not None:
+            symbol = metadata.elf.function_containing(pc)
+            entry = metadata.ehabi.entry_for(pc)
+            if (
+                entry is not None
+                and symbol is not None
+                and (entry.start & ~1) == symbol.start
+            ):
+                has_metadata = True
+                outcome = unwind_ehabi(
+                    entry,
+                    table=metadata.ehabi,
+                    sp=sp,
+                    regs=regs,
+                    read=read,
+                    stack_low=stack_low,
+                    stack_high=stack_high,
+                    endian=endian,
+                )
+                if isinstance(outcome, tuple):
+                    new_regs, new_sp, new_pc = outcome
+                    step_method: Method = "ehabi"
+                else:
+                    attempts.append(outcome)
+                    outcome = None
+            else:
+                attempts.append("ehabi-no-matching-function")
+                outcome = None
+        else:
+            outcome = None
+            step_method = "cfi"
+        if outcome is None and metadata is not None:
+            row = None
+            for table in metadata.cfi_tables:
+                row = table.row_for(pc)
+                if row is not None:
+                    break
+            if row is not None:
+                has_metadata = True
+                outcome = _unwind_cfi(
+                    row,
+                    regs=regs,
+                    sp=sp,
+                    read=read,
+                    ptr_size=ptr_size,
+                    endian=endian,
+                    return_register=return_register,
+                    stack_low=stack_low,
+                    stack_high=stack_high,
+                )
+                if isinstance(outcome, tuple):
+                    new_regs, new_sp, new_pc = outcome
+                    step_method = "cfi"
+                else:
+                    attempts.append(outcome)
+                    outcome = None
+            else:
+                attempts.append("cfi-no-fde")
+        if outcome is None and allow_frame_pointer and not has_metadata:
+            outcome = _unwind_frame_pointer(
+                arch=arch,
+                regs=regs,
+                sp=sp,
+                read=read,
+                ptr_size=ptr_size,
+                endian=endian,
+                frame_pointer_register=fp_register,
+                stack_low=stack_low,
+                stack_high=stack_high,
+            )
+            if isinstance(outcome, tuple):
+                new_regs, new_sp, new_pc = outcome
+                step_method = "frame-pointer"
+            else:
+                attempts.append(outcome)
+                outcome = None
+        if outcome is None:
+            cfi_failures = [
+                reason for reason in attempts if reason.startswith(("cfi-", "eh-"))
+            ]
+            if cfi_failures:
+                specific = [reason for reason in cfi_failures if reason != "cfi-no-fde"]
+                stop_reason = specific[0] if specific else "no-unwind-info"
+            else:
+                stop_reason = attempts[0] if attempts else "no-unwind-info"
+            break
+        caller_pc = new_pc & ~1 if arch == "arm" else new_pc
+        if caller_pc == 0:
+            complete = seed.root_pc == 0
+            stop_reason = seed.root_reason if complete else "return-address-zero"
+            break
+        if not code(caller_pc):
+            stop_reason = "return-address-outside-code"
+            break
+        if new_sp < sp:
+            stop_reason = "no-progress"
+            break
+        if stack_low is not None and new_sp < stack_low:
+            stop_reason = "stack-underflow"
+            break
+        if stack_high is not None and new_sp > stack_high:
+            stop_reason = "stack-overflow"
+            break
+        if (caller_pc, new_sp) in seen:
+            stop_reason = "loop"
+            break
+        seen.add((caller_pc, new_sp))
+        frames.append(UnwindFrame(index, caller_pc, step_method))
+        method = step_method
+        pc = caller_pc
+        sp = new_sp
+        regs = new_regs
+        if seed.root_pc is not None and pc == (
+            seed.root_pc & ~1 if arch == "arm" else seed.root_pc
+        ):
+            stop_reason = seed.root_reason
+            complete = True
+            break
+    else:
+        stop_reason = "max-depth"
+        truncated = True
+    return UnwindResult(
+        frames=tuple(frames),
+        stop_reason=stop_reason,
+        complete=complete,
+        truncated=truncated,
+        seed_source=seed.source,
+        method=method,
+    )
+
+
+# The following two helpers are used by RTOS adapters to read a frame slot
+# without duplicating bounds checks.
+def read_slot(
+    read: Reader,
+    address: int,
+    width: int,
+    endian: Endian,
+    *,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+) -> int | None:
+    """Read one integer slot with optional stack bounds; ``None`` on failure."""
+    return _read_value(
+        read,
+        address,
+        width,
+        endian,
+        stack_low=stack_low,
+        stack_high=stack_high,
+    )
+
+
+def read_block(
+    read: Reader,
+    address: int,
+    size: int,
+    *,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+) -> bytes | None:
+    """Read a bounded block; ``None`` on a short read or bounds violation."""
+    if size <= 0 or size > MAX_FRAME_READ or address <= 0:
+        return None
+    if stack_low is not None and address < stack_low:
+        return None
+    if stack_high is not None and address + size > stack_high:
+        return None
+    raw = read(address, size)
+    if raw is None or len(raw) != size:
+        return None
+    return raw

@@ -13,6 +13,8 @@ import pytest
 import core.adapter as adapter_api
 import core.api as api
 from core.adapter import (
+    BacktraceFrame,
+    BacktraceReport,
     Capabilities,
     CheckFinding,
     ColumnSpec,
@@ -24,6 +26,7 @@ from core.adapter import (
     SystemSummary,
 )
 from core.api import (
+    backtrace_to_dict,
     capabilities_to_dict,
     chunk_payload,
     heap_report_to_dict,
@@ -65,6 +68,7 @@ class _ApiAdapter:
     findings: list[CheckFinding] = field(
         default_factory=lambda: [CheckFinding("TaskCount", "ok", scope="system")]
     )
+    backtrace_value: BacktraceReport | None = None
     resets: int = 0
     boom: bool = False
     boom_exc: Exception | None = None
@@ -115,6 +119,9 @@ class _ApiAdapter:
 
     def diagnostics_report(self):
         return self.findings
+
+    def backtrace(self, target, max_depth=32):  # noqa: ARG002
+        return self.backtrace_value
 
     def reset(self):
         self.resets += 1
@@ -780,3 +787,37 @@ def test_transport_plan_switches_at_the_inline_limit():
     kind, meta = transport_plan(large)
     assert kind == "chunked"
     assert json.loads(meta)["total"] > 1
+
+
+def test_backtrace_verb_serializes_the_bounded_contract(session):
+    """Frame index/PC/method, completeness and the stop reason cross the API."""
+    session.backtrace_value = BacktraceReport(
+        task="worker",
+        address=0x2000,
+        port="cortex-m3",
+        architecture="arm",
+        method="cfi",
+        source="saved",
+        complete=False,
+        stop_reason="max-depth",
+        truncated=True,
+        max_depth=2,
+        bounds="recorded",
+        frames=[
+            BacktraceFrame(0, 0x1000, "seed", "foo+4"),
+            BacktraceFrame(1, 0x1004, "cfi", "bar"),
+        ],
+        messages=["note"],
+    )
+    data = _data(api.api_call("backtrace", "worker", "--max-depth", "2"))
+    assert data["task"] == "worker"
+    assert data["stop_reason"] == "max-depth"
+    assert data["truncated"] is True
+    assert data["frames"][0] == {
+        "index": 0,
+        "pc": 0x1000,
+        "symbol": "foo+4",
+        "source": None,
+        "method": "seed",
+    }
+    assert backtrace_to_dict(session.backtrace_value)["max_depth"] == 2

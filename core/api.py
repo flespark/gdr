@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 
 from core import __version__ as GDR_VERSION
 from core.adapter import (
+    BacktraceReport,
     Capabilities,
     CheckFinding,
     DetailSection,
@@ -190,6 +191,39 @@ def _sections_to_list(sections: Sequence[DetailSection]) -> list[dict[str, objec
         }
         for section in sections
     ]
+
+
+def backtrace_to_dict(report: BacktraceReport) -> dict[str, object]:
+    """Serialize one bounded task backtrace.
+
+    The frame list is the stable contract a client walks; ``complete`` is true
+    only when the unwinder reached the task entry or a zero return address.
+    ``stop_reason`` names the exact bound that ended the walk.
+    """
+    return {
+        "task": report.task,
+        "address": report.address,
+        "port": report.port,
+        "architecture": report.architecture,
+        "method": report.method,
+        "source": report.source,
+        "complete": report.complete,
+        "stop_reason": report.stop_reason,
+        "truncated": report.truncated,
+        "max_depth": report.max_depth,
+        "bounds": report.bounds,
+        "frames": [
+            {
+                "index": frame.index,
+                "pc": frame.pc,
+                "symbol": frame.symbol,
+                "source": _source_to_dict(frame.source),
+                "method": frame.method,
+            }
+            for frame in report.frames
+        ],
+        "messages": list(report.messages),
+    }
 
 
 def system_summary_pairs(summary: SystemSummary) -> list[tuple[str, str]]:
@@ -485,6 +519,51 @@ def _table_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     )
 
 
+def _backtrace_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
+    """One task's bounded backtrace; ``backtrace <task> [--max-depth N]``."""
+    if not args:
+        raise ApiError("bad_args", "backtrace requires <task> [--max-depth N]")
+    target = ""
+    max_depth = 32
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--max-depth":
+            if index + 1 >= len(args):
+                raise ApiError("bad_args", "--max-depth requires a value")
+            try:
+                max_depth = int(args[index + 1])
+            except ValueError as exc:
+                raise ApiError(
+                    "bad_args", f"invalid --max-depth: {args[index + 1]}"
+                ) from exc
+            index += 2
+            continue
+        if arg.startswith("--max-depth="):
+            try:
+                max_depth = int(arg.split("=", 1)[1])
+            except ValueError as exc:
+                raise ApiError("bad_args", f"invalid --max-depth: {arg}") from exc
+            index += 1
+            continue
+        if arg.startswith("--"):
+            raise ApiError("bad_args", f"unknown backtrace option: {arg}")
+        if target:
+            raise ApiError("bad_args", "backtrace takes one task name")
+        target = arg
+        index += 1
+    if not target.strip():
+        raise ApiError("empty_name", "task name must not be empty")
+    if max_depth < 1 or max_depth > 64:
+        raise ApiError("bad_args", "--max-depth must be between 1 and 64")
+    report = adapter.backtrace(target, max_depth)
+    if report is None:
+        raise ApiError(
+            "backtrace_unavailable", "this adapter cannot unwind task stacks"
+        )
+    return backtrace_to_dict(report), list(report.messages)
+
+
 def _heap_dump_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     """The heap block layout and palette ``<rtos> heap dump`` draws."""
     if args:
@@ -641,6 +720,8 @@ _VERBS: dict[str, _VerbHandler] = {
     # NOTE: ``checks`` stays an alias for earlier clients; the shape is
     # unchanged, so no schema bump is owed.
     "checks": _check_verb,
+    "backtrace": _backtrace_verb,
+    "bt": _backtrace_verb,
     "table": _table_verb,
     "heap-dump": _heap_dump_verb,
     "probe": _probe_verb,

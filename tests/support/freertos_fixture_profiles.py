@@ -33,7 +33,13 @@ _SUPPORTED_VARIANTS = (
     "tick16",
 )
 
-_SUPPORTED_BOARDS = ("mps2-an385", "mps2-an521", "qemu-virt-rv64")
+_SUPPORTED_BOARDS = (
+    "mps2-an385",
+    "microbit",
+    "mps2-an521",
+    "qemu-virt-rv32",
+    "qemu-virt-rv64",
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,7 @@ class FreeRtosTestProfile:
     stream_buffers: bool
     batching_buffer: bool
     stack_watermark: bool
+    never_started_task: bool
     tick_bits: int = 32
 
 
@@ -132,7 +139,11 @@ def get_freertos_test_profile(
         # kernels always used MiniListItem_t without the config switch, so the
         # DWARF shape is still "mini" (no pvOwner on xListEnd).
         mini_list_item=True if v10_5 or (major, minor, patch) >= (10, 3, 0) else None,
-        high_water_source="pxEndOfStack" if variant == "full" else "scan",
+        high_water_source=(
+            "pxEndOfStack"
+            if variant in {"full", "smp", "mpu", "rv64"} or target == "qemu-virt-rv32"
+            else "scan"
+        ),
         runtime_stats=variant == "full",
         queue_sets=variant == "full",
         registry_size=0 if variant == "registry-0" else 8,
@@ -151,4 +162,5 @@ def get_freertos_test_profile(
         # scan and the HighWater column must disappear instead of printing a
         # fabricated number.
         stack_watermark=variant != "trace-off",
+        never_started_task=variant not in {"snapshot", "static-only"},
     )

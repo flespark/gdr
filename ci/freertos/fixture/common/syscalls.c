@@ -25,3 +25,19 @@ void *_sbrk(ptrdiff_t increment)
     heap = next;
     return previous;
 }
+
+/* Reason: -funwind-tables makes .ARM.exidx reference the EHABI personality
+ * routines.  The fixture has no C++ runtime; these local no-op definitions
+ * satisfy the link without pulling libgcc's unwind-arm.o (which would also
+ * require __exidx_start/__exidx_end and libc process syscalls). */
+void __aeabi_unwind_cpp_pr0(void)
+{
+}
+
+void __aeabi_unwind_cpp_pr1(void)
+{
+}
+
+void __aeabi_unwind_cpp_pr2(void)
+{
+}

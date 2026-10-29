@@ -146,6 +146,41 @@ def test_freertos_profile_derives_machine_from_target():
     )
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_args"),
+    [
+        (
+            "microbit",
+            (
+                "-global",
+                "nrf51-soc.sram-size=262144",
+                "-semihosting-config",
+                "enable=on,target=native",
+            ),
+        ),
+        ("mps2-an385", ("-semihosting-config", "enable=on,target=native")),
+        ("mps2-an521", ("-semihosting-config", "enable=on,target=native")),
+    ],
+)
+def test_freertos_arm_profile_uses_board_memory_configuration(target, expected_args):
+    from tests.support.freertos_qemu_profiles import get_freertos_qemu_profile
+
+    spec = load_integration_spec(
+        {
+            "GDR_RTOS": "freertos",
+            "GDR_QEMU_TARGET": target,
+            "GDR_VERSION": "11.1.0",
+            "GDR_FIXTURE_VARIANT": "full",
+        }
+    )
+    profile = get_freertos_qemu_profile(Path("/unused"), spec)
+    assert profile.machine == target
+    assert profile.firmware_option == "-kernel"
+    assert profile.qemu_args == expected_args
+    assert profile.elf_path == spec.fixture_dir() / "freertos.elf"
+    assert profile.elf_path.parent.name == "full"
+
+
 def test_snapshot_has_no_qemu_profile():
     from tests.support.freertos_qemu_profiles import get_freertos_qemu_profile
 

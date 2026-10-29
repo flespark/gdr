@@ -32,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/fixture-common.sh"
 DEFAULT_REPO="https://github.com/FreeRTOS/FreeRTOS-Kernel.git"
 DEFAULT_TAG="V11.1.0"
-DEFAULT_KERNEL_DIR="/tmp/gdr-freertos-kernel-source"
+DEFAULT_KERNEL_DIR="${FREERTOS_KERNEL_CACHE:-/tmp/gdr-freertos-kernel-source}"
 DEFAULT_TARGET="mps2-an385"
 DEFAULT_VARIANT="base"
 DEFAULT_BUILD_DIR="/tmp/gdr-freertos-kernel-build"
@@ -41,7 +41,7 @@ TOOLCHAIN_PREFIX="arm-none-eabi-"
 # prefix is resolved after --target is parsed (setup_toolchain runs in main).
 toolchain_prefix_for() {
     case "$TARGET" in
-    qemu-virt-rv64) echo "riscv-none-elf-" ;;
+    qemu-virt-rv64 | qemu-virt-rv32) echo "riscv-none-elf-" ;;
     *) echo "$TOOLCHAIN_PREFIX" ;;
     esac
 }
@@ -78,10 +78,17 @@ board_flags() {
     mps2-an385)
         echo "-mcpu=cortex-m3 -mthumb"
         ;;
+    microbit)
+        echo "-mcpu=cortex-m0 -mthumb"
+        ;;
     mps2-an521)
         # NOTE: the AN521 runs two Cortex-M33s; pin the FPU off to match
         # configENABLE_FPU 0 so the lazy-stacking path stays out of the build.
         echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=soft"
+        ;;
+    qemu-virt-rv32)
+        # NOTE: RV32 uses the same integer-only RISC-V port with 4-byte words.
+        echo "-march=rv32imac_zicsr -mabi=ilp32 -mcmodel=medany"
         ;;
     qemu-virt-rv64)
         # NOTE: integer-only rv64imac keeps portContext.h's FPU sections out
@@ -114,13 +121,17 @@ compile_fixture() {
 
     case "$TARGET" in
     mps2-an385) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM3" ;;
+    microbit) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM0" ;;
     mps2-an521) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM33_NTZ/non_secure" ;;
-    qemu-virt-rv64) port_dir="$KERNEL_DIR/portable/GCC/RISC-V" ;;
+    qemu-virt-rv64 | qemu-virt-rv32) port_dir="$KERNEL_DIR/portable/GCC/RISC-V" ;;
     esac
 
     local -a port_sources=()
     local -a chip_include_paths=()
     case "$TARGET" in
+    microbit)
+        port_sources+=("$port_dir/portasm.c")
+        ;;
     mps2-an521)
         # NOTE: the CM33_NTZ port keeps context switching and the SVC/
         # PendSV handler in portasm.c -- ARM_CM3 has only port.c, so the
@@ -142,7 +153,7 @@ compile_fixture() {
             )
         fi
         ;;
-    qemu-virt-rv64)
+    qemu-virt-rv64 | qemu-virt-rv32)
         # NOTE: the RISC-V port keeps the context switch and M-mode trap
         # handler in portASM.S (port.c alone would link but never switch
         # tasks).  The chip-specific extension header (mtime/CLINT macros)
@@ -172,6 +183,12 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
+    if [[ "$TARGET" != "qemu-virt-rv64" && "$TARGET" != "qemu-virt-rv32" ]]; then
+        # The M3/M33/M0 lanes carry real EHABI tables so the fallback and
+        # compact personalities are exercised against compiler output, not
+        # only synthetic unit vectors.
+        cflags+=(-funwind-tables)
+    fi
     # NOTE: set -u treats "${chip_include_paths[@]}" on an empty array as
     # an unbound-variable error on older bash (the same reason port_sources
     # is gated below), so only expand when the target added paths.
@@ -223,7 +240,7 @@ compile_fixture() {
     # specs flags per target.  The empty-array expansion must also be gated
     # (set -u on bash 3.2 errors on an empty "${specs_flags[@]}").
     local -a specs_flags=()
-    if [[ "$TARGET" == "qemu-virt-rv64" ]]; then
+    if [[ "$TARGET" == "qemu-virt-rv64" || "$TARGET" == "qemu-virt-rv32" ]]; then
         specs_flags=(--specs=nano.specs --specs=nosys.specs)
     fi
 

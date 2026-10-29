@@ -10,13 +10,16 @@ and the per-RTOS integration test coverage.
 ## Unit test coverage boundary
 
 `uv run pytest tests/unit --cov` enforces branch coverage (`fail_under = 85`)
-across all 20 hardware-independent modules in `core/`, `rtthread/`, and
+across all 28 hardware-independent modules in `core/`, `rtthread/`, and
 `freertos/` (`adapter`, `api`, `commands`, `constants`, `formatting`,
 `heapmap`, `help`, `version`, `layout`, `stackpc`, `views`, `diagnostics`,
-`objects`, `heap`). Only the four direct `gdb.Value` / DWARF / target-memory
-traversal modules (`core/gdb_bridge.py`, `core/layout.py`,
-`rtthread/navigation.py`, `freertos/navigation.py`) are excluded from the
-unit-only gate and verified end-to-end by the closed-loop QEMU suites below.
+`objects`, `heap`, `unwind`, `unwind_meta`, `unwind_cfi`, `unwind_ehabi`,
+`backtrace`). Direct `gdb.Value` / DWARF / target-memory traversal modules
+(`core/gdb_bridge.py`, `core/layout.py`,
+`rtthread/navigation.py`, `freertos/navigation.py`) and the two
+`backtrace_gdb.py` orchestration modules are excluded from the unit-only
+coverage gate. Focused orchestration unit tests and the closed-loop QEMU
+suites below verify their adapter contracts and target reads.
 
 In addition to functional unit tests, `tests/unit/core/test_boundary.py`
 enforces repository-wide structural invariants on every run:
@@ -64,6 +67,14 @@ than spawning a batch GDB process per test:
 3. Each test calls `gdb_session.run(...)` to execute GDB commands and capture
    stripped output.
 
+Writable fixture/build output can be moved off the host system disk:
+`ci/validate-podman.sh` mounts `GDR_CI_WORK_DIR` at the same path and places
+`freertos/`, `freertos-build/`, `freertos-kernel-source/`, `rt-thread-build/`
+and the virtualenv under it; the individual runners honor
+`FREERTOS_FIXTURE_CACHE`, `FREERTOS_BUILD_ROOT`, `FREERTOS_KERNEL_CACHE`,
+`RT_THREAD_BUILD_ROOT` and `UV_PROJECT_ENVIRONMENT` directly.  Without a work
+directory the historical `/tmp` paths remain the fallback.
+
 `tests/support/loader.py` is the single reader of closed-loop environment
 variables (`GDR_RTOS`, `GDR_VERSION`, `GDR_QEMU_TARGET`,
 `GDR_FIXTURE_VARIANT`, cache roots, and ELF overrides). `tests/integration/conftest.py`
@@ -82,6 +93,8 @@ answers.
 | `rv64` | RT-Thread | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | 64-bit RISC-V (`riscv:rv64`) |
 | `mps2-an385` | FreeRTOS | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Cortex-M3 |
 | `mps2-an521` | FreeRTOS | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit dual Cortex-M33 (SSE-200) |
+| `microbit` | FreeRTOS | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Cortex-M0 (Thumb-1) |
+| `qemu-virt-rv32` | FreeRTOS | `qemu-system-riscv32 -M virt -cpu rv32 -m 256M -bios freertos.bin -semihosting-config enable=on` | `freertos.elf` | 32-bit RISC-V (`riscv:rv32`) |
 | `qemu-virt-rv64` | FreeRTOS | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios freertos.bin -semihosting-config enable=on` | `freertos.elf` | 64-bit RISC-V (`riscv:rv64`) |
 
 On 64-bit RISC-V lanes (`rv64` and `qemu-virt-rv64`), QEMU boots the raw
@@ -127,6 +140,7 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 | `test_commands.py` | Every `rtt` list and detail command (`threads`/`thread`, `semaphores`, `mutexes`, `events`, `mailboxes`, `msgqueues`, `mempools`, `timers`, `objects`, `system`, `heap`, `heap dump`, `check`, `watch`/`unwatch`), waiter chains (`count@names`), mailbox slot addresses, timer `Src` provenance (`registry+active`), and proven saved-frame `PC`. |
 | `test_api.py` | `$gdr_json`, `$gdr_json_chunk`, `$gdr_dump`, `gdr api <verb>`, `gdr probe` evidence, and `gdr reset` / `--force` / `--allow-unverified` session lifecycle. |
 | `test_startup.py` | Separate paused-at-reset QEMU session verifying that snapshots taken before kernel initialization safely stop on `NULL` timer-list heads instead of fabricating wrapped object addresses, and recover once the scheduler starts. |
+| `test_backtrace.py` | Blocked `worker1` chain through `rt_thread_mdelay` to `_thread_exit`, `task-exit` completeness, bounded text output and structured missing-thread failures (RV64 lane). Other RT-Thread ports report unverified. |
 
 ---
 
@@ -154,7 +168,7 @@ Verification spans three complementary execution arms:
      notification arrays (`>= 10.4`), `configUSE_MINI_LIST_ITEM`,
      `heap-protector` and `heap-5-protector` canary decoding (`>= 11.0`), and
      stream-buffer `uxNotificationIndex` (`>= 11.1`).
-2. **Architecture, SMP, and MPU lanes (`mps2-an521` and `qemu-virt-rv64`)**:
+2. **Architecture, SMP, and MPU lanes**:
    - **Dual-core SMP (`mps2-an521` / `11.3.1` / `smp`)**: Boots two
      Cortex-M33 cores on SSE-200 (`cpu1_start.c` wakes CPU1 via `INITSVTOR1`
      then `CPUWAIT`) and verifies shared-memory `pxCurrentTCBs[]`, `CPU`, and
@@ -165,6 +179,14 @@ Verification spans three complementary execution arms:
    - **64-bit RISC-V (`qemu-virt-rv64` / `11.1.0` / `rv64`)**: Verifies
      64-bit pointers, 64-bit `TickType_t` event-group control masks, and
      64-bit heap allocation-bitmask arithmetic.
+   - **Cortex-M0 (`microbit` / `11.1.0` / `full`)**: Builds the shared fixture
+     against `portable/GCC/ARM_CM0` with the expanded QEMU memory setup (see
+     the [lane README](../ci/freertos/README.md#cortex-m0-microbit-variant-full));
+     verifies the Thumb-1 context frame, EHABI/CFI selection and rejection of
+     false unstarted-task classification.
+   - **32-bit RISC-V (`qemu-virt-rv32` / `11.1.0` / `base`)**: Builds
+     `rv32imac_zicsr` with 4-byte words; verifies RV32 saved-context offsets,
+     pointer width and CFI unwinding.
 3. **File-only static snapshot for corruption negatives (`mps2-an521/11.1.0/snapshot`)**:
    - Loaded via `StaticElfSession` (`tests/support/freertos_elf_harness.py`)
      using GDB `file` only (no QEMU). Pre-initialized `.data` structures in
@@ -184,13 +206,14 @@ Verification spans three complementary execution arms:
 | `test_smp.py` | Dual-core `pxCurrentTCBs[0..1]` running-task resolution, `CPU` placement, core-affinity masks (`gdr_bound`), and preemption-disable state (`gdr_preempt`). |
 | `test_snapshot.py` | File-only negative testing for `frt check` and inline `Check[...]` failure/mismatch/corrupt verdicts on `freertos.elf` and `snapshot_heap.elf`. |
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
+| `test_backtrace.py` | Ordered saved-context chains, exact port/method/bounds, proven exit completeness versus RISC-V first-task loops, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
 
 ## Summary comparison of RT-Thread vs FreeRTOS test strategies
 
 | Dimension | RT-Thread (`ci/rt-thread/`) | FreeRTOS (`ci/freertos/`) |
 | --- | --- | --- |
 | **Firmware source** | Upstream RT-Thread repo + per-BSP/version patch sets | Upstream `FreeRTOS-Kernel` tags + shared `fixture/main.c`, `board/`, `config/<variant>/` |
-| **Primary matrix axis** | Kernel release history (`3.1.0–3.1.5`, `4.0.0–4.1.1`) across 32-bit ARM and 64-bit RV64 | Compile-time `FreeRTOSConfig.h` feature matrix (17 variants) + kernel version sweep (`10.3.1–11.3.1`) |
-| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv64` (`virt`) | `mps2-an385` (CM3), `mps2-an521` (dual CM33 SMP / MPU), `qemu-virt-rv64` (RV64) |
+| **Primary matrix axis** | Kernel release history (`3.1.0–3.1.5`, `4.0.0–4.1.1`) across 32-bit ARM and 64-bit RV64 | Compile-time `FreeRTOSConfig.h` feature matrix (19 variants) + kernel version sweep (`10.3.1–11.3.1`) |
+| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv64` (`virt`) | `microbit` (CM0), `mps2-an385` (CM3), `mps2-an521` (CM33 SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
 | **Negative / corruption testing** | Unit tests + reset-vector `NULL`-head startup session (`test_startup.py`) | Dedicated file-only static ELF pair (`test_snapshot.py`: `freertos.elf` + `snapshot_heap.elf`) |
 | **Expectation oracle** | `tests/support/rtthread_fixture_profiles.py` | `tests/support/freertos_fixture_profiles.py` |

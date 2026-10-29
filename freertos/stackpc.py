@@ -9,11 +9,14 @@ number cannot pick the slot.
 
 The port is decided from evidence in the image, never guessed:
 
-* ``xPortStartFirstTask`` present: RISC-V (``mepc`` is the first 8-byte slot);
+* ``xPortStartFirstTask``/``ullNextTime`` present: RISC-V (``mepc`` is the
+  first 4- or 8-byte slot, selected by pointer width);
 * ``PendSV_Handler`` present and the ARM build attribute ``Tag_CPU_name`` reads
-  ``8-M.MAIN``: Cortex-M33 (the PC is 24 bytes below ``pxTopOfStack``);
-* ``PendSV_Handler`` present and the attribute reads ``7-M``: Cortex-M3 (the PC
-  is 56 bytes above ``pxTopOfStack``).
+  ``8-M.MAIN``: Cortex-M33 (MPU layout: PC 24 bytes below ``pxTopOfStack``);
+* ``PendSV_Handler`` present and the attribute reads ``7-M``: Cortex-M3 (PC
+  56 bytes above ``pxTopOfStack``);
+* ``PendSV_Handler`` present and the attribute reads ``6-M``/``6S-M``:
+  Cortex-M0 (EXC_RETURN at the top, PC 60 bytes above ``pxTopOfStack``).
 
 Anything else is ``None`` and the PC column reads ``N/A``.
 
@@ -38,7 +41,7 @@ from typing import Literal
 
 Reader = Callable[[int, int], "bytes | None"]
 
-Port = Literal["cortex-m3", "cortex-m33", "riscv64"]
+Port = Literal["cortex-m0", "cortex-m3", "cortex-m33", "riscv32", "riscv64"]
 
 
 @dataclass(frozen=True)
@@ -63,7 +66,16 @@ PORT_LAYOUTS: dict[Port, SavedPcLayout] = {
     "cortex-m33": SavedPcLayout(offset=-24, width=4, xpsr_offset=-20),
     # portSAVE_CONTEXT stores mepc as the first 8-byte slot.
     "riscv64": SavedPcLayout(offset=0, width=8, xpsr_offset=None),
+    # Cortex-M0 stores EXC_RETURN at the top, then r4-r11, then the
+    # hardware frame; its PC is 60 bytes above pxTopOfStack.
+    "cortex-m0": SavedPcLayout(offset=60, width=4, xpsr_offset=64),
+    # The 32-bit RISC-V port uses the same first slot with 4-byte words.
+    "riscv32": SavedPcLayout(offset=0, width=4, xpsr_offset=None),
 }
+
+# The ARMv8-M non-MPU (SMP) save path stores the hardware frame above the
+# software context, so its PC is 64 bytes above pxTopOfStack.
+CORTEX_M33_SMP_LAYOUT = SavedPcLayout(offset=64, width=4, xpsr_offset=68)
 
 
 def _uleb128(data: bytes, index: int) -> tuple[int, int] | None:
@@ -135,14 +147,21 @@ def port_of(
     has_start_first_task: bool,
     has_pendsv: bool,
     cpu_name: str | None,
+    pointer_size: int | None = None,
 ) -> Port | None:
-    """The FreeRTOS port the image was built for, decided from its evidence."""
+    """The FreeRTOS port the image was built for, decided from its evidence.
+
+    ``pointer_size`` disambiguates the 32- and 64-bit RISC-V ports.  Omitting
+    it keeps the original 64-bit default for callers that predate RV32.
+    """
     if has_start_first_task:
-        return "riscv64"
+        return "riscv32" if pointer_size == 4 else "riscv64"
     if has_pendsv and cpu_name == "8-M.MAIN":
         return "cortex-m33"
     if has_pendsv and cpu_name == "7-M":
         return "cortex-m3"
+    if has_pendsv and cpu_name in {"6-M", "6S-M"}:
+        return "cortex-m0"
     return None
 
 

@@ -85,6 +85,7 @@ GDR_USED static TaskHandle_t gdr_event_wait_task;
 GDR_USED static TaskHandle_t gdr_notify_wait_task;
 GDR_USED static TaskHandle_t gdr_maxdelay_task;
 GDR_USED static TaskHandle_t gdr_suspended_task;
+GDR_USED static TaskHandle_t gdr_unstarted_task;
 GDR_USED static TaskHandle_t gdr_recursive_task;
 GDR_USED static TaskHandle_t gdr_exhaust_task;
 GDR_USED static TaskHandle_t gdr_ready_spin_task;
@@ -425,6 +426,18 @@ static void gdr_suspended(void *argument)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
+
+/* Created and suspended before the scheduler starts; the initial context
+ * alone must not be reported as independent task-entry evidence. */
+#if (configSUPPORT_DYNAMIC_ALLOCATION == 1)
+static void gdr_unstarted(void *argument)
+{
+    (void)argument;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+#endif
 
 static void gdr_recursive_hold(void *argument)
 {
@@ -912,6 +925,9 @@ int main(void)
                     &gdr_maxdelay_task);
     gdr_create_task(gdr_suspended, "gdr_susp", configMINIMAL_STACK_SIZE, 2,
                     &gdr_suspended_task);
+    gdr_create_task(gdr_unstarted, "gdr_new", configMINIMAL_STACK_SIZE, 1,
+                    &gdr_unstarted_task);
+    vTaskSuspend(gdr_unstarted_task);
     gdr_create_task(gdr_recursive_hold, "gdr_recm", configMINIMAL_STACK_SIZE, 2,
                     &gdr_recursive_task);
     gdr_create_task(gdr_exhaust_stack_task, "gdr_exh",
@@ -960,6 +976,7 @@ int main(void)
     vTaskCoreAffinitySet(gdr_notify_wait_task, 0x1U);
     vTaskCoreAffinitySet(gdr_maxdelay_task, 0x1U);
     vTaskCoreAffinitySet(gdr_suspended_task, 0x1U);
+    vTaskCoreAffinitySet(gdr_unstarted_task, 0x1U);
     vTaskCoreAffinitySet(gdr_recursive_task, 0x1U);
     vTaskCoreAffinitySet(gdr_exhaust_task, 0x1U);
     vTaskCoreAffinitySet(gdr_ready_spin_task, 0x1U);

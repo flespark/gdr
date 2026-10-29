@@ -102,7 +102,11 @@ def test_help_lists_every_command_and_alias(argument, capsys):
     commands._invoke_command(argument)
 
     assert capsys.readouterr().out == f"{commands._HELP}\n"
-    assert set(commands._COMMAND_DESCRIPTIONS) == {"help", *_PUBLIC_ROUTES}
+    assert set(commands._COMMAND_DESCRIPTIONS) == {
+        "help",
+        "backtrace",
+        *_PUBLIC_ROUTES,
+    }
     for command in commands._COMMAND_DESCRIPTIONS:
         assert f"rtt {command}" in commands._HELP
     for command in commands._DETAIL_DESCRIPTIONS:

@@ -19,13 +19,24 @@ fi
 
 podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile.gdb12" \
     --tag "$IMAGE_TAG" "$ROOT_DIR"
-podman run --rm --platform "$PLATFORM" \
-    --volume "$ROOT_DIR:/workspace" \
-    --workdir /workspace \
-    --env GDR_GDB=gdb-multiarch \
-    --env GDR_EXPECTED_GDB_MAJOR=12 \
-    --env GDR_EXPECTED_EMBEDDED_PYTHON=3.10 \
-    --env RT_THREAD_REFS=v4.0.5 \
-    --env RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-    --env CROSS_TOOL_PREFIX=arm-none-eabi- \
-    "$IMAGE_TAG" bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+podman_args=(
+    --rm --platform "$PLATFORM"
+    --volume "$ROOT_DIR:/workspace"
+    --workdir /workspace
+    --env GDR_GDB=gdb-multiarch
+    --env GDR_EXPECTED_GDB_MAJOR=12
+    --env GDR_EXPECTED_EMBEDDED_PYTHON=3.10
+    --env RT_THREAD_REFS=v4.0.5
+    --env RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
+    --env CROSS_TOOL_PREFIX=arm-none-eabi-
+)
+if [[ -n "${GDR_CI_WORK_DIR:-}" ]]; then
+    mkdir -p "$GDR_CI_WORK_DIR"
+    podman_args+=(
+        --env "GDR_CI_WORK_DIR=$GDR_CI_WORK_DIR"
+        --env "RT_THREAD_BUILD_ROOT=$GDR_CI_WORK_DIR/rt-thread-build"
+        --env "UV_PROJECT_ENVIRONMENT=$GDR_CI_WORK_DIR/venv"
+        --volume "$GDR_CI_WORK_DIR:$GDR_CI_WORK_DIR"
+    )
+fi
+podman run "${podman_args[@]}" "$IMAGE_TAG" bash ci/rt-thread/run-qemu-matrix.sh cortex-a9

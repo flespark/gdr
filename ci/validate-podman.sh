@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Reproduce CNB's QEMU matrices locally in a Podman container.
+#
+# Optional external workspace:
+#   GDR_CI_WORK_DIR=/path/on/external/disk
+# mounts that host path into the container and puts FreeRTOS/RT-Thread build
+# trees, kernel caches, fixtures and the virtualenv there instead of /tmp.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -45,6 +50,7 @@ podman_args=(
     --platform "$PLATFORM"
     --volume "$ROOT_DIR:/workspace"
     --workdir /workspace
+    --env "GDR_VALIDATE_LANES=${GDR_VALIDATE_LANES:-all}"
 )
 if [[ -n "${RT_THREAD_REPO:-}" ]]; then
     podman_args+=(--env "RT_THREAD_REPO=$RT_THREAD_REPO")
@@ -86,29 +92,42 @@ if [[ -n "${FREERTOS_FIXTURE_CACHE:-}" ]]; then
     )
 fi
 
+# Writable build/fixture workspace.  When the caller names an external disk
+# path, mount it at the same path and give every builder a subdirectory there
+# instead of falling back to the container's /tmp.  The path is deliberately
+# not created inside the repository, so no generated archive can be committed.
+if [[ -n "${GDR_CI_WORK_DIR:-}" ]]; then
+    mkdir -p "$GDR_CI_WORK_DIR"
+    podman_args+=(
+        --env "GDR_CI_WORK_DIR=$GDR_CI_WORK_DIR"
+        --volume "$GDR_CI_WORK_DIR:$GDR_CI_WORK_DIR"
+    )
+fi
+
 # Reuse a prebuilt image when GDR_SKIP_DOCKER_BUILD is set: the xPack toolchains
 # (roughly 300MB each) download slowly, and an uncommitted Dockerfile change
 # invalidates the build cache and forces a redownload.
 if [[ -n "${GDR_SKIP_DOCKER_BUILD:-}" ]] && podman image exists "$IMAGE_TAG"; then
     echo "[gdr-ci] reusing existing image $IMAGE_TAG (GDR_SKIP_DOCKER_BUILD)"
 else
-    # Seed ci/gdr-xpack with pre-downloaded archives (host-side cache, faster
-    # than the VM's GitHub download). The Dockerfile falls back to curl for
-    # CNB where no local cache exists. xPack arm64+x64 archives share one dir.
+    image_context="$(mktemp -d "${GDR_CI_WORK_DIR:-${TMPDIR:-/tmp}}/gdr-image-context.XXXXXX")"
+    trap 'rm -rf "$image_context"' EXIT
+    mkdir -p "$image_context/ci/gdr-xpack"
+    cp "$ROOT_DIR/ci/Dockerfile" "$image_context/ci/Dockerfile"
+    cp "$ROOT_DIR/ci/gdr-xpack/.gitkeep" "$image_context/ci/gdr-xpack/.gitkeep"
     archive_dir="${GDR_CI_XPACK_DIR:-/Volumes/PS3000/gdr-xpack-archives}"
     if [[ -d "$archive_dir" ]]; then
-        mkdir -p "$ROOT_DIR/ci/gdr-xpack"
         for archive in \
             "xpack-arm-none-eabi-gcc-15.2.1-1.1-${XPACK_ARCH}.tar.gz" \
             "xpack-riscv-none-elf-gcc-15.2.0-1-${XPACK_ARCH}.tar.gz"; do
             if [[ -s "$archive_dir/$archive" ]]; then
                 echo "[gdr-ci] seeding $archive from $archive_dir"
-                cp "$archive_dir/$archive" "$ROOT_DIR/ci/gdr-xpack/$archive"
+                cp "$archive_dir/$archive" "$image_context/ci/gdr-xpack/$archive"
             fi
         done
     fi
-    podman build --platform "$PLATFORM" --file "$ROOT_DIR/ci/Dockerfile" \
-        "${build_args[@]}" --tag "$IMAGE_TAG" "$ROOT_DIR"
+    podman build --platform "$PLATFORM" --file "$image_context/ci/Dockerfile" \
+        "${build_args[@]}" --tag "$IMAGE_TAG" "$image_context"
 fi
 podman run "${podman_args[@]}" "$IMAGE_TAG" \
     bash -c '
@@ -119,6 +138,15 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
         # CI.  GDR_VALIDATE_LANES="rtthread:freertos" or a narrower list
         # opts into a fast subset.
         lanes="${GDR_VALIDATE_LANES:-all}"
+
+        if [[ -n "${GDR_CI_WORK_DIR:-}" ]]; then
+            mkdir -p "$GDR_CI_WORK_DIR"
+            export FREERTOS_BUILD_ROOT="$GDR_CI_WORK_DIR/freertos-build"
+            export FREERTOS_KERNEL_CACHE="$GDR_CI_WORK_DIR/freertos-kernel-source"
+            export RT_THREAD_BUILD_ROOT="$GDR_CI_WORK_DIR/rt-thread-build"
+            export UV_PROJECT_ENVIRONMENT="$GDR_CI_WORK_DIR/venv"
+            mkdir -p "$FREERTOS_BUILD_ROOT" "$RT_THREAD_BUILD_ROOT"
+        fi
 
         if [[ "$lanes" == *all* || "$lanes" == *rtthread* ]]; then
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
@@ -131,12 +159,17 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
             # NOTE: the FreeRTOS lane installs freshly built fixtures into
             # its cache root, so it must target a container-writable
             # directory -- the host FREERTOS_FIXTURE_CACHE is mounted read-only.
-            # Seed the writable copy from the host cache so fixtures that are
-            # still current are reused instead of rebuilt; cp -a keeps the
-            # mtimes the runner compares against the fixture sources.
+            # Prefer the caller external workspace; otherwise keep the
+            # historical /tmp fallback.  Seed the writable copy from the host
+            # cache so current fixtures are reused instead of rebuilt; cp -a
+            # keeps the mtimes the runner compares against the sources.
             seed="${FREERTOS_FIXTURE_CACHE:-}"
-            export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
-            if [[ -n "$seed" && -d "$seed" ]]; then
+            if [[ -n "${GDR_CI_WORK_DIR:-}" ]]; then
+                export FREERTOS_FIXTURE_CACHE="$GDR_CI_WORK_DIR/freertos"
+            else
+                export FREERTOS_FIXTURE_CACHE=/tmp/gdr-freertos-cache
+            fi
+            if [[ -n "$seed" && "$seed" != "$FREERTOS_FIXTURE_CACHE" && -d "$seed" ]]; then
                 mkdir -p "$FREERTOS_FIXTURE_CACHE"
                 cp -a "$seed/." "$FREERTOS_FIXTURE_CACHE/"
             fi
@@ -153,6 +186,11 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
             bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu
             RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
             bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
+            # Cortex-M0 and RV32 lanes, the other two first-version targets.
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
+            bash ci/freertos/run-qemu-matrix.sh microbit 11.1.0 full
+            RTOS_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
+            bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv32 11.1.0 base
             # snapshot: file-only ELF for the data-corruption negatives,
             # same matrix runner and kernel source as the other an521 cells.
             RTOS_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \

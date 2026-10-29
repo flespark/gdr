@@ -277,7 +277,15 @@ def test_freertos_high_water_matches_variant(gdb_session):
     idle = gdb_session.run(f"freertos task {_idle_name()}", timeout=20)
     high_water = [line for line in idle.splitlines() if "HighWater" in line]
     assert high_water, idle
-    assert "unavailable" not in high_water[0]
+    assert "N/A" not in high_water[0] and "unavailable" not in high_water[0], idle
+    if SPEC.variant == "mpu":
+        detail = gdb_session.run("freertos task gdr_ready", timeout=20)
+        values = {}
+        for key in ("StackSize", "Used", "HighWater"):
+            match = re.search(rf"^\s*{key}:\s*(\d+) B\s*$", detail, re.MULTILINE)
+            assert match is not None, detail
+            values[key] = int(match.group(1))
+        assert 0 < values["Used"] <= values["HighWater"] <= values["StackSize"], detail
 
 
 def test_objects_summary_reports_sources(gdb_session):

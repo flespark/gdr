@@ -5,11 +5,6 @@ decoder branch. A constraint is a *current* limitation (what GDR cannot do
 or what a lane cannot falsify), not a development rule — development rules
 live in `AGENTS.md` and the per-lane READMEs.
 
-Known limits of the debugging model and the fixture evidence behind each
-decoder branch.  A constraint is a *current* limitation (what GDR cannot do
-or what a lane cannot falsify), not a development rule — development rules
-live in `AGENTS.md` and the per-lane READMEs.
-
 ## General
 
 **Kernel debug info drives every probe.** Every adapter reads versions,
@@ -44,11 +39,11 @@ fabricated 0.
 
 ## FreeRTOS
 
-**Live coverage is 32-bit Cortex-M plus one 64-bit RISC-V lane.**
-The 32-bit lanes are `mps2-an385` Cortex-M3,
-`mps2-an521` dual-core Cortex-M33 and the Cortex-M33 static snapshot; a
-`qemu-virt-rv64` lane (QEMU `-machine virt`, `portable/GCC/RISC-V`
-rv64imac) covers 64-bit pointers and 64-bit ticks (the RISC-V port hardcodes
+**Live coverage is 32-bit Cortex-M0/M3/M33 plus RV32/RV64 RISC-V.**
+The 32-bit ARM lanes are `microbit` Cortex-M0, `mps2-an385` Cortex-M3,
+`mps2-an521` dual-core Cortex-M33 and the Cortex-M33 static snapshot; the
+RISC-V lanes are `qemu-virt-rv32` (rv32imac) and `qemu-virt-rv64`
+(rv64imac); the latter covers 64-bit pointers and 64-bit ticks (the RISC-V port hardcodes
 `TickType_t` to the architecture width; the lane's config also declares
 `configTICK_TYPE_WIDTH_IN_BITS` 64 so the kernel's event-group control
 bits sit in the top byte, matching the tick-width-derived masks).  Pointer
@@ -94,8 +89,7 @@ are unavailable because the saved SP does not retain stack capacity.
   no GCC toolchain and no QEMU machine, so no grow-up target can exist; the
   dead field/branch was removed rather than kept as an untestable probe.
 
-Several decoder branches now have live fixture evidence that used to be
-unit-test-only: the MPU-pool channel (`mpu` variant), event-group control
+Live fixture evidence covers the MPU-pool channel (`mpu` variant), event-group control
 bits at 16/64-bit tick widths (`tick16` / the RISC-V lane), the timer
 pended-callback arm (`pend-callback`), stream-buffer ring wrap and the
 deleted-buffer signature (`streams`), and `ListIntegrityBytes` on the static
@@ -117,6 +111,63 @@ the *allocated-bit* cell (free-list member with the size_t MSB) cannot share
 one heap symbol set — a corrupt walk swallows the mismatch verdict — so the
 allocated-bit cell lives in a second, heap-only ELF (`snapshot_heap.c`).
 
+## Task backtraces
+
+**Verified saved-context matrix.** FreeRTOS backtraces are verified on
+Cortex-M0 (`microbit`), Cortex-M3 (`mps2-an385`), Cortex-M33 SMP and MPU
+(`mps2-an521`), RV32 (`qemu-virt-rv32`) and RV64 (`qemu-virt-rv64`).
+The Cortex-M33 fixtures disable FPU and TrustZone; other extended-context
+configurations are not verified.
+RT-Thread backtraces are verified on RV64; its M0/M3/M33/RV32 context layouts
+are implemented and unit-tested but report `unverified-port` until a QEMU BSP
+fixture exists. Cortex-A9 remains on the existing `stackpc` path and is not a
+first-version backtrace target.
+
+**EHABI entries require a matching ELF function symbol.** Without
+`-funwind-tables` the ARM fixtures expose only `EXIDX_CANTUNWIND`. With the
+tables enabled, GDR accepts an exidx entry only when its start equals the
+enclosing sized `STT_FUNC` symbol; a previous function's entry cannot cover a
+gap where the compiler emitted no row. If the symbol table is stripped, CFI or
+the validated frame-pointer chain is used instead.
+
+**`.eh_frame` parsing is unit-tested, not live-verified.** The QEMU fixtures
+emit `.debug_frame` (and, on ARM with `-funwind-tables`, EHABI); the
+`.eh_frame` reader supports the same bounded CIE/FDE subset and pointer
+encodings, but no current fixture uses it. A real `.eh_frame` lane can be
+added without changing the driver.
+
+**FreeRTOS does not record a stack end in every build.** Without
+`configRECORD_STACK_HIGH_ADDRESS` or another retained stack-end field, the
+report has no frames and stops at `stack-bounds-unavailable`. RT-Thread
+supplies `stack_addr`/`stack_size`; unavailable bounds also prevent a walk.
+
+**Unstarted tasks require an explicit proof.** RT-Thread requires the saved
+PC to equal the TCB entry and the integer context to carry the port's initial
+fill. FreeRTOS retains no independent task-entry field, so its adapter never
+reports `source=unstarted` from initial registers, xPSR or an exit sentinel
+alone. The pure decoder requires an independently supplied entry address.
+
+**RISC-V first-task return state can loop.** The FreeRTOS port starts its
+first task with RA equal to the entry PC. A chain that repeats `(PC, SP)`
+stops at `loop` with `complete=false`; reaching an entry-looking symbol is
+not an independent task-entry proof. Other tasks can reach the recorded
+`xTaskReturnAddress` value, including zero, and finish at `task-exit`.
+
+**Interrupt-stack transitions are not live-verified.** The saved-context
+lanes exercise blocked/yielding tasks, not hard-interrupt or nested-exception
+cross-stack unwinding. FPU/TrustZone extended frames and other unverified
+context variants are outside the verified matrix.
+
+**SMP tasks on another core have no saved context.** A task currently running
+on a core other than the selected one reports `smp-no-context`; GDR never
+reads that core's live registers through another core's context.
+
+**No stack scanning and no inferior calls.** The frame-pointer fallback is
+used only when EHABI/CFI has no row; it validates alignment, stack bounds,
+progress and that the return PC is executable. GDR never scans a stack for
+plausible return addresses, calls an inferior function, or writes target
+memory.
+
 **No `Entry` column.** The FreeRTOS TCB (`tskTaskControlBlock`) does not store
 the task entry function pointer after task creation; it exists only transiently
 on the initial stack frame and is overwritten on first context switch. This is
@@ -134,6 +185,10 @@ stacks yield no value, never a fabricated total. Initial context reservations
 count before scheduler startup, ensuring `Used <= HighWater <= Stack` whenever
 all are available. A halted snapshot cannot recover historical reservations
 that left no write trace or distinguish a write equal to the fill byte.
+For MPU wrappers v2, `pxTopOfStack` addresses the TCB context array, not the
+task stack: `Used` uses the decoded task SP, and fill scanning uses only the
+recorded task span. An unreadable context can leave `Used` unavailable while
+the retained span and fill still establish `HighWater`.
 
 **Queue `type` field is gated by `trace_facility`.** The `ucQueueType` member
 only exists under `configUSE_TRACE_FACILITY == 1`. Layout summary fields that

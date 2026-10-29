@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULT_TARGET="mps2-an385"
 DEFAULT_VERSION="10.3.1"
 DEFAULT_VARIANT="base"
-DEFAULT_BUILD_DIR="/tmp/gdr-freertos-build"
+DEFAULT_BUILD_DIR="${FREERTOS_BUILD_ROOT:-/tmp/gdr-freertos-build}"
 DEFAULT_CACHE_ROOT="$HOME/Project/gdr-fixture/freertos"
 
 die() {
@@ -56,7 +56,7 @@ toolchain_path_for() {
     # NOTE: RTOS_TOOLCHAIN_PATH is env-set to the ARM xPack dir (it is the
     # default for every other lane); the RISC-V-specific variable must win
     # so the rv64 lane cannot silently compile with the ARM compiler.
-    qemu-virt-rv64) echo "${XPACK_RISCV_TOOLCHAIN_PATH:-${RTOS_TOOLCHAIN_PATH:-}}" ;;
+    qemu-virt-rv64 | qemu-virt-rv32) echo "${XPACK_RISCV_TOOLCHAIN_PATH:-${RTOS_TOOLCHAIN_PATH:-}}" ;;
     *) echo "${RTOS_TOOLCHAIN_PATH:-${XPACK_ARM_TOOLCHAIN_PATH:-}}" ;;
     esac
 }
@@ -67,6 +67,7 @@ toolchain_path_for() {
 gdb_architecture_for() {
     case "$1" in
     qemu-virt-rv64) echo "riscv:rv64" ;;
+    qemu-virt-rv32) echo "riscv:rv32" ;;
     *) echo "arm" ;;
     esac
 }

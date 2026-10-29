@@ -162,6 +162,58 @@ def test_high_water_unavailable_without_recorded_stack_end(monkeypatch):
 # --- high-water mark --------------------------------------------------------
 
 
+@pytest.mark.parametrize("failure", [None, "bounds", "overflow", "unreadable"])
+def test_mpu_stack_usage_decodes_task_sp_separately_from_tcb_context(
+    monkeypatch, failure
+):
+    from tests.unit.freertos.test_backtrace import _Memory
+
+    layout = build_layout(
+        FreeRtosConfig(mpu_context=True, stack_end_field="pxEndOfStack")
+    )
+    memory = _Memory()
+    context = adapter_module.context_for("cortex-m33", mpu=True)
+    top = 0x3000
+    for register, offset in context.registers:
+        memory.word(top + offset, 0x100 + register)
+    memory.word(top - 24, 0x1235)
+    memory.word(top - 20, 0x61000000)
+    memory.word(top - 28, 0x222)
+    memory.word(top - 16, 0x1200 if failure == "overflow" else 0x1160)
+    values = {"top_of_stack": top, "stack_base": 0x1000, "stack_end": 0x11FC}
+    monkeypatch.setattr(
+        adapter_module, "read_field", lambda _v, _l, key: values.get(key)
+    )
+    monkeypatch.setattr(adapter_module, "read_int", lambda value: value)
+    monkeypatch.setattr(adapter_module, "read_cstring", lambda _v: "mpu")
+    monkeypatch.setattr(adapter_module, "value_address", lambda _v: 0x3100)
+    monkeypatch.setattr(adapter_module, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(
+        adapter_module,
+        "saved_context_bounds",
+        lambda _v, _l: (None, None) if failure == "bounds" else (top - 80, top + 4),
+    )
+    monkeypatch.setattr(adapter_module, "is_idle_task", lambda _v, _l: False)
+    reads = []
+
+    def read(address, size):
+        reads.append((address, size))
+        if address == 0x1000:
+            return b"\xa5" * 0x100 + b"\x00" * (size - 0x100)
+        return None if failure == "unreadable" else memory(address, size)
+
+    monkeypatch.setattr(adapter_module, "read_bytes", read)
+    task = adapter_module.value_to_task(object(), "Blocked", None, layout)
+    assert task.top_of_stack == top and task.stack_size == 512
+    assert task.stack_used == (128 if failure is None else None)
+    assert task.high_water_mark == 256
+    assert all(
+        address == 0x1000 or top - 80 <= address < top + 4 for address, _size in reads
+    )
+    if failure == "bounds":
+        assert reads == [(0x1000, 512)]
+
+
 def test_high_water_unavailable_when_stack_not_filled(monkeypatch):
     """A stack whose first byte is not 0xa5 was never watermark-filled."""
     monkeypatch.setattr(adapter_module, "_stack_type_size", lambda _layout: 4)

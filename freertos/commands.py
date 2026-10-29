@@ -15,6 +15,7 @@ from core.commands import (
     complete_command_tree,
     complete_watch,
     remove_watch,
+    render_backtrace,
     render_heap,
     render_heap_dump,
     render_heap_dump_options,
@@ -151,7 +152,7 @@ def _tasks_list_help() -> CommandHelp:
         ),
         limitations=(
             "There is no Entry column: a FreeRTOS TCB does not retain the task entry function after creation.",
-            "A proven initial frame can show an entry PC before startup; this does not mean the task ran, nor provide a retained TCB entry field.",
+            "An initial-looking saved PC does not independently prove the task entry or that the task never ran.",
             "Current saved-SP reservations count even when slots still contain fill, so HighWater >= Used. Historical reservations that left no write trace cannot be recovered from a halted snapshot.",
         ),
         aliases=("threads",),
@@ -365,6 +366,39 @@ def _heap_command_help() -> CommandHelp:
     )
 
 
+def _backtrace_help() -> CommandHelp:
+    return CommandHelp(
+        "backtrace",
+        "Unwind one task's stack",
+        "Walks the saved or live context of one task through ARM EHABI, DWARF CFI or a validated frame-pointer chain, bounded by the task stack and a maximum depth.",
+        usage=("frt backtrace <task> [--max-depth N]",),
+        fields=_fields(
+            ("#", "Frame index, starting at the task's current PC."),
+            ("PC", "Instruction address of the frame."),
+            ("Function", "Symbol at the PC, or its hexadecimal address."),
+            ("Source", "Resolved source file and line when debug info covers the PC."),
+            ("Method", "Evidence for the frame: seed, ehabi, cfi or frame-pointer."),
+        ),
+        tips=(
+            "The last line reports the port, evidence, completeness and exact stop reason.",
+            "A task running on another core without a saved context reports smp-no-context.",
+        ),
+        configuration=(
+            "The firmware must retain an ELF symbol table and applicable unwind data (ARM EHABI or DWARF CFI), or compile frame-pointer records.",
+            "Task stack bounds must be retained, for example with configRECORD_STACK_HIGH_ADDRESS.",
+        ),
+        limitations=(
+            "Cortex-M33 FPU/TrustZone context variants are not verified.",
+            "Initial registers alone do not prove an unstarted task; repeated PC/SP pairs remain partial loops.",
+            "A frame-pointer record is used only when alignment, stack bounds, progress and the return PC validate.",
+            "The target stays halted and GDR never calls inferior code or writes target memory.",
+            "The maximum depth is 64 frames; a deeper walk stops at max-depth and is marked partial.",
+        ),
+        aliases=("bt", "cb"),
+        action="backtrace",
+    )
+
+
 def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
     """Build the FreeRTOS help tree, optionally with live printer metadata."""
     commands = (
@@ -388,6 +422,7 @@ def build_help_tree(layout: FreeRtosLayout | None = None) -> HelpTree:
         _unwatch_command_help(),
         _system_summary_help(),
         _heap_command_help(),
+        _backtrace_help(),
     )
     return HelpTree(
         program="frt",
@@ -802,7 +837,9 @@ def _invoke_command(argument: str) -> None:
         print(render_terminal(tree, path))
         return
     command = _COMMAND_ALIASES.get(args[0].lower(), args[0].lower())
-    if command == "check":
+    if command == "backtrace":
+        _invoke_backtrace(argument)
+    elif command == "check":
         render_checks(args[1:])
     elif command == "watch":
         _invoke_watch(argument)
@@ -841,6 +878,35 @@ def _invoke_command(argument: str) -> None:
         render_heap()
     else:
         warn(_USAGE)
+
+
+def _invoke_backtrace(argument: str) -> None:
+    """Parse ``backtrace <task> [--max-depth N]`` without touching target state."""
+    words = argument.split(None, 1)
+    if len(words) != 2 or not words[1].strip():
+        warn("usage: freertos backtrace <task> [--max-depth N]")
+        return
+    rest = words[1].strip()
+    max_depth = 32
+    marker = rest.rfind("--max-depth")
+    if marker >= 0:
+        option = rest[marker:].split()
+        if len(option) != 2:
+            warn("usage: freertos backtrace <task> [--max-depth N]")
+            return
+        try:
+            max_depth = int(option[1])
+        except ValueError:
+            warn(f"invalid --max-depth: {option[1]}")
+            return
+        rest = rest[:marker].strip()
+    if not rest:
+        warn("usage: freertos backtrace <task> [--max-depth N]")
+        return
+    if max_depth < 1 or max_depth > 64:
+        warn("--max-depth must be between 1 and 64")
+        return
+    render_backtrace(rest, max_depth)
 
 
 def _command_vocabulary() -> list[str]:

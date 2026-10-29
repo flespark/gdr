@@ -22,7 +22,7 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 | RTOS | 版本 | 状态 |
 |------------|-------------------------------|----------------------------------------------------------------------------------------------------------------------------|
 | RT-Thread  | 3.1.x、4.0.x、4.1.x           | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起                                       |
-| FreeRTOS   | V10.3.0–V11.3.x               | 已实现；在 QEMU MPS2-AN385（Cortex-M3，10.3.1/10.4/10.5/11.1）与 MPS2-AN521（双 Cortex-M33，SMP，11.3.1）验证 |
+| FreeRTOS   | V10.3.0–V11.3.x               | 已实现；在 QEMU MPS2-AN385（Cortex-M3）、MPS2-AN521（双 Cortex-M33 SMP/MPU）、micro:bit（Cortex-M0）与 RISC-V virt（RV32/RV64）验证 |
 
 ## 快速开始
 
@@ -149,6 +149,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | `<rtos> help [topic]` | 浏览命令树；topic 包含字段说明、使用 tips、配置依赖与实现限制 |
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |
 | `<rtos> <object> <name-or-address>` | 以纵向 `Key: Value` 显示指定对象的详情 |
+| `<rtos> backtrace <task> [--max-depth N]` | 通过 EHABI、DWARF CFI 或验证过的帧指针链回溯任务栈；输出帧 PC、符号/源码、方法、完整性和停止原因 |
 | `<rtos> check [scope] [name]` | 显式运行完整一致性检查 |
 | `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | 每次停机打印被 watch 的对象，类似gdb的 `display` 但不会使目标停下 |
 | `<rtos> heap dump [path]` | 绘制堆占用位图，iTerm2 或 Kitty 中内联显示，否则写入 PNG |

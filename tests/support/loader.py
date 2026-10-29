@@ -25,7 +25,11 @@ _RTTHREAD_DEFAULT_TARGET = "cortex-a9"
 # (rtos, target) pairs whose QEMU machine boots a raw BIN via -bios instead
 # of the ELF via -kernel.
 _RAW_BIN_BOOT_TARGETS = frozenset(
-    {("freertos", "qemu-virt-rv64"), ("rtthread", "rv64")}
+    {
+        ("freertos", "qemu-virt-rv32"),
+        ("freertos", "qemu-virt-rv64"),
+        ("rtthread", "rv64"),
+    }
 )
 
 

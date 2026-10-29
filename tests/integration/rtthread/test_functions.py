@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_gdr_task_returns_a_target_native_rtthread_value(gdb_session):
-    output = gdb_session.run('p $gdr_task("worker1").current_priority')
+    output = gdb_session.run('p/d $gdr_task("worker1").current_priority')
     assert "20" in output
 
 
@@ -228,7 +228,7 @@ print(
 
 
 def test_target_pointer_width_matches_the_qemu_profile(gdb_session):
-    output = gdb_session.run("p sizeof(void *)")
+    output = gdb_session.run("p/d sizeof(void *)")
     expected = 8 if SPEC.target == "rv64" else 4
     assert f"= {expected}" in output, output
 

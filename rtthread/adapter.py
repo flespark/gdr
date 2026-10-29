@@ -27,6 +27,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from core.adapter import (
+    BacktraceReport,
     Capabilities,
     Cell,
     CheckFinding,
@@ -65,6 +66,9 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.layout import KernelLayout, read_field
+from core.unwind import (
+    UnwindMetadata,
+)
 from rtthread import diagnostics
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
@@ -602,6 +606,7 @@ class RtThreadAdapter(RtosAdapter):
         # adapter never reads target memory (tests build it without GDB).
         self._saved_pc: tuple[SavedPcLayout, int] | None = None
         self._saved_pc_resolved = False
+        self._unwind_cache: tuple[str, UnwindMetadata | None] | None = None
         # NOTE: IPC policy decoding lives in ``_ipc_policy``; expose it to the
         # RTOS-neutral pretty-printer through the layout's formatter hook so the
         # core reuses the same decoder rather than a duplicated enum_map.
@@ -1143,6 +1148,12 @@ class RtThreadAdapter(RtosAdapter):
             endian=endian,
         )
         return decoded.pc if decoded is not None else None
+
+    def backtrace(self, target: str, max_depth: int = 32) -> BacktraceReport:
+        """Unwind one RT-Thread thread from its saved or live context."""
+        from rtthread.backtrace_gdb import backtrace as run_backtrace
+
+        return run_backtrace(self, target, max_depth)
 
     def _task_views(self):
         current = get_current_thread()

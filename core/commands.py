@@ -41,6 +41,52 @@ def render_tasks() -> None:
 
 
 @gdb_command_guard
+def render_backtrace(target: str, max_depth: int = 32) -> None:
+    """Render one bounded task backtrace as a compact frame table.
+
+    The header states the evidence and completeness; each row names the frame
+    index, PC, resolved symbol and source line.  ``N/A`` means the unwinder
+    stopped before that frame existed, never a fabricated address.
+    """
+    adapter = active()
+    if adapter is None:
+        warn("run `gdr init <rtos> <version>` first")
+        return
+    if not target.strip():
+        warn("task name or address must not be empty")
+        return
+    report = adapter.backtrace(target, max_depth)
+    if report is None:
+        warn("this adapter cannot unwind task stacks")
+        return
+    for message in report.messages:
+        info(message)
+    headers = ["#", "PC", "Function", "Source", "Method"]
+    rows: list[list[str]] = []
+    for frame in report.frames:
+        source = (
+            f"{frame.source.name}:{frame.source.line}"
+            if frame.source is not None
+            else ""
+        )
+        rows.append(
+            [
+                str(frame.index),
+                hex(frame.pc),
+                frame.symbol or hex(frame.pc),
+                source,
+                frame.method,
+            ]
+        )
+    print_table(rows, headers, elastic=("Function", "Source"))
+    state = "complete" if report.complete else "partial"
+    print(
+        f"{report.task}: {report.port} {report.architecture}, "
+        f"{report.source}, {report.method}, {state} ({report.stop_reason})"
+    )
+
+
+@gdb_command_guard
 def render_object_detail(kind: str, target: str) -> None:
     """Render one object's complete detail as a Key: Value block.
 

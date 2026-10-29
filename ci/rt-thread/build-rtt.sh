@@ -27,7 +27,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_ROOT="$SCRIPT_DIR/patches"
 DEFAULT_REPO="https://github.com/RT-Thread/rt-thread.git"
-DEFAULT_BUILD_DIR="/tmp/rt-thread-build"
+DEFAULT_BUILD_DIR="${RT_THREAD_BUILD_ROOT:-/tmp/rt-thread-build}"
 
 die() {
     echo "[gdr-ci] FAILED: $*" >&2

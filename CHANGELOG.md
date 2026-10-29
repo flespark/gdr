@@ -6,21 +6,22 @@ All notable changes to GDR are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `rtt backtrace`, `frt backtrace` and `gdr api backtrace` show bounded task
+  stacks with symbols, source locations, per-frame evidence and explicit
+  completeness/stop reasons; `--max-depth` limits the walk.
+
 ### Changed
 
 - improve heap dump CLI and bitmap render. CLI add `--cell-pixel`, `--width`,
   `--row-bytes option`. Bitmap add outline for allocate blocks, add start/end
   text label around bitmap, legend rows read `name: sizeB, start-end`, free
   blocks span auto folds.
-- Restructure the runtime into fewer, symmetric modules: `gdr/` is now
-  `core/` (`gdb_bridge`, `formatting`, `layout`, `version`, `adapter`, `api`,
-  `commands`, `heapmap`, `help` plus `constants.py`); adapter internals are
-  merged (`rtthread`: `layout`, `navigation`, `stackpc`, `adapter`, `views`,
-  `diagnostics`, `commands`; `freertos` adds `objects` and `heap`). Behaviour
-  is unchanged; out-of-GDB importers must use the new module paths.
-- Split `docs/architecture.md` into `architecture.md`, `decisions.md`,
-  `testing.md` and `errata.md`, and add an RT-Thread vs FreeRTOS debugging
-  capability comparison to `architecture.md`.
+- Out-of-GDB importers must use `core.*` and the consolidated adapter module
+  paths; loading GDR inside GDB is unchanged.
+- MPU task `Used` and `HighWater` use the task stack rather than TCB context
+  storage.
 
 ## [2026.04] - 2026-10-13
 

@@ -37,9 +37,13 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`), plus layout-driven pretty-printer registration. Type matching uses `strip_typedefs().unqualified().tag` so typedef-spelled values resolve. |
 | `version.py` | RTOS-neutral version parsing/decoding, `TargetVerdict`, and the `ProbeCandidate` registry behind `gdr probe`. |
 | `adapter.py` | `RtosAdapter` protocol, presentation dataclasses (`Cell`, `ColumnSpec`, `ObjectTable`, `ObjectDetail`, `SystemSummary`, `HeapReport`, `CheckFinding`), and the active session. |
-| `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
+| `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`backtrace`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
 | `commands.py` | Shared collectors and guarded text renderers, the stop-time watch set, and convenience functions (`$gdr_task`, `$gdr_object`, `$gdr_json`). |
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
+| `unwind.py` | Bounded task unwind driver: seed frames, EHABI/CFI/frame-pointer selection, stack/PC/progress validation, per-frame method and stop reason. Pure; no GDB import. |
+| `unwind_meta.py` | Bounded ELF sections, code symbols and shared binary encodings. |
+| `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`) tables and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
+| `unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
 | `help.py` | Structured help schema with terminal/Markdown renderers; command metadata stays structured so the same source feeds GDB now and docs later. |
 
 ### `rtthread/` — RT-Thread adapter
@@ -49,6 +53,7 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** `RtConfig`, symbol-presence probing, `build_layouts(config)`, version policy and probe evidence. |
 | `navigation.py` | Registry/current-thread/tick symbols, type codes, timer traversal, halted system-heap snapshot. Returns raw `gdb.Value`. |
 | `stackpc.py` | Last PC from the saved switch frame (per-release slot table with entry/call/code proofs). |
+| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (M0/M3/M33/RV32/RV64; only RV64 has closed-loop proof) and the GDB-facing seed/thread orchestration for `rtt backtrace`. |
 | `adapter.py` | Intermediate models, value conversion, task/object tables, detail dispatch, system summaries. |
 | `views.py` | Column contracts, typed detail-table navigation cells, heap views and verdicts. |
 | `diagnostics.py` | Bounded raw-memory walks (IPC, heap), consistency diagnostics, and `rtt check`. |
@@ -61,6 +66,7 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | Config/DWARF probes, struct paths, version policy and probe evidence. |
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
 | `stackpc.py` | Last PC from the saved context frame (port evidence, not version). |
+| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (M0/M3/M33 SMP/MPU/RV32/RV64) and the GDB-facing seed/task orchestration for verified FreeRTOS ports. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |
 | `adapter.py` | Task/object models, conversion, tables, summaries, `RtosAdapter` surface. |
@@ -92,6 +98,18 @@ rtt/freertos command -> generic coordinator -> active adapter
   -> RTOS navigation/layout -> adapter intermediate model
   -> ObjectTable/ObjectDetail/SystemSummary
   -> shared formatting -> GDB output
+```
+
+Task stack backtraces resolve the task, decode its TCB/port context, parse
+the loaded ELF's unwind sections and walk bounded frames:
+
+```text
+rtt/frt backtrace <task> / gdr api backtrace -> adapter
+  -> saved/live seed registers + task stack bounds
+  -> core.unwind_meta (ELF sections and symbols)
+  -> core.unwind_cfi / core.unwind_ehabi (unwind metadata)
+  -> core.unwind (metadata selection, optional frame pointer, bounds/depth proof)
+  -> frames + method + complete/stop_reason
 ```
 
 Native inspection stays separate:
@@ -160,6 +178,7 @@ Boundary details behind each row live in `errata.md`.
 | **Object discovery** | Kernel global object registry plus the active timer lists | Six-channel evidence merge (MPU pool, registry, active lists, symbols, waiter hosts, user addresses) with `Src` provenance and a `Queue_t` discriminator (`?` when inferred) |
 | **Task basics** | TCB keeps `Entry`; `Stack`/`Used`/`HighWater` always derivable; `Error` and `RemainingTick`; SMP `CPU`/`Bind` | No retained `Entry`; `Stack`/`Used`/`HighWater` need `pxEndOfStack`; `Runtime`, `WakeTick`/`BlockedOn`, `Notify[n]`; SMP `CPU`/`Affinity` |
 | **Last PC (`stackpc.py`)** | Slot keyed by version and pointer width; entry/call/code proof | Slot keyed by port evidence (build attributes and port symbols); code symbol plus Cortex-M Thumb-bit proof |
+| **Task backtrace (`backtrace`)** | RV64 verified; A9 stays on `stackpc`, M0/M3/M33/RV32 report `unverified-port` | M0/M3/M33 SMP+MPU/RV32/RV64 verified on integer-only port configurations; EHABI preferred, DWARF CFI and validated frame-pointer fallback; SMP task on another core reports `smp-no-context` |
 | **IPC and sync objects** | Semaphores, mutexes, events, mailboxes (with slot addresses), message queues, memory pools; unified `FIFO`/`PRIO` policy | Queue family (queues with FIFO item addresses and set membership, binary/counting semaphores, recursive mutexes), event groups with per-waiter conditions, stream/message/batch buffers |
 | **Software timers** | Hard/soft and one-shot/periodic modes; registry vs active-list `Src` evidence | Current/overflow epoch handling, symbolic IDs, daemon command-queue decode |
 | **Heap (`heap` / `heap dump`)** | `small_mem`, `memheap`, `slab`; per-thread owner colours with `MEMTRACE`; walk-vs-counter accounting | `heap_1..5` (heap_3 wraps malloc); no owner field so no per-task attribution; protector canary decode; free-list/linear cross-check |
