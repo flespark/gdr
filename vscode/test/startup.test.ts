@@ -58,7 +58,7 @@ function host(settings = {rtos:'',version:'',autoInit:true}) {
  const loader = path.join(directory,'loader.gdb');
  writeFileSync(path.join(directory,'gdr.py'),'# runtime stub');
  writeFileSync(`${loader}.result`,'present');
- let reply: unknown = {schema_version:2,ok:true,data:{candidates:[],resolved:null}};
+ let reply: unknown = {schema_version:3,ok:true,data:{candidates:[],resolved:null}};
  let thrown: Error | null = null;
  const session = new GdrSession({id:'s1',name:'firmware',type:'cortex-debug',configuration:{gdrLoaderPath:loader},
   customRequest: async () => {if(thrown) {throw thrown;} return {result:JSON.stringify(reply)};}
@@ -131,7 +131,7 @@ test('missing version and cancelled selection explain the required user action',
  for (const candidates of [[{rtos:'freertos',version:null}], [{rtos:'freertos',version:'11.2.0'}]]) {
   const h=host();
   try {
-   h.reply({schema_version:2,ok:true,data:{candidates,resolved:null}});
+   h.reply({schema_version:3,ok:true,data:{candidates,resolved:null}});
    assert.equal(await h.session.onFirstStop(1),false);
    assert.equal(h.session.failureLevel,'warning');
    assert.match(h.session.errorMessage!,/gdr.rtos and gdr.version/);
@@ -143,7 +143,7 @@ test('missing version and cancelled selection explain the required user action',
 test('failed adapter initialization includes the verification failure',async()=>{
  const h=host({rtos:'freertos',version:'11.2.0',autoInit:true});
  try {
-  h.reply({schema_version:2,ok:false,error:{code:'not_initialized',message:'unsupported kernel version'},data:null});
+  h.reply({schema_version:3,ok:false,error:{code:'not_initialized',message:'unsupported kernel version'},data:null});
   assert.equal(await h.session.onFirstStop(1),false);
   assert.equal(h.session.failureLevel,'error');
   assert.match(h.session.errorMessage!,/initialization of freertos 11.2.0.*unsupported kernel version/);
@@ -154,7 +154,7 @@ test('a successful retry clears the previous startup failure',async()=>{
  const h=host();
  try {
   assert.equal(await h.session.onFirstStop(1),false);
-  h.reply({schema_version:2,ok:true,data:{candidates:[{rtos:'freertos',version:'11.2.0'}],resolved:{rtos:'freertos',version:'11.2.0'}}});
+  h.reply({schema_version:3,ok:true,data:{candidates:[{rtos:'freertos',version:'11.2.0'}],resolved:{rtos:'freertos',version:'11.2.0'}}});
   assert.equal(await h.session.onFirstStop(2),true);
   assert.equal(h.session.errorMessage,null);
   assert.equal(h.session.initialized?.rtos,'freertos');
@@ -173,7 +173,7 @@ test('late startup failures after termination do not notify',()=>{
 test('failed probe envelope retains coded error rather than generic initialization failure',async()=>{
  const h=host();
  try {
-  h.reply({schema_version:2,ok:false,error:{code:'access',message:'ELF symbols unreadable'},data:null});
+  h.reply({schema_version:3,ok:false,error:{code:'access',message:'ELF symbols unreadable'},data:null});
   assert.equal(await h.session.onFirstStop(1),false);
   assert.equal(h.session.failureLevel,'error');
   assert.match(h.session.errorMessage!,/ELF symbols unreadable/);

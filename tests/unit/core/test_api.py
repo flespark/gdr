@@ -794,8 +794,8 @@ def test_backtrace_verb_serializes_the_bounded_contract(session):
     session.backtrace_value = BacktraceReport(
         task="worker",
         address=0x2000,
-        port="cortex-m3",
-        architecture="arm",
+        architecture="armv7-m",
+        abi="aapcs32",
         method="cfi",
         source="saved",
         complete=False,
@@ -811,6 +811,8 @@ def test_backtrace_verb_serializes_the_bounded_contract(session):
     )
     data = _data(api.api_call("backtrace", "worker", "--max-depth", "2"))
     assert data["task"] == "worker"
+    assert (data["architecture"], data["abi"]) == ("armv7-m", "aapcs32")
+    assert "port" not in data and "isa" not in data
     assert data["stop_reason"] == "max-depth"
     assert data["truncated"] is True
     assert data["frames"][0] == {

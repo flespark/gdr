@@ -6,6 +6,8 @@ import pytest
 
 import freertos.adapter as adapter_module
 import freertos.navigation as navigation
+from core.stack_frame_parser import StackContextSelection
+from freertos.backtrace import ARMV8M_MAINLINE_MPU_INTEGER
 from freertos.layout import (
     FreeRtosConfig,
     FreeRtosLayout,
@@ -172,7 +174,12 @@ def test_mpu_stack_usage_decodes_task_sp_separately_from_tcb_context(
         FreeRtosConfig(mpu_context=True, stack_end_field="pxEndOfStack")
     )
     memory = _Memory()
-    context = adapter_module.context_for("cortex-m33", mpu=True)
+    context = ARMV8M_MAINLINE_MPU_INTEGER
+    monkeypatch.setattr(
+        adapter_module,
+        "_loaded_context",
+        lambda _layout: StackContextSelection("armv8-m.mainline", "arm", context, "ok"),
+    )
     top = 0x3000
     for register, offset in context.registers:
         memory.word(top + offset, 0x100 + register)

@@ -24,6 +24,7 @@ EM_RISCV = 243
 SHT_PROGBITS = 1
 SHT_NOBITS = 8
 SHT_ARM_EXIDX = 0x70000001
+SHT_ATTRIBUTES = 0x70000003
 SHF_EXECINSTR = 0x4
 
 DW_EH_PE_ABSPTR = 0x00
@@ -101,6 +102,13 @@ class ElfImage:
     machine: int
     sections: tuple[ElfSection, ...]
     symbols: tuple[CodeSymbol, ...] = ()
+    flags: int = 0
+    anchors: tuple[tuple[str, int], ...] = ()
+
+    def symbol_address(self, name: str) -> int | None:
+        """Return a defined symbol's unique address, including zero-size labels."""
+        addresses = {address for symbol, address in self.anchors if symbol == name}
+        return next(iter(addresses)) if len(addresses) == 1 else None
 
     def section(self, name: str) -> ElfSection | None:
         """Return one named section, or ``None`` when it is absent."""
@@ -259,7 +267,7 @@ class ElfImage:
                 continue
             if offset > len(data) or size > len(data) - offset:
                 return None
-            if section_type in (SHT_PROGBITS, SHT_ARM_EXIDX):
+            if section_type in (SHT_PROGBITS, SHT_ARM_EXIDX, SHT_ATTRIBUTES):
                 sections.append(
                     ElfSection(
                         name=name,
@@ -269,7 +277,7 @@ class ElfImage:
                         section_type=section_type,
                     )
                 )
-        symbols = _parse_code_symbols(
+        symbols, anchors = _parse_code_symbols(
             data,
             all_headers,
             is_64=is_64,
@@ -283,6 +291,8 @@ class ElfImage:
             machine=machine,
             sections=tuple(sections),
             symbols=symbols,
+            flags=struct.unpack_from(f"{order}I", data, 48 if is_64 else 36)[0],
+            anchors=anchors,
         )
 
     @classmethod
@@ -310,11 +320,12 @@ def _parse_code_symbols(
     endian: Endian,
     machine: int,
     section_count: int,
-) -> tuple[CodeSymbol, ...]:
-    """Parse sized ``STT_FUNC`` symbols from ``.symtab`` within one ELF."""
+) -> tuple[tuple[CodeSymbol, ...], tuple[tuple[str, int], ...]]:
+    """Parse sized functions and defined, allocated-section symbol anchors."""
     order = "<" if endian == "little" else ">"
     entry_size = 24 if is_64 else 16
     symbols: list[CodeSymbol] = []
+    anchors: list[tuple[str, int]] = []
     for index, (
         _name_offset,
         section_type,
@@ -332,16 +343,16 @@ def _parse_code_symbols(
             or offset > len(data)
             or size > len(data) - offset
         ):
-            return ()
+            return (), ()
         string_offset, string_type, _sf, _sa, strings_at, strings_size, _sl = headers[
             link
         ]
         del string_offset, string_type
         if strings_at > len(data) or strings_size > len(data) - strings_at:
-            return ()
+            return (), ()
         strings = data[strings_at : strings_at + strings_size]
         if entry_size == 0 or size % entry_size:
-            return ()
+            return (), ()
         for item in range(0, size - entry_size + 1, entry_size):
             base = offset + item
             name_at = struct.unpack_from(f"{order}I", data, base)[0]
@@ -353,7 +364,14 @@ def _parse_code_symbols(
                 value = struct.unpack_from(f"{order}I", data, base + 4)[0]
                 value_size = struct.unpack_from(f"{order}I", data, base + 8)[0]
                 info = data[base + 12]
-            if info & 0x0F != STT_FUNC or value_size == 0 or name_at >= len(strings):
+            section_index = struct.unpack_from(
+                f"{order}H", data, base + (6 if is_64 else 14)
+            )[0]
+            if (
+                name_at >= len(strings)
+                or not 0 < section_index < section_count
+                or not headers[section_index][2] & 2
+            ):
                 continue
             if machine == EM_ARM:
                 value &= ~1
@@ -362,10 +380,16 @@ def _parse_code_symbols(
                 continue
             name = strings[name_at:end].decode("ascii", errors="replace")
             if name:
-                symbols.append(CodeSymbol(name=name, start=value, size=value_size))
+                anchors.append((name, value))
+                if (
+                    info & 0x0F == STT_FUNC
+                    and value_size > 0
+                    and headers[section_index][2] & SHF_EXECINSTR
+                ):
+                    symbols.append(CodeSymbol(name=name, start=value, size=value_size))
         break
     symbols.sort(key=lambda symbol: symbol.start)
-    return tuple(symbols)
+    return tuple(symbols), tuple(anchors)
 
 
 def _read_section_header(
@@ -440,39 +464,3 @@ def _sign_extend(value: int, bits: int) -> int:
 
 def _prel31(word: int, place: int) -> int:
     return place + _sign_extend(word, 31)
-
-
-def cpu_name_from_attributes(blob: bytes) -> str | None:
-    """Return ARM build-attribute ``Tag_CPU_name`` (e.g. ``6-M``/``7-M``)."""
-    if len(blob) < 5 or blob[0:1] != b"A":
-        return None
-    index = 1
-    while index + 4 <= len(blob):
-        length = int.from_bytes(blob[index : index + 4], "little")
-        end = index + length
-        if length < 5 or end > len(blob):
-            return None
-        vendor_end = blob.find(b"\x00", index + 4, end)
-        if vendor_end == -1:
-            return None
-        body = vendor_end + 1
-        if blob[index + 4 : vendor_end] == b"aeabi":
-            cursor = body
-            while cursor < end:
-                decoded = _read_uleb(blob, cursor, end)
-                if decoded is None:
-                    return None
-                tag, cursor = decoded
-                if tag == 1:
-                    if cursor + 4 > end:
-                        return None
-                    cursor += 4
-                    continue
-                if tag == 5:
-                    name_end = blob.find(b"\x00", cursor, end)
-                    if name_end == -1:
-                        return None
-                    return blob[cursor:name_end].decode("ascii", errors="replace")
-                return None
-        index = end
-    return None

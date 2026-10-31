@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from rtthread.backtrace import context_for, decode_saved_context
+from rtthread.backtrace import (
+    ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_INTEGER,
+    RISCV64_INTEGER,
+    decode_saved_context,
+)
 
 
 class _Memory:
@@ -40,7 +45,7 @@ def _m3_context(memory: _Memory, top: int, *, fill: bool = False) -> None:
 
 
 def test_m3_context_has_the_verified_rtthread_layout():
-    context = context_for("cortex-m3")
+    context = ARMV7M_INTEGER
     assert context is not None
     assert context.verified is False
     assert context.pc_offset == 56 and context.sp_offset == 64
@@ -63,7 +68,7 @@ def test_m3_context_has_the_verified_rtthread_layout():
 
 
 def test_rtthread_m33_context_has_special_registers_above_the_frame():
-    context = context_for("cortex-m33")
+    context = ARMV8M_MAINLINE_INTEGER
     assert context is not None and context.verified is False
     memory = _Memory()
     top = 0x3000
@@ -87,7 +92,7 @@ def test_rtthread_m33_context_has_special_registers_above_the_frame():
 
 
 def test_rv64_context_is_closed_loop_verified_and_sp_is_above_it():
-    context = context_for("riscv64")
+    context = RISCV64_INTEGER
     assert context is not None and context.verified is True
     memory = _Memory()
     top = 0x5000
@@ -110,7 +115,7 @@ def test_rv64_context_is_closed_loop_verified_and_sp_is_above_it():
 
 
 def test_rtthread_unstarted_requires_entry_and_fill():
-    context = context_for("cortex-m3")
+    context = ARMV7M_INTEGER
     assert context is not None
     memory = _Memory()
     top = 0x2000

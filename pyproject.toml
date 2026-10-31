@@ -124,8 +124,9 @@ addopts = "-ra"
 
 # ---------------------------------------------------------------------------
 # Coverage: every hardware-independent module in core/, rtthread/, freertos/
-# (excludes only core.gdb_bridge, core.layout, rtthread.navigation, and
-# freertos.navigation, whose live gdb.Value/DWARF/memory walks belong to the
+# (excludes core.gdb_bridge, core.layout, rtthread.navigation,
+# freertos.navigation, and the <rtos>.stack_frame_profile modules, whose live
+# gdb.Value/DWARF/memory walks and compiled save-layout proofs belong to the
 # QEMU integration suite).
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
@@ -140,6 +141,8 @@ source = [
     "core.help",
     "core.unwind",
     "core.unwind_meta",
+    "core.cpus",
+    "core.stack_frame_parser",
     "core.unwind_cfi",
     "core.unwind_ehabi",
     "core.version",

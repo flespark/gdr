@@ -76,7 +76,7 @@ class GdbProcess:
         env.update(getattr(self, "extra_env", {}))
         self._proc = pexpect.spawn(
             self._gdb_binary,
-            ["-q"],
+            ["--nx", "-q"],
             env=env,
             encoding="utf-8",
             timeout=30,

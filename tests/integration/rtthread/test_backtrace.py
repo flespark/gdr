@@ -30,7 +30,8 @@ def test_blocked_thread_backtrace_reaches_the_entry(gdb_session):
     envelope = _envelope(output)
     assert envelope["ok"] is True, envelope
     data = envelope["data"]
-    assert data["port"] == "riscv64", data
+    assert data["architecture"] == "riscv64", data
+    assert "port" not in data and "isa" not in data
     assert data["bounds"] == "recorded" and data["source"] == "saved", data
     assert data["method"] == "cfi", data
     functions = [frame["symbol"] or "" for frame in data["frames"]]

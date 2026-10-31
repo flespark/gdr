@@ -57,7 +57,6 @@ from core.formatting import timer_expires_in as derive_timer_expires_in
 from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     arch_or_default,
-    eval_identifier,
     lookup_symbol_at,
     read_bytes,
     read_cstring,
@@ -66,9 +65,7 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.layout import KernelLayout, read_field
-from core.unwind import (
-    UnwindMetadata,
-)
+from core.unwind import UnwindMetadata
 from rtthread import diagnostics
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
@@ -101,7 +98,10 @@ from rtthread.navigation import (
 from rtthread.navigation import (
     find_object as find_rt_object,
 )
-from rtthread.stackpc import SavedPcLayout, decode_saved_pc, saved_pc_layout
+from rtthread.stackpc import (
+    SavedPcLayout,
+    decode_saved_pc,
+)
 from rtthread.views import (
     DETAIL_SPECS,
     EVENT_SPECS,
@@ -158,9 +158,12 @@ class Thread(KernelObject):
 
     @property
     def stack_used(self) -> int | None:
-        if not self.stack_addr or not self.stack_size or not self.sp:
-            return None
-        if self.stack_grows_up is None:
+        if (
+            not self.stack_addr
+            or not self.stack_size
+            or not self.sp
+            or self.stack_grows_up is None
+        ):
             return None
         used = (
             self.sp - self.stack_addr
@@ -239,22 +242,30 @@ def _infer_stack_grows_up(stack: bytes) -> bool | None:
 
 
 def _max_stack_used(stack: bytes, stack_grows_up: bool | None) -> int | None:
-    """Return RT-Thread's fill-pattern high-water mark for a known direction."""
     if stack_grows_up is None:
         return None
     fill = bytes([RT_THREAD_STACK_FILL])
     return len(stack.rstrip(fill) if stack_grows_up else stack.lstrip(fill))
 
 
-def value_to_thread(val: gdb.Value, layout: KernelLayout) -> Thread:
-    """Convert a ``struct rt_thread`` gdb.Value to a ``Thread`` dataclass."""
+def value_to_thread(
+    val: gdb.Value,
+    layout: KernelLayout,
+    *,
+    collect_stack_metrics: bool = True,
+) -> Thread:
+    """Convert one RT-Thread thread value."""
     sl = layout.structs["struct rt_thread"]
     name = read_cstring(read_field(val, sl, "name")) or ""
     stat_raw = read_int(read_field(val, sl, "stat")) or 0
     state = ThreadState.from_raw(stat_raw)
     stack_addr = read_int(read_field(val, sl, "stack_addr")) or 0
     stack_size = read_int(read_field(val, sl, "stack_size")) or 0
-    stack = read_bytes(stack_addr, stack_size) if stack_addr and stack_size else None
+    stack = (
+        read_bytes(stack_addr, stack_size)
+        if collect_stack_metrics and stack_addr and stack_size
+        else None
+    )
     stack_grows_up = layout.stack_grows_up
     if stack_grows_up is None and stack is not None:
         stack_grows_up = _infer_stack_grows_up(stack)
@@ -1099,23 +1110,16 @@ class RtThreadAdapter(RtosAdapter):
         return thread, state, current_core
 
     def _saved_pc_setup(self) -> tuple[SavedPcLayout, int] | None:
-        """The saved-PC slot layout and ``rt_hw_context_switch``'s address.
+        """Return the image-proven saved-PC layout and switch address."""
+        from rtthread.backtrace_gdb import saved_pc_setup
 
-        ``None`` when the release is not in the layout table, the port has no
-        ``rt_hw_context_switch_exit`` (the common restore path this decoder
-        relies on), or the switch symbol cannot be resolved.
-        """
-        if gdb is None:
-            return None
-        if not self._saved_pc_resolved:
-            self._saved_pc_resolved = True
-            pointer_size, _endian = arch_or_default()
-            layout = saved_pc_layout(self.version, pointer_size)
-            switch = eval_identifier("rt_hw_context_switch")
-            exit_path = eval_identifier("rt_hw_context_switch_exit")
-            if layout is not None and switch is not None and exit_path is not None:
-                self._saved_pc = (layout, value_address(switch))
-        return self._saved_pc
+        return saved_pc_setup(self, gdb is not None)
+
+    def reset(self) -> None:
+        """Drop image-derived backtrace and last-PC decisions."""
+        from rtthread.backtrace_gdb import reset_adapter
+
+        reset_adapter(self)
 
     def _thread_pc(self, thread: Thread, is_current: bool) -> int | None:
         """The last PC of one thread, or ``None`` when it cannot be proven.

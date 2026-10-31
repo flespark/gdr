@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 
 /** Envelope schema this client knows how to read. */
-export const GDR_SCHEMA_VERSION = 2;
+export const GDR_SCHEMA_VERSION = 3;
 
 export interface GdrError {
 	code: string;
@@ -39,6 +39,29 @@ export interface GdrEnvelope {
 	generation?: number;
 	/** Wall time of the verb on GDR's side; lets the UI self-throttle. */
 	elapsed_ms?: number;
+}
+
+export interface GdrBacktrace {
+	task: string;
+	address: number;
+	/** Canonical ISA selected from ELF attributes and profile evidence. */
+	architecture: string;
+	abi: string | null;
+	method: string;
+	source: string;
+	complete: boolean;
+	stop_reason: string;
+	truncated: boolean;
+	max_depth: number;
+	bounds: string;
+	frames: Array<{
+		index: number;
+		pc: number;
+		symbol: string | null;
+		source: { fullname: string; file: string; line: number } | null;
+		method: string;
+	}>;
+	messages: string[];
 }
 
 export interface ChunkMeta {

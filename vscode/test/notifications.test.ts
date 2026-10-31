@@ -14,7 +14,7 @@ test('notification gate deduplicates a cause within one session, not across sess
 test('runtime warning routing drops duplicated CLI provenance but retains verification and read failures', () => {
 	const registry = 'object counts come from the kernel object registry (rt_object_get_information)';
 	const corrupt = 'heap walk corrupt; later blocks not drawn';
-	const warnings = snapshotWarnings({ schema_version: 2, ok: true,
+	const warnings = snapshotWarnings({ schema_version: 3, ok: true,
 		warnings: [registry, 'target version could not be verified', corrupt],
 		data: { objects: { messages: [registry] }, tasks: { messages: ['Kernel tick: 100'] },
 			heap: { messages: [corrupt] }, tables: { timer: { messages: ['timer subsystem not initialised (pxCurrentTimerList == NULL)'] } },

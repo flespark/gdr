@@ -23,7 +23,7 @@ The builder installs its artifacts into one cache root so tests, the matrix
 runner and other machines read the same layout:
 
 ```text
-$FREERTOS_FIXTURE_CACHE/                 default ~/Project/gdr-fixture/freertos
+$FREERTOS_FIXTURE_CACHE/                 default /Volumes/PS3000/gdr-fixture/freertos
   <target>/<version>/<variant>/freertos.elf   (+ .bin, + .map)
   mps2-an521/11.1.0/snapshot/snapshot_heap.elf   (second artifact of the snapshot cell)
 ```

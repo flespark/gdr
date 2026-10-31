@@ -67,5 +67,5 @@ install_to_cache() {
 
 # Default fixture cache root (overridable via FREERTOS_FIXTURE_CACHE).
 fixture_cache_root() {
-    echo "${FREERTOS_FIXTURE_CACHE:-$HOME/Project/gdr-fixture/freertos}"
+    echo "${FREERTOS_FIXTURE_CACHE:-/Volumes/PS3000/gdr-fixture/freertos}"
 }

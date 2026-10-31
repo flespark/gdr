@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from freertos.backtrace import context_for, decode_saved_context, initial_context
+from freertos.backtrace import (
+    ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_MPU_INTEGER,
+    ARMV8M_MAINLINE_SMP_INTEGER,
+    RISCV32_INTEGER,
+    RISCV64_INTEGER,
+    decode_saved_context,
+    initial_context,
+)
 
 
 class _Memory:
@@ -52,7 +60,7 @@ def test_cortex_m3_saved_context_decodes_pc_sp_and_registers():
     top = 0x2000
     _arm_saved_context(memory, top)
     seed, reason = decode_saved_context(
-        context_for("cortex-m3"),
+        ARMV7M_INTEGER,
         top,
         memory,
         endian="little",
@@ -74,7 +82,7 @@ def test_cortex_m3_initial_frame_requires_independent_entry_evidence():
     top = 0x2000
     _arm_saved_context(memory, top, fill=True)
     seed, reason = decode_saved_context(
-        context_for("cortex-m3"),
+        ARMV7M_INTEGER,
         top,
         memory,
         endian="little",
@@ -92,7 +100,7 @@ def test_cortex_m3_initial_frame_requires_independent_entry_evidence():
 def test_cortex_m33_mpu_context_uses_the_psp_slot_and_negative_offsets():
     memory = _Memory()
     top = 0x3000
-    context = context_for("cortex-m33", mpu=True)
+    context = ARMV8M_MAINLINE_MPU_INTEGER
     for register, offset in context.registers:
         memory.word(top + offset, 0x100 + register)
     memory.word(top - 24, 0x1235)
@@ -119,7 +127,7 @@ def test_cortex_m33_mpu_context_uses_the_psp_slot_and_negative_offsets():
 def test_cortex_m33_smp_context_places_the_hardware_frame_above_the_top():
     memory = _Memory()
     top = 0x4000
-    context = context_for("cortex-m33", smp=True)
+    context = ARMV8M_MAINLINE_SMP_INTEGER
     for register, offset in context.registers:
         memory.word(top + offset, 0x100 + register)
     memory.word(top + 64, 0x3457)
@@ -142,7 +150,7 @@ def test_cortex_m33_smp_context_places_the_hardware_frame_above_the_top():
 def test_riscv64_context_maps_pc_ra_and_saved_sp():
     memory = _Memory()
     top = 0x5000
-    context = context_for("riscv64")
+    context = RISCV64_INTEGER
     for register, offset in context.registers:
         memory.word(top + offset, 0x100 + register, size=8)
     memory.word(top, 0x80000123, size=8)
@@ -164,7 +172,7 @@ def test_riscv64_context_maps_pc_ra_and_saved_sp():
 def test_riscv32_context_uses_four_byte_words():
     memory = _Memory()
     top = 0x6000
-    context = context_for("riscv32")
+    context = RISCV32_INTEGER
     for register, offset in context.registers:
         memory.word(top + offset, 0x100 + register)
     memory.word(top, 0x80000123)
@@ -184,7 +192,7 @@ def test_riscv32_context_uses_four_byte_words():
 def test_missing_or_non_thumb_saved_context_is_not_a_frame():
     memory = _Memory()
     assert (
-        decode_saved_context(context_for("cortex-m3"), 0, memory, endian="little")[1]
+        decode_saved_context(ARMV7M_INTEGER, 0, memory, endian="little")[1]
         == "no-saved-context"
     )
     top = 0x2000
@@ -192,7 +200,7 @@ def test_missing_or_non_thumb_saved_context_is_not_a_frame():
     memory.word(top + 60, 0)
     assert (
         decode_saved_context(
-            context_for("cortex-m3"),
+            ARMV7M_INTEGER,
             top,
             memory,
             endian="little",
@@ -209,7 +217,7 @@ def test_initial_context_requires_the_unstarted_proof():
     _arm_saved_context(memory, top)
     assert (
         initial_context(
-            context_for("cortex-m3"),
+            ARMV7M_INTEGER,
             top,
             memory,
             endian="little",
@@ -220,7 +228,7 @@ def test_initial_context_requires_the_unstarted_proof():
     )
     _arm_saved_context(memory, top, fill=True)
     seed, reason = initial_context(
-        context_for("cortex-m3"),
+        ARMV7M_INTEGER,
         top,
         memory,
         endian="little",
@@ -239,7 +247,7 @@ def test_initial_registers_without_entry_evidence_do_not_prove_unstarted():
     for pc, entry in ((0x100D, None), (0x100D, 0x1000), (0x1001, None)):
         memory.word(top + 56, pc)
         seed, reason = decode_saved_context(
-            context_for("cortex-m3"),
+            ARMV7M_INTEGER,
             top,
             memory,
             endian="little",
@@ -254,7 +262,7 @@ def test_initial_registers_without_entry_evidence_do_not_prove_unstarted():
 def test_mpu_context_needs_its_own_bounds_before_reading_memory():
     reads = []
     seed, reason = decode_saved_context(
-        context_for("cortex-m33", mpu=True),
+        ARMV8M_MAINLINE_MPU_INTEGER,
         0x3000,
         lambda address, size: reads.append((address, size)),
         endian="little",
@@ -265,8 +273,10 @@ def test_mpu_context_needs_its_own_bounds_before_reading_memory():
     assert reads == []
 
 
-def test_m33_without_smp_or_mpu_evidence_has_no_verified_layout():
-    assert context_for("cortex-m33") is None
+def test_m33_mpu_and_smp_profiles_have_distinct_ids():
+    assert ARMV8M_MAINLINE_MPU_INTEGER.profile_id != (
+        ARMV8M_MAINLINE_SMP_INTEGER.profile_id
+    )
 
 
 def test_saved_context_rejects_restored_sp_outside_task_stack():
@@ -274,7 +284,7 @@ def test_saved_context_rejects_restored_sp_outside_task_stack():
     top = 0x2000
     _arm_saved_context(memory, top)
     seed, reason = decode_saved_context(
-        context_for("cortex-m3"),
+        ARMV7M_INTEGER,
         top,
         memory,
         endian="little",
@@ -290,7 +300,7 @@ def test_hardware_alignment_padding_is_part_of_restored_sp():
     _arm_saved_context(memory, top)
     memory.word(top + 60, 0x01000200)
     seed, reason = decode_saved_context(
-        context_for("cortex-m3"),
+        ARMV7M_INTEGER,
         top,
         memory,
         endian="little",

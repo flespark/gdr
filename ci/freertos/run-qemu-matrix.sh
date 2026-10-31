@@ -12,7 +12,7 @@
 #   FREERTOS_FIXTURE_CACHE   firmware cache root with
 #                            <target>/<version>/<variant>/freertos.elf
 #                            (the snapshot cell also holds snapshot_heap.elf).
-#                            Default: ~/Project/gdr-fixture/freertos.
+#                            Default: /Volumes/PS3000/gdr-fixture/freertos.
 #                            A cached fixture is reused; missing ones are built
 #                            and then installed into this cache.
 #   GDR_FORCE_BUILD=1        rebuild even when the cached fixture exists
@@ -27,7 +27,7 @@ DEFAULT_TARGET="mps2-an385"
 DEFAULT_VERSION="10.3.1"
 DEFAULT_VARIANT="base"
 DEFAULT_BUILD_DIR="${FREERTOS_BUILD_ROOT:-/tmp/gdr-freertos-build}"
-DEFAULT_CACHE_ROOT="$HOME/Project/gdr-fixture/freertos"
+DEFAULT_CACHE_ROOT="/Volumes/PS3000/gdr-fixture/freertos"
 
 die() {
     echo "[gdr-ci] FAILED: $*" >&2

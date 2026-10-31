@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-_DEFAULT_FREERTOS_CACHE = Path.home() / "Project" / "gdr-fixture" / "freertos"
+_DEFAULT_FREERTOS_CACHE = Path("/Volumes/PS3000/gdr-fixture/freertos")
 # Reason: CNB closed-loop hosts keep prebuilt RT-Thread firmware here.
 _DEFAULT_RTTHREAD_CACHE = Path("/workspace/fixture/rtthread")
 

@@ -1,36 +1,7 @@
-"""Recover a FreeRTOS task's last PC from its saved context frame.
+"""Last-PC decoding projected from the selected immutable save profile.
 
-A FreeRTOS TCB keeps ``pxTopOfStack``, the stack pointer of the saved context.
-Its PC is not a TCB field: it sits in the frame the port pushed when the task
-left the CPU. The slot is fixed per port, and the ports differ, so the table
-below is keyed by port, not by kernel version. Cortex-M3 and Cortex-M33 both use
-``PendSV_Handler`` but lay the frame out in opposite directions, so a version
-number cannot pick the slot.
-
-The port is decided from evidence in the image, never guessed:
-
-* ``xPortStartFirstTask``/``ullNextTime`` present: RISC-V (``mepc`` is the
-  first 4- or 8-byte slot, selected by pointer width);
-* ``PendSV_Handler`` present and the ARM build attribute ``Tag_CPU_name`` reads
-  ``8-M.MAIN``: Cortex-M33 (MPU layout: PC 24 bytes below ``pxTopOfStack``);
-* ``PendSV_Handler`` present and the attribute reads ``7-M``: Cortex-M3 (PC
-  56 bytes above ``pxTopOfStack``);
-* ``PendSV_Handler`` present and the attribute reads ``6-M``/``6S-M``:
-  Cortex-M0 (EXC_RETURN at the top, PC 60 bytes above ``pxTopOfStack``).
-
-Anything else is ``None`` and the PC column reads ``N/A``.
-
-A decoded value must then pass one proof before it is shown:
-
-* ``switched``: the slot names code (a symbolised address). On Cortex-M the xPSR
-  word beside it must also carry the Thumb bit, which a hardware frame always
-  has; RISC-V has no such bit and relies on the symbol alone.
-* ``unstarted``: the slot equals the task's declared entry, the value the port's
-  stack initialiser wrote for a task that never ran.
-
-The module is pure: memory and symbol lookups are injected, so the layout table,
-the port decision and the proofs are unit tested without a GDB session. The same
-method was verified on the fixtures (see the verification notes in the plan).
+Only PC and status slots are read; recovering the full register set is not
+a prerequisite. Runtime selection belongs to :mod:`freertos.stack_frame_profile`.
 """
 
 from __future__ import annotations
@@ -39,130 +10,25 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-Reader = Callable[[int, int], "bytes | None"]
-
-Port = Literal["cortex-m0", "cortex-m3", "cortex-m33", "riscv32", "riscv64"]
+from core.stack_frame_parser import SavedStackContext
+from core.unwind import Reader
 
 
 @dataclass(frozen=True)
 class SavedPcLayout:
-    """Where one port keeps the saved PC, relative to ``pxTopOfStack``.
-
-    ``offset`` may be negative (Cortex-M33 places its frame below the top).
-    ``width`` is the slot size in bytes; ``xpsr_offset`` is the xPSR word beside
-    the PC on Cortex-M, or ``None`` where the port has no Thumb-bit word to check.
-    """
+    """PC and optional Arm status slots relative to the saved context pointer."""
 
     offset: int
     width: int
-    xpsr_offset: int | None
+    status_offset: int | None
 
 
-PORT_LAYOUTS: dict[Port, SavedPcLayout] = {
-    # PendSV frame: {r0..r3,r12,lr,pc,xpsr} above the saved {r4..r11}.
-    "cortex-m3": SavedPcLayout(offset=56, width=4, xpsr_offset=60),
-    # PendSV saves {r4..r11,PSPLIM,CONTROL,EXC_RETURN} above the hardware frame;
-    # the measured frame lies below pxTopOfStack, PC at -24, xPSR at -20.
-    "cortex-m33": SavedPcLayout(offset=-24, width=4, xpsr_offset=-20),
-    # portSAVE_CONTEXT stores mepc as the first 8-byte slot.
-    "riscv64": SavedPcLayout(offset=0, width=8, xpsr_offset=None),
-    # Cortex-M0 stores EXC_RETURN at the top, then r4-r11, then the
-    # hardware frame; its PC is 60 bytes above pxTopOfStack.
-    "cortex-m0": SavedPcLayout(offset=60, width=4, xpsr_offset=64),
-    # The 32-bit RISC-V port uses the same first slot with 4-byte words.
-    "riscv32": SavedPcLayout(offset=0, width=4, xpsr_offset=None),
-}
-
-# The ARMv8-M non-MPU (SMP) save path stores the hardware frame above the
-# software context, so its PC is 64 bytes above pxTopOfStack.
-CORTEX_M33_SMP_LAYOUT = SavedPcLayout(offset=64, width=4, xpsr_offset=68)
+Port = Literal["armv6-m", "armv7-m", "armv8-m.mainline", "riscv32", "riscv64"]
 
 
-def _uleb128(data: bytes, index: int) -> tuple[int, int] | None:
-    """Decode one unsigned LEB128 at *index*; ``(value, next index)`` or None."""
-    value = 0
-    shift = 0
-    while index < len(data):
-        byte = data[index]
-        index += 1
-        value |= (byte & 0x7F) << shift
-        if byte & 0x80 == 0:
-            return value, index
-        shift += 7
-        if shift > 35:
-            return None
-    return None
-
-
-def cpu_name_from_attributes(blob: bytes) -> str | None:
-    """The ``Tag_CPU_name`` string of an ARM build-attribute section, or None.
-
-    The section is a version byte ``A`` followed by sub-sections, each
-    ``uint32 length`` (covering itself), a NUL-terminated vendor name, and
-    ULEB128-tagged attributes. Tag 5 is ``Tag_CPU_name``, a NUL string. Every
-    step is bounds-checked, so a malformed section yields None, never a read past
-    its end.
-    """
-    if len(blob) < 5 or blob[0:1] != b"A":
-        return None
-    index = 1
-    while index + 4 <= len(blob):
-        length = int.from_bytes(blob[index : index + 4], "little")
-        end = index + length
-        if length < 5 or end > len(blob):
-            return None
-        vendor_end = blob.find(b"\x00", index + 4, end)
-        if vendor_end == -1:
-            return None
-        body = vendor_end + 1
-        if blob[index + 4 : vendor_end] == b"aeabi":
-            cursor = body
-            while cursor < end:
-                decoded = _uleb128(blob, cursor)
-                if decoded is None:
-                    return None
-                tag, cursor = decoded
-                if tag == 1:
-                    # Tag_File: a 4-byte length (covering this tag) then more
-                    # attributes; step over the length and keep scanning.
-                    cursor += 4
-                    continue
-                if tag == 5:
-                    name_end = blob.find(b"\x00", cursor, end)
-                    if name_end == -1:
-                        return None
-                    return blob[cursor:name_end].decode("ascii", errors="replace")
-                # NOTE: only the tags seen in these builds are decoded; an
-                # unknown tag stops the scan rather than being mis-stepped.
-                return None
-                # type; only Tag_CPU_name is needed to choose the port, so an
-                # unknown tag stops the scan rather than being mis-decoded.
-                return None
-        index = end
-    return None
-
-
-def port_of(
-    *,
-    has_start_first_task: bool,
-    has_pendsv: bool,
-    cpu_name: str | None,
-    pointer_size: int | None = None,
-) -> Port | None:
-    """The FreeRTOS port the image was built for, decided from its evidence.
-
-    ``pointer_size`` disambiguates the 32- and 64-bit RISC-V ports.  Omitting
-    it keeps the original 64-bit default for callers that predate RV32.
-    """
-    if has_start_first_task:
-        return "riscv32" if pointer_size == 4 else "riscv64"
-    if has_pendsv and cpu_name == "8-M.MAIN":
-        return "cortex-m33"
-    if has_pendsv and cpu_name == "7-M":
-        return "cortex-m3"
-    if has_pendsv and cpu_name in {"6-M", "6S-M"}:
-        return "cortex-m0"
-    return None
+def pc_layout(context: SavedStackContext) -> SavedPcLayout:
+    """Project the PC-only view without another save-layout registry."""
+    return SavedPcLayout(context.pc_offset, context.pointer_size, context.status_offset)
 
 
 @dataclass(frozen=True)
@@ -201,9 +67,9 @@ def decode_saved_pc(
         return SavedPc(code, "unstarted")
     if not symbolised(code):
         return None
-    if layout.xpsr_offset is None:
+    if layout.status_offset is None:
         return SavedPc(code, "switched")
-    xpsr_raw = read(top_of_stack + layout.xpsr_offset, 4)
+    xpsr_raw = read(top_of_stack + layout.status_offset, 4)
     if xpsr_raw is None or len(xpsr_raw) != 4:
         return None
     xpsr = int.from_bytes(xpsr_raw, byteorder=endian)

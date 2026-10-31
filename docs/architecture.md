@@ -41,7 +41,9 @@ duplicating what GDB already displays well. Design rationale lives in
 | `commands.py` | Shared collectors and guarded text renderers, the stop-time watch set, and convenience functions (`$gdr_task`, `$gdr_object`, `$gdr_json`). |
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
 | `unwind.py` | Bounded task unwind driver: seed frames, EHABI/CFI/frame-pointer selection, stack/PC/progress validation, per-frame method and stop reason. Pure; no GDB import. |
-| `unwind_meta.py` | Bounded ELF sections, code symbols and shared binary encodings. |
+| `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
+| `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence from ELF attributes; contains no RTOS policy. |
+| `stack_frame_parser.py` | Validated saved-frame profiles and bounded RISC-V code evidence. |
 | `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`) tables and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
 | `unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
 | `help.py` | Structured help schema with terminal/Markdown renderers; command metadata stays structured so the same source feeds GDB now and docs later. |
@@ -52,8 +54,9 @@ duplicating what GDB already displays well. Design rationale lives in
 | -------- | --------------- |
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** `RtConfig`, symbol-presence probing, `build_layouts(config)`, version policy and probe evidence. |
 | `navigation.py` | Registry/current-thread/tick symbols, type codes, timer traversal, halted system-heap snapshot. Returns raw `gdb.Value`. |
-| `stackpc.py` | Last PC from the saved switch frame (per-release slot table with entry/call/code proofs). |
-| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (M0/M3/M33/RV32/RV64; only RV64 has closed-loop proof) and the GDB-facing seed/thread orchestration for `rtt backtrace`. |
+| `stackpc.py` | Last PC from the version-specific frame, retaining the Cortex-A9 path. Verified RV64 uses the selected saved-context profile. |
+| `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing thread orchestration; only the compiled and closed-loop RV64 profile is enabled. |
+| `stack_frame_profile.py` | ISA selection and compiled RV64 context-switch evidence; unverified profiles remain gated. |
 | `adapter.py` | Intermediate models, value conversion, task/object tables, detail dispatch, system summaries. |
 | `views.py` | Column contracts, typed detail-table navigation cells, heap views and verdicts. |
 | `diagnostics.py` | Bounded raw-memory walks (IPC, heap), consistency diagnostics, and `rtt check`. |
@@ -65,8 +68,9 @@ duplicating what GDB already displays well. Design rationale lives in
 | -------- | --------------- |
 | `layout.py` | Config/DWARF probes, struct paths, version policy and probe evidence. |
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
-| `stackpc.py` | Last PC from the saved context frame (port evidence, not version). |
+| `stackpc.py` | Last PC projection from the selected saved-context profile. |
 | `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (M0/M3/M33 SMP/MPU/RV32/RV64) and the GDB-facing seed/task orchestration for verified FreeRTOS ports. |
+| `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled RISC-V save-layout evidence for verified profile selection. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |
 | `adapter.py` | Task/object models, conversion, tables, summaries, `RtosAdapter` surface. |

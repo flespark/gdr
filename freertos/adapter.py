@@ -36,26 +36,24 @@ from core.formatting import fill_watermark, format_address
 from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     arch_or_default,
+    loaded_object_path,
     lookup_symbol_at,
+    macro_definitions_from_elf,
     read_bytes,
     read_cstring,
     read_int,
-    section_payloads,
     source_definition_at,
     source_location_at,
-    symbol_exists,
     value_address,
 )
 from core.layout import read_field, value_at
-from core.unwind import UnwindMetadata
+from core.stack_frame_parser import StackContextSelection
+from core.unwind import ElfImage, UnwindMetadata
 from freertos import heap as heap_module
-from freertos.backtrace import context_for, decode_saved_context
+from freertos.backtrace import decode_saved_context
 from freertos.diagnostics import system_checks
 from freertos.layout import (
     OBJECT_KIND_ORDER,
-    PORT_PENDSV_SYMBOL,
-    PORT_RISCV_SYMBOL,
-    PORT_RISCV_TIMER_SYMBOL,
     STRUCT_BY_KIND,
     FreeRtosLayout,
     queue_type_label,
@@ -93,14 +91,8 @@ from freertos.objects import (
     value_to_event_group_object,
     value_to_stream_buffer_object,
 )
-from freertos.stackpc import (
-    CORTEX_M33_SMP_LAYOUT,
-    PORT_LAYOUTS,
-    Port,
-    cpu_name_from_attributes,
-    decode_saved_pc,
-    port_of,
-)
+from freertos.stack_frame_profile import select_context
+from freertos.stackpc import decode_saved_pc, pc_layout
 from freertos.views import (
     EVENT_GROUP_SPECS,
     MUTEX_SPECS,
@@ -236,8 +228,18 @@ def _read_notifications(
 
 
 def value_to_task(
-    value, state: str, core: int | None, layout: FreeRtosLayout
+    value,
+    state: str,
+    core: int | None,
+    layout: FreeRtosLayout,
+    *,
+    collect_stack_metrics: bool = True,
 ) -> FreeRtosTask:
+    """Convert a TCB, optionally reading stack memory for usage metrics.
+
+    Disabling metric collection preserves recorded task bounds and TCB fields,
+    while skipping MPU saved-context decoding and the stack fill-pattern scan.
+    """
     sl = layout.structs["struct tskTaskControlBlock"]
     top = read_int(read_field(value, sl, "top_of_stack")) or 0
     base = read_int(read_field(value, sl, "stack_base")) or 0
@@ -249,12 +251,13 @@ def value_to_task(
     upper = end + word_bytes if end and base and end >= base else None
     size = upper - base if upper is not None else None
     stack_pointer = top
-    if layout.config.mpu_context:
+    if collect_stack_metrics and layout.config.mpu_context:
         stack_pointer = 0
-        if upper is not None:
+        context = _loaded_context(layout).context
+        if upper is not None and context is not None and context.context_in_tcb:
             context_low, context_high = saved_context_bounds(value, layout)
             seed, _reason = decode_saved_context(
-                context_for("cortex-m33", mpu=True),
+                context,
                 top,
                 read_bytes,
                 endian=arch_or_default()[1],
@@ -274,7 +277,7 @@ def value_to_task(
     # NOTE: FreeRTOS's native watermark is remaining words. Matching
     # RT-Thread requires total - untouched bytes; saved SP cannot replace the
     # missing total because initial context slots may still contain fill.
-    if size is not None:
+    if collect_stack_metrics and size is not None:
         raw = read_bytes(base, size)
         if raw is not None and len(raw) == size:
             free_words = _high_water_mark(raw, word_bytes)
@@ -559,24 +562,30 @@ def _detail(pairs: list[tuple[str, str]], *, found: bool = True) -> ObjectDetail
     return ObjectDetail(pairs=pairs, found=found, sections=sections_from_pairs(pairs))
 
 
-def _arm_cpu_name() -> str | None:
-    """The ARM ``Tag_CPU_name`` of the loaded image, or None when unreadable.
+_context_cache: tuple[tuple[str, bool, bool], StackContextSelection] | None = None
 
-    Read from the ELF on disk (GDB does not expose section bytes). A missing or
-    unreadable file is an undecided port, never an error.
-    """
-    if gdb is None:
-        return None
-    try:
-        path = gdb.current_progspace().filename
-        if not path:
-            return None
-        with open(path, "rb") as handle:
-            data = handle.read()
-    except (OSError, gdb.error):
-        return None
-    blob = section_payloads(data, (".ARM.attributes",)).get(".ARM.attributes", b"")
-    return cpu_name_from_attributes(blob)
+
+def _loaded_context(layout: FreeRtosLayout) -> StackContextSelection:
+    """Resolve this image's profile without reading target context memory."""
+    global _context_cache
+    path = loaded_object_path()
+    if path is None:
+        return StackContextSelection(None, "unknown", None, "port-undetermined")
+    key = (path, layout.config.smp, layout.config.mpu_context)
+    if _context_cache is not None and _context_cache[0] == key:
+        return _context_cache[1]
+    elf = ElfImage.from_path(path)
+    if elf is None:
+        result = StackContextSelection(None, "unknown", None, "port-undetermined")
+    else:
+        result = select_context(
+            elf,
+            smp=layout.config.smp,
+            mpu=layout.config.mpu_context,
+            macros=macro_definitions_from_elf(path),
+        )
+    _context_cache = (key, result)
+    return result
 
 
 class FreeRtosAdapter(RtosAdapter):
@@ -586,40 +595,11 @@ class FreeRtosAdapter(RtosAdapter):
         self.layout = layout
         # NOTE: the port is decided once per session from the image; a per-row
         # decision would re-read the ELF for every task.
-        self._port_cache: tuple[bool, Port | None] | None = None
         self._unwind_cache: tuple[str, UnwindMetadata | None] | None = None
 
-    def _port(self) -> Port | None:
-        """The FreeRTOS port this image was built for, decided from its evidence.
-
-        Symbols first (RISC-V has ``xPortStartFirstTask``; Cortex-M has
-        ``PendSV_Handler``), then the ARM build attribute ``Tag_CPU_name`` to tell
-        Cortex-M3 (``7-M``) from Cortex-M33 (``8-M.MAIN``). Undecided is ``None``.
-        """
-        if self._port_cache is not None:
-            return self._port_cache[1]
-        if gdb is None:
-            # NOTE: outside GDB there is no image to decide from. Return without
-            # caching, so a later call inside a session still decides the port.
-            return None
-        port: Port | None = None
-        pointer_size, _endian = arch_or_default()
-        if symbol_exists(PORT_RISCV_SYMBOL) or symbol_exists(PORT_RISCV_TIMER_SYMBOL):
-            port = port_of(
-                has_start_first_task=True,
-                has_pendsv=False,
-                cpu_name=None,
-                pointer_size=pointer_size,
-            )
-        elif symbol_exists(PORT_PENDSV_SYMBOL):
-            port = port_of(
-                has_start_first_task=False,
-                has_pendsv=True,
-                cpu_name=_arm_cpu_name(),
-                pointer_size=pointer_size,
-            )
-        self._port_cache = (True, port)
-        return port
+    def _context_selection(self) -> StackContextSelection:
+        """Return the shared ISA, save profile and evidence decision."""
+        return _loaded_context(self.layout)
 
     def _pc_cell(self, task: FreeRtosTask) -> Cell:
         """The task's last PC as a symbol cell, or N/A when no proof admits it.
@@ -628,12 +608,10 @@ class FreeRtosAdapter(RtosAdapter):
         entry, so the never-started proof has no independent source here. A task
         without a proof reads N/A rather than an unverified address.
         """
-        port = self._port()
-        if port is None:
+        context = self._context_selection().context
+        if context is None or not context.verified:
             return text_cell("N/A")
-        layout = PORT_LAYOUTS[port]
-        if port == "cortex-m33" and self.layout.config.smp:
-            layout = CORTEX_M33_SMP_LAYOUT
+        layout = pc_layout(context)
         decoded = decode_saved_pc(
             task.top_of_stack,
             None,
@@ -658,7 +636,9 @@ class FreeRtosAdapter(RtosAdapter):
         """Drop the session symbol scan so a re-init sees the new image."""
         from freertos.navigation import reset_symbol_object_cache
 
+        global _context_cache
         reset_symbol_object_cache()
+        _context_cache = None
         self._unwind_cache = None
 
     def find_task(self, target: str) -> gdb.Value | None:

@@ -69,7 +69,6 @@ class BacktraceReport:
 
     task: str
     address: int
-    port: str
     architecture: str
     method: str
     source: str
@@ -80,6 +79,7 @@ class BacktraceReport:
     bounds: str
     frames: list[BacktraceFrame]
     messages: list[str] = field(default_factory=list)
+    abi: str | None = None
 
 
 @dataclass(frozen=True)

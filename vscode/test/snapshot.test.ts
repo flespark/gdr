@@ -16,7 +16,7 @@ import {
 import type { GdrEnvelope } from '../src/transport.ts';
 
 function envelope(data: unknown, generation?: number): GdrEnvelope {
-	return { schema_version: 2, ok: true, data, ...(generation !== undefined ? { generation } : {}) };
+	return { schema_version: 3, ok: true, data, ...(generation !== undefined ? { generation } : {}) };
 }
 
 const TASKS = {

@@ -52,15 +52,16 @@ def test_saved_task_backtrace_has_a_known_chain(gdb_session):
         assert not data["complete"] and data["frames"] == [], data
         return
     assert (
-        data["port"]
+        data["architecture"]
         == {
-            "microbit": "cortex-m0",
-            "mps2-an385": "cortex-m3",
-            "mps2-an521": "cortex-m33-smp" if SPEC.variant == "smp" else "cortex-m33",
+            "microbit": "armv6-m",
+            "mps2-an385": "armv7-m",
+            "mps2-an521": "armv8-m.mainline",
             "qemu-virt-rv32": "riscv32",
             "qemu-virt-rv64": "riscv64",
         }[SPEC.target]
     )
+    assert "port" not in data and "isa" not in data
     assert data["frames"], data
     functions = [frame["symbol"] or "" for frame in data["frames"]]
     assert any("vTaskDelay" in function for function in functions), functions
@@ -89,9 +90,10 @@ def test_riscv_nonfirst_task_reaches_the_recorded_zero_exit(gdb_session):
     data = _envelope(
         gdb_session.run("gdr api backtrace gdr_normal --json", timeout=30)
     )["data"]
-    assert data["port"] == ("riscv32" if SPEC.target.endswith("rv32") else "riscv64"), (
-        data
-    )
+    assert data["architecture"] == (
+        "riscv32" if SPEC.target.endswith("rv32") else "riscv64"
+    ), data
+    assert "port" not in data and "isa" not in data
     assert data["bounds"] == "recorded" and data["source"] == "saved", data
     assert data["complete"] and not data["truncated"], data
     assert data["stop_reason"] == "task-exit" and data["method"] == "cfi", data

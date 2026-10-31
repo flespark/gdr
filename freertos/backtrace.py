@@ -9,98 +9,36 @@ unwind itself lives in :mod:`core.unwind`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
+from core.cpus import Isa
+from core.stack_frame_parser import SavedStackContext
 from core.unwind import Endian, Reader, SeedFrame, read_block, read_slot
-
-Port = Literal[
-    "cortex-m0",
-    "cortex-m3",
-    "cortex-m33",
-    "cortex-m33-smp",
-    "riscv32",
-    "riscv64",
-]
 
 _ARM_FILL = 0xA5A5A5A5
 
 
-@dataclass(frozen=True)
-class SavedContext:
-    """Offsets in one port's saved context, relative to ``pxTopOfStack``.
-
-    ``registers`` maps DWARF register numbers to byte offsets.  ``sp`` is the
-    original stack pointer at the interrupted instruction, which is above the
-    hardware exception frame rather than equal to ``pxTopOfStack``.
-    """
-
-    port: Port
-    pointer_size: int
-    registers: tuple[tuple[int, int], ...]
-    pc_offset: int
-    lr_offset: int
-    xpsr_offset: int | None
-    sp_offset: int
-    sp_slot_offset: int | None = None
-    sp_slot_bias: int = 0
-    fill_word: int = _ARM_FILL
-    initial_registers: tuple[int, ...] | None = None
-    context_in_tcb: bool = False
-
-
-def _arm_context(
-    port: Port,
-    *,
-    top: int,
-    registers: tuple[tuple[int, int], ...],
-    pc: int,
-    lr: int,
-    xpsr: int,
-    sp: int,
-    sp_slot: int | None = None,
-    sp_bias: int = 0,
-    fill_word: int = _ARM_FILL,
-    initial_registers: tuple[int, ...] | None = None,
-    context_in_tcb: bool = False,
-) -> SavedContext:
-    del top
-    return SavedContext(
-        port=port,
-        pointer_size=4,
-        registers=registers,
-        pc_offset=pc,
-        lr_offset=lr,
-        xpsr_offset=xpsr,
-        sp_offset=sp,
-        sp_slot_offset=sp_slot,
-        sp_slot_bias=sp_bias,
-        fill_word=fill_word,
-        initial_registers=initial_registers,
-        context_in_tcb=context_in_tcb,
-    )
-
-
 # Cortex-M3/M0: pxTopOfStack points at r4; the hardware frame is above it.
-_CM3 = _arm_context(
-    "cortex-m3",
-    top=0,
+ARMV7M_INTEGER = SavedStackContext(
+    profile_id="freertos/armv7-m/integer",
+    verified=True,
+    pointer_size=4,
     registers=tuple((register, (register - 4) * 4) for register in range(4, 12))
     + ((0, 32), (1, 36), (2, 40), (3, 44), (12, 48)),
-    pc=56,
-    lr=52,
-    xpsr=60,
-    sp=64,
+    pc_offset=56,
+    lr_offset=52,
+    status_offset=60,
+    sp_offset=64,
+    fill_word=_ARM_FILL,
 )
 
-_CM0 = SavedContext(
-    port="cortex-m0",
+ARMV6M_INTEGER = SavedStackContext(
+    profile_id="freertos/armv6-m/integer",
+    verified=True,
     pointer_size=4,
     registers=tuple((register, 4 + (register - 4) * 4) for register in range(4, 12))
     + ((0, 36), (1, 40), (2, 44), (3, 48), (12, 52)),
     pc_offset=60,
     lr_offset=56,
-    xpsr_offset=64,
+    status_offset=64,
     sp_offset=68,
     fill_word=0x04040404,
     initial_registers=(
@@ -117,14 +55,15 @@ _CM0 = SavedContext(
 
 # CM33 non-MPU (SMP lane): pxTopOfStack = psp-40; the saved hardware frame
 # begins at +40 and the original SP is one hardware frame above it.
-_CM33_SMP = SavedContext(
-    port="cortex-m33-smp",
+ARMV8M_MAINLINE_SMP_INTEGER = SavedStackContext(
+    profile_id="freertos/armv8-m.mainline/non-mpu-smp",
+    verified=True,
     pointer_size=4,
     registers=tuple((register, 8 + (register - 4) * 4) for register in range(4, 12))
     + ((0, 40), (1, 44), (2, 48), (3, 52), (12, 56)),
     pc_offset=64,
     lr_offset=60,
-    xpsr_offset=68,
+    status_offset=68,
     sp_offset=72,
     fill_word=_ARM_FILL,
     initial_registers=(
@@ -142,14 +81,15 @@ _CM33_SMP = SavedContext(
 # CM33 MPU wrappers v2: the port's context array ends at pxTopOfStack.  The
 # hardware frame copy is at -48..-21, PC at -24, and the original PSP slot at
 # -16; that PSP names the hardware frame, so the interrupted SP is PSP+32.
-_CM33_MPU = SavedContext(
-    port="cortex-m33",
+ARMV8M_MAINLINE_MPU_INTEGER = SavedStackContext(
+    profile_id="freertos/armv8-m.mainline/mpu-v2",
+    verified=True,
     pointer_size=4,
     registers=tuple((register, -80 + (register - 4) * 4) for register in range(4, 12))
     + ((0, -48), (1, -44), (2, -40), (3, -36), (12, -32)),
     pc_offset=-24,
     lr_offset=-28,
-    xpsr_offset=-20,
+    status_offset=-20,
     sp_offset=0,
     sp_slot_offset=-16,
     sp_slot_bias=32,
@@ -168,41 +108,27 @@ _CM33_MPU = SavedContext(
 )
 
 
-def context_for(
-    port: Port, *, smp: bool = False, mpu: bool = False
-) -> SavedContext | None:
-    """Return the verified context layout for *port*.
+def _riscv_context(isa: Isa, word: int) -> SavedStackContext:
+    return SavedStackContext(
+        profile_id=f"freertos/{isa}/integer-gpr",
+        pointer_size=word,
+        registers=((1, word),)
+        + tuple((register, (register - 3) * word) for register in range(5, 32)),
+        pc_offset=0,
+        lr_offset=word,
+        status_offset=None,
+        sp_offset=31 * word,
+        fill_word=int.from_bytes(bytes([0xA5]) * word, "little"),
+        verified=True,
+    )
 
-    Cortex-M33 needs explicit SMP or MPU evidence. The single-core, non-MPU
-    ARMv8-M save path is not verified and has no layout here.
-    """
-    if port in ("cortex-m33", "cortex-m33-smp"):
-        if smp:
-            return _CM33_SMP
-        return _CM33_MPU if mpu else None
-    if port == "cortex-m0":
-        return _CM0
-    if port == "cortex-m3":
-        return _CM3
-    if port in ("riscv32", "riscv64"):
-        word = 4 if port == "riscv32" else 8
-        registers: list[tuple[int, int]] = [(1, word)]
-        registers.extend((register, (register - 3) * word) for register in range(5, 32))
-        return SavedContext(
-            port=port,
-            pointer_size=word,
-            registers=tuple(registers),
-            pc_offset=0,
-            lr_offset=word,
-            xpsr_offset=None,
-            sp_offset=31 * word,
-            fill_word=0xA5A5A5A5A5A5A5A5 if word == 8 else 0xA5A5A5A5,
-        )
-    raise ValueError(f"unknown FreeRTOS port: {port}")
+
+RISCV32_INTEGER = _riscv_context("riscv32", 4)
+RISCV64_INTEGER = _riscv_context("riscv64", 8)
 
 
 def _registers(
-    context: SavedContext,
+    context: SavedStackContext,
     top: int,
     read: Reader,
     *,
@@ -229,7 +155,7 @@ def _registers(
 
 
 def decode_saved_context(
-    context: SavedContext,
+    context: SavedStackContext,
     top: int,
     read: Reader,
     *,
@@ -303,16 +229,16 @@ def decode_saved_context(
     )
     if lr is not None:
         registers[
-            14 if context.pointer_size == 4 and context.xpsr_offset is not None else 1
+            14 if context.pointer_size == 4 and context.status_offset is not None else 1
         ] = lr
     registers[
-        13 if context.pointer_size == 4 and context.xpsr_offset is not None else 2
+        13 if context.pointer_size == 4 and context.status_offset is not None else 2
     ] = sp
-    if context.xpsr_offset is not None:
+    if context.status_offset is not None:
         registers[15] = pc
         xpsr = read_slot(
             read,
-            top + context.xpsr_offset,
+            top + context.status_offset,
             4,
             endian,
             stack_low=read_low,
@@ -328,12 +254,14 @@ def decode_saved_context(
             if stack_high is not None and sp > stack_high:
                 return None, "saved-stack-overflow"
     code_pc = (
-        pc & ~1 if context.pointer_size == 4 and context.xpsr_offset is not None else pc
+        pc & ~1
+        if context.pointer_size == 4 and context.status_offset is not None
+        else pc
     )
     if code_pc == 0:
         return None, "saved-context-unreadable"
     unstarted = False
-    if context.xpsr_offset is not None:
+    if context.status_offset is not None:
         core = tuple(registers.get(register, 0) for register in range(4, 12))
         if context.initial_registers is not None:
             unstarted = core == context.initial_registers
@@ -370,7 +298,7 @@ def decode_saved_context(
 
 
 def initial_context(
-    context: SavedContext,
+    context: SavedStackContext,
     top: int,
     read: Reader,
     *,
@@ -399,7 +327,7 @@ def initial_context(
 
 
 def raw_context_words(
-    context: SavedContext,
+    context: SavedStackContext,
     top: int,
     read: Reader,
     *,

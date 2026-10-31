@@ -19,6 +19,7 @@ import {
 	reassembleChunks,
 	transportPlan
 } from '../src/transport.ts';
+import type { GdrBacktrace } from '../src/transport.ts';
 
 /**
  * Narrow a value the parser may refuse.
@@ -49,6 +50,26 @@ function chunkFrames(payload: string, chunkSize = 8): string[] {
 	};
 	return [JSON.stringify(meta), ...slices];
 }
+
+test('the backtrace payload uses canonical ISA and ABI fields', () => {
+	const report: GdrBacktrace = {
+		task: 'worker',
+		address: 0x2000,
+		architecture: 'armv7-m',
+		abi: 'aapcs32',
+		method: 'cfi',
+		source: 'saved',
+		complete: true,
+		stop_reason: 'task-exit',
+		truncated: false,
+		max_depth: 32,
+		bounds: 'recorded',
+		frames: [],
+		messages: []
+	};
+	assert.equal(report.architecture, 'armv7-m');
+	assert.equal(report.abi, 'aapcs32');
+});
 
 test('an expression quotes a name that carries a quote or backslash', () => {
 	assert.equal(evaluateExpression('tasks'), '$gdr_json("tasks")');

@@ -203,8 +203,8 @@ def backtrace_to_dict(report: BacktraceReport) -> dict[str, object]:
     return {
         "task": report.task,
         "address": report.address,
-        "port": report.port,
         "architecture": report.architecture,
+        "abi": report.abi,
         "method": report.method,
         "source": report.source,
         "complete": report.complete,

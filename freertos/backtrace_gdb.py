@@ -23,7 +23,6 @@ from core.gdb_bridge import (
 )
 from core.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
-from freertos.backtrace import context_for as context_for_backtrace
 from freertos.backtrace import decode_saved_context as decode_backtrace_context
 from freertos.navigation import current_tasks, saved_context_bounds, task_state
 
@@ -124,7 +123,6 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         return BacktraceReport(
             task=target,
             address=0,
-            port="unknown",
             architecture="unknown",
             method="none",
             source="none",
@@ -136,37 +134,38 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             frames=[],
             messages=[f"task {target!r} was not found in the scheduler lists"],
         )
+    selection = adapter._context_selection()
     _state, core = task_state(value, adapter.layout)
-    task = value_to_task(value, _state, core, adapter.layout)
-    port = adapter._port()
-    if port is None:
+    task = value_to_task(
+        value, _state, core, adapter.layout, collect_stack_metrics=False
+    )
+    context = selection.context
+    if context is None or not context.verified:
         return BacktraceReport(
             task=task.name or target,
             address=task.address,
-            port="unknown",
-            architecture="unknown",
+            architecture=selection.isa or "unknown",
             method="none",
             source="none",
             complete=False,
-            stop_reason="port-undetermined",
+            stop_reason=selection.reason,
             truncated=False,
             max_depth=max_depth,
             bounds="unknown",
             frames=[],
-            messages=["the port could not be identified from image evidence"],
+            messages=[
+                "no verified save profile matches the image/configuration evidence"
+            ],
+            abi=selection.abi,
         )
-    arch = "riscv" if port.startswith("riscv") else "arm"
-    if port == "cortex-m33" and adapter.layout.config.smp:
-        context_port = "cortex-m33-smp"
-    else:
-        context_port = port
+    arch = selection.family
+    architecture = selection.isa or "unknown"
     low, high, bounds = _task_bounds(task)
     if low is None or high is None:
         return BacktraceReport(
             task=task.name or target,
             address=task.address,
-            port=context_port,
-            architecture=arch,
+            architecture=architecture,
             method="none",
             source="none",
             complete=False,
@@ -178,6 +177,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             messages=[
                 "the task records no usable stack span; enable configRECORD_STACK_HIGH_ADDRESS"
             ],
+            abi=selection.abi,
         )
     running = {address: core for core, address in current_tasks(adapter.layout)}
     current_core = running.get(task.address)
@@ -193,8 +193,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             return BacktraceReport(
                 task=task.name or target,
                 address=task.address,
-                port=context_port,
-                architecture=arch,
+                architecture=architecture,
                 method="none",
                 source="current",
                 complete=False,
@@ -207,14 +206,14 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                     f"task runs on core {current_core}; the selected core "
                     f"{selected} has no saved context for it"
                 ],
+                abi=selection.abi,
             )
         seed = _live_seed(arch)
         if seed is None:
             return BacktraceReport(
                 task=task.name or target,
                 address=task.address,
-                port=context_port,
-                architecture=arch,
+                architecture=architecture,
                 method="none",
                 source="current",
                 complete=False,
@@ -224,38 +223,30 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 bounds=bounds,
                 frames=[],
                 messages=["the selected core's registers are not readable"],
+                abi=selection.abi,
             )
     else:
-        context = context_for_backtrace(
-            context_port,
-            smp=adapter.layout.config.smp,
-            mpu=adapter.layout.config.mpu_context,
-        )
         context_low, context_high = (
             saved_context_bounds(value, adapter.layout)
-            if context is not None and context.context_in_tcb
+            if context.context_in_tcb
             else (None, None)
         )
-        if context is None:
-            seed, reason = None, "unverified-port"
-        else:
-            seed, reason = decode_backtrace_context(
-                context,
-                task.top_of_stack,
-                read_bytes,
-                endian=arch_or_default()[1],
-                stack_low=low,
-                stack_high=high,
-                context_low=context_low,
-                context_high=context_high,
-                exit_pc=_exit_pc(),
-            )
+        seed, reason = decode_backtrace_context(
+            context,
+            task.top_of_stack,
+            read_bytes,
+            endian=arch_or_default()[1],
+            stack_low=low,
+            stack_high=high,
+            context_low=context_low,
+            context_high=context_high,
+            exit_pc=_exit_pc(),
+        )
         if seed is None:
             return BacktraceReport(
                 task=task.name or target,
                 address=task.address,
-                port=context_port,
-                architecture=arch,
+                architecture=architecture,
                 method="none",
                 source="saved",
                 complete=False,
@@ -265,6 +256,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 bounds=bounds,
                 frames=[],
                 messages=["the saved context is not readable or not proven"],
+                abi=selection.abi,
             )
     exit_pc = _exit_pc()
     if seed.source != "unstarted" and exit_pc is not None:
@@ -305,8 +297,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
     return BacktraceReport(
         task=task.name or target,
         address=task.address,
-        port=context_port,
-        architecture=arch,
+        architecture=architecture,
         method=method,
         source=seed.source,
         complete=result.complete,
@@ -316,4 +307,5 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         bounds=bounds,
         frames=frames,
         messages=messages,
+        abi=selection.abi,
     )

@@ -118,6 +118,10 @@ Cortex-M0 (`microbit`), Cortex-M3 (`mps2-an385`), Cortex-M33 SMP and MPU
 (`mps2-an521`), RV32 (`qemu-virt-rv32`) and RV64 (`qemu-virt-rv64`).
 The Cortex-M33 fixtures disable FPU and TrustZone; other extended-context
 configurations are not verified.
+Backtrace JSON reports canonical ISA in `architecture` and ELF ABI in `abi`;
+profile identity remains internal. RISC-V profiles require a bounded match of
+the compiled integer save/restore and initial-stack code; this does not prove
+vendor-private traps.
 RT-Thread backtraces are verified on RV64; its M0/M3/M33/RV32 context layouts
 are implemented and unit-tested but report `unverified-port` until a QEMU BSP
 fixture exists. Cortex-A9 remains on the existing `stackpc` path and is not a
@@ -132,9 +136,9 @@ the validated frame-pointer chain is used instead.
 
 **`.eh_frame` parsing is unit-tested, not live-verified.** The QEMU fixtures
 emit `.debug_frame` (and, on ARM with `-funwind-tables`, EHABI); the
-`.eh_frame` reader supports the same bounded CIE/FDE subset and pointer
-encodings, but no current fixture uses it. A real `.eh_frame` lane can be
-added without changing the driver.
+`.eh_frame` reader is connected to the unwind driver and supports a bounded
+CIE/FDE subset and pointer encodings. Synthetic unit tests cover parsing,
+but no current fixture verifies a real compiler-produced `.eh_frame` chain.
 
 **FreeRTOS does not record a stack end in every build.** Without
 `configRECORD_STACK_HIGH_ADDRESS` or another retained stack-end field, the
@@ -153,10 +157,13 @@ stops at `loop` with `complete=false`; reaching an entry-looking symbol is
 not an independent task-entry proof. Other tasks can reach the recorded
 `xTaskReturnAddress` value, including zero, and finish at `task-exit`.
 
-**Interrupt-stack transitions are not live-verified.** The saved-context
-lanes exercise blocked/yielding tasks, not hard-interrupt or nested-exception
-cross-stack unwinding. FPU/TrustZone extended frames and other unverified
-context variants are outside the verified matrix.
+**Hard-interrupt and nested-exception cross-stack unwinding is not supported.**
+Recovering a task seed from a port's saved hardware exception frame does not
+provide handler-to-task unwinding. The driver uses a single stack span; it
+does not decode exception-return transitions, switch task/interrupt stack
+bounds, or join nested handler frames to the interrupted task. Saved-context
+lanes exercise blocked/yielding tasks. FPU/TrustZone extended frames and other
+unverified context variants are outside the verified matrix.
 
 **SMP tasks on another core have no saved context.** A task currently running
 on a core other than the selected one reports `smp-no-context`; GDR never

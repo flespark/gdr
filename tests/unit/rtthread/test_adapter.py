@@ -6,6 +6,7 @@ import pytest
 
 import rtthread.adapter as adapter_module
 from core.layout import KernelLayout, StructField, StructLayout
+from core.stack_frame_parser import StackContextSelection
 from rtthread.adapter import (
     Event,
     Mailbox,
@@ -15,6 +16,7 @@ from rtthread.adapter import (
     Semaphore,
     Timer,
 )
+from rtthread.stackpc import SavedPcLayout, selected_saved_pc_layout
 
 
 def _type_info(code: int, struct_name: str, name: str, *, enabled: bool = True):
@@ -973,6 +975,88 @@ def test_heap_basic_pairs_report_enabled_memtrace(monkeypatch):
     assert pairs["TotalSize"] == "100 B"
     assert pairs["UsedSize"] == "N/A"
     assert "Source" not in pairs
+
+
+def test_a9_stackpc_fallback_requires_arm_application_isa_and_version(monkeypatch):
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), version=(3, 1, 2))
+    monkeypatch.setattr(adapter_module, "gdb", object())
+
+    class _Address:
+        address = 0x8000
+
+    monkeypatch.setattr(
+        "rtthread.backtrace_gdb.eval_identifier",
+        lambda name: (
+            _Address()
+            if name in {"rt_hw_context_switch", "rt_hw_context_switch_exit"}
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        "rtthread.backtrace_gdb.arch_or_default",
+        lambda: (4, "little"),
+    )
+    monkeypatch.setattr(
+        "rtthread.backtrace_gdb._backtrace_context",
+        lambda: StackContextSelection("armv7-a", "arm", None, "unverified-port"),
+    )
+    assert adapter._saved_pc_setup() == (SavedPcLayout(60, 4, "arm_bl"), 0x8000)
+
+
+def test_a9_saved_pc_layout_requires_arm_application_isa_and_exit_path():
+    selection = StackContextSelection("armv7-a", "arm", None, "unverified-port")
+    assert selected_saved_pc_layout(
+        selection, (3, 1, 2), 4, 0x8000, has_exit_path=True
+    ) == (SavedPcLayout(60, 4, "arm_bl"), 0x8000)
+    assert (
+        selected_saved_pc_layout(
+            StackContextSelection(None, "unknown", None, "cpu-evidence-unavailable"),
+            (3, 1, 2),
+            4,
+            0x8000,
+            has_exit_path=True,
+        )
+        is None
+    )
+    assert (
+        selected_saved_pc_layout(selection, (3, 1, 2), 4, 0x8000, has_exit_path=False)
+        is None
+    )
+
+
+def test_unverified_m_profile_does_not_use_version_width_saved_pc_guess(monkeypatch):
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), version=(4, 0, 5))
+    monkeypatch.setattr(adapter_module, "gdb", object())
+    monkeypatch.setattr(
+        "rtthread.backtrace_gdb.eval_identifier",
+        lambda name: (
+            0x8000
+            if name in {"rt_hw_context_switch", "rt_hw_context_switch_exit"}
+            else None
+        ),
+    )
+    monkeypatch.setattr("rtthread.backtrace_gdb.arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(
+        "rtthread.backtrace_gdb._backtrace_context",
+        lambda: StackContextSelection("armv7-m", "arm", None, "unverified-port"),
+    )
+    assert adapter._saved_pc_setup() is None
+
+
+def test_unknown_isa_does_not_use_version_based_saved_pc_guess(monkeypatch):
+    adapter = adapter_module.RtThreadAdapter(KernelLayout(), version=(3, 1, 2))
+    monkeypatch.setattr(adapter_module, "gdb", object())
+    monkeypatch.setattr(
+        "rtthread.backtrace_gdb._backtrace_context",
+        lambda: StackContextSelection(
+            None, "unknown", None, "cpu-evidence-unavailable"
+        ),
+    )
+    monkeypatch.setattr(
+        "rtthread.backtrace_gdb.eval_identifier",
+        lambda _name: pytest.fail("unknown ISA must not probe saved-PC symbols"),
+    )
+    assert adapter._saved_pc_setup() is None
 
 
 def test_heap_basic_pairs_fall_back_to_a_closed_walk(monkeypatch):

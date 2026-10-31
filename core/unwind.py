@@ -24,7 +24,6 @@ from .unwind_meta import (
     Endian,
     Method,
     Reader,
-    cpu_name_from_attributes,  # noqa: F401 - adapter-facing re-export
 )
 
 # ---------------------------------------------------------------------------

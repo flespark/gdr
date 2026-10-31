@@ -5,14 +5,35 @@ from types import SimpleNamespace
 import pytest
 
 import freertos.backtrace_gdb as bridge
+import freertos.stack_frame_profile as ports
+from core.cpus import Cpu
+from core.stack_frame_parser import StackContextSelection
 from core.unwind import SeedFrame, UnwindFrame, UnwindResult
 from freertos.adapter import FreeRtosTask
+from freertos.backtrace import (
+    ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_MPU_INTEGER,
+    ARMV8M_MAINLINE_SMP_INTEGER,
+)
 from freertos.layout import FreeRtosConfig, build_layout
 
 
-def _session(monkeypatch, *, port="cortex-m3", smp=False, mpu=False):
+def _session(monkeypatch, *, isa="armv7-m", smp=False, mpu=False):
     layout = build_layout(FreeRtosConfig(smp=smp, mpu_context=mpu))
-    adapter = SimpleNamespace(layout=layout, _port=lambda: port, _unwind_cache=None)
+    context = {
+        ("armv7-m", False, False): ARMV7M_INTEGER,
+        ("armv8-m.mainline", False, True): ARMV8M_MAINLINE_MPU_INTEGER,
+        ("armv8-m.mainline", True, False): ARMV8M_MAINLINE_SMP_INTEGER,
+    }.get((isa, smp, mpu))
+    selection = StackContextSelection(
+        isa,
+        "riscv" if isa.startswith("riscv") else "arm",
+        context,
+        "ok" if context is not None else "unverified-port",
+    )
+    adapter = SimpleNamespace(
+        layout=layout, _context_selection=lambda: selection, _unwind_cache=None
+    )
     task = FreeRtosTask(
         name="worker",
         address=0x4000,
@@ -23,7 +44,7 @@ def _session(monkeypatch, *, port="cortex-m3", smp=False, mpu=False):
     value = object()
     monkeypatch.setattr(bridge, "find_task", lambda _target, _layout: value)
     monkeypatch.setattr(bridge, "task_state", lambda _value, _layout: ("Blocked", None))
-    monkeypatch.setattr(bridge, "value_to_task", lambda *_args: task)
+    monkeypatch.setattr(bridge, "value_to_task", lambda *_args, **_kwargs: task)
     monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [])
     monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "little"))
     monkeypatch.setattr(bridge, "_exit_pc", lambda: 0x1200)
@@ -42,12 +63,14 @@ def _session(monkeypatch, *, port="cortex-m3", smp=False, mpu=False):
 )
 def test_unavailable_inputs_never_reach_the_unwinder(monkeypatch, case, reason):
     adapter, task = _session(
-        monkeypatch, port="cortex-m33" if case == "m33" else "cortex-m3"
+        monkeypatch, isa="armv8-m.mainline" if case == "m33" else "armv7-m"
     )
     if case == "missing":
         monkeypatch.setattr(bridge, "find_task", lambda *_args: None)
     elif case == "port":
-        adapter._port = lambda: None
+        adapter._context_selection = lambda: StackContextSelection(
+            None, "unknown", None, "port-undetermined"
+        )
     elif case == "bounds":
         task.stack_size = None
     monkeypatch.setattr(
@@ -58,10 +81,49 @@ def test_unavailable_inputs_never_reach_the_unwinder(monkeypatch, case, reason):
     assert not report.complete and not report.truncated
 
 
+def test_m33_profile_requires_explicit_smp_or_mpu_configuration(monkeypatch):
+    monkeypatch.setattr(
+        ports,
+        "cpu_of",
+        lambda _elf: Cpu("armv8-m.mainline", "arm", "ok"),
+    )
+    elf = SimpleNamespace(symbol_address=lambda _name: 0x1000)
+
+    single_core = ports.select_context(elf)
+    smp = ports.select_context(elf, smp=True, macros={"configENABLE_MPU": "0"})
+    mpu = ports.select_context(
+        elf,
+        mpu=True,
+        macros={"configENABLE_MPU": "1", "configUSE_MPU_WRAPPERS_V1": "0"},
+    )
+
+    assert single_core.context is None and single_core.reason == "unverified-port"
+    assert smp.context is ARMV8M_MAINLINE_SMP_INTEGER and smp.reason == "ok"
+    assert mpu.context is ARMV8M_MAINLINE_MPU_INTEGER and mpu.reason == "ok"
+
+
+def test_unverified_profile_selection_precedes_stack_watermark_reads(monkeypatch):
+    adapter, _task = _session(monkeypatch, isa="armv8-m.mainline")
+    adapter._context_selection = lambda: StackContextSelection(
+        "armv8-m.mainline", "arm", None, "unsupported-extension-context"
+    )
+    monkeypatch.setattr(
+        bridge,
+        "value_to_task",
+        lambda *_args, **kwargs: (
+            pytest.fail("task stack metrics were read")
+            if kwargs.get("collect_stack_metrics")
+            else FreeRtosTask(name="worker", address=0x4000)
+        ),
+    )
+    report = bridge.backtrace(adapter, "worker")
+    assert report.stop_reason == "unsupported-extension-context"
+
+
 def test_mpu_decode_receives_context_and_task_bounds_without_entry_evidence(
     monkeypatch,
 ):
-    adapter, task = _session(monkeypatch, port="cortex-m33", mpu=True)
+    adapter, task = _session(monkeypatch, isa="armv8-m.mainline", mpu=True)
     task.top_of_stack = 0x3080
     monkeypatch.setattr(bridge, "saved_context_bounds", lambda *_args: (0x3000, 0x3100))
     seen = {}
@@ -99,7 +161,7 @@ def test_mpu_decode_receives_context_and_task_bounds_without_entry_evidence(
 
 
 def test_other_running_core_never_uses_selected_core_registers(monkeypatch):
-    adapter, task = _session(monkeypatch, port="cortex-m33", smp=True)
+    adapter, task = _session(monkeypatch, isa="armv8-m.mainline", smp=True)
     monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [(1, task.address)])
     monkeypatch.setattr(
         bridge, "gdb", SimpleNamespace(selected_thread=lambda: SimpleNamespace(num=1))
@@ -109,7 +171,7 @@ def test_other_running_core_never_uses_selected_core_registers(monkeypatch):
     )
     report = bridge.backtrace(adapter, "worker")
     assert report.stop_reason == "smp-no-context" and report.frames == []
-    assert report.port == "cortex-m33-smp" and not report.complete
+    assert report.architecture == "armv8-m.mainline" and not report.complete
 
 
 @pytest.mark.parametrize("value", [0, 0x1234, None])

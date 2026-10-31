@@ -10,62 +10,29 @@ a guessed context.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
+from core.cpus import Isa
+from core.stack_frame_parser import SavedStackContext
 from core.unwind import Endian, Reader, SeedFrame, read_slot
 
-Port = Literal["cortex-m0", "cortex-m3", "cortex-m33", "riscv32", "riscv64"]
 
-
-@dataclass(frozen=True)
-class SavedContext:
-    """Offsets in one ``rt_thread`` switch frame, relative to ``thread->sp``."""
-
-    port: Port
-    pointer_size: int
-    registers: tuple[tuple[int, int], ...]
-    pc_offset: int
-    lr_offset: int
-    xpsr_offset: int | None
-    sp_offset: int
-    fill_word: int
-    verified: bool
-
-
-def context_for(port: Port) -> SavedContext | None:
-    """Return the verified port layout, or ``None`` for an unverified one."""
-    if port == "cortex-m0":
-        return _cortex_m(port, verified=False)
-    if port == "cortex-m3":
-        return _cortex_m(port, verified=False)
-    if port == "cortex-m33":
-        return _cortex_m33()
-    if port == "riscv64":
-        return _riscv(port, 8, verified=True)
-    if port == "riscv32":
-        return _riscv(port, 4, verified=False)
-    return None
-
-
-def _cortex_m(port: Port, *, verified: bool) -> SavedContext:
-    return SavedContext(
-        port=port,
+def _arm_integer(isa: Isa, *, verified: bool) -> SavedStackContext:
+    return SavedStackContext(
+        profile_id=f"rtthread/{isa}/integer",
         pointer_size=4,
         registers=tuple((register, (register - 4) * 4) for register in range(4, 12))
         + ((0, 32), (1, 36), (2, 40), (3, 44), (12, 48)),
         pc_offset=56,
         lr_offset=52,
-        xpsr_offset=60,
+        status_offset=60,
         sp_offset=64,
         fill_word=0xDEADBEEF,
         verified=verified,
     )
 
 
-def _cortex_m33() -> SavedContext:
-    return SavedContext(
-        port="cortex-m33",
+def _armv8m_mainline() -> SavedStackContext:
+    return SavedStackContext(
+        profile_id="rtthread/armv8-m.mainline/integer",
         pointer_size=4,
         registers=tuple(
             (register, 16 + (register - 4) * 4) for register in range(4, 12)
@@ -73,31 +40,39 @@ def _cortex_m33() -> SavedContext:
         + ((0, 48), (1, 52), (2, 56), (3, 60), (12, 64)),
         pc_offset=72,
         lr_offset=4,
-        xpsr_offset=76,
+        status_offset=76,
         sp_offset=80,
         fill_word=0xDEADBEEF,
         verified=False,
     )
 
 
-def _riscv(port: Port, word: int, *, verified: bool) -> SavedContext:
+def _riscv(isa: Isa, word: int, *, verified: bool) -> SavedStackContext:
     registers: list[tuple[int, int]] = [(1, word)]
+    registers.append((4, 4 * word))
     registers.extend((register, register * word) for register in range(5, 32))
-    return SavedContext(
-        port=port,
+    return SavedStackContext(
+        profile_id=f"rtthread/{isa}/integer",
         pointer_size=word,
         registers=tuple(registers),
         pc_offset=0,
         lr_offset=word,
-        xpsr_offset=None,
+        status_offset=None,
         sp_offset=32 * word,
         fill_word=0xDEADBEEF,
         verified=verified,
     )
 
 
+ARMV6M_INTEGER = _arm_integer("armv6-m", verified=False)
+ARMV7M_INTEGER = _arm_integer("armv7-m", verified=False)
+ARMV8M_MAINLINE_INTEGER = _armv8m_mainline()
+RISCV32_INTEGER = _riscv("riscv32", 4, verified=False)
+RISCV64_INTEGER = _riscv("riscv64", 8, verified=True)
+
+
 def decode_saved_context(
-    context: SavedContext,
+    context: SavedStackContext,
     sp: int,
     read: Reader,
     *,
@@ -146,14 +121,14 @@ def decode_saved_context(
         stack_high=stack_high,
     )
     if lr is not None:
-        registers[14 if context.xpsr_offset is not None else 1] = lr
+        registers[14 if context.status_offset is not None else 1] = lr
     caller_sp = sp + context.sp_offset
-    registers[13 if context.xpsr_offset is not None else 2] = caller_sp
-    if context.xpsr_offset is not None:
+    registers[13 if context.status_offset is not None else 2] = caller_sp
+    if context.status_offset is not None:
         registers[15] = pc
         xpsr = read_slot(
             read,
-            sp + context.xpsr_offset,
+            sp + context.status_offset,
             4,
             endian,
             stack_low=stack_low,
@@ -163,13 +138,13 @@ def decode_saved_context(
             return None, "saved-context-unreadable"
         if not xpsr & (1 << 24):
             return None, "saved-frame-not-thumb"
-    code_pc = pc & ~1 if context.xpsr_offset is not None else pc
+    code_pc = pc & ~1 if context.status_offset is not None else pc
     if code_pc == 0:
         return None, "saved-context-unreadable"
     unstarted = False
     if entry:
         core = [registers.get(register, 0) for register in range(4, 12)]
-        if context.xpsr_offset is not None:
+        if context.status_offset is not None:
             unstarted = (code_pc & ~1) == (entry & ~1) and all(
                 value == context.fill_word for value in core
             )

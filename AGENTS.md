@@ -25,6 +25,8 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   heapmap.py           heap grid, owner palette, PNG/inline frames, legend lettering
   unwind.py            bounded task unwind driver (seed, stack/PC validation, stop reasons)
   unwind_meta.py       bounded ELF sections, code symbols and binary encodings
+  cpus.py              bounded Arm/RISC-V CPU attributes and ISA/ABI evidence
+  stack_frame_parser.py validated task-frame profiles and RISC-V code evidence
   unwind_cfi.py        bounded DWARF CFI tables and encoded-pointer decoding
   unwind_ehabi.py      bounded ARM EHABI tables and virtual-register unwinding
 rtthread/              RT-Thread 3.1.x/4.x adapter
@@ -33,6 +35,7 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   stackpc.py           last PC from the saved switch frame (pure; slot table + proofs)
   backtrace.py         saved-context layouts and seed decoding (pure)
   backtrace_gdb.py     GDB-facing thread backtrace orchestration
+  stack_frame_profile.py compiled save-layout evidence and profile selection
   adapter.py           intermediate models, value converters, summaries and tables
   views.py             column contracts, detail-table cells, heap views/verdicts
   diagnostics.py       bounded raw-memory walks (IPC, heap) + `rtt check`
@@ -43,6 +46,7 @@ freertos/              FreeRTOS adapter
   stackpc.py           last PC from the saved frame (pure; port evidence + proofs)
   backtrace.py         saved-context layouts and seed decoding (pure)
   backtrace_gdb.py     GDB-facing task backtrace orchestration
+  stack_frame_profile.py compiled save-layout evidence and profile selection
   objects.py           per-kind decode: timers, event groups, stream buffers
   heap.py              heap_1..5 snapshot, canary, walks and cross-check verdicts
   adapter.py           task/object models, conversion, list tables, summaries
@@ -215,7 +219,7 @@ FREERTOS_FIXTURE_CACHE=/path/to/cache \
 
 Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` rooted at
 `FREERTOS_FIXTURE_CACHE` (the snapshot cell `mps2-an521/11.1.0/snapshot/`
-also holds `snapshot_heap.elf`; default `~/Project/gdr-fixture/freertos`).
+also holds `snapshot_heap.elf`; default `/Volumes/PS3000/gdr-fixture/freertos`).
 `GDR_FIXTURE_VARIANT` selects the
 variant, `GDR_FORCE_BUILD=1` forces a rebuild, and a missing artifact is
 `pytest.skip` so partial local caches stay usable. Shared fixture sources live in

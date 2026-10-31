@@ -17,7 +17,7 @@
 #   --out-bin PATH          destination BIN
 #   --cache-dir DIR         fixture cache directory receiving freertos.{elf,bin}
 #                           (default: $FREERTOS_FIXTURE_CACHE/<target>/<version>/<variant>,
-#                            FREERTOS_FIXTURE_CACHE defaults to ~/Project/gdr-fixture/freertos)
+#                            FREERTOS_FIXTURE_CACHE defaults to /Volumes/PS3000/gdr-fixture/freertos)
 #   --no-cache-install      build only, do not copy into the fixture cache
 #   --toolchain-path DIR    directory containing arm-none-eabi-* binaries
 #

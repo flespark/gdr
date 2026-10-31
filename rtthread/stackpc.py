@@ -26,6 +26,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from core.stack_frame_parser import StackContextSelection
+
 Reader = Callable[[int, int], "bytes | None"]
 
 
@@ -71,6 +73,28 @@ def saved_pc_layout(
         return SavedPcLayout(offset=68, width=4, call="arm_bl")
     if pointer_size == 8 and major == 4:
         return SavedPcLayout(offset=0, width=8, call="rv64_jal")
+    return None
+
+
+def selected_saved_pc_layout(
+    selection: StackContextSelection,
+    version: tuple[int, int, int] | None,
+    pointer_size: int,
+    switch_address: int | None,
+    *,
+    has_exit_path: bool,
+) -> tuple[SavedPcLayout, int] | None:
+    """Return an ISA-proven saved-PC layout and switch address."""
+    context = selection.context
+    if switch_address is None:
+        return None
+    if selection.isa == "riscv64" and context is not None and context.verified:
+        return SavedPcLayout(context.pc_offset, context.pointer_size, "rv64_jal"), (
+            switch_address
+        )
+    if selection.isa == "armv7-a" and has_exit_path:
+        layout = saved_pc_layout(version, pointer_size)
+        return (layout, switch_address) if layout is not None else None
     return None
 
 

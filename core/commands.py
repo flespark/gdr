@@ -81,7 +81,7 @@ def render_backtrace(target: str, max_depth: int = 32) -> None:
     print_table(rows, headers, elastic=("Function", "Source"))
     state = "complete" if report.complete else "partial"
     print(
-        f"{report.task}: {report.port} {report.architecture}, "
+        f"{report.task}: {report.architecture}, "
         f"{report.source}, {report.method}, {state} ({report.stop_reason})"
     )
 

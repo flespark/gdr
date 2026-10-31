@@ -64,7 +64,7 @@ GDR_HEAP_MIN_PIXEL_WIDTH = 200
 # the chunk protocol; it is deliberately independent of the GDR release version
 # so a client compares it against its own compiled expectation instead of
 # parsing release strings.
-GDR_API_SCHEMA_VERSION = 2
+GDR_API_SCHEMA_VERSION = 3
 
 # Payloads up to this many characters ride one ``$gdr_json`` evaluate result;
 # larger ones switch to the chunked protocol.  The limit has to stay below what

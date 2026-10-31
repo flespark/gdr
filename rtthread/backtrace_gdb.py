@@ -16,21 +16,22 @@ from core.gdb_bridge import (
     loaded_object_path,
     lookup_symbol_at,
     read_bytes,
-    section_payloads,
     source_location_at,
     value_address,
 )
+from core.stack_frame_parser import StackContextSelection
 from core.unwind import (
     ElfImage,
     SeedFrame,
     UnwindMetadata,
-    cpu_name_from_attributes,
     unwind_chain,
 )
 from rtthread.adapter import value_to_thread
-from rtthread.backtrace import context_for as context_for_backtrace
 from rtthread.backtrace import decode_saved_context as decode_backtrace_context
+from rtthread.layout import RT_THREAD_STACK_FILL
 from rtthread.navigation import find_thread, get_current_thread
+from rtthread.stack_frame_profile import select_context
+from rtthread.stackpc import SavedPcLayout, selected_saved_pc_layout
 
 try:
     import gdb
@@ -51,32 +52,62 @@ def _unwind_metadata(adapter) -> UnwindMetadata | None:
     return metadata
 
 
-def _backtrace_port() -> tuple[str | None, str]:
-    """Return ``(port, architecture)`` from ELF machine and ARM attributes."""
+_context_cache: tuple[str, StackContextSelection] | None = None
+
+
+def _backtrace_context() -> StackContextSelection:
+    """Resolve ISA, ABI and the actual compiled libcpu save convention."""
+    global _context_cache
     path = loaded_object_path()
     if path is None:
-        return None, "unknown"
+        return StackContextSelection(None, "unknown", None, "port-undetermined")
+    if _context_cache is not None and _context_cache[0] == path:
+        return _context_cache[1]
     elf = ElfImage.from_path(path)
     if elf is None:
-        return None, "unknown"
-    if elf.machine == 243:
-        return ("riscv32" if elf.pointer_size == 4 else "riscv64"), "riscv"
-    if elf.machine != 40:
-        return None, "unknown"
-    try:
-        with open(path, "rb") as handle:
-            blob = section_payloads(handle.read(), (".ARM.attributes",)).get(
-                ".ARM.attributes", b""
+        return StackContextSelection(None, "unknown", None, "port-undetermined")
+    result = select_context(elf)
+    _context_cache = (path, result)
+    return result
+
+
+def reset_context_cache() -> None:
+    """Drop the image-derived save-profile decision when GDB replaces the image."""
+    global _context_cache
+    _context_cache = None
+
+
+def saved_pc_setup(adapter, gdb_available: bool) -> tuple[SavedPcLayout, int] | None:
+    """Resolve an image-proven saved-PC layout for the adapter session."""
+    if not gdb_available:
+        return None
+    if not adapter._saved_pc_resolved:
+        selection = _backtrace_context()
+        if selection.isa in ("riscv64", "armv7-a"):
+            switch = eval_identifier("rt_hw_context_switch")
+            exit_path = (
+                eval_identifier("rt_hw_context_switch_exit")
+                if selection.isa == "armv7-a"
+                else None
             )
-    except OSError:
-        return None, "arm"
-    name = cpu_name_from_attributes(blob)
-    return {
-        "6-M": "cortex-m0",
-        "6S-M": "cortex-m0",
-        "7-M": "cortex-m3",
-        "8-M.MAIN": "cortex-m33",
-    }.get(name or ""), "arm"
+            pointer_size = arch_or_default()[0] if selection.isa == "armv7-a" else 8
+            adapter._saved_pc = selected_saved_pc_layout(
+                selection,
+                adapter.version,
+                pointer_size,
+                value_address(switch) if switch is not None else None,
+                has_exit_path=exit_path is not None,
+            )
+        adapter._saved_pc_resolved = True
+    return adapter._saved_pc
+
+
+def reset_adapter(adapter) -> None:
+    """Drop image-derived decisions and unwind metadata for one session."""
+    reset_context_cache()
+    adapter._saved_pc = None
+    adapter._saved_pc_resolved = False
+    adapter._unwind_cache = None
 
 
 def _live_seed(arch: str, root_pc: int | None) -> SeedFrame | None:
@@ -90,7 +121,7 @@ def _live_seed(arch: str, root_pc: int | None) -> SeedFrame | None:
     except (gdb.error, AttributeError, RuntimeError, TypeError):
         return None
     registers: dict[int, int] = {}
-    if arch == "arm":
+    if arch.startswith("arm"):
         for register in range(13):
             try:
                 registers[register] = int(frame.read_register(f"r{register}"))
@@ -125,12 +156,35 @@ def _live_seed(arch: str, root_pc: int | None) -> SeedFrame | None:
                 return None
         registers[2] = sp
     return SeedFrame(
-        pc=pc & ~1 if arch == "arm" else pc,
+        pc=pc & ~1 if arch.startswith("arm") else pc,
         sp=sp,
         regs=registers,
         source="current",
         root_pc=root_pc,
     )
+
+
+def _stack_growth(low: int, high: int) -> bool | None:
+    """Infer growth direction from bounded fill sentinels at valid stack edges."""
+    size = high - low
+    if size <= 0:
+        return None
+    edge = min(size, 16)
+    low_edge = read_bytes(low, edge)
+    high_edge = read_bytes(high - edge, edge)
+    if (
+        low_edge is None
+        or high_edge is None
+        or len(low_edge) != edge
+        or len(high_edge) != edge
+    ):
+        return None
+    fill = bytes([RT_THREAD_STACK_FILL]) * edge
+    low_untouched = low_edge == fill
+    high_untouched = high_edge == fill
+    if low_untouched == high_untouched:
+        return None
+    return high_untouched
 
 
 def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
@@ -140,7 +194,6 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         return BacktraceReport(
             task=target,
             address=0,
-            port="unknown",
             architecture="unknown",
             method="none",
             source="none",
@@ -152,61 +205,26 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             frames=[],
             messages=[f"thread {target!r} was not found in the registry"],
         )
-    thread = value_to_thread(value, adapter.layout)
-    port, arch = _backtrace_port()
-    if port is None:
-        return BacktraceReport(
-            task=thread.name or target,
-            address=thread.address,
-            port="unknown",
-            architecture=arch,
-            method="none",
-            source="none",
-            complete=False,
-            stop_reason="port-undetermined",
-            truncated=False,
-            max_depth=max_depth,
-            bounds="unknown",
-            frames=[],
-            messages=["the libcpu port could not be identified from image evidence"],
-        )
-    context = context_for_backtrace(port)
+    selection = _backtrace_context()
+    thread = value_to_thread(value, adapter.layout, collect_stack_metrics=False)
+    context = selection.context
+    architecture = selection.isa or "unknown"
+    arch = selection.family
     if context is None or not context.verified:
         return BacktraceReport(
             task=thread.name or target,
             address=thread.address,
-            port=port,
-            architecture=arch,
+            architecture=architecture,
             method="none",
             source="none",
             complete=False,
-            stop_reason="unverified-port",
+            stop_reason=selection.reason,
             truncated=False,
             max_depth=max_depth,
             bounds="unknown",
             frames=[],
-            messages=[
-                f"the {port} saved-context layout has no closed-loop fixture; "
-                "this port is not claimed as verified"
-            ],
-        )
-    if thread.stack_grows_up:
-        return BacktraceReport(
-            task=thread.name or target,
-            address=thread.address,
-            port=port,
-            architecture=arch,
-            method="none",
-            source="none",
-            complete=False,
-            stop_reason="unsupported-stack-direction",
-            truncated=False,
-            max_depth=max_depth,
-            bounds="unknown",
-            frames=[],
-            messages=[
-                "stack growth direction is upward; only downward stacks are supported"
-            ],
+            messages=["no verified libcpu save profile matches the image evidence"],
+            abi=selection.abi,
         )
     low = thread.stack_addr if thread.stack_addr else None
     high = low + thread.stack_size if low is not None and thread.stack_size else None
@@ -214,8 +232,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         return BacktraceReport(
             task=thread.name or target,
             address=thread.address,
-            port=port,
-            architecture=arch,
+            architecture=architecture,
             method="none",
             source="none",
             complete=False,
@@ -225,6 +242,34 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             bounds="unknown",
             frames=[],
             messages=["the thread records no usable stack address and size"],
+            abi=selection.abi,
+        )
+    grows_up = thread.stack_grows_up
+    if grows_up is None:
+        grows_up = _stack_growth(low, high)
+    if grows_up is not False:
+        reason = (
+            "unsupported-stack-direction" if grows_up else "stack-direction-unavailable"
+        )
+        message = (
+            "stack growth direction is upward; only downward stacks are supported"
+            if grows_up
+            else "stack growth direction cannot be proven from configuration or fill sentinels"
+        )
+        return BacktraceReport(
+            task=thread.name or target,
+            address=thread.address,
+            architecture=architecture,
+            method="none",
+            source="none",
+            complete=False,
+            stop_reason=reason,
+            truncated=False,
+            max_depth=max_depth,
+            bounds="recorded",
+            frames=[],
+            messages=[message],
+            abi=selection.abi,
         )
     current = get_current_thread()
     is_current = current is not None and value_address(current) == thread.address
@@ -239,8 +284,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             return BacktraceReport(
                 task=thread.name or target,
                 address=thread.address,
-                port=port,
-                architecture=arch,
+                architecture=architecture,
                 method="none",
                 source="current",
                 complete=False,
@@ -253,14 +297,14 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                     f"thread runs on core {thread.oncpu}; the selected core "
                     f"{selected} has no saved context for it"
                 ],
+                abi=selection.abi,
             )
         seed = _live_seed(arch, thread.entry or None)
         if seed is None:
             return BacktraceReport(
                 task=thread.name or target,
                 address=thread.address,
-                port=port,
-                architecture=arch,
+                architecture=architecture,
                 method="none",
                 source="current",
                 complete=False,
@@ -270,14 +314,14 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 bounds="recorded",
                 frames=[],
                 messages=["the selected core's registers are not readable"],
+                abi=selection.abi,
             )
     else:
         if thread.oncpu is not None:
             return BacktraceReport(
                 task=thread.name or target,
                 address=thread.address,
-                port=port,
-                architecture=arch,
+                architecture=architecture,
                 method="none",
                 source="saved",
                 complete=False,
@@ -289,6 +333,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 messages=[
                     f"thread is running on core {thread.oncpu} and has no saved context"
                 ],
+                abi=selection.abi,
             )
         exit_pc = None
         exit_value = eval_identifier("rt_thread_exit")
@@ -307,8 +352,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             return BacktraceReport(
                 task=thread.name or target,
                 address=thread.address,
-                port=port,
-                architecture=arch,
+                architecture=architecture,
                 method="none",
                 source="saved",
                 complete=False,
@@ -321,6 +365,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                     "the saved context is not readable or not proven"
                     + (f" (exit {exit_pc:#x})" if exit_pc else "")
                 ],
+                abi=selection.abi,
             )
     exit_value = None
     for exit_name in ("rt_thread_exit", "_thread_exit"):
@@ -362,8 +407,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
     return BacktraceReport(
         task=thread.name or target,
         address=thread.address,
-        port=port,
-        architecture=arch,
+        architecture=architecture,
         method=method,
         source=seed.source,
         complete=result.complete,
@@ -373,4 +417,5 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         bounds="recorded",
         frames=frames,
         messages=messages,
+        abi=selection.abi,
     )

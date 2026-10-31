@@ -206,7 +206,7 @@ Verification spans three complementary execution arms:
 | `test_smp.py` | Dual-core `pxCurrentTCBs[0..1]` running-task resolution, `CPU` placement, core-affinity masks (`gdr_bound`), and preemption-disable state (`gdr_preempt`). |
 | `test_snapshot.py` | File-only negative testing for `frt check` and inline `Check[...]` failure/mismatch/corrupt verdicts on `freertos.elf` and `snapshot_heap.elf`. |
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
-| `test_backtrace.py` | Ordered saved-context chains, exact port/method/bounds, proven exit completeness versus RISC-V first-task loops, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
+| `test_backtrace.py` | Ordered saved-context chains, canonical ISA/method/bounds, proven exit completeness versus RISC-V first-task loops, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
 
 ## Summary comparison of RT-Thread vs FreeRTOS test strategies
 
