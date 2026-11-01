@@ -97,7 +97,7 @@ snapshot.  Each variant's exact scope is documented in
 `ci/freertos/README.md`; the snapshot variant carries the diagnostic negatives
 a healthy kernel cannot produce.
 
-**Static snapshot variant** (`build-fixture-kernel.sh --variant snapshot`,
+**Static snapshot variant** (`ci/freertos/build.sh --variant snapshot`,
 cell `mps2-an521/11.1.0`, sources in `ci/freertos/fixture/config/snapshot/`)
 covers states a healthy kernel cannot produce
 (corrupt lists, SMP `xTaskRunState` of `0`/`1`/`-1`/`-2` without a live

@@ -18,9 +18,10 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import * as net from 'node:net';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
+
+import { CACHE, REPO_ROOT, cachedTool, temporaryDirectory } from './fixture.ts';
 
 import { parseProbePayload } from '../../src/probe.ts';
 import { parseSnapshot, type PanelSnapshot } from '../../src/snapshot.ts';
@@ -33,14 +34,9 @@ import {
 	type GdrEnvelope
 } from '../../src/transport.ts';
 
-/** The extension directory is the npm script's cwd; the runtime sits above it. */
-const REPO_ROOT = process.env.GDR_REPO_ROOT ?? path.resolve(process.cwd(), '..');
-const GDB = process.env.GDR_GDB ?? 'arm-none-eabi-gdb-py3';
-const QEMU = process.env.GDR_QEMU ?? 'qemu-system-arm';
-const CACHE =
-	process.env.RT_THREAD_FIXTURE_CACHE ??
-	path.join(process.env.HOME ?? '', 'Project/gdr-fixture/rtthread');
-const ELF = process.env.GDR_PROBE_ELF ?? path.join(CACHE, 'cortex-a9', '4.0.5', 'rtthread.elf');
+const GDB = cachedTool(['gdb-multiarch', 'arm-none-eabi-gdb-py3', 'gdb']);
+const QEMU = cachedTool(['qemu-system-arm']);
+const ELF = path.join(CACHE, 'fixtures', 'rtthread', 'cortex-a9', '4.0.5', 'rtthread.elf');
 const GDR_ENTRY = path.join(REPO_ROOT, 'gdr.py');
 const MACHINE = 'vexpress-a9';
 
@@ -228,7 +224,7 @@ function renderableSnapshot(envelope: GdrEnvelope): PanelSnapshot {
  * A real RT-Thread snapshot rendered by the panel renderer.
  *
  * One batch GDB session loads the fixture, initializes the adapter, and asks
- * the snapshot through GDR's file bypass (`--out`), which is the Phase 4
+ * the snapshot through GDR's file bypass (`--out`), which is
  * mechanism for the very large payloads; the written envelope then goes
  * through the real parsers and the real renderer. This is the closest a
  * panel assertion gets without an Electron host: real task rows, real column
@@ -236,7 +232,7 @@ function renderableSnapshot(envelope: GdrEnvelope): PanelSnapshot {
  */
 test('a real snapshot renders task rows, alignment and hints', { skip: reason }, async () => {
 	await withSession((port) => {
-		const outFile = path.join(os.tmpdir(), `gdr-snapshot-integration-${process.pid}.json`);
+		const outFile = path.join(temporaryDirectory(), `gdr-snapshot-integration-${process.pid}.json`);
 		try {
 			const run = spawnSync(
 				GDB,

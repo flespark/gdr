@@ -4,7 +4,7 @@ GDR verifies every layer at two levels: fast host-side unit tests for the
 hardware-independent core and adapter logic (`tests/unit/`), and closed-loop
 QEMU/GDB integration tests that boot real RTOS firmware or inspect crafted
 kernel images (`tests/integration/`). Fixture build mechanics live in
-`ci/<rtos>/README.md` and `ci/unwind/README.md`; this document defines the
+[the shared CLI guide](../ci/README.md) and the RTOS lane READMEs; this document defines the
 shared test infrastructure and the per-RTOS integration test coverage.
 
 ## Unit test coverage boundary
@@ -67,18 +67,13 @@ than spawning a batch GDB process per test:
 3. Each test calls `gdb_session.run(...)` to execute GDB commands and capture
    stripped output.
 
-Writable fixture/build output can be moved off the host system disk:
-`ci/validate-podman.sh` mounts `GDR_CI_WORK_DIR` at the same path and places
-`freertos/`, `freertos-build/`, `freertos-kernel-source/`, `rt-thread-build/`
-and the virtualenv under it; the individual runners honor
-`FREERTOS_FIXTURE_CACHE`, `FREERTOS_BUILD_ROOT`, `FREERTOS_KERNEL_CACHE`,
-`RT_THREAD_BUILD_ROOT` and `UV_PROJECT_ENVIRONMENT` directly.  Without a work
-directory the historical `/tmp` paths remain the fallback.
-
-`tests/support/loader.py` is the single reader of closed-loop environment
-variables (`GDR_RTOS`, `GDR_VERSION`, `GDR_QEMU_TARGET`,
-`GDR_FIXTURE_VARIANT`, cache roots, and ELF overrides). `tests/integration/conftest.py`
-selects the target profile and assembles the session fixtures. Expected
+The [shared integration CLI](../ci/README.md) owns cache initialization,
+source preparation, firmware manifests, tool preflight and pytest execution.
+`tests/support/loader.py` reads its session transport (`GDR_RTOS`,
+`GDR_VERSION`, `GDR_QEMU_TARGET`, `GDR_FIXTURE_VARIANT`, and GDB/QEMU settings).
+Firmware paths are fixed under `ci/.cache/fixtures/<rtos>/`; pytest never
+builds or downloads artifacts. `tests/integration/conftest.py` selects the
+target profile and assembles the session fixtures. Expected
 capabilities and object layouts for each fixture live in independent test
 profiles (`tests/support/rtthread_fixture_profiles.py` and
 `tests/support/freertos_fixture_profiles.py`) that never import production
@@ -108,7 +103,7 @@ On 64-bit RISC-V lanes (`rv64` and `qemu-virt-rv64`), QEMU boots the raw
 
 RT-Thread fixtures are built by applying platform- and version-scoped patch
 series (`ci/rt-thread/patches/<target>/<version>/`) to upstream RT-Thread BSPs
-and caching `<RT_THREAD_FIXTURE_CACHE>/<target>/<version>/rtthread.elf` (plus
+and caching `ci/.cache/fixtures/rtthread/<target>/<version>/rtthread.elf` (plus
 `rtthread.bin` on RV64):
 
 - **`cortex-a9` (`3.1.0–3.1.5`, `4.0.0–4.1.1`)**: Runs the full integration
@@ -117,7 +112,8 @@ and caching `<RT_THREAD_FIXTURE_CACHE>/<target>/<version>/rtthread.elf` (plus
   `3.1.3` enum shift, the `3.1.4` addition of
   `rt_messagequeue.suspend_sender_thread` (dropped in `4.0.0–4.0.1` and
   restored in `4.0.2`), and the `4.0.x` to `4.1.x` layout transitions.
-  Cortex-A9 patches set `RT_NAME_MAX` to 16 so canonical fixture names match
+  The default matrix compiles 3.1.1, 3.1.2, and 3.1.4 only; explicit CLI
+  runs can execute them. Cortex-A9 patches set `RT_NAME_MAX` to 16 so canonical fixture names match
   the RV64 BSPs.
 - **`rv64` (`4.0.4`, `4.0.5`, `4.1.0`, `4.1.1`)**: Verifies 64-bit pointer
   alignment, 64-bit switch-frame `PC` recovery, and BSP path transitions
@@ -149,10 +145,10 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 ### Fixture and variant matrix
 
 FreeRTOS fixtures are built directly from `FreeRTOS-Kernel` git tags by
-`ci/freertos/build-fixture-kernel.sh`, combining shared application code
+`ci/freertos/build.sh`, combining shared application code
 (`ci/freertos/fixture/main.c`), board startup (`fixture/board/<target>/`),
 and per-variant headers (`fixture/config/<variant>/FreeRTOSConfig.h`) into
-`<FREERTOS_FIXTURE_CACHE>/<target>/<version>/<variant>/freertos.elf`.
+`ci/.cache/fixtures/freertos/<target>/<version>/<variant>/freertos.elf`.
 Verification spans three complementary execution arms:
 
 1. **Config-variant and version matrix on Cortex-M3 (`mps2-an385`)**:
@@ -208,20 +204,22 @@ Verification spans three complementary execution arms:
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
 | `test_backtrace.py` | Ordered saved-context chains, canonical ISA/method/bounds, proven exit completeness versus partial RISC-V first-task chains, independent entry/lookup-symbol checks, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
 
-## Standalone `.eh_frame` unwinding
+## Isolated `.eh_frame` variant
 
-`tests/integration/test_unwind_eh_frame.py` boots a GNU-assembled RV64 image
-with `.eh_frame`, no `.debug_frame` or EHABI, and frame-pointer fallback
+`tests/integration/freertos/test_eh_frame.py` uses the
+`freertos/qemu-virt-rv64/11.1.0/eh-frame` cell. Its GNU-assembled RV64 image
+has `.eh_frame`, no `.debug_frame` or EHABI, and frame-pointer fallback
 disabled. Five tests verify an ordered four-frame chain with an extended
 offset and virtual return column 128, a signal-CIE exact boundary PC, and
 missing/truncated metadata or an unavailable `textrel` base. Undefined return
 columns remain partial endpoints. Signal-CIE coverage does not verify
-hardware exception decoding or cross-stack unwinding. Build details and the
-runner command live in [the fixture README](../ci/unwind/README.md).
+hardware exception decoding or cross-stack unwinding. Build details live in
+[the fixture README](../ci/freertos/fixture/eh-frame/README.md).
 
-The CNB `freertos-kernel-scope` pipeline and a dedicated GitHub job run the
-same tool-checked runner. Local Podman validation includes it in `all`, or
-selects it alone with `GDR_VALIDATE_LANES=unwind`.
+The cell belongs to `freertos-ports` in the shared matrix, including CNB and
+GitHub RTOS verification. Future CFI-expression, IRQ/multistack and PendSV
+cases must add deterministic RTOS-owned fixture inputs and independent
+assertions through the [same lane extension contract](../ci/README.md#layering-and-new-lanes).
 
 ## Summary comparison of RT-Thread vs FreeRTOS test strategies
 

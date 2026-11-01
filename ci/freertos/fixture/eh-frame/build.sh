@@ -3,8 +3,13 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-output="${1:?usage: build-fixture.sh OUTPUT_DIRECTORY}"
-prefix="${XPACK_RISCV_TOOLCHAIN_PATH:+$XPACK_RISCV_TOOLCHAIN_PATH/}riscv-none-elf-"
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    echo "Usage: $0 OUTPUT_DIRECTORY TOOLCHAIN_BIN_DIRECTORY"
+    exit 0
+fi
+[[ $# -eq 2 ]] || { echo "Usage: $0 OUTPUT_DIRECTORY TOOLCHAIN_BIN_DIRECTORY" >&2; exit 2; }
+output="$1"
+prefix="$2/riscv-none-elf-"
 mkdir -p "$output"
 
 "${prefix}gcc" -march=rv64imac_zicsr -mabi=lp64 -mcmodel=medany \

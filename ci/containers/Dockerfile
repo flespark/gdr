@@ -77,24 +77,13 @@ ARG XPACK_ARCH=linux-x64
 # NOTE: xPack publishes per-arch linux archives (linux-x64 / linux-arm64);
 # the CNB runner builds amd64, while local Apple-Silicon podman builds arm64.
 #
-# validate-podman.sh stages ci/gdr-xpack in an external build context. CNB's
-# context carries only .gitkeep and downloads the archives below. Both paths
-# verify the same hashes.
 # NOTE: RT-Thread's RV64 BSP hard-codes the legacy riscv64-unknown-elf prefix.
-COPY ci/gdr-xpack/ /opt/gdr-xpack/
 RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-${XPACK_ARCH}.tar.gz" \
     && riscv_archive="xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-${XPACK_ARCH}.tar.gz" \
-    && if [ -s "/opt/gdr-xpack/$arm_archive" ] && [ -s "/opt/gdr-xpack/$riscv_archive" ]; then \
-        echo "[gdr-ci] seeding toolchains from ci/gdr-xpack"; \
-        cp "/opt/gdr-xpack/$arm_archive" "/tmp/$arm_archive"; \
-        cp "/opt/gdr-xpack/$riscv_archive" "/tmp/$riscv_archive"; \
-    else \
-        echo "[gdr-ci] downloading xPack toolchains from GitHub"; \
-        curl --fail --location --retry 3 --output "/tmp/$arm_archive" \
-            "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v${XPACK_ARM_VERSION}/$arm_archive"; \
-        curl --fail --location --retry 3 --output "/tmp/$riscv_archive" \
-            "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/$riscv_archive"; \
-    fi \
+    && curl --fail --location --retry 3 --output "/tmp/$arm_archive" \
+        "https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v${XPACK_ARM_VERSION}/$arm_archive" \
+    && curl --fail --location --retry 3 --output "/tmp/$riscv_archive" \
+        "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/$riscv_archive" \
     && echo "${XPACK_ARM_SHA256}  /tmp/$arm_archive" | sha256sum --check - \
     && echo "${XPACK_RISCV_SHA256}  /tmp/$riscv_archive" | sha256sum --check - \
     && tar --extract --gzip --file "/tmp/$arm_archive" --directory /opt \
@@ -111,16 +100,12 @@ RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-${XPACK_ARCH}.tar.
     && printf '#include <stdio.h>\n' | "$arm_gcc" -E -x c - >/dev/null \
     && printf '#include <stdio.h>\n' | "$riscv_gcc" -E -x c - >/dev/null
 
-ENV XPACK_ARM_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-    XPACK_RISCV_TOOLCHAIN_PATH=/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin \
-    PYTHON2_BIN=/opt/python2/bin/python \
-    PYTHON2_SCONS=/opt/python2/bin/scons \
-    PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Fail the image build if the isolated Python 2 runtime cannot load the
 # matching OpenSSL 1.1 extension modules copied from the Buster stage.
 # NOTE: keep /opt/python2/lib off the image-wide LD_LIBRARY_PATH; only this
-# smoke check and build-rtt.sh's 3.1.x scons path need it.
+# smoke check and the RT-Thread 3.1.x builder need it.
 RUN LD_LIBRARY_PATH=/opt/python2/lib \
     /opt/python2/bin/python -c 'import hashlib; assert hashlib.md5("gdr").hexdigest() == "fff7c7603b50cc39962ecf42277c0d0d"'
 

@@ -23,6 +23,17 @@ GDR_ROOT = Path(__file__).resolve().parents[2]
 SPEC = load_integration_spec()
 
 
+def pytest_ignore_collect(collection_path: Path) -> bool | None:
+    """Keep metadata-only fixtures separate from scheduler-profile modules."""
+    if (
+        SPEC.variant == "eh-frame"
+        and collection_path.name.startswith("test_")
+        and collection_path.name != "test_eh_frame.py"
+    ):
+        return True
+    return None
+
+
 def get_qemu_profile() -> QemuProfile:
     """Resolve the selected RTOS profile without coupling the harness to it."""
     if SPEC.rtos == "rtthread":

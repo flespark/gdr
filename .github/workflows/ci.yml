@@ -17,19 +17,28 @@ concurrency:
 
 jobs:
 
-  unwind:
-    name: Standalone RV64 .eh_frame
+  integration:
+    name: RTOS integration (${{ matrix.group }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [gdb12, rtthread-a9, rtthread-rv64, freertos-config, freertos-version, freertos-ports]
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           persist-credentials: false
       - name: Build the pinned QEMU and cross-toolchain image
-        run: docker build --file ci/Dockerfile --tag gdr-unwind-ci .
-      - name: Verify .eh_frame without another metadata source
+        run: |
+          dockerfile=ci/containers/Dockerfile
+          if [ "${{ matrix.group }}" = gdb12 ]; then
+            dockerfile=ci/containers/Dockerfile.gdb12
+          fi
+          docker build --file "$dockerfile" --tag gdr-ci ci/containers
+      - name: Run the selected RTOS matrix
         run: |
           docker run --rm --volume "$GITHUB_WORKSPACE:/workspace" \
-            --workdir /workspace gdr-unwind-ci bash ci/unwind/run-qemu.sh
+            --workdir /workspace gdr-ci python3 ci/test.py matrix "${{ matrix.group }}"
 
   extension:
     name: Extension (Node ${{ matrix.node }})
@@ -60,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           npm run vendor
-          python3 ../ci/check-vendored-schema.py .
+          python3 scripts/check-vendored-schema.py .
           git check-ignore -q resources/gdr/VERSION
       - name: Type check
         run: npm run check-types

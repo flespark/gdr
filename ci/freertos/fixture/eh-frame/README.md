@@ -1,32 +1,26 @@
-# Standalone unwind fixture
+# Isolated RV64 `.eh_frame` fixture
 
 This fixture isolates `.eh_frame` from RTOS saved-context decoding. Coverage
-and CI placement live in [testing](../../docs/testing.md#standalone-eh_frame-unwinding);
-runtime rules and limitations live in [architecture](../../docs/architecture.md)
-and [errata](../../docs/errata.md#task-backtraces).
+and CI placement live in [testing](../../../../docs/testing.md#isolated-eh_frame-variant);
+runtime rules and limitations live in [architecture](../../../../docs/architecture.md)
+and [errata](../../../../docs/errata.md#task-backtraces).
 
 ## Tools and build
 
-CI uses the xPack GNU RISC-V GCC 15.2.0-1 toolchain from
-[`ci/Dockerfile`](../Dockerfile), `qemu-system-riscv64`, a Python-enabled
-RV64-capable GDB, and the locked development dependencies.
-`XPACK_RISCV_TOOLCHAIN_PATH` selects the directory containing
-`riscv-none-elf-{gcc,objcopy,readelf}`; otherwise they must be on `PATH`.
-`GDR_GDB` defaults to `gdb-multiarch`.
+This is the `freertos/qemu-virt-rv64/11.1.0/eh-frame` cell in the
+[shared integration CLI](../../../README.md). It requires the RISC-V
+compiler, `qemu-system-riscv64`, and Python-enabled RV64-capable GDB.
+The shared [container](../../../containers/Dockerfile) pins the compiler.
 
 ```bash
-XPACK_RISCV_TOOLCHAIN_PATH=/path/to/toolchain/bin \
-GDR_GDB=/path/to/python-enabled-gdb bash ci/unwind/run-qemu.sh
+python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 eh-frame
 ```
 
-`run-qemu.sh` probes every required binary before pytest, preventing absent
-tools from passing CI by skipping. `UV_PROJECT_ENVIRONMENT` selects the
-virtualenv (default `/tmp/gdr-venv`). Pytest builds fresh artifacts in its
-temporary directory; `--basetemp /path/to/output` can relocate them when
-running pytest directly. No RTOS source checkout or fixture cache is needed.
-
-`build-fixture.sh OUTPUT_DIRECTORY` produces `unwind.elf`, `unwind.bin` and
-`frames.txt`. The assembly selects `.cfi_sections .eh_frame`; build flags are
+The runner checks tools and prepares artifacts before pytest, retaining
+build/test logs and a firmware manifest in the shared cache. No RTOS source
+checkout is needed. The internal
+`build.sh OUTPUT_DIRECTORY TOOLCHAIN_BIN_DIRECTORY` produces `unwind.elf`,
+`unwind.bin` and `frames.txt`. The assembly selects `.cfi_sections .eh_frame`; build flags are
 `-march=rv64imac_zicsr -mabi=lp64 -mcmodel=medany -g -nostdlib -nostartfiles
 -Wl,--no-relax`. The linker places code at `0x80000000` and reserves a
 4 KiB stack. QEMU boots the binary with `-M virt -cpu rv64 -bios`; GDB loads

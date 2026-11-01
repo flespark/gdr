@@ -2,7 +2,7 @@
 # Build an RT-Thread QEMU test fixture for GDR CI.
 #
 # Usage:
-#   build-rtt.sh --target <cortex-a9|rv64> --ref <version-ref> [options]
+#   build.sh --target <cortex-a9|rv64> --ref <version-ref> [options]
 #
 # --ref is the RT-Thread release tag or branch to check out (for example
 # v4.0.5 or lts-v4.1.x). Patch sets and BSP paths are selected from that
@@ -19,15 +19,14 @@
 #   --toolchain-path DIR    directory containing the compiler binaries
 #   --toolchain-prefix STR  cross-compiler prefix
 #   --g3                    build with -g3 and DWARF 4 so the kernel version
-#                           macros land in the macro debug section (env:
-#                           GDR_RTTHREAD_G3=1); fixtures built this way let
+#                           macros land in the macro debug section; fixtures let
 #                           `gdr probe` resolve an exact version.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_ROOT="$SCRIPT_DIR/patches"
 DEFAULT_REPO="https://github.com/RT-Thread/rt-thread.git"
-DEFAULT_BUILD_DIR="${RT_THREAD_BUILD_ROOT:-/tmp/rt-thread-build}"
+DEFAULT_BUILD_DIR=""
 
 die() {
     echo "[gdr-ci] FAILED: $*" >&2
@@ -35,7 +34,7 @@ die() {
 }
 
 usage() {
-    sed -n '3,20p' "$0" | sed 's/^# \?//'
+    sed -n '2,/^set -/p' "$0" | sed '$d; s/^# \?//'
 }
 
 # Fill BSP_DIR / PATCH_SET / TOOLCHAIN_PREFIX from TARGET + REF when unset.
@@ -130,19 +129,9 @@ collect_patch_dirs() {
 }
 
 checkout_source() {
-    # NOTE: always re-checkout the ref so stale changes do not survive CI reruns.
-    if [[ -d "$BUILD_DIR/.git" ]]; then
-        echo "[gdr-ci] existing clone found; reusing"
-        git -C "$BUILD_DIR" fetch --depth=1 origin "$REF"
-        git -C "$BUILD_DIR" checkout "$REF"
-    else
-        mkdir -p "$BUILD_DIR"
-        git clone --depth=1 --branch "$REF" "$REPO" "$BUILD_DIR"
-    fi
-    # BUILD_DIR is a disposable, version-specific clone. Reset tracked files and
-    # remove untracked/ignored SCons outputs so every invocation is a clean build.
-    git -C "$BUILD_DIR" reset --hard "$REF"
-    git -C "$BUILD_DIR" clean -ffdxq
+    [[ ! -e "$BUILD_DIR" ]] || die "build source directory already exists: $BUILD_DIR"
+    mkdir -p "$(dirname "$BUILD_DIR")"
+    git clone --no-hardlinks --branch "$REF" "$REPO" "$BUILD_DIR"
 }
 
 apply_patches() {
@@ -238,12 +227,9 @@ build_bsp() {
         jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
         # NOTE: RT-Thread 3.1.x's tools/building.py has Python 2 syntax, while
         # 4.x is verified with the default Python 3/SCons 4 environment.
-        if [[ -n "${SCONS_BIN:-}" ]]; then
-            echo "[gdr-ci] scons command: $SCONS_BIN"
-            "$SCONS_BIN" -j"$jobs"
-        elif [[ "$REF" == v3.1.* ]]; then
-            python2="${PYTHON2_BIN:-/opt/python2/bin/python}"
-            scons="${PYTHON2_SCONS:-/opt/python2/bin/scons}"
+        if [[ "$REF" == v3.1.* ]]; then
+            python2="$SCRIPT_DIR/../.cache/tools/$(python3 -c 'import platform,sys; print(sys.platform+"-"+platform.machine())')/python2/bin/python"
+            scons="$(dirname "$python2")/scons"
             # NOTE: the relocated /opt/python2 interpreter needs its private
             # libpython/OpenSSL path only for this process, not the whole container.
             python2_lib="$(cd "$(dirname "$python2")/../lib" && pwd)"
@@ -251,8 +237,7 @@ build_bsp() {
             env LD_LIBRARY_PATH="$python2_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                 "$python2" "$scons" -j"$jobs"
         else
-            echo "[gdr-ci] scons command: /opt/scons-venv/bin/scons"
-            /opt/scons-venv/bin/scons -j"$jobs"
+            scons -j"$jobs"
         fi
         [[ -f rtthread.elf ]] || die "rtthread.elf not produced"
         if [[ "$TARGET" == "rv64" && ! -f rtthread.bin ]]; then
@@ -352,11 +337,12 @@ main() {
     TOOLCHAIN_PATH=""
     TOOLCHAIN_PREFIX=""
     PATCH_SET=""
-    G3="${GDR_RTTHREAD_G3:-0}"
+    G3=0
     local dir
     local -a PATCH_DIRS
 
     parse_args "$@"
+    [[ -n "$BUILD_DIR" ]] || die "--build-dir is required; use python3 ci/test.py build"
     resolve_target_defaults
     OUT_ELF="${OUT_ELF:-$BUILD_DIR/$BSP_DIR/rtthread.elf}"
     OUT_BIN="${OUT_BIN:-$BUILD_DIR/$BSP_DIR/rtthread.bin}"

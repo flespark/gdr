@@ -1,7 +1,7 @@
 """Single reader of closed-loop integration environment variables.
 
-Matrix scripts and ad-hoc pytest invocations parameterize a session through
-a small set of ``GDR_*`` / cache variables. QEMU profiles, snapshot tests
+The shared CLI transports session coordinates through a small set of
+``GDR_*`` variables; firmware always uses the repository-owned cache. QEMU profiles, snapshot tests
 and integration modules call :func:`load_integration_spec` instead of
 parsing ``os.environ`` themselves.
 """
@@ -13,9 +13,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-_DEFAULT_FREERTOS_CACHE = Path("/Volumes/PS3000/gdr-fixture/freertos")
-# Reason: CNB closed-loop hosts keep prebuilt RT-Thread firmware here.
-_DEFAULT_RTTHREAD_CACHE = Path("/workspace/fixture/rtthread")
+from ci.testing.cache import CACHE
+
+_DEFAULT_FREERTOS_CACHE = CACHE / "fixtures" / "freertos"
+_DEFAULT_RTTHREAD_CACHE = CACHE / "fixtures" / "rtthread"
 
 _FREERTOS_DEFAULT_VERSION = "10.3.1"
 _FREERTOS_DEFAULT_TARGET = "mps2-an385"
@@ -40,11 +41,6 @@ def _env_str(env: Mapping[str, str], name: str, default: str) -> str:
     return env.get(name) or default
 
 
-def _env_optional_path(env: Mapping[str, str], name: str) -> Path | None:
-    value = env.get(name) or ""
-    return Path(value) if value else None
-
-
 @dataclass(frozen=True)
 class IntegrationSpec:
     """Closed-loop session selected by the environment.
@@ -58,14 +54,10 @@ class IntegrationSpec:
             ``variant == "snapshot"`` alone identifies the snapshot lane.
         gdb: GDB binary with an embedded Python interpreter.
         boot_wait: Seconds to wait for the QEMU ready marker.
-        force_build: Rebuild cached firmware even when it exists.
         fixture_cache: Root of the built-firmware cache: the compiled fixture
             images the builders install (ELF/BIN/MAP — never checked-out
-            kernel sources; the builders clone sources under their own
-            cache, e.g. ``FREERTOS_KERNEL_CACHE``). See :meth:`fixture_dir`
+            kernel sources; sources live under ``ci/.cache/sources``). See :meth:`fixture_dir`
             for the layout.
-        elf_override: Optional explicit ELF, wins over the cache layout; GDB
-            loads it and a RISC-V lane boots its ``.bin`` sibling.
         qemu: Optional QEMU binary override.
     """
 
@@ -75,9 +67,7 @@ class IntegrationSpec:
     variant: str
     gdb: str
     boot_wait: float
-    force_build: bool
     fixture_cache: Path
-    elf_override: Path | None = None
     qemu: str | None = None
 
     def fixture_dir(self) -> Path:
@@ -94,9 +84,13 @@ class IntegrationSpec:
 
     def elf_path(self) -> Path:
         """Return the DWARF ELF GDB should load."""
-        if self.elf_override is not None:
-            return self.elf_override
-        name = "freertos.elf" if self.rtos == "freertos" else "rtthread.elf"
+        name = (
+            "unwind.elf"
+            if self.variant == "eh-frame"
+            else "freertos.elf"
+            if self.rtos == "freertos"
+            else "rtthread.elf"
+        )
         return self.fixture_dir() / name
 
     def firmware_path(self) -> Path:
@@ -128,16 +122,12 @@ def load_integration_spec(
         variant = _env_str(env, "GDR_FIXTURE_VARIANT", _FREERTOS_DEFAULT_VARIANT)
         version = _env_str(env, "GDR_VERSION", _FREERTOS_DEFAULT_VERSION)
         target = _env_str(env, "GDR_QEMU_TARGET", _FREERTOS_DEFAULT_TARGET)
-        cache = Path(
-            _env_str(env, "FREERTOS_FIXTURE_CACHE", str(_DEFAULT_FREERTOS_CACHE))
-        )
+        cache = _DEFAULT_FREERTOS_CACHE
     elif rtos == "rtthread":
         variant = ""
         version = _env_str(env, "GDR_VERSION", _RTTHREAD_DEFAULT_VERSION)
         target = _env_str(env, "GDR_QEMU_TARGET", _RTTHREAD_DEFAULT_TARGET)
-        cache = Path(
-            _env_str(env, "RT_THREAD_FIXTURE_CACHE", str(_DEFAULT_RTTHREAD_CACHE))
-        )
+        cache = _DEFAULT_RTTHREAD_CACHE
     else:
         raise RuntimeError(f"unknown GDR_RTOS: {rtos}")
     return IntegrationSpec(
@@ -147,8 +137,6 @@ def load_integration_spec(
         variant=variant,
         gdb=_env_str(env, "GDR_GDB", "gdb"),
         boot_wait=float(_env_str(env, "GDR_BOOT_WAIT", "10")),
-        force_build=_env_str(env, "GDR_FORCE_BUILD", "0") == "1",
         fixture_cache=cache,
-        elf_override=_env_optional_path(env, "GDR_ELF_PATH"),
         qemu=env.get("GDR_QEMU") or None,
     )

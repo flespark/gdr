@@ -21,7 +21,7 @@ done
 
 release_tag="$1"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
 archive_dir="${2:-dist}"
 if [[ "$archive_dir" != /* ]]; then
     archive_dir="$repo_root/$archive_dir"
@@ -38,7 +38,7 @@ if [[ ${#archives[@]} -ne 2 ]]; then
     echo "expected one versioned archive in each format" >&2
     exit 1
 fi
-vsix_file="$("$script_dir/vsix-artifact-name.sh" "$archive_dir")"
+vsix_file="$("$repo_root/vscode/scripts/vsix-artifact-name.sh" "$archive_dir")"
 # NOTE: unlike the source archives, the VSIX file name carries the extension
 # version (`vscode/package.json`, e.g. `gdb-rtos-views-2026.4.0.vsix`), which
 # is what installers and the Marketplace expect -- keep it versioned, and

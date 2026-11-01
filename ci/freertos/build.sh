@@ -2,7 +2,7 @@
 # Build a FreeRTOS QEMU fixture directly from FreeRTOS-Kernel.
 #
 # Usage:
-#   build-fixture-kernel.sh [options]
+#   build.sh [options] (internal builder; public entry: python3 ci/test.py)
 #
 # Options:
 #   --repo URL              FreeRTOS-Kernel git URL
@@ -16,8 +16,7 @@
 #   --out-elf PATH          destination ELF
 #   --out-bin PATH          destination BIN
 #   --cache-dir DIR         fixture cache directory receiving freertos.{elf,bin}
-#                           (default: $FREERTOS_FIXTURE_CACHE/<target>/<version>/<variant>,
-#                            FREERTOS_FIXTURE_CACHE defaults to /Volumes/PS3000/gdr-fixture/freertos)
+#                           (default: ci/.cache/fixtures/freertos/<target>/<version>/<variant>)
 #   --no-cache-install      build only, do not copy into the fixture cache
 #   --toolchain-path DIR    directory containing arm-none-eabi-* binaries
 #
@@ -29,13 +28,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/fixture-common.sh"
+source "$SCRIPT_DIR/lib.sh"
 DEFAULT_REPO="https://github.com/FreeRTOS/FreeRTOS-Kernel.git"
 DEFAULT_TAG="V11.1.0"
-DEFAULT_KERNEL_DIR="${FREERTOS_KERNEL_CACHE:-/tmp/gdr-freertos-kernel-source}"
+DEFAULT_KERNEL_DIR=""
 DEFAULT_TARGET="mps2-an385"
 DEFAULT_VARIANT="base"
-DEFAULT_BUILD_DIR="/tmp/gdr-freertos-kernel-build"
+DEFAULT_BUILD_DIR=""
 TOOLCHAIN_PREFIX="arm-none-eabi-"
 # NOTE: the RISC-V lane compiles with the riscv-none-elf- toolchain; the
 # prefix is resolved after --target is parsed (setup_toolchain runs in main).
@@ -53,24 +52,14 @@ version_from_tag() {
 }
 
 prepare_kernel() {
-    local source="$KERNEL_DIR"
-    if [[ "${KERNEL_DIR_EXPLICIT:-0}" == 1 ]]; then
-        # NOTE: never checkout a caller-owned reference tree. The build uses
-        # a private clone whose worktree may safely be detached at TAG.
-        KERNEL_DIR="$BUILD_DIR/kernel-source"
-        rm -rf "$KERNEL_DIR"
-        git clone --depth=1 --branch "$TAG" "$source" "$KERNEL_DIR"
-        return
-    fi
-    if [[ ! -d "$KERNEL_DIR/.git" ]]; then
-        mkdir -p "$(dirname "$KERNEL_DIR")"
-        git clone --depth=1 --branch "$TAG" "$REPO" "$KERNEL_DIR"
-        return
-    fi
-    if ! git -C "$KERNEL_DIR" rev-parse "$TAG" >/dev/null 2>&1; then
-        git -C "$KERNEL_DIR" fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
-    fi
-    git -C "$KERNEL_DIR" checkout --detach "$TAG"
+    [[ -n "$KERNEL_DIR" && -d "$KERNEL_DIR/.git" ]] ||
+        die "--kernel-dir must name a prepared tag checkout; use python3 ci/test.py build"
+    local expected actual dirty
+    expected="$(git -C "$KERNEL_DIR" rev-parse "refs/tags/$TAG^{commit}")"
+    actual="$(git -C "$KERNEL_DIR" rev-parse HEAD)"
+    dirty="$(git -C "$KERNEL_DIR" status --porcelain)"
+    [[ "$actual" == "$expected" && -z "$dirty" ]] ||
+        die "kernel source must be clean and at $TAG; the builder never modifies it"
 }
 
 board_flags() {
@@ -189,6 +178,7 @@ compile_fixture() {
         # only synthetic unit vectors.
         cflags+=(-funwind-tables)
     fi
+    local -a link_flags=(-Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num)
     # NOTE: set -u treats "${chip_include_paths[@]}" on an empty array as
     # an unbound-variable error on older bash (the same reason port_sources
     # is gated below), so only expand when the target added paths.
@@ -247,13 +237,13 @@ compile_fixture() {
     if [[ ${#specs_flags[@]} -gt 0 ]]; then
         "$cc" "${cflags[@]}" "${sources[@]}" \
             -T"$board_dir/linker.ld" \
-            -Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num \
+            "${link_flags[@]}" \
             -Wl,-Map,"$BUILD_DIR/freertos.map" \
             -nostartfiles -o "$OUT_ELF" "${specs_flags[@]}"
     else
         "$cc" "${cflags[@]}" "${sources[@]}" \
             -T"$board_dir/linker.ld" \
-            -Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num \
+            "${link_flags[@]}" \
             -Wl,-Map,"$BUILD_DIR/freertos.map" \
             -nostartfiles -o "$OUT_ELF"
     fi
@@ -322,7 +312,6 @@ parse_args() {
             ;;
         --kernel-dir)
             KERNEL_DIR="$2"
-            KERNEL_DIR_EXPLICIT=1
             shift 2
             ;;
         --target)
@@ -390,9 +379,9 @@ main() {
     # shellcheck disable=SC2034 # read by the sourced install_to_cache()
     CACHE_INSTALL=1
     TOOLCHAIN_PATH=""
-    KERNEL_DIR_EXPLICIT=0
 
     parse_args "$@"
+    [[ -n "$BUILD_DIR" ]] || die "--build-dir is required; use python3 ci/test.py build"
     OUT_ELF="${OUT_ELF:-$BUILD_DIR/freertos.elf}"
     OUT_BIN="${OUT_BIN:-$BUILD_DIR/freertos.bin}"
     VERSION="${VERSION:-$(version_from_tag "$TAG")}"

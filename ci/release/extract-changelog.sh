@@ -8,7 +8,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-changelog="$script_dir/../CHANGELOG.md"
+changelog="$script_dir/../../CHANGELOG.md"
 release_tag="$1"
 
 awk -v heading="## [${release_tag}]" '

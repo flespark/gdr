@@ -30,17 +30,18 @@
  *
  * Every requirement is probed and reported through `t.skip`, matching the
  * repository's other lanes, so a partial local setup stays usable:
- * `GDR_STLINK_ADAPTER`, `GDR_STLINK_DEVICE`, `GDR_GDB` (must have Python),
- * `GDR_FREERTOS_ELF`, `GDR_QEMU`.
+ * `GDR_STLINK_ADAPTER`, `GDR_STLINK_DEVICE`, cached firmware and registered
+ * QEMU/GDB tools (GDB must have Python).
  */
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as net from 'node:net';
-import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
+
+import { CACHE, REPO_ROOT, cachedTool, temporaryDirectory } from './fixture.ts';
 
 import { consoleCommand, setupCommands, watchExpression } from '../../src/inject.ts';
 import { parseSnapshot } from '../../src/snapshot.ts';
@@ -52,20 +53,16 @@ import {
 	transportPlan
 } from '../../src/transport.ts';
 
-/** The extension directory is the npm script's cwd; the runtime sits above it. */
-const REPO_ROOT = process.env.GDR_REPO_ROOT ?? path.resolve(process.cwd(), '..');
 const GDR_ENTRY = path.join(REPO_ROOT, 'gdr.py');
 const ADAPTER = process.env.GDR_STLINK_ADAPTER ?? '';
 const DEVICE = process.env.GDR_STLINK_DEVICE ?? '';
 const CORE = process.env.GDR_STLINK_CORE ?? 'Cortex-M3';
-const GDB = process.env.GDR_GDB ?? 'gdb';
-const ELF =
-	process.env.GDR_FREERTOS_ELF ??
-	path.join(process.env.HOME ?? '', 'Project/gdr-fixture/freertos/mps2-an385/11.1.0/base/freertos.elf');
-const QEMU = process.env.GDR_QEMU ?? 'qemu-system-arm';
-const MACHINE = process.env.GDR_QEMU_MACHINE ?? 'mps2-an385';
+const GDB = cachedTool(['gdb-multiarch', 'arm-none-eabi-gdb-py3', 'gdb']);
+const ELF = path.join(CACHE, 'fixtures', 'freertos', 'mps2-an385', '11.1.0', 'base', 'freertos.elf');
+const QEMU = cachedTool(['qemu-system-arm']);
+const MACHINE = 'mps2-an385';
 const RTOS = 'freertos';
-const VERSION = process.env.GDR_FREERTOS_VERSION ?? '11.1.0';
+const VERSION = '11.1.0';
 
 /** Why this lane cannot run, or `false` when it can. */
 function skipReason(): string | false {
@@ -278,7 +275,7 @@ test('the ST adapter hosts GDR through initCommands and the file route', async (
 		return;
 	}
 
-	const root = mkdtempSync(path.join(tmpdir(), 'gdr-stlink-'));
+	const root = mkdtempSync(path.join(temporaryDirectory(), 'gdr-stlink-'));
 	const loader = path.join(root, 'load.gdb');
 	const dump = path.join(root, 'snapshot.json');
 	const port = await freePort();

@@ -79,7 +79,7 @@
       set -eu
       cd vscode
       npm run vendor
-      python3 ../ci/check-vendored-schema.py .
+      python3 scripts/check-vendored-schema.py .
       git check-ignore -q resources/gdr/VERSION || {
         echo "vendored runtime is not ignored by git" >&2
         exit 1
@@ -130,37 +130,18 @@
   tags: cnb:arch:amd64
   cpus: 8
 
-# ci/Dockerfile pins QEMU, GDB, xPack ARM/RISC-V GCC/newlib, scons, and uv.
+# ci/containers/Dockerfile pins the shared integration build environment.
 # `by` lets CNB invalidate the cached image only when these inputs change;
 # rebuilds are otherwise read from the artifact registry.
 .qemu-matrix-build: &qemu-matrix-build
-  dockerfile: ci/Dockerfile
+  dockerfile: ci/containers/Dockerfile
   by:
-    - ci/Dockerfile
-    - ci/gdr-xpack/
+    - ci/containers/Dockerfile
 
 .gdb12-build: &gdb12-build
-  dockerfile: ci/Dockerfile.gdb12
+  dockerfile: ci/containers/Dockerfile.gdb12
   by:
-    - ci/Dockerfile.gdb12
-
-.arm-toolchain-env: &arm-toolchain-env
-  GDR_GDB: gdb-multiarch
-  RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
-
-.freertos-env: &freertos-env
-  GDR_GDB: gdb-multiarch
-  RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
-  FREERTOS_FIXTURE_CACHE: /tmp/freertos-fixture
-
-# NOTE: probe the exact tools each lane needs before pytest; a missing gcc
-# would otherwise pytest.skip the whole lane and report green.
-.gdb-python-qemu-sanity: &gdb-python-qemu-sanity
-  name: toolchain sanity (no green-by-skip)
-  script: |
-    arm-none-eabi-gcc --version | head -1
-    "$GDR_GDB" --nx --quiet --batch --ex 'python print("GDR_PYTHON_OK")'
-    qemu-system-arm --version | head -1
+    - ci/containers/Dockerfile.gdb12
 
 # ---------------------------------------------------------------------------
 # Closed-loop pipelines, each defined once and run on both push and PR.
@@ -171,114 +152,70 @@
   runner: *amd64-runner
   docker:
     build: *gdb12-build
-    volumes:
-      - /tmp/rt-thread-build:copy-on-write
-      - /root/.cache/uv:copy-on-write
-  env:
-    GDR_GDB: gdb-multiarch
-    GDR_EXPECTED_GDB_MAJOR: "12"
-    GDR_EXPECTED_EMBEDDED_PYTHON: "3.10"
-    RT_THREAD_REFS: v4.0.5
-    RTOS_TOOLCHAIN_PATH: /opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin
   stages:
     - name: GDB 12 / Python 3.10 Cortex-A9 smoke test
-      script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+      script: python3 ci/test.py matrix gdb12
 
 .rtthread-a9-target: &rtthread-a9-target
   name: rtthread-a9-target
   runner: *amd64-runner
   docker:
     build: *qemu-matrix-build
-    volumes:
-      # Cache RT-Thread tags and per-version Git clones across CI runs.
-      # build-rtt.sh removes ignored SCons outputs before every build.
-      - /tmp/rt-thread-build:copy-on-write
-      - /root/.cache/uv:copy-on-write
-  env: *arm-toolchain-env
   stages:
     - name: pytest matrix (QEMU closed-loop)
-      script: bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
+      script: python3 ci/test.py matrix rtthread-a9
 
 .rtthread-rv64-target: &rtthread-rv64-target
   name: rtthread-rv64-target
   runner: *amd64-runner
   docker:
     build: *qemu-matrix-build
-    volumes:
-      - /tmp/rt-thread-build:copy-on-write
-      - /root/.cache/uv:copy-on-write
-  env:
-    GDR_GDB: gdb-multiarch
-    RTOS_TOOLCHAIN_PATH: /opt/xpack-riscv-none-elf-gcc-15.2.0-1/bin
   stages:
     - name: pytest RV64 matrix (QEMU closed-loop)
-      script: bash ci/rt-thread/run-qemu-matrix.sh rv64
+      script: python3 ci/test.py matrix rtthread-rv64
 
-# NOTE: one freertos lane — every cell builds from FreeRTOS-Kernel at a tag
-# with build-fixture-kernel.sh, so one kernel-source volume serves the config
-# matrix (10.3.1), the version sweep, SMP/MPU, RISC-V and the snapshot alike.
+# Every FreeRTOS matrix uses the same cache and lane runner.
 .freertos-kernel-scope: &freertos-kernel-scope
   name: freertos-kernel-scope
   runner: *amd64-runner
   docker:
     build: *qemu-matrix-build
-    volumes:
-      - /tmp/freertos-fixture:copy-on-write
-      - /tmp/gdr-freertos-kernel-source:copy-on-write
-      - /tmp/gdr-venv:copy-on-write
-      - /root/.cache/uv:copy-on-write
-  env: *freertos-env
   stages:
-    - <<: *gdb-python-qemu-sanity
-    - name: Standalone RV64 .eh_frame unwind
-      script: bash ci/unwind/run-qemu.sh
     - name: FreeRTOS config variant matrix (mps2-an385, kernel 10.3.1)
-      script: |
-        bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 \
-          base full static-only static-dynamic trace-off \
-          heap-1 heap-2 heap-3 heap-5 heap-protector \
-          registry-0 pend-callback streams tick16
+      script: python3 ci/test.py matrix freertos-config
     # NOTE: the config axis pins 10.3.1 (the V10.3.1-kernel-only tag); the
     # version axis sweeps the newer ABI generations on the same board.
     - name: FreeRTOS kernel version matrix (mps2-an385)
-      script: |
-        bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.4.6 base
-        bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.5.1 base
-        bash ci/freertos/run-qemu-matrix.sh mps2-an385 11.1.0 \
-          base heap-protector heap-2 heap-5-protector streams \
-          pend-callback tick16
+      script: python3 ci/test.py matrix freertos-version
     # NOTE: kept a separate stage so a dual-core failure is attributable at a
     # glance. ARMv8-M SMP exists only from 11.3.1, so this cannot fold into the
-    # single-core version sweep above.  The mpu variant (single-core
-    # configENABLE_MPU on the same board) shares the board's linker script:
-    # its earlier unreachability was a fixture linker defect (the script
-    # collected *(.privileged_functions*) instead of *(privileged_functions*)
-    # and overlapped every flash region), fixed with the SMP lane -- the two
-    # variants boot from the same board directory, so a regression on either
-    # fails this stage.
+    # single-core version sweep above. The SMP and MPU variants share the
+    # board's linker script, so either regression fails this stage.
     - name: FreeRTOS dual-core SMP + MPU wrappers (mps2-an521, kernel 11.3.1)
-      script: bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp mpu
+      script: |
+        python3 ci/test.py run freertos mps2-an521 11.3.1 smp
+        python3 ci/test.py run freertos mps2-an521 11.3.1 mpu
     # NOTE: the 64-bit lane is a separate stage so a RISC-V failure is not
     # conflated with the 32-bit sweep; gdb-multiarch speaks riscv:rv64 and the
-    # container env provides XPACK_RISCV_TOOLCHAIN_PATH.
+    # tool registration resolves the RISC-V compiler independently of ARM.
     - name: FreeRTOS 64-bit RISC-V (qemu-virt-rv64, kernel 11.1.0)
-      script: bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64
+      script: |
+        python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 rv64
+        python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 eh-frame
     # NOTE: the first-version M0 and RV32 targets are separate stages so a
     # 32-bit RISC-V or Thumb-1 port failure is distinguishable from the
     # already-covered M3/M33/RV64 lanes.
     - name: FreeRTOS Cortex-M0 (microbit, kernel 11.1.0)
-      script: bash ci/freertos/run-qemu-matrix.sh microbit 11.1.0 full
+      script: python3 ci/test.py run freertos microbit 11.1.0 full
     - name: FreeRTOS 32-bit RISC-V (qemu-virt-rv32, kernel 11.1.0)
-      script: bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv32 11.1.0 base
+      script: python3 ci/test.py run freertos qemu-virt-rv32 11.1.0 base
     # NOTE: the static snapshot (file-only ELF, no QEMU) is the
     # negative-testing arm of the FreeRTOS matrix — the data-corruption
     # states a healthy kernel cannot produce (corrupt scheduler lists, a
-    # timer on the overflow list, mismatched heap counters). It builds from
-    # the same FreeRTOS-Kernel source volume this lane already mounts
-    # (V11.1.0 headers) and stays its own stage so a snapshot failure is
-    # attributable at a glance.
+    # timer on the overflow list, mismatched heap counters). It uses cached
+    # V11.1.0 headers and remains separately attributable.
     - name: FreeRTOS snapshot (mps2-an521, 11.1.0)
-      script: bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.1.0 snapshot
+      script: python3 ci/test.py run freertos mps2-an521 11.1.0 snapshot
 
 main: # branch: main
   push:
@@ -303,7 +240,7 @@ main: # branch: main
       services:
         - docker
       ifModify:
-        - ci/Dockerfile
+        - ci/containers/Dockerfile
         - .cnb.yml
       env:
         GDR_CI_IMAGE: docker.cnb.cool/flespark-2026/gdr/qemu-matrix
@@ -315,7 +252,7 @@ main: # branch: main
             LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
             echo "Publishing ${VERSIONED_IMAGE}"
             docker pull "$LATEST_IMAGE" || true
-            docker build --cache-from "$LATEST_IMAGE" --file ci/Dockerfile \
+            docker build --cache-from "$LATEST_IMAGE" --file ci/containers/Dockerfile \
               --tag "$VERSIONED_IMAGE" --tag "$LATEST_IMAGE" .
             docker push "$VERSIONED_IMAGE"
             docker push "$LATEST_IMAGE"
@@ -325,7 +262,7 @@ main: # branch: main
       services:
         - docker
       ifModify:
-        - ci/Dockerfile.gdb12
+        - ci/containers/Dockerfile.gdb12
         - .cnb.yml
       env:
         GDR_CI_IMAGE: docker.cnb.cool/flespark-2026/gdr/gdb12-compat
@@ -338,7 +275,7 @@ main: # branch: main
             echo "Publishing ${VERSIONED_IMAGE}"
             docker pull "$LATEST_IMAGE" || true
             docker build --cache-from "$LATEST_IMAGE" \
-              --file ci/Dockerfile.gdb12 \
+              --file ci/containers/Dockerfile.gdb12 \
               --tag "$VERSIONED_IMAGE" --tag "$LATEST_IMAGE" .
             docker push "$VERSIONED_IMAGE"
             docker push "$LATEST_IMAGE"
@@ -352,6 +289,7 @@ main: # branch: main
     # Same test pipelines as push, minus the two image publishers.
     - <<: *validate-py310
     - <<: *validate-py314
+    - <<: *extension
     - <<: *gdb12-compat-a9
     - <<: *rtthread-a9-target
     - <<: *rtthread-rv64-target
@@ -376,12 +314,12 @@ $:
               ca-certificates curl git python3
             rm -rf /var/lib/apt/lists/*
         - name: create source archives
-          script: bash ci/create-release-archives.sh "$CNB_BRANCH"
+          script: bash ci/release/create-archives.sh "$CNB_BRANCH"
         - name: build the release VSIX
-          # NOTE: same versioned `ci/build-vsix.sh` the GitHub release
+          # NOTE: same versioned `vscode/scripts/build-vsix.sh` the GitHub release
           # runs, so both forges attach the identical file name; the tag
           # check fails the pipeline on a mistagged release.
-          script: bash ci/build-vsix.sh "$CNB_BRANCH"
+          script: bash vscode/scripts/build-vsix.sh "$CNB_BRANCH"
         - name: publish CNB Release
           script: |
             if [ -z "${GDR_RELEASE_TOKEN:-}" ]; then
@@ -390,4 +328,4 @@ $:
               exit 1
             fi
             CNB_TOKEN="$GDR_RELEASE_TOKEN" \
-              bash ci/publish-cnb-release.sh "$CNB_BRANCH"
+              bash ci/release/publish-cnb.sh "$CNB_BRANCH"

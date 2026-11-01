@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -19,28 +16,23 @@ from tests.support.qemu_harness import (
     check_tools,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SPEC = load_integration_spec()
+pytestmark = pytest.mark.skipif(
+    SPEC.rtos != "freertos" or SPEC.variant != "eh-frame",
+    reason="requires the FreeRTOS eh-frame fixture lane",
+)
 
 
 @pytest.fixture(scope="module")
-def eh_frame_image(tmp_path_factory):
-    toolchain = os.environ.get("XPACK_RISCV_TOOLCHAIN_PATH", "")
-    compiler = (
-        str(Path(toolchain) / "riscv-none-elf-gcc")
-        if toolchain
-        else "riscv-none-elf-gcc"
-    )
-    if shutil.which(compiler) is None:
-        pytest.skip(f"missing compiler: {compiler}")
-    output = tmp_path_factory.mktemp("eh-frame")
-    result = subprocess.run(
-        ["bash", str(ROOT / "ci/unwind/build-fixture.sh"), str(output)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
+def eh_frame_image():
+    output = SPEC.fixture_dir()
+    if not all(
+        (output / name).is_file() for name in ("unwind.elf", "unwind.bin", "frames.txt")
+    ):
+        pytest.skip(
+            "missing eh-frame fixture; use python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 eh-frame"
+        )
     image = ElfImage.from_path(output / "unwind.elf")
     assert image is not None and image.section(".eh_frame") is not None
     assert image.section(".debug_frame") is None

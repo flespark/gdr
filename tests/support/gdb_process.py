@@ -27,10 +27,9 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 def has_embedded_python(gdb_binary: str) -> bool:
     """Return whether GDB can execute the embedded Python interpreter.
 
-    Only ``ci/check-gdb-python.sh`` used to probe this; every closed-loop
-    lane (live QEMU and the static snapshot) needs it, so the check moved
-    into the shared harness and both session types skip early instead of
-    failing mid-test.
+    Live QEMU and file-only sessions skip before setup when their GDB
+    lacks Python. The CLI additionally preflights Python version and ISA
+    through ``ci/checks/gdb-python.sh``.
     """
     result = subprocess.run(
         [

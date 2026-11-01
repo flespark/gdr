@@ -111,7 +111,7 @@ All commands run via `uv run` (auto-activates the `.venv`):
 | `uv run ruff format .` | Format (black-compatible) |
 | `uv run ruff format --check .` | Verify formatting without writing |
 | `uv run pytest tests/unit --cov` | Run unit tests and enforce core coverage |
-| `uv run pytest tests/integration -v` | Run QEMU tests when fixtures exist |
+| `python3 ci/test.py run RTOS TARGET VERSION [VARIANT]` | Prepare and run one integration lane |
 | `cd vscode && npm run vendor` | Refresh the extension's bundled GDR runtime |
 | `cd vscode && npm run check-types` | Type-check the extension |
 | `cd vscode && npm test` | Extension units + real-session check (skips without fixtures) |
@@ -121,153 +121,40 @@ replacement and the only formatter used.
 
 ## Verification and CI
 
-### RT-Thread QEMU test
-
-`bash ci/rt-thread/run-qemu-matrix.sh` apply series arch/version triage patches
-to RT-thread repo and build firmware for QEMU test.
-
-QEMU fixture patches are grouped by platform first:
-`ci/rt-thread/patches/cortex-a9/<version>/` and
-`ci/rt-thread/patches/rv64/<version>/`. Do not share a patch across those
-directories unless it applies cleanly to both BSP paths and toolchains.
-
-The integration harness resolves fixture paths from
-`RT_THREAD_FIXTURE_CACHE/<target>/<version>/rtthread.elf` (plus
-`rtthread.bin` for RV64). The default cache root is the CNB host path
-`/workspace/fixture/rtthread`. An explicit `GDR_ELF_PATH` still wins; on
-RV64 the QEMU boot image is always its `.bin` sibling. Env parsing lives in
-`tests/support/loader.py`; missing tools or fixture artifacts are skipped
-per test via `pytest.skip` (see `tests/support/qemu_harness.py`), so
-partial local caches stay usable.
+The public integration entry point is `python3 ci/test.py`. Commands, cache
+initialization/linking, tool registration, containers, logs, and interface
+layering are documented in [ci/README.md](ci/README.md). Coverage and target
+profiles live in [docs/testing.md](docs/testing.md); measured build facts
+belong to the [FreeRTOS](ci/freertos/README.md) and
+[RT-Thread](ci/rt-thread/README.md) lane READMEs.
 
 ```bash
-# Run the Cortex-A9 matrix against the default CNB fixture cache.
-GDR_GDB=gdb-multiarch bash ci/rt-thread/run-qemu-matrix.sh cortex-a9
-
-# Or point at another cache root / a single pytest session.
-RT_THREAD_FIXTURE_CACHE=/path/to/cache GDR_GDB=gdb-multiarch \
-  GDR_QEMU_TARGET=cortex-a9 GDR_VERSION=4.0.5 \
-  uv run pytest tests/integration/rtthread -v
+python3 ci/test.py list smoke
+python3 ci/test.py run freertos mps2-an385 11.1.0 full -- -k backtrace
+python3 ci/test.py matrix rtthread-rv64
+python3 ci/test.py container run -- matrix smoke
 ```
-
-RT-Thread 3.1.x is verified on the Cortex-A9 QEMU BSP only; the upstream
-QEMU RV64 BSP starts at RT-Thread 4.0.4, so the RV64 matrix covers 4.0.4
-through 4.1.1 (`bsp/qemu-virt64-riscv` from 4.1.1).
-
-The RV64 target uses `qemu-system-riscv64 -machine virt` and boots
-`rtthread.bin` as BIOS; GDB reads the separate `rtthread.elf`.
-
-### FreeRTOS smoke test
-
-FreeRTOS verification has one kernel-direct builder plus its static `snapshot`
-variant, all installing into one fixture cache (details in
-`ci/freertos/README.md`):
-
-- **Kernel-direct (`mps2-an385`, `mps2-an521`, `qemu-virt-rv64`):**
-  `ci/freertos/build-fixture-kernel.sh` clones `FreeRTOS-Kernel` at a tag and
-  links a port directory chosen by target, carrying both the **config variant**
-  matrix (14 variants on `mps2-an385` at 10.3.1, the `V10.3.1-kernel-only`
-  tag) and the **kernel version** matrix (10.4.6, 10.5.1, 11.1.0).
-  `mps2-an385` links `portable/GCC/ARM_CM3` (single core).
-  `mps2-an521` links `portable/GCC/ARM_CM33_NTZ/non_secure` and hosts two
-  mutually exclusive single-board variants: the **dual-core SMP** lane (QEMU
-  models that board as SSE-200 with two Cortex-M33, ARMv8-M SMP exists only
-  from `V11.3.1` -- `portVALIDATED_FOR_SMP` is 0 in every earlier tag -- so it
-  is pinned to `11.3.1` with the `smp` config variant) and the **single-core
-  `mpu`** variant (`configENABLE_MPU 1`, MPU wrappers v2) that populates
-  `xKernelObjectPool`. Unlike the CM3 port, CM33 needs `portasm.c` compiled
-  alongside `port.c`; the `mpu` variant additionally links
-  `portable/Common/mpu_wrappers_v2.c` and `mpu_wrappers_v2_asm.c`.
-  `qemu-virt-rv64` links `portable/GCC/RISC-V` (rv64imac, `portASM.S` +
-  `chip_specific_extensions/RISCV_MTIME_CLINT_no_extensions`) and boots on
-  QEMU `-machine virt` with the SiFive CLINT tick; it is the 64-bit lane
-  (64-bit pointers, and the RISC-V port always uses 64-bit ticks). The
-  kernel-direct compiler follows the target (`riscv-none-elf-` on
-  `qemu-virt-rv64`, `arm-none-eabi-` elsewhere).
-- **Static snapshot** (kernel-direct variant `snapshot`, cell
-  `mps2-an521/11.1.0`): `ci/freertos/build-fixture-kernel.sh` compiles a
-  file-only Cortex-M33 ELF pair from `fixture/config/snapshot/` whose `.data`
-  holds pre-initialized SMP scheduler structures plus the diagnostic
-  negatives a healthy kernel cannot produce (corrupt lists, a timer on the
-  overflow list, a heap whose free-list/linear/counter triple disagrees) —
-  the data-corruption negative-testing arm of the matrix. A second, heap-only
-  ELF (`snapshot_heap.c` -> `snapshot_heap.elf`) carries the
-  free-list-member-with-allocated-bit case, which cannot share one heap
-  symbol set with the mismatch case. `tests/integration/freertos/test_snapshot.py`
-  loads them with `file` only (no QEMU) via
-  `tests/support/freertos_elf_harness.py`; a cached snapshot ELF older than
-  its sources is rebuilt, like the live lanes.
-
-`bash ci/freertos/run-qemu-matrix.sh [<target>] [<version>] [<variant>...]`
-drives the live lanes and the file-only `snapshot` variant.
-
-```bash
-bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 base full static-dynamic
-bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.1.0 snapshot   # file-only ELF
-bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 smp        # dual-core SMP
-bash ci/freertos/run-qemu-matrix.sh mps2-an521 11.3.1 mpu        # MPU wrappers v2
-bash ci/freertos/run-qemu-matrix.sh qemu-virt-rv64 11.1.0 rv64   # 64-bit RISC-V
-# The GDR_GDB used for the closed loop must match the lane's architecture
-# (riscv-none-elf-gdb-py3 for qemu-virt-rv64, arm-none-eabi-gdb-py3 elsewhere);
-# the matrix runner probes the architecture and refuses to start otherwise.
-
-# Point the fixture cache elsewhere. A cached fixture is reused only while it is
-# newer than the fixture sources; a missing or stale one is rebuilt and installed.
-FREERTOS_FIXTURE_CACHE=/path/to/cache \
-  bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 base
-```
-
-Cache layout is `<cache>/<target>/<version>/<variant>/freertos.elf` rooted at
-`FREERTOS_FIXTURE_CACHE` (the snapshot cell `mps2-an521/11.1.0/snapshot/`
-also holds `snapshot_heap.elf`; default `/Volumes/PS3000/gdr-fixture/freertos`).
-`GDR_FIXTURE_VARIANT` selects the
-variant, `GDR_FORCE_BUILD=1` forces a rebuild, and a missing artifact is
-`pytest.skip` so partial local caches stay usable. Shared fixture sources live in
-`ci/freertos/fixture/` (`config/<variant>/`, `board/<board>/`, `main.c`).
-Board code owns the platform details a shared `main.c` must not carry: the
-`mps2-an521` board directory holds the CPU1 entry point and the
-`configWAKE_SECONDARY_CORES` implementation (write `INITSVTOR1`, then clear the
-`CPUWAIT` bit -- that order matters, because clearing the bit warm-resets CPU1
-from whatever `INITSVTOR1` holds at that moment).
-
-That fixture has one documented limitation: it does not override the port's weak
-`vInterruptCore`, so cross-core yield requests are not delivered as interrupts
-and a task caught mid-yield can render as `Running(yielding)`. Every
-ground-truth waiter task is pinned to core 0 so no shared assertion depends on a
-cross-core yield. See `ci/freertos/README.md` for why the MHU doorbell is not
-wired.
-
-`GDR_GDB` must name a GDB with embedded Python: xPack's `arm-none-eabi-gdb`
-has none, its sibling `arm-none-eabi-gdb-py3` does. Probe with
-`"$GDR_GDB" --nx --quiet --batch --ex 'python print("ok")'` instead of trusting
-the binary's name.
 
 Any work that consumes a config branch (SMP, heap_N, static allocation,
-stream buffers, MPU, runtime stats, …) must first have a fixture or
-snapshot that can falsify it.
+stream buffers, MPU, runtime stats, IRQ stacks, scheduling transitions, …)
+must first have a fixture or snapshot that can falsify it. Target-specific
+patches belong under `ci/rt-thread/patches/<target>/<version>/`; verify each
+BSP/toolchain before sharing a patch.
 
 ### CI pipelines
 
-CI runs on [CNB](https://cnb.cool/) (Cloud Native Build); pipelines are
-defined in `.cnb.yml`, one per verification axis and named `<rtos>-<axis>`:
-ruff + unit coverage on Python 3.10/3.14, the GDB 12 compatibility baseline,
-RT-Thread split by target (`rtthread-a9-target` / `rtthread-rv64-target`), and
-`freertos-kernel-scope` building every FreeRTOS cell from FreeRTOS-Kernel at a
-tag (the config matrix at 10.3.1, the version sweep, the dual-core SMP and
-single-core MPU lanes on mps2-an521, the 64-bit RISC-V lane, and the static
-snapshot for data-corruption negative testing). Every test pipeline is defined once as a YAML anchor
-and referenced from both `push:` and `pull_request:`; the two event lists differ
-only in the two image publishers, which are push-only so a PR never moves a
-shared tag.
-GitHub Actions mirrors the validate jobs in `.github/workflows/ci.yml`. To
-reproduce the current ARM and RV64 QEMU matrices locally in a Podman machine:
+| Verification axis | CNB pipeline | CLI matrix / command |
+| --- | --- | --- |
+| Python lint, hooks, unit coverage | `validate-py310`, `validate-py314` | `uv run pytest tests/unit --cov` |
+| GDB 12 / Python 3.10 baseline | `gdb12-compat-a9` | `matrix gdb12` |
+| RT-Thread Cortex-A9 | `rtthread-a9-target` | `matrix rtthread-a9` |
+| RT-Thread RV64 | `rtthread-rv64-target` | `matrix rtthread-rv64` |
+| FreeRTOS config, version, ports and negative fixtures | `freertos-kernel-scope` | `matrix freertos` |
+| VSCode build and checks | `extension` | See `vscode/README.md`. |
 
-```bash
-ci/validate-podman.sh
-```
-
-The script builds `ci/Dockerfile` for `linux/amd64` and uses the pinned xPack
-toolchains. Start a Podman machine before running it.
+CNB definitions live in `.cnb.yml`; test pipelines use shared YAML anchors
+for push and pull requests. Image publishers run only on push. GitHub
+Actions uses the same CLI in `.github/workflows/ci.yml`.
 
 ## Documentation map
 
@@ -286,6 +173,7 @@ that owns the fact:
 | `docs/errata.md` | design readers | known limits and kernel differences by adapter | development rules (→ AGENTS.md) | one fact per bold item |
 | `docs/gdb_python_reference.md` | developers | offline GDB Python API reference for bridge/stack work | project-specific claims | reference only, never edit by hand |
 | `CHANGELOG.md` | users | user-visible behaviour changes | fixture/CI/lane/variant internals, implementation narrative, test-fix process notes | one line per change, ≤3 lines each |
+| `ci/README.md` | contributors | integration CLI, shared cache, containers and orchestration layering | RTOS build mechanics | command-oriented |
 | `ci/<rtos>/README.md` | lane maintainers | measured build facts, toolchains, cache, linker traps, unreachable variants | adapter design | none |
 | `vscode/README.md` | extension users and lane maintainers | build/test/vendor commands, supported adapters, known limits | GDR internals, envelope design (link to architecture.md) | short sections, no per-file prose |
 

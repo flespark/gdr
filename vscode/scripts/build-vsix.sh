@@ -3,11 +3,11 @@
 #
 # The extension version tracks GDR's own year.serial release (GDR `2026.4`
 # ships as extension `2026.4.0`), so the file name comes from
-# `ci/vsix-artifact-name.sh`, never from the tag string: a tag cannot spell
+# `vscode/scripts/vsix-artifact-name.sh`, never from the tag string: a tag cannot spell
 # the semver patch. A tag release always ships patch `0`; an extension-only
 # fix (packaging or UI, same runtime) bumps the patch and is built with
 # `--patch` instead, then attached to the existing release by hand or by the
-# release workflow's manual dispatch. `ci/check-vendored-schema.py` separately
+# release workflow's manual dispatch. `vscode/scripts/check-vendored-schema.py` separately
 # enforces that the vendored runtime and its envelope schema match this
 # checkout.
 set -euo pipefail
@@ -29,7 +29,7 @@ if [[ ! "$release_tag" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
 output_dir="dist"
 if [[ $# -eq 2 ]]; then
     output_dir="$2"
@@ -88,7 +88,7 @@ mkdir -p "$output_dir"
     cd "$repo_root/vscode"
     npm ci --no-audit --no-fund
     npm run vendor
-    python3 ../ci/check-vendored-schema.py .
+    python3 scripts/check-vendored-schema.py .
     npm run build
     npx vsce package --no-dependencies --out "$vsix_path"
 )

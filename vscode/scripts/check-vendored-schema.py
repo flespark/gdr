@@ -11,7 +11,7 @@ names one version must identify both halves.
 
 Usage::
 
-    ci/check-vendored-schema.py [<vscode-directory>]
+    vscode/scripts/check-vendored-schema.py [<vscode-directory>]
 """
 
 from __future__ import annotations

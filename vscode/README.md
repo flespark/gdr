@@ -112,9 +112,16 @@ npm run package       # vendor + build + gdb-rtos-views.vsix (installable)
 run when the bundled manifest's envelope schema differs from the schema this
 client was built for. `npm run package` produces the installable VSIX; CI
 builds the same VSIX on every push for verification only and never publishes
-(Marketplace releases are published by hand). `ci/check-vendored-schema.py`
+(Marketplace releases are published by hand). `vscode/scripts/check-vendored-schema.py`
 checks the bundle's version and schema against the source checkout
 (`GDR x.y` ships as extension `x.y.0`).
+
+The real-session tests consume firmware under `ci/.cache/fixtures/` and
+registered tools from `ci/.cache/tools/<host>/bin/`, with PATH fallback.
+Prepare `rtthread/cortex-a9/4.0.5` (and the optional ST adapter lane's
+`freertos/mps2-an385/11.1.0/base`) with the
+[shared CLI](../ci/README.md). Missing requirements are reported as skips;
+ST adapter configuration uses the explicit `GDR_STLINK_*` test settings.
 
 ## Known limits
 

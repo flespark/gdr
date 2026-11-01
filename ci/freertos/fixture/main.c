@@ -5,7 +5,7 @@
  * tskKERNEL_VERSION_*). Heap_5 region setup is gated by GDR_FIXTURE_HEAP_5.
  *
  * The kernel/config/board headers below resolve only through the ARM cross
- * include paths supplied by ci/freertos/build-fixture-kernel.sh; host-side
+ * include paths supplied by ci/freertos/build.sh; host-side
  * analyzers without those paths report spurious "file not found" errors
  * (see .pi-lens.json ignore for the same class).
  */

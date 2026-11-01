@@ -11,9 +11,6 @@ set can only show one corruption.
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -23,9 +20,6 @@ from tests.support.loader import load_integration_spec
 
 SPEC = load_integration_spec()
 GDR_ROOT = Path(__file__).resolve().parents[3]
-FREERTOS_CI_DIR = GDR_ROOT / "ci" / "freertos"
-SNAPSHOT_DIR = FREERTOS_CI_DIR / "fixture" / "config" / "snapshot"
-BUILD_SCRIPT = FREERTOS_CI_DIR / "build-fixture-kernel.sh"
 # Reason: the snapshot is an ordinary cache cell — the main ELF follows the
 # freertos.elf convention and the heap-only negative rides along as a second
 # artifact in the same directory.
@@ -44,75 +38,11 @@ _OVERFLOW_EXPIRY = 5
 _EXPECTED_OVERFLOW_EXPIRES_IN = (2**32 - _TICK) + _OVERFLOW_EXPIRY
 
 
-def _snapshot_sources_newer_than(elf: Path) -> bool:
-    """Whether any snapshot source is newer than a cached ELF.
-
-    Mirrors ``ci/freertos/run-qemu-matrix.sh::fixture_sources_newer_than``:
-    a stale cached fixture would silently run the *old* negative data against
-    the new assertions -- the exact false-pass trap the live-lane fix
-    addressed -- so the snapshot variant rebuilds when its sources changed.
-    """
-    if not elf.exists():
-        return True
-    sources = [
-        SNAPSHOT_DIR / "snapshot.c",
-        SNAPSHOT_DIR / "snapshot_heap.c",
-        SNAPSHOT_DIR / "FreeRTOSConfig.h",
-        SNAPSHOT_DIR / "portmacro.h",
-        SNAPSHOT_DIR / "linker.ld",
-        BUILD_SCRIPT,
-    ]
-    return any(
-        source.exists() and source.stat().st_mtime > elf.stat().st_mtime
-        for source in sources
-    )
-
-
-def _snapshot_cache_fresh() -> bool:
-    """Whether both cached ELFs exist and are newer than their sources."""
-    return (
-        CACHED_SNAPSHOT_ELF.exists()
-        and CACHED_HEAP_SNAPSHOT_ELF.exists()
-        and not _snapshot_sources_newer_than(CACHED_SNAPSHOT_ELF)
-        and not _snapshot_sources_newer_than(CACHED_HEAP_SNAPSHOT_ELF)
-    )
-
-
 def _ensure_snapshot_cache() -> None:
-    """Reuse the cached snapshot pair or rebuild it through the shared builder."""
-    if _snapshot_cache_fresh() and not SPEC.force_build:
-        return
-    if shutil.which("arm-none-eabi-gcc") is None:
-        pytest.skip("arm-none-eabi-gcc not available for the snapshot variant")
-    with tempfile.TemporaryDirectory(prefix="gdr-snapshot-build") as build_dir:
-        command = [
-            "bash",
-            str(BUILD_SCRIPT),
-            "--tag",
-            f"V{SPEC.version}",
-            "--target",
-            SPEC.target,
-            "--variant",
-            "snapshot",
-            "--version",
-            SPEC.version,
-            "--build-dir",
-            build_dir,
-            "--out-elf",
-            str(Path(build_dir) / "freertos.elf"),
-            "--cache-dir",
-            str(SPEC.fixture_dir()),
-        ]
-        # Reason: no --kernel-dir plumbing here — the builder resolves kernel
-        # headers itself (FREERTOS_KERNEL_DIR from the inherited environment,
-        # else the shared tag clone).
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
-        # Reason: a broken snapshot build must fail the lane. Skipping here is
-        # how the C layer previously stayed "green" in CI while decoding
-        # nothing.
-        assert result.returncode == 0, (
-            f"snapshot build failed ({result.returncode}):\n"
-            f"{result.stdout}\n{result.stderr}"
+    """Require prepared artifacts; pytest never downloads or builds firmware."""
+    if not CACHED_SNAPSHOT_ELF.is_file() or not CACHED_HEAP_SNAPSHOT_ELF.is_file():
+        pytest.skip(
+            "missing snapshot pair; use python3 ci/test.py run freertos mps2-an521 11.1.0 snapshot"
         )
 
 

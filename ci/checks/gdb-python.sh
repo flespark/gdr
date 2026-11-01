@@ -1,13 +1,33 @@
 #!/usr/bin/env bash
 # Verify the GDB used by a closed-loop job: the embedded Python interpreter
-# and, when the lane passes its target architecture as $1 (e.g. riscv:rv64),
+# and, when the lane passes --architecture (e.g. riscv:rv64),
 # that the GDB actually supports it.
 set -euo pipefail
 
-GDB_BIN="${GDR_GDB:-gdb-multiarch}"
-MIN_PYTHON="${GDR_MIN_EMBEDDED_PYTHON:-3.10}"
-EXPECTED_GDB_MAJOR="${GDR_EXPECTED_GDB_MAJOR:-}"
-EXPECTED_PYTHON="${GDR_EXPECTED_EMBEDDED_PYTHON:-}"
+GDB_BIN=gdb-multiarch
+MIN_PYTHON=3.10
+EXPECTED_GDB_MAJOR=""
+EXPECTED_PYTHON=""
+REQUIRED_ARCH=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --gdb | --architecture | --major | --python)
+        [[ $# -ge 2 && -n "$2" ]] || { echo "missing value for $1" >&2; exit 2; }
+        case "$1" in
+        --gdb) GDB_BIN="$2" ;;
+        --architecture) REQUIRED_ARCH="$2" ;;
+        --major) EXPECTED_GDB_MAJOR="$2" ;;
+        --python) EXPECTED_PYTHON="$2" ;;
+        esac
+        shift 2
+        ;;
+    -h | --help)
+        echo "Usage: $0 [--gdb FILE] [--architecture ISA] [--major N] [--python X.Y]"
+        exit 0
+        ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+done
 
 if ! command -v "$GDB_BIN" >/dev/null; then
     echo "[gdr-ci] FAILED: GDB executable not found: $GDB_BIN" >&2
@@ -47,12 +67,10 @@ fi
 echo "[gdr-ci] embedded Python: $embedded_version"
 
 # NOTE: a GDB can exist and embed Python yet lack the lane's target
-# architecture (an ARM-only build on the RISC-V lane); that used to surface
-# as every closed-loop test failing on a half-initialised session instead of
-# a clear pre-flight error. Match the success message rather than the exit
+# architecture (an ARM-only build on the RISC-V lane). Match the success
+# message rather than the exit
 # status, like the Python probe above: batch-mode command errors can still
 # leave some GDB builds with a successful process status.
-REQUIRED_ARCH="${1:-}"
 if [[ -n "$REQUIRED_ARCH" ]]; then
     arch_output="$(LC_ALL=C "$GDB_BIN" --nx --quiet --batch \
         --ex "set architecture $REQUIRED_ARCH" 2>&1 || true)"

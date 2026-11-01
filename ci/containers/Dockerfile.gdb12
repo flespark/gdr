@@ -23,7 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -LsSf https://astral.sh/uv/0.5.11/install.sh | sh \
     && ln -sf /root/.local/bin/uv /usr/local/bin/uv \
     && python3 -m venv /opt/scons-venv \
-    && /opt/scons-venv/bin/pip install --no-cache-dir "scons>=4.6,<5"
+    && /opt/scons-venv/bin/pip install --no-cache-dir "scons>=4.6,<5" \
+    && ln -sf /opt/scons-venv/bin/scons /usr/local/bin/scons
 
 # Keep the test fixture compiler identical to the regular Cortex-A9 matrix.
 # NOTE: a distribution compiler can alter the fixture's stack layout and
@@ -40,13 +41,12 @@ RUN arm_archive="xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}-linux-x64.tar.gz" 
     && printf '#include <stdio.h>\n' | /opt/xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}/bin/arm-none-eabi-gcc -E -x c - >/dev/null
 
 # Verify the immutable purpose of this image while building it. Runtime jobs
-# repeat the check via ci/check-gdb-python.sh before every actual GDB session.
+# repeat the check via ci/checks/gdb-python.sh before every actual GDB session.
 RUN LC_ALL=C gdb-multiarch --version | head -n 1 | grep -Eq ' 12(\.| )' \
     && gdb-multiarch --nx --quiet --batch \
         --ex 'python import sys; assert sys.version_info[:2] == (3, 10), sys.version' \
     && /opt/xpack-arm-none-eabi-gcc-${XPACK_ARM_VERSION}/bin/arm-none-eabi-gcc --version | head -n 1
 
-ENV XPACK_ARM_TOOLCHAIN_PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin \
-    PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/opt/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /workspace

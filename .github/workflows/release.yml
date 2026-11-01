@@ -38,7 +38,7 @@ jobs:
       - name: Create source archives
         env:
           TAG: ${{ github.ref_name }}
-        run: bash ci/create-release-archives.sh "$TAG"
+        run: bash ci/release/create-archives.sh "$TAG"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           # NOTE: no dependency cache on a release job -- a poisoned cache
@@ -52,18 +52,18 @@ jobs:
         # a wrong VSIX. Extension-only fixes go through --patch (see below).
         env:
           TAG: ${{ github.ref_name }}
-        run: bash ci/build-vsix.sh "$TAG"
+        run: bash vscode/scripts/build-vsix.sh "$TAG"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           notes_file="$(mktemp)"
-          bash ci/extract-changelog.sh "$TAG" >"$notes_file"
+          bash ci/release/extract-changelog.sh "$TAG" >"$notes_file"
           # NOTE: the VSIX name is derived from vscode/package.json by
-          # ci/vsix-artifact-name.sh, the same authority ci/build-vsix.sh
+          # vscode/scripts/vsix-artifact-name.sh, the same authority the VSIX builder
           # packages under -- globbing dist/ could pick up a stale file.
-          vsix_file="$(bash ci/vsix-artifact-name.sh)"
+          vsix_file="$(bash vscode/scripts/vsix-artifact-name.sh)"
           if [[ ! -f "$vsix_file" ]]; then
             echo "missing expected VSIX: $vsix_file" >&2
             exit 1
@@ -115,13 +115,13 @@ jobs:
       - name: Build the patch VSIX
         env:
           TAG: ${{ inputs.gdr_tag }}
-        run: bash ci/build-vsix.sh --patch "$TAG"
+        run: bash vscode/scripts/build-vsix.sh --patch "$TAG"
       - name: Upload the patch VSIX onto the existing release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.gdr_tag }}
         run: |
-          vsix_file="$(bash ci/vsix-artifact-name.sh)"
+          vsix_file="$(bash vscode/scripts/vsix-artifact-name.sh)"
           if [[ ! -f "$vsix_file" ]]; then
             echo "missing expected VSIX: $vsix_file" >&2
             exit 1

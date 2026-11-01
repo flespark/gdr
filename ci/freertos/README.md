@@ -1,75 +1,29 @@
 # FreeRTOS fixture builds
 
-Firmware and static-image builders for GDR's FreeRTOS closed-loop tests, plus
-the facts that constrain them. One builder exists, and it also produces the
-static `snapshot` variant:
+Use the [shared CLI](../README.md) for cache setup, tools, firmware
+preparation and test execution. This document owns FreeRTOS-specific
+compilation and measured platform facts; coverage and matrix coordinates
+are described in [testing](../../docs/testing.md).
 
-| Lane | Builder | Kernel source | What only this lane can prove |
-| --- | --- | --- | --- |
-| Kernel-direct live | `build-fixture-kernel.sh` | `FreeRTOS-Kernel` at a git tag | config branches on real running firmware (heap manager, trace facility, static allocation, runtime stats, queue sets, registry size) and version branches (notification array, mini list item, V11 heap protector, array-typed run-time totals) |
-| Static snapshot (kernel-direct variant) | `build-fixture-kernel.sh --variant snapshot` | kernel headers only, data written by `fixture/config/snapshot/snapshot.c` | states a healthy kernel cannot produce: SMP decoding, corrupted structures, mismatched counters |
+| Variant family | Internal builder | Inputs |
+| --- | --- | --- |
+| Live kernel-direct | `build.sh` | Clean `FreeRTOS-Kernel` tag, shared application, board and config headers. |
+| File-only `snapshot` | `build.sh` | Kernel headers and `fixture/config/snapshot/` data-only sources. |
+| Isolated `eh-frame` | `fixture/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
 
-`run-qemu-matrix.sh [<target>] [<version>] [<variant>...]` drives the live
-lanes and the file-only `snapshot` variant: it reuses a cached fixture when one
-exists, otherwise builds it and installs it into the cache, then runs
-`tests/integration/freertos`. The snapshot is an ordinary variant on the cell
-`mps2-an521/11.1.0` — the negative-testing arm for data-corruption scenarios —
-started the same way as a live cell: `run-qemu-matrix.sh mps2-an521 11.1.0
-snapshot`.
-
-## Fixture cache
-
-The builder installs its artifacts into one cache root so tests, the matrix
-runner and other machines read the same layout:
-
-```text
-$FREERTOS_FIXTURE_CACHE/                 default /Volumes/PS3000/gdr-fixture/freertos
-  <target>/<version>/<variant>/freertos.elf   (+ .bin, + .map)
-  mps2-an521/11.1.0/snapshot/snapshot_heap.elf   (second artifact of the snapshot cell)
-```
-
-`--cache-dir DIR` overrides the destination, `--no-cache-install` builds
-without copying, and `GDR_FORCE_BUILD=1` makes the matrix rebuild even when a
-cached fixture is present. A missing artifact makes the corresponding test
-`pytest.skip`, so partial caches stay usable.
-
-`run-qemu-matrix.sh` reuses a cached ELF only while it is newer than the fixture
-sources it was built from (`fixture/main.c`, `fixture/config/gdr_fixture_common.h`,
-`fixture/config/<variant>/`, `fixture/board/<target>/`, and the builder);
-otherwise it rebuilds and logs `cached fixture is older than its sources;
-rebuilding`. Reason: a fixture edit silently invalidates every variant that is
-not rebuilt, and the resulting failures point at the decoder rather than at the
-cache -- a stale image can also *pass* obsolete assertions, hiding a real
-regression.
-
-## Toolchain
-
-The builder resolves its compiler from `--toolchain-path`,
-then `RTOS_TOOLCHAIN_PATH` / `XPACK_ARM_TOOLCHAIN_PATH`, then `PATH`
-(`arm-none-eabi-gcc` everywhere except the RISC-V lane's `riscv-none-elf-gcc`).
-
-The GDB used by the tests (`GDR_GDB`) must have an embedded Python
-interpreter, which is not implied by the toolchain name:
-
-- xPack's `arm-none-eabi-gdb` reports "Python scripting is not supported in
-  this copy of GDB"; the sibling `arm-none-eabi-gdb-py3` is the Python build.
-- `gdb-multiarch` (Linux) and Homebrew's `gdb` (macOS) both work.
-
-Probe a candidate rather than trusting its name:
-
-```bash
-"$GDR_GDB" --nx --quiet --batch --ex 'python print("ok")'
-```
-
-It must also speak the lane's target architecture (`riscv:rv64` on
-`qemu-virt-rv64`, `arm` elsewhere). The matrix runner probes both before
-building anything and refuses to start on an incapable GDB.
+The shared runner supplies explicit source, build, compiler and install
+paths. `build.sh` rejects a modified or mismatched tag checkout and never
+changes it. Artifacts are published only after a complete successful build.
+The compiler family follows the board (`arm-none-eabi-*` or
+`riscv-none-elf-*`); the GDB must have Python and the matching target ISA.
+The shared CLI's `doctor` command probes the selected tools before source
+preparation.
 
 ## Live lanes
 
 ### Cortex-M0 (`microbit`, variant `full`)
 
-`build-fixture-kernel.sh --target microbit --variant full` links the shared
+`build.sh --target microbit --variant full` links the shared
 fixture against `portable/GCC/ARM_CM0` plus `portasm.c` and the micro:bit
 startup/linker (256 KiB flash). QEMU uses `-M microbit` with
 `-global nrf51-soc.sram-size=262144`, matching the linker's 256 KiB SRAM
@@ -82,13 +36,10 @@ backtrace chain.
 
 ### Kernel-direct (`mps2-an385`)
 
-`build-fixture-kernel.sh` shallow-clones `FreeRTOS-Kernel` at a tag (default
-`/tmp/gdr-freertos-kernel-source`, override with `--kernel-dir` or
-`FREERTOS_KERNEL_DIR`) and links it with `portable/GCC/ARM_CM3` plus
-`fixture/board/mps2-an385/`. QEMU machine is `qemu-system-arm -M mps2-an385`.
-A caller-supplied checkout is copied into the build directory before
-`git checkout`, so a developer's reference tree is never mutated.
-
+`build.sh` reads the prepared kernel tag and links it with
+`portable/GCC/ARM_CM3` plus `fixture/board/mps2-an385/`. QEMU machine is
+`qemu-system-arm -M mps2-an385`. Source checkouts are immutable; only the
+private build directory receives compiler output.
 This lane carries both matrices: the config variants at 10.3.1 (the
 `V10.3.1-kernel-only` tag) and the version sweep. The tags matter because they
 bracket ABI
@@ -115,7 +66,7 @@ silently degrade to the unprotected layout.
 
 ### Kernel-direct SMP (`mps2-an521`)
 
-`build-fixture-kernel.sh` with `--target mps2-an521` links the same shared
+`build.sh` with `--target mps2-an521` links the same shared
 fixture against the **dual-core** ARMv8-M port `portable/GCC/ARM_CM33_NTZ/non_secure`
 and the `mps2-an521` board (QEMU machine `mps2-an521`, two Cortex-M33s, SSE-200).
 This lane needs kernel `V11.3.1` or later: ARMv8-M SMP support was added in
@@ -210,7 +161,7 @@ sentinels and the width-correct list-value raw reads on every supported lane
 
 ### 32-bit RISC-V (`qemu-virt-rv32`, variant `base`)
 
-`build-fixture-kernel.sh --target qemu-virt-rv32 --variant base` links
+`build.sh --target qemu-virt-rv32 --variant base` links
 `portable/GCC/RISC-V` for `rv32imac_zicsr`/`ilp32`; QEMU machine is
 `qemu-system-riscv32 -M virt -cpu rv32 -bios freertos.bin`, GDB uses
 `riscv:rv32`.  The saved-context layout uses the same first PC slot as RV64
@@ -230,7 +181,7 @@ valid cell.
 
 ## Static snapshot variant
 
-`build-fixture-kernel.sh --variant snapshot` compiles
+`build.sh --variant snapshot` compiles
 `fixture/config/snapshot/snapshot.c` for Cortex-M33 into an ELF that is never
 executed — the negative-testing arm for data-corruption scenarios. The matrix
 runner launches it as the ordinary `snapshot` variant on the cell
@@ -244,10 +195,8 @@ corruption, because one heap symbol set can only show one corruption and
 
 The snapshot carries the diagnostic negatives a healthy kernel cannot
 produce: a timer on the overflow list, a heap whose free-list/linear/counter
-triple disagrees, and corrupted scheduler lists (`gdr_bad_*`). The test
-module rebuilds a cached ELF when its sources are newer (same
-source-newer-than-cache rule as the live lanes), so stale cached negatives
-cannot silently satisfy new assertions.
+triple disagrees, and corrupted scheduler lists (`gdr_bad_*`). The shared runner fingerprints snapshot inputs before tests; the test
+module requires the prepared pair and never rebuilds it.
 
 Two measured facts shape the design:
 

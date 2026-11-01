@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ci.testing.cache import CACHE
 from tests.support.loader import load_integration_spec
 from tests.support.qemu_harness import (
     QemuProfile,
@@ -51,7 +52,7 @@ def test_freertos_live_cache_layout():
             "FREERTOS_FIXTURE_CACHE": "/tmp/cache",
         }
     )
-    assert spec.fixture_dir() == Path("/tmp/cache/mps2-an385/10.4.6/base")
+    assert spec.fixture_dir() == CACHE / "fixtures/freertos/mps2-an385/10.4.6/base"
     assert spec.elf_path() == spec.fixture_dir() / "freertos.elf"
     assert spec.firmware_path() == spec.elf_path()
 
@@ -79,17 +80,20 @@ def test_snapshot_is_an_ordinary_cache_cell():
         }
     )
     assert spec.variant == "snapshot"
-    assert spec.fixture_dir() == Path("/tmp/cache/mps2-an521/11.1.0/snapshot")
+    assert spec.fixture_dir() == CACHE / "fixtures/freertos/mps2-an521/11.1.0/snapshot"
     assert spec.elf_path() == spec.fixture_dir() / "freertos.elf"
 
 
-def test_elf_override_repoints_gdb_and_the_qemu_boot_image():
+def test_retired_path_overrides_do_not_redirect_firmware():
     # ARM lane: QEMU boots the same ELF via -kernel.
     arm = load_integration_spec(
         {"GDR_RTOS": "freertos", "GDR_ELF_PATH": "/tmp/custom.elf"}
     )
-    assert arm.elf_path() == Path("/tmp/custom.elf")
-    assert arm.firmware_path() == Path("/tmp/custom.elf")
+    assert (
+        arm.elf_path()
+        == CACHE / "fixtures/freertos/mps2-an385/10.3.1/base/freertos.elf"
+    )
+    assert arm.firmware_path() == arm.elf_path()
     # RV64 lane: QEMU boots the raw .bin sibling via -bios.
     rv64 = load_integration_spec(
         {
@@ -98,8 +102,8 @@ def test_elf_override_repoints_gdb_and_the_qemu_boot_image():
             "GDR_ELF_PATH": "/tmp/build/rtthread.elf",
         }
     )
-    assert rv64.elf_path() == Path("/tmp/build/rtthread.elf")
-    assert rv64.firmware_path() == Path("/tmp/build/rtthread.bin")
+    assert rv64.elf_path() == CACHE / "fixtures/rtthread/rv64/4.0.5/rtthread.elf"
+    assert rv64.firmware_path() == rv64.elf_path().with_suffix(".bin")
 
 
 def test_unknown_rtos_is_an_error():
@@ -121,8 +125,8 @@ def test_rtthread_profile_uses_loader_paths():
     profile = get_rtthread_qemu_profile(Path("/unused"), spec)
     assert profile.machine == "virt"
     assert profile.firmware_option == "-bios"
-    assert profile.elf_path == Path("/tmp/rtt/rv64/4.1.1/rtthread.elf")
-    assert profile.firmware_path == Path("/tmp/rtt/rv64/4.1.1/rtthread.bin")
+    assert profile.elf_path == CACHE / "fixtures/rtthread/rv64/4.1.1/rtthread.elf"
+    assert profile.firmware_path == profile.elf_path.with_suffix(".bin")
 
 
 def test_freertos_profile_derives_machine_from_target():
@@ -140,10 +144,11 @@ def test_freertos_profile_derives_machine_from_target():
     profile = get_freertos_qemu_profile(Path("/unused"), spec)
     assert profile.machine == "virt"
     assert profile.firmware_option == "-bios"
-    assert profile.elf_path == Path("/tmp/frt/qemu-virt-rv64/11.1.0/rv64/freertos.elf")
-    assert profile.firmware_path == Path(
-        "/tmp/frt/qemu-virt-rv64/11.1.0/rv64/freertos.bin"
+    assert (
+        profile.elf_path
+        == CACHE / "fixtures/freertos/qemu-virt-rv64/11.1.0/rv64/freertos.elf"
     )
+    assert profile.firmware_path == profile.elf_path.with_suffix(".bin")
 
 
 @pytest.mark.parametrize(

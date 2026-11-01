@@ -28,14 +28,8 @@ venv/
 # mypy
 .mypy_cache/
 
-# Local toolchain archives seeded into the Docker build context by
-# ci/validate-podman.sh (GDR_CI_XPACK_DIR); never commit the ~300MB blobs
-ci/gdr-xpack/*.tar.gz
-tests/fixtures/**/*.elf
-tests/fixtures/**/*.bin
-tests/fixtures/**/*.map
-tests/fixtures/**/Build/
-tests/fixtures/**/rtthread.bin
+# Integration test inputs, tools, environments and generated artifacts (or symlink).
+ci/.cache
 
 # IDE
 .cursor/

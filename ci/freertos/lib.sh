@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared fixture-builder plumbing for the FreeRTOS closed-loop lanes.
 #
-# Sourced by build-fixture-kernel.sh (the single FreeRTOS fixture builder);
+# Sourced by build.sh (the single FreeRTOS fixture builder);
 # everything generic (errors, usage text, toolchain resolution, heap source
 # selection, cache install) lives here so the builder's live and snapshot
 # paths cannot drift.
@@ -50,7 +50,7 @@ heap_source() {
 }
 
 # Copy the freshly linked artifacts into the shared fixture cache so every
-# consumer (pytest, run-qemu-matrix.sh, other machines' rsync) reads one
+# consumer (pytest and the shared runner) reads one
 # canonical layout: <cache>/<target>/<version>/<variant>/freertos.{elf,bin}.
 install_to_cache() {
     [[ "$CACHE_INSTALL" == 1 ]] || return 0
@@ -65,7 +65,7 @@ install_to_cache() {
     echo "[gdr-ci] cached fixture: $CACHE_DIR"
 }
 
-# Default fixture cache root (overridable via FREERTOS_FIXTURE_CACHE).
+# Repository-owned fixture cache root.
 fixture_cache_root() {
-    echo "${FREERTOS_FIXTURE_CACHE:-/Volumes/PS3000/gdr-fixture/freertos}"
+    echo "$SCRIPT_DIR/../.cache/fixtures/freertos"
 }
