@@ -30,6 +30,8 @@ def _run(blob, *, target=None, initial=None, **kwargs):
     "blob,register,kind,value",
     [
         (b"\x8e\x02", 14, "offset", -8),
+        (b"\x05\x0e\x02", 14, "offset", -8),
+        (b"\x05\x80\x01\x03", 128, "offset", -12),
         (b"\x11\x0e\x7e", 14, "offset", 8),
         (b"\x14\x0e\x02", 14, "val_offset", -8),
         (b"\x15\x0e\x7e", 14, "val_offset", 8),
@@ -86,6 +88,10 @@ def test_location_advance_changes_only_subsequent_rows(advance):
     "blob,reason",
     [
         (b"\x80", "cfi-truncated-uleb"),
+        (b"\x05", "cfi-truncated-uleb"),
+        (b"\x05\x80", "cfi-truncated-uleb"),
+        (b"\x05\x0e", "cfi-truncated-uleb"),
+        (b"\x05\x0e\x80", "cfi-truncated-uleb"),
         (b"\x01", "cfi-truncated-set-loc"),
         (b"\x02", "cfi-truncated-advance"),
         (b"\x03\x01", "cfi-truncated-advance"),

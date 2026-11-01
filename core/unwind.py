@@ -50,6 +50,12 @@ class UnwindFrame:
     index: int
     pc: int
     method: Method
+    lookup_pc: int | None = None
+
+    @property
+    def address_in_block(self) -> int:
+        """Return the metadata/symbol address, retaining the raw resume PC."""
+        return self.pc if self.lookup_pc is None else self.lookup_pc
 
 
 @dataclass(frozen=True)
@@ -202,13 +208,37 @@ def _unwind_cfi(
     ptr_size: int,
     endian: Endian,
     return_register: int,
+    sp_register: int,
     stack_low: int | None,
     stack_high: int | None,
 ) -> tuple[dict[int, int], int, int] | str:
     if row.error is not None:
         return row.error
+    return_register = (
+        row.return_register if row.return_register is not None else return_register
+    )
+    register_count = 16 if sp_register == 13 else 32
+    return_rule = row.registers.get(return_register)
+    if (
+        return_register < 0
+        or return_register == sp_register
+        or (
+            return_register >= register_count
+            and (return_rule is None or return_rule.kind == "same")
+        )
+    ):
+        return "cfi-return-register-unsupported"
+    if return_rule is not None and return_rule.kind == "undefined":
+        return "cfi-return-address-undefined"
     if row.cfa.register is None:
         return "cfi-no-cfa"
+    if not 0 <= row.cfa.register < register_count:
+        return "cfi-cfa-register-unsupported"
+    for register, rule in row.registers.items():
+        if (not 0 <= register < register_count and register != return_register) or (
+            rule.register is not None and not 0 <= rule.register < register_count
+        ):
+            return "cfi-register-unsupported"
     cfa_base = regs.get(row.cfa.register)
     if cfa_base is None:
         return _register_failure(regs, row.cfa.register, "cfi-cfa-register-missing")
@@ -258,8 +288,10 @@ def _unwind_cfi(
             return failure
     if caller_pc is None:
         return _register_failure(regs, return_register, "cfi-return-address-missing")
-    new_regs[return_register] = caller_pc
-    sp_register = 13 if return_register == 14 else 2
+    if return_register < register_count:
+        new_regs[return_register] = caller_pc
+    else:
+        new_regs.pop(return_register, None)
     new_regs[sp_register] = cfa
     new_regs.unavailable.pop(return_register, None)
     new_regs.unavailable.pop(sp_register, None)
@@ -390,6 +422,7 @@ def unwind_chain(
         else (8 if arch == "riscv" else 7)
     )
     return_register = metadata.return_register if metadata is not None else 14
+    sp_register = 13 if arch == "arm" else 2
 
     pc = seed.pc & ~1 if arch == "arm" else seed.pc
     sp = seed.sp
@@ -416,6 +449,7 @@ def unwind_chain(
     else:
         regs[2] = sp
     frames: list[UnwindFrame] = [UnwindFrame(0, pc, "seed")]
+    lookup_pc = pc
     seen: set[tuple[int, int]] = {(pc, sp)}
     method = seed.source
     stop_reason = "no-unwind-info"
@@ -435,9 +469,10 @@ def unwind_chain(
     for index in range(1, max_depth):
         attempts: list[str] = []
         has_metadata = False
+        exact_caller_pc = False
         if metadata is not None and metadata.ehabi is not None:
-            symbol = metadata.elf.function_containing(pc)
-            entry = metadata.ehabi.entry_for(pc)
+            symbol = metadata.elf.function_containing(lookup_pc)
+            entry = metadata.ehabi.entry_for(lookup_pc)
             if (
                 entry is not None
                 and symbol is not None
@@ -470,8 +505,13 @@ def unwind_chain(
             row = None
             parse_failures: list[str] = []
             for table in metadata.cfi_tables:
-                row = table.row_for(pc)
+                row = table.row_for(lookup_pc)
                 if row is not None:
+                    if row.error is not None:
+                        has_metadata = True
+                        parse_failures.append(row.error)
+                        row = None
+                        continue
                     break
                 if table.error is not None:
                     parse_failures.append(table.error)
@@ -485,12 +525,14 @@ def unwind_chain(
                     ptr_size=ptr_size,
                     endian=endian,
                     return_register=return_register,
+                    sp_register=sp_register,
                     stack_low=stack_low,
                     stack_high=stack_high,
                 )
                 if isinstance(outcome, tuple):
                     new_regs, new_sp, new_pc = outcome
                     step_method = "cfi"
+                    exact_caller_pc = row.signal_frame
                 else:
                     attempts.append(outcome)
                     outcome = None
@@ -530,7 +572,11 @@ def unwind_chain(
             complete = seed.root_pc == 0
             stop_reason = seed.root_reason if complete else "return-address-zero"
             break
-        if not code(caller_pc):
+        at_root = seed.root_pc is not None and caller_pc == (
+            seed.root_pc & ~1 if arch == "arm" else seed.root_pc
+        )
+        caller_lookup_pc = caller_pc if exact_caller_pc or at_root else caller_pc - 1
+        if not code(caller_lookup_pc):
             stop_reason = "return-address-outside-code"
             break
         if new_sp < sp:
@@ -546,9 +592,10 @@ def unwind_chain(
             stop_reason = "loop"
             break
         seen.add((caller_pc, new_sp))
-        frames.append(UnwindFrame(index, caller_pc, step_method))
+        frames.append(UnwindFrame(index, caller_pc, step_method, caller_lookup_pc))
         method = step_method
         pc = caller_pc
+        lookup_pc = caller_lookup_pc
         sp = new_sp
         recovered = _RecoveredRegisters(new_regs)
         if isinstance(regs, _RecoveredRegisters):
@@ -556,9 +603,10 @@ def unwind_chain(
                 if register not in recovered:
                     recovered.unavailable.setdefault(register, reason)
         regs = recovered
-        if seed.root_pc is not None and pc == (
-            seed.root_pc & ~1 if arch == "arm" else seed.root_pc
-        ):
+        if arch == "arm":
+            regs[15] = pc
+            regs.unavailable.pop(15, None)
+        if at_root:
             stop_reason = seed.root_reason
             complete = True
             break

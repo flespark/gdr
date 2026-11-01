@@ -230,6 +230,8 @@
   env: *freertos-env
   stages:
     - <<: *gdb-python-qemu-sanity
+    - name: Standalone RV64 .eh_frame unwind
+      script: bash ci/unwind/run-qemu.sh
     - name: FreeRTOS config variant matrix (mps2-an385, kernel 10.3.1)
       script: |
         bash ci/freertos/run-qemu-matrix.sh mps2-an385 10.3.1 \

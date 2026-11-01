@@ -17,6 +17,20 @@ concurrency:
 
 jobs:
 
+  unwind:
+    name: Standalone RV64 .eh_frame
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - name: Build the pinned QEMU and cross-toolchain image
+        run: docker build --file ci/Dockerfile --tag gdr-unwind-ci .
+      - name: Verify .eh_frame without another metadata source
+        run: |
+          docker run --rm --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace gdr-unwind-ci bash ci/unwind/run-qemu.sh
+
   extension:
     name: Extension (Node ${{ matrix.node }})
     runs-on: ubuntu-latest

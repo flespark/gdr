@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from .unwind_meta import (
@@ -59,6 +59,8 @@ class CfiRow:
     cfa: CfaRule = field(default_factory=CfaRule)
     registers: Mapping[int, RegisterRule] = field(default_factory=dict)
     error: str | None = None
+    return_register: int | None = None
+    signal_frame: bool = False
 
 
 @dataclass(frozen=True)
@@ -522,7 +524,11 @@ def _execute_cfi(
     endian: Endian,
 ) -> CfiRow:
     if fde.error is not None or fde.cie.initial.error is not None:
-        return CfiRow(error=fde.error or fde.cie.initial.error)
+        return CfiRow(
+            error=fde.error or fde.cie.initial.error,
+            return_register=fde.cie.return_register,
+            signal_frame="S" in fde.cie.augmentation,
+        )
     result = _run_cfi(
         fde.instructions,
         fde.cie.initial,
@@ -536,8 +542,12 @@ def _execute_cfi(
         max_steps=MAX_CFI_OPCODES,
     )
     if isinstance(result, str):
-        return CfiRow(error=result)
-    return result
+        result = CfiRow(error=result)
+    return replace(
+        result,
+        return_register=fde.cie.return_register,
+        signal_frame="S" in fde.cie.augmentation,
+    )
 
 
 def _run_cfi(
@@ -696,14 +706,16 @@ def _run_cfi(
             continue
         if opcode in (0x0F, 0x10, 0x16):
             return "cfi-expression-unsupported"
-        if opcode == 0x11:
+        if opcode in (0x05, 0x11):
             reg = _read_uleb(instructions, index, len(instructions))
             if reg is None:
                 return "cfi-truncated-uleb"
             reg_value, index = reg
-            offset = _read_sleb(instructions, index, len(instructions))
+            offset = (_read_sleb if opcode == 0x11 else _read_uleb)(
+                instructions, index, len(instructions)
+            )
             if offset is None:
-                return "cfi-truncated-sleb"
+                return "cfi-truncated-sleb" if opcode == 0x11 else "cfi-truncated-uleb"
             offset_value, index = offset
             row.registers[reg_value] = RegisterRule(
                 kind="offset", value=offset_value * data_alignment

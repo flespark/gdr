@@ -155,6 +155,10 @@ podman run "${podman_args[@]}" "$IMAGE_TAG" \
             bash ci/rt-thread/run-qemu-matrix.sh rv64
         fi
 
+        if [[ "$lanes" == *all* || "$lanes" == *unwind* ]]; then
+            bash ci/unwind/run-qemu.sh
+        fi
+
         if [[ "$lanes" == *all* || "$lanes" == *freertos* ]]; then
             # NOTE: the FreeRTOS lane installs freshly built fixtures into
             # its cache root, so it must target a container-writable

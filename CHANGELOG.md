@@ -27,6 +27,12 @@ All notable changes to GDR are documented in this file.
 
 ### Fixed
 
+- CFI unwinding honors extended offsets and CIE return-address columns
+  independently of SP; an undefined return column ends a partial chain.
+- Backtrace metadata, symbols and source locations distinguish ordinary
+  return addresses from exact seed/signal/root PCs while retaining resume PCs.
+- FreeRTOS RISC-V first-task chains without entry proof remain partial;
+  ordinary return-address lookup can stop at `cfi-stack-overflow`.
 - Backtraces discard undefined or unreadable register values and preserve
   their failure reasons instead of reusing them in subsequent frames.
 - CFI parse failures cannot enable frame-pointer fallback; valid independent

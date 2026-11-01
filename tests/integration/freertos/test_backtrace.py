@@ -72,8 +72,28 @@ def test_saved_task_backtrace_has_a_known_chain(gdb_session):
     assert data["bounds"] == "recorded"
     assert data["source"] == "saved"
     if SPEC.target.startswith("qemu-virt-rv"):
-        assert not data["complete"] and data["stop_reason"] == "loop", data
-        assert functions[-1] == "gdr_ready_task", functions
+        oracle = _envelope(
+            gdb_session.run_python(
+                f"""
+import json
+symbol = gdb.lookup_static_symbol('gdr_ready_task')
+assert symbol is not None
+print(json.dumps({{
+    'entry': int(symbol.value().address),
+    'lookup_symbol': gdb.execute('info symbol {data["frames"][-1]["pc"] - 1:#x}', to_string=True).split(' in section ')[0].strip(),
+}}))
+"""
+            )
+        )
+        assert not data["complete"] and data["stop_reason"] == "cfi-stack-overflow", (
+            data
+        )
+        assert len(data["frames"]) == entry + 2, data
+        assert data["frames"][-1]["pc"] == oracle["entry"], data
+        assert functions[-1] == oracle["lookup_symbol"].replace(" + ", "+"), (
+            data,
+            oracle,
+        )
     else:
         assert data["complete"] and data["stop_reason"] == "task-exit", data
     assert not data["truncated"], data

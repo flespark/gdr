@@ -258,7 +258,7 @@ def test_mpu_decode_receives_context_and_task_bounds_without_entry_evidence(
         assert kwargs["stack_low"] == 0x2000 and kwargs["stack_high"] == 0x2200
         assert kwargs["max_depth"] == 3
         return UnwindResult(
-            (UnwindFrame(0, 0x1004, "seed"), UnwindFrame(1, 0x1200, "cfi")),
+            (UnwindFrame(0, 0x1004, "seed"), UnwindFrame(1, 0x1200, "cfi", 0x11FF)),
             "task-exit",
             True,
             False,
@@ -269,13 +269,19 @@ def test_mpu_decode_receives_context_and_task_bounds_without_entry_evidence(
     monkeypatch.setattr(bridge, "decode_backtrace_context", decode)
     monkeypatch.setattr(bridge, "unwind_chain", unwind)
     monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"function_{pc:x}")
-    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda pc: f"source_{pc:x}")
     report = bridge.backtrace(adapter, "worker", 3)
     assert seen["context_low"] == 0x3000 and seen["context_high"] == 0x3100
     assert seen["stack_low"] == 0x2000 and seen["stack_high"] == 0x2200
     assert "entry_pc" not in seen
     assert report.source == "saved" and report.method == "cfi" and report.complete
     assert [frame.index for frame in report.frames] == [0, 1]
+    assert [frame.pc for frame in report.frames] == [0x1004, 0x1200]
+    assert [frame.symbol for frame in report.frames] == [
+        "function_1004",
+        "function_11ff",
+    ]
+    assert [frame.source for frame in report.frames] == ["source_1004", "source_11ff"]
 
 
 def test_other_running_core_never_uses_selected_core_registers(monkeypatch):

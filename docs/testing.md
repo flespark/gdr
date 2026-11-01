@@ -4,8 +4,8 @@ GDR verifies every layer at two levels: fast host-side unit tests for the
 hardware-independent core and adapter logic (`tests/unit/`), and closed-loop
 QEMU/GDB integration tests that boot real RTOS firmware or inspect crafted
 kernel images (`tests/integration/`). Fixture build mechanics live in
-`ci/<rtos>/README.md`; this document defines the shared test infrastructure
-and the per-RTOS integration test coverage.
+`ci/<rtos>/README.md` and `ci/unwind/README.md`; this document defines the
+shared test infrastructure and the per-RTOS integration test coverage.
 
 ## Unit test coverage boundary
 
@@ -206,7 +206,22 @@ Verification spans three complementary execution arms:
 | `test_smp.py` | Dual-core `pxCurrentTCBs[0..1]` running-task resolution, `CPU` placement, core-affinity masks (`gdr_bound`), and preemption-disable state (`gdr_preempt`). |
 | `test_snapshot.py` | File-only negative testing for `frt check` and inline `Check[...]` failure/mismatch/corrupt verdicts on `freertos.elf` and `snapshot_heap.elf`. |
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
-| `test_backtrace.py` | Ordered saved-context chains, canonical ISA/method/bounds, proven exit completeness versus RISC-V first-task loops, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
+| `test_backtrace.py` | Ordered saved-context chains, canonical ISA/method/bounds, proven exit completeness versus partial RISC-V first-task chains, independent entry/lookup-symbol checks, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
+
+## Standalone `.eh_frame` unwinding
+
+`tests/integration/test_unwind_eh_frame.py` boots a GNU-assembled RV64 image
+with `.eh_frame`, no `.debug_frame` or EHABI, and frame-pointer fallback
+disabled. Five tests verify an ordered four-frame chain with an extended
+offset and virtual return column 128, a signal-CIE exact boundary PC, and
+missing/truncated metadata or an unavailable `textrel` base. Undefined return
+columns remain partial endpoints. Signal-CIE coverage does not verify
+hardware exception decoding or cross-stack unwinding. Build details and the
+runner command live in [the fixture README](../ci/unwind/README.md).
+
+The CNB `freertos-kernel-scope` pipeline and a dedicated GitHub job run the
+same tool-checked runner. Local Podman validation includes it in `all`, or
+selects it alone with `GDR_VALIDATE_LANES=unwind`.
 
 ## Summary comparison of RT-Thread vs FreeRTOS test strategies
 

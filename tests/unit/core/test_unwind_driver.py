@@ -143,7 +143,7 @@ def test_cfi_register_recovery_rules(rule, expected):
             CfiRow(CfaRule(13, 8), {14: RegisterRule("undefined")}),
             0x2040,
             {13: 0x2040},
-            "cfi-register-undefined",
+            "cfi-return-address-undefined",
         ),
     ],
 )
@@ -157,6 +157,7 @@ def test_cfi_failures_do_not_manufacture_caller_registers(row, sp, regs, reason)
             ptr_size=4,
             endian="little",
             return_register=14,
+            sp_register=13,
             stack_low=0x2000,
             stack_high=0x2100,
         )
@@ -245,6 +246,7 @@ def test_unavailable_register_drops_old_value_and_retains_failure(rule, reason):
         ptr_size=4,
         endian="little",
         return_register=14,
+        sp_register=13,
         stack_low=0x2000,
         stack_high=0x2200,
     )
@@ -262,7 +264,11 @@ def test_unavailable_register_drops_old_value_and_retains_failure(rule, reason):
         RegisterRule("register", register=7),
         cfa=sp,
         regs=regs,
-        **{key: value for key, value in options.items() if key != "return_register"},
+        **{
+            key: value
+            for key, value in options.items()
+            if key not in ("return_register", "sp_register")
+        },
     ) == (None, reason)
     assert (
         driver._unwind_frame_pointer(
@@ -271,7 +277,9 @@ def test_unavailable_register_drops_old_value_and_retains_failure(rule, reason):
             sp=sp,
             frame_pointer_register=7,
             **{
-                key: value for key, value in options.items() if key != "return_register"
+                key: value
+                for key, value in options.items()
+                if key not in ("return_register", "sp_register")
             },
         )
         == reason
@@ -292,8 +300,8 @@ def test_register_failures_survive_multiple_driver_steps(monkeypatch):
             CfaRule(13, 8),
             {7: RegisterRule("undefined"), 14: RegisterRule("val_offset", -0x1040)},
         ),
-        0x1008: CfiRow(CfaRule(13, 8), {14: RegisterRule("val_offset", -0x1044)}),
-        0x100C: CfiRow(CfaRule(7, 8)),
+        0x1007: CfiRow(CfaRule(13, 8), {14: RegisterRule("val_offset", -0x1044)}),
+        0x100B: CfiRow(CfaRule(7, 8)),
     }
     monkeypatch.setattr(CfiTable, "row_for", lambda _self, pc: rows.get(pc))
     result = unwind_chain(
@@ -311,7 +319,7 @@ def test_register_failures_survive_multiple_driver_steps(monkeypatch):
     "patch,reason",
     [
         (lambda blob: blob[:13] + b"\x0f" + blob[14:], "cfi-expression-unsupported"),
-        (lambda blob: blob[:13] + b"\x05" + blob[14:], "cfi-opcode-unsupported"),
+        (lambda blob: blob[:13] + b"\x17" + blob[14:], "cfi-opcode-unsupported"),
         (lambda blob: blob[:8] + b"\x09" + blob[9:], "cfi-cie-version-unsupported"),
         (lambda blob: blob[:20] + b"\xfe\xff\xff\xff" + blob[24:], "cfi-cie-missing"),
         (lambda blob: blob[:-1], "cfi-truncated-unit"),

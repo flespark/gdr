@@ -332,7 +332,7 @@ def test_frame_pointer_fallback_validates_arm_chain():
         max_depth=2,
         stack_low=0x2000,
         stack_high=0x2100,
-        is_code=lambda address: address in {0x0200, 0x0300},
+        is_code=lambda address: 0x0100 <= address < 0x0300,
     )
     assert [frame.pc for frame in result.frames] == [0x0100, 0x0200]
     assert result.frames[1].method == "frame-pointer"
@@ -373,7 +373,7 @@ def test_frame_pointer_fallback_accepts_riscv_frame_record():
         max_depth=2,
         stack_low=0x2000,
         stack_high=0x2200,
-        is_code=lambda address: address in {0x1100, 0x1200},
+        is_code=lambda address: 0x1100 <= address < 0x1200,
     )
     assert result.frames[1].pc == 0x1200
     assert result.frames[1].method == "frame-pointer"

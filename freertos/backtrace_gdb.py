@@ -275,8 +275,8 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
     )
     frames = []
     for item in result.frames:
-        symbol = lookup_symbol_at(item.pc)
-        source = source_location_at(item.pc)
+        symbol = lookup_symbol_at(item.address_in_block)
+        source = source_location_at(item.address_in_block)
         frames.append(
             BacktraceFrame(
                 index=item.index,

@@ -138,11 +138,13 @@ enclosing sized `STT_FUNC` symbol; a previous function's entry cannot cover a
 gap where the compiler emitted no row. If the symbol table is stripped, CFI or
 the validated frame-pointer chain is used instead.
 
-**`.eh_frame` parsing is unit-tested, not live-verified.** The QEMU fixtures
-emit `.debug_frame` (and, on ARM with `-funwind-tables`, EHABI); the
-`.eh_frame` reader is connected to the unwind driver and supports a bounded
-CIE/FDE subset and pointer encodings. Synthetic unit tests cover parsing,
-but no current fixture verifies a real compiler-produced `.eh_frame` chain.
+**CFI supports a bounded integer-rule subset.** `DW_CFA_offset_extended`,
+CIE return columns and signal-CIE exact PCs are supported; an undefined
+return column stops at `cfi-return-address-undefined` with `complete=false`.
+The three expression rules stop at `cfi-expression-unsupported`. Pointer
+encodings requiring unavailable text/function bases or indirect reads are
+rejected. The standalone `.eh_frame` verification scope is recorded in
+[testing](testing.md#standalone-eh_frame-unwinding).
 
 **FreeRTOS does not record a stack end in every build.** Without
 `configRECORD_STACK_HIGH_ADDRESS` or another retained stack-end field, the
@@ -155,11 +157,14 @@ fill. FreeRTOS retains no independent task-entry field, so its adapter never
 reports `source=unstarted` from initial registers, xPSR or an exit sentinel
 alone. The pure decoder requires an independently supplied entry address.
 
-**RISC-V first-task return state can loop.** The FreeRTOS port starts its
-first task with RA equal to the entry PC. A chain that repeats `(PC, SP)`
-stops at `loop` with `complete=false`; reaching an entry-looking symbol is
-not an independent task-entry proof. Other tasks can reach the recorded
-`xTaskReturnAddress` value, including zero, and finish at `task-exit`.
+**RISC-V first-task return state is not a normal call chain.** The FreeRTOS
+port starts its first task with RA equal to the entry PC, not a call's resume
+address. Without independent task-entry evidence, ordinary `PC - 1` lookup
+can select the preceding function; the RV32/RV64 fixtures stop at
+`cfi-stack-overflow` with `complete=false`. An entry-looking RA must not
+be promoted to an exact PC or a proven task root. Repeated `(PC, SP)` pairs
+still stop at `loop`. Other tasks can reach the recorded `xTaskReturnAddress`
+value, including zero, and finish at `task-exit`.
 
 **Hard-interrupt and nested-exception cross-stack unwinding is not supported.**
 Recovering a task seed from a port's saved hardware exception frame does not

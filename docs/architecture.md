@@ -123,6 +123,16 @@ CIE/rule errors. Parse failures with undecodable coverage prohibit
 frame-pointer fallback unless an independent metadata rule covers the PC;
 clean uncovered PCs retain the bounded fallback.
 
+Each CFI row carries its CIE return-address column and signal-frame flag;
+the architecture selects SP independently. Virtual return columns require
+an explicit recovery rule and are not propagated as machine registers.
+An undefined return column ends a partial chain, not a proven task root.
+Frames retain the normalized resume PC; ordinary caller metadata, symbols
+and source locations use `PC - 1`, while the seed, signal-CIE caller and
+independently proven task root use the exact PC. This lookup adjustment does
+not decode instruction lengths or implement exception-stack transitions; the
+JSON contract is unchanged.
+
 Native inspection stays separate:
 
 ```text

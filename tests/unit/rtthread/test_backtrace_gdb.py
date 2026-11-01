@@ -6,6 +6,7 @@ import pytest
 
 import rtthread.backtrace_gdb as bridge
 from core.stack_frame_parser import StackContextSelection
+from core.unwind import SeedFrame, UnwindFrame, UnwindResult
 from rtthread.adapter import Thread
 from rtthread.backtrace import (
     ARMV6M_INTEGER,
@@ -136,3 +137,50 @@ def test_stack_direction_inference_reads_only_recorded_edges(
     monkeypatch.setattr(bridge, "read_bytes", read)
     assert bridge._stack_growth(0x2000, 0x2100) is expected
     assert reads == [(0x2000, 16), (0x20F0, 16)]
+
+
+def test_symbols_and_source_use_lookup_pc_without_changing_resume_pc(monkeypatch):
+    thread = Thread(
+        name="worker",
+        address=0x4000,
+        stack_addr=0x2000,
+        stack_size=0x200,
+        stack_grows_up=False,
+    )
+    monkeypatch.setattr(bridge, "find_thread", lambda *_args: object())
+    monkeypatch.setattr(bridge, "value_to_thread", lambda *_args, **_kwargs: thread)
+    monkeypatch.setattr(
+        bridge,
+        "_backtrace_context",
+        lambda: StackContextSelection("riscv64", "riscv", RISCV64_INTEGER, "ok"),
+    )
+    monkeypatch.setattr(bridge, "get_current_thread", lambda: None)
+    monkeypatch.setattr(bridge, "eval_identifier", lambda _name: None)
+    monkeypatch.setattr(bridge, "arch_or_default", lambda: (8, "little"))
+    monkeypatch.setattr(
+        bridge,
+        "decode_backtrace_context",
+        lambda *_args, **_kwargs: (SeedFrame(0x1004, 0x2040, {2: 0x2040}), "ok"),
+    )
+    monkeypatch.setattr(bridge, "_unwind_metadata", lambda _adapter: None)
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda *_args, **_kwargs: UnwindResult(
+            (UnwindFrame(0, 0x1004, "seed"), UnwindFrame(1, 0x1100, "cfi", 0x10FF)),
+            "cfi-return-address-undefined",
+            False,
+            False,
+            "saved",
+            "cfi",
+        ),
+    )
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"function_{pc:x}")
+    monkeypatch.setattr(bridge, "source_location_at", lambda pc: f"source_{pc:x}")
+    report = bridge.backtrace(SimpleNamespace(layout=object()), "worker")
+    assert [frame.pc for frame in report.frames] == [0x1004, 0x1100]
+    assert [frame.symbol for frame in report.frames] == [
+        "function_1004",
+        "function_10ff",
+    ]
+    assert [frame.source for frame in report.frames] == ["source_1004", "source_10ff"]

@@ -393,8 +393,8 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             index=item.index,
             pc=item.pc,
             method=item.method,
-            symbol=lookup_symbol_at(item.pc),
-            source=source_location_at(item.pc),
+            symbol=lookup_symbol_at(item.address_in_block),
+            source=source_location_at(item.address_in_block),
         )
         for item in result.frames
     ]

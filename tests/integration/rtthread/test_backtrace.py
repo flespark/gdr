@@ -41,6 +41,12 @@ def test_blocked_thread_backtrace_reaches_the_entry(gdb_session):
     entry = next(i for i, name in enumerate(functions) if "worker1_entry" in name)
     assert delay < entry < len(functions) - 1, functions
     assert "thread_exit" in functions[-1], functions
+    root = _envelope(
+        gdb_session.run_python(
+            "import json; print(json.dumps({'pc': int(gdb.lookup_static_symbol('_thread_exit').value().address)}))"
+        )
+    )
+    assert data["frames"][-1]["pc"] == root["pc"], data
     assert [frame["index"] for frame in data["frames"]] == list(range(len(functions)))
     assert all(frame["method"] == "cfi" for frame in data["frames"][1:]), data
     assert data["stop_reason"] == "task-exit"
