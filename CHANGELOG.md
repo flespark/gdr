@@ -27,6 +27,7 @@ All notable changes to GDR are documented in this file.
 
 ### Fixed
 
+- FreeRTOS heap_2 inspection accounts for the V10.3.x heap base alignment.
 - CFI unwinding honors extended offsets and CIE return-address columns
   independently of SP; an undefined return column ends a partial chain.
 - Backtrace metadata, symbols and source locations distinguish ordinary

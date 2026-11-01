@@ -725,10 +725,18 @@ def test_walk_linear_enumerates_blocks_below_free_list_head(monkeypatch):
     assert heap.cross_validate(free_list, walk, 0x40, geom) == "ok"
 
 
-def test_heap2_linear_base_comes_from_uc_heap(monkeypatch):
-    """heap_2's free list is size-sorted, so its head is not the heap base;
-    the linear walk starts at align_up(&ucHeap) (the kernel's own function-
-    local pucAlignedHeap, heap_2.c prvHeapInit)."""
+@pytest.mark.parametrize(
+    ("version", "base", "expected"),
+    [
+        ((10, 3, 1), 0x20000058, 0x20000060),
+        ((10, 3, 1), 0x20000056, 0x20000058),
+        ((10, 4, 6), 0x20000058, 0x20000058),
+        ((10, 4, 6), 0x20000056, 0x20000058),
+        ((11, 1, 0), 0x20000058, 0x20000058),
+    ],
+)
+def test_heap2_linear_base_comes_from_uc_heap(monkeypatch, version, base, expected):
+    """The size-sorted list head cannot replace the versioned ucHeap base."""
     monkeypatch.setattr(heap, "lookup_symbol", lambda _name: None)
     _minimal_geometry_probes(monkeypatch)
     monkeypatch.setattr(
@@ -739,22 +747,12 @@ def test_heap2_linear_base_comes_from_uc_heap(monkeypatch):
         heap,
         "lookup_symbol",
         lambda name: (
-            _FakeValue(sizeof=49152, address=0x20000058) if name == "ucHeap" else None
+            _FakeValue(sizeof=49152, address=base) if name == "ucHeap" else None
         ),
     )
-    geom = heap.heap_geometry(build_layout(FreeRtosConfig(heap_kind=2), (10, 3, 1)))
-    assert geom.linear_low == 0x20000058  # already 8-aligned
-    assert geom.heap_limit == 0x20000058 + 49144
-
-    monkeypatch.setattr(
-        heap,
-        "lookup_symbol",
-        lambda name: (
-            _FakeValue(sizeof=49152, address=0x20000056) if name == "ucHeap" else None
-        ),
-    )
-    geom = heap.heap_geometry(build_layout(FreeRtosConfig(heap_kind=2), (10, 3, 1)))
-    assert geom.linear_low == 0x20000058  # rounded up to portBYTE_ALIGNMENT
+    geom = heap.heap_geometry(build_layout(FreeRtosConfig(heap_kind=2), version))
+    assert geom.linear_low == expected
+    assert geom.heap_limit == expected + 49144
 
 
 def test_heap2_init_detection_falls_back_to_x_end_size(monkeypatch):

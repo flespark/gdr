@@ -378,14 +378,7 @@ def _free_list_head(canary: int) -> int | None:
 
 
 def _aligned_heap_base(alignment: int | None) -> int | None:
-    """Return ``align_up(&ucHeap, portBYTE_ALIGNMENT)``, or None.
-
-    heap_2's free list is sorted by *size* (heap_2.c prvInsertBlockIntoFreeList),
-    so its chain head is not the heap's physical start the way heap_4's is;
-    the kernel's own base ("pucAlignedHeap", a function-local variable) is
-    ``&ucHeap`` rounded up to the port alignment, which is reproducible from
-    the symbol.
-    """
+    """Return ``align_up(&ucHeap, portBYTE_ALIGNMENT)`` for heap_4, or None."""
     value = lookup_symbol("ucHeap")
     if value is None:
         return None
@@ -393,6 +386,24 @@ def _aligned_heap_base(alignment: int | None) -> int | None:
     if not base:
         return None
     align = alignment or 8
+    return (base + align - 1) & ~(align - 1)
+
+
+def _heap2_aligned_base(
+    alignment: int | None, version: tuple[int, int, int] | None
+) -> int | None:
+    """Return the heap_2 base using its release-specific initialization rule."""
+    value = lookup_symbol("ucHeap")
+    if value is None:
+        return None
+    base = value_address(value)
+    if not base:
+        return None
+    align = alignment or 8
+    if version is not None and version < (10, 4, 0):
+        # NOTE: V10.3.x aligns &ucHeap[portBYTE_ALIGNMENT] down; an already
+        # aligned ucHeap therefore starts one full alignment unit into the array.
+        return (base + align) & ~(align - 1)
     return (base + align - 1) & ~(align - 1)
 
 
@@ -458,7 +469,7 @@ def heap_geometry(layout: FreeRtosLayout) -> HeapGeometry:
             linear_low, heap_limit = _heap5_protector_extent(canary_present)
     elif kind == 2:
         free_end = value_address(lookup_symbol("xEnd")) or None
-        linear_low = _aligned_heap_base(alignment)
+        linear_low = _heap2_aligned_base(alignment, version)
         adjusted = _adjusted_heap_size(alignment)
         x_end_size = _read_x_end_block_size()
         limit_size = x_end_size if x_end_size and x_end_size > 0 else adjusted
