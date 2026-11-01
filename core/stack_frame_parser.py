@@ -10,12 +10,16 @@ adapter packages.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .unwind_meta import ElfImage, _sign_extend
 
 
 class EvidenceError(ValueError):
     """An instruction or symbol does not prove the requested convention."""
+
+
+ValidationLevel = Literal["synthetic", "file-only", "live"]
 
 
 @dataclass(frozen=True)
@@ -42,8 +46,10 @@ class SavedStackContext:
             initial-context builder, or ``None`` when no such proof exists.
         context_in_tcb: Whether the saved context lives in the TCB rather than
             on the task stack.
-        verified: Whether this profile has compiled/closed-loop evidence;
-            selectors must not enable an unverified profile.
+        context_span: Half-open saved-buffer offsets relative to frame top.
+        slot_aliases: Explicit pairs of slot names (``rN``, ``pc``, ``lr``,
+            ``status``, ``sp``) that describe the same saved value.
+        validation: Evidence tier; only ``live`` profiles pass runtime gates.
     """
 
     profile_id: str
@@ -53,16 +59,25 @@ class SavedStackContext:
     lr_offset: int
     status_offset: int | None
     sp_offset: int
+    context_span: tuple[int, int]
     sp_slot_offset: int | None = None
     sp_slot_bias: int = 0
     fill_word: int = 0
     initial_registers: tuple[int, ...] | None = None
     context_in_tcb: bool = False
-    verified: bool = False
+    slot_aliases: tuple[tuple[str, str], ...] = ()
+    validation: ValidationLevel = "synthetic"
+
+    @property
+    def verified(self) -> bool:
+        """Whether this profile has a live closed-loop validation lane."""
+        return self.validation == "live"
 
     def __post_init__(self) -> None:
         if self.pointer_size not in (4, 8) or not self.profile_id:
             raise ValueError("invalid saved-context profile")
+        if self.validation not in ("synthetic", "file-only", "live"):
+            raise ValueError("invalid saved-context validation")
         numbers = [register for register, _offset in self.registers]
         if len(set(numbers)) != len(numbers):
             raise ValueError("duplicate saved-context register")
@@ -82,6 +97,43 @@ class SavedStackContext:
             raise ValueError("TCB context requires a saved task SP")
         if self.initial_registers is not None and len(self.initial_registers) != 8:
             raise ValueError("invalid initial-register proof")
+        values = (self.fill_word, *(self.initial_registers or ()))
+        if any(not 0 <= value < 1 << (8 * self.pointer_size) for value in values):
+            raise ValueError("saved-context value exceeds slot width")
+        low, high = self.context_span
+        if low >= high or any(value % self.pointer_size for value in (low, high)):
+            raise ValueError("invalid saved-context span")
+        slots = {f"r{register}": offset for register, offset in self.registers}
+        slots.update(pc=self.pc_offset, lr=self.lr_offset)
+        if self.status_offset is not None:
+            slots["status"] = self.status_offset
+        if self.sp_slot_offset is not None:
+            slots["sp"] = self.sp_slot_offset
+        if any(
+            offset < low or offset + self.pointer_size > high
+            for offset in slots.values()
+        ):
+            raise ValueError("saved-context slot outside span")
+        aliases: set[frozenset[str]] = set()
+        for left, right in self.slot_aliases:
+            pair = frozenset((left, right))
+            if (
+                len(pair) != 2
+                or pair in aliases
+                or left not in slots
+                or right not in slots
+                or slots[left] != slots[right]
+            ):
+                raise ValueError("invalid saved-context slot alias")
+            aliases.add(pair)
+        names = list(slots)
+        for index, left in enumerate(names):
+            for right in names[index + 1 :]:
+                if (
+                    slots[left] == slots[right]
+                    and frozenset((left, right)) not in aliases
+                ):
+                    raise ValueError("overlapping saved-context slots require an alias")
 
 
 @dataclass(frozen=True)

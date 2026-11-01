@@ -11,11 +11,11 @@ a guessed context.
 from __future__ import annotations
 
 from core.cpus import Isa
-from core.stack_frame_parser import SavedStackContext
+from core.stack_frame_parser import SavedStackContext, ValidationLevel
 from core.unwind import Endian, Reader, SeedFrame, read_slot
 
 
-def _arm_integer(isa: Isa, *, verified: bool) -> SavedStackContext:
+def _arm_integer(isa: Isa) -> SavedStackContext:
     return SavedStackContext(
         profile_id=f"rtthread/{isa}/integer",
         pointer_size=4,
@@ -25,8 +25,8 @@ def _arm_integer(isa: Isa, *, verified: bool) -> SavedStackContext:
         lr_offset=52,
         status_offset=60,
         sp_offset=64,
+        context_span=(0, 64),
         fill_word=0xDEADBEEF,
-        verified=verified,
     )
 
 
@@ -42,12 +42,12 @@ def _armv8m_mainline() -> SavedStackContext:
         lr_offset=4,
         status_offset=76,
         sp_offset=80,
+        context_span=(0, 80),
         fill_word=0xDEADBEEF,
-        verified=False,
     )
 
 
-def _riscv(isa: Isa, word: int, *, verified: bool) -> SavedStackContext:
+def _riscv(isa: Isa, word: int, *, validation: ValidationLevel) -> SavedStackContext:
     registers: list[tuple[int, int]] = [(1, word)]
     registers.append((4, 4 * word))
     registers.extend((register, register * word) for register in range(5, 32))
@@ -59,16 +59,18 @@ def _riscv(isa: Isa, word: int, *, verified: bool) -> SavedStackContext:
         lr_offset=word,
         status_offset=None,
         sp_offset=32 * word,
+        context_span=(0, 32 * word),
+        slot_aliases=(("r1", "lr"),),
         fill_word=0xDEADBEEF,
-        verified=verified,
+        validation=validation,
     )
 
 
-ARMV6M_INTEGER = _arm_integer("armv6-m", verified=False)
-ARMV7M_INTEGER = _arm_integer("armv7-m", verified=False)
+ARMV6M_INTEGER = _arm_integer("armv6-m")
+ARMV7M_INTEGER = _arm_integer("armv7-m")
 ARMV8M_MAINLINE_INTEGER = _armv8m_mainline()
-RISCV32_INTEGER = _riscv("riscv32", 4, verified=False)
-RISCV64_INTEGER = _riscv("riscv64", 8, verified=True)
+RISCV32_INTEGER = _riscv("riscv32", 4, validation="synthetic")
+RISCV64_INTEGER = _riscv("riscv64", 8, validation="live")
 
 
 def decode_saved_context(

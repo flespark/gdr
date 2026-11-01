@@ -19,7 +19,7 @@ _ARM_FILL = 0xA5A5A5A5
 # Cortex-M3/M0: pxTopOfStack points at r4; the hardware frame is above it.
 ARMV7M_INTEGER = SavedStackContext(
     profile_id="freertos/armv7-m/integer",
-    verified=True,
+    validation="live",
     pointer_size=4,
     registers=tuple((register, (register - 4) * 4) for register in range(4, 12))
     + ((0, 32), (1, 36), (2, 40), (3, 44), (12, 48)),
@@ -27,12 +27,13 @@ ARMV7M_INTEGER = SavedStackContext(
     lr_offset=52,
     status_offset=60,
     sp_offset=64,
+    context_span=(0, 64),
     fill_word=_ARM_FILL,
 )
 
 ARMV6M_INTEGER = SavedStackContext(
     profile_id="freertos/armv6-m/integer",
-    verified=True,
+    validation="live",
     pointer_size=4,
     registers=tuple((register, 4 + (register - 4) * 4) for register in range(4, 12))
     + ((0, 36), (1, 40), (2, 44), (3, 48), (12, 52)),
@@ -40,6 +41,7 @@ ARMV6M_INTEGER = SavedStackContext(
     lr_offset=56,
     status_offset=64,
     sp_offset=68,
+    context_span=(0, 68),
     fill_word=0x04040404,
     initial_registers=(
         0x04040404,
@@ -57,7 +59,7 @@ ARMV6M_INTEGER = SavedStackContext(
 # begins at +40 and the original SP is one hardware frame above it.
 ARMV8M_MAINLINE_SMP_INTEGER = SavedStackContext(
     profile_id="freertos/armv8-m.mainline/non-mpu-smp",
-    verified=True,
+    validation="live",
     pointer_size=4,
     registers=tuple((register, 8 + (register - 4) * 4) for register in range(4, 12))
     + ((0, 40), (1, 44), (2, 48), (3, 52), (12, 56)),
@@ -65,6 +67,7 @@ ARMV8M_MAINLINE_SMP_INTEGER = SavedStackContext(
     lr_offset=60,
     status_offset=68,
     sp_offset=72,
+    context_span=(0, 72),
     fill_word=_ARM_FILL,
     initial_registers=(
         0x04040404,
@@ -83,7 +86,7 @@ ARMV8M_MAINLINE_SMP_INTEGER = SavedStackContext(
 # -16; that PSP names the hardware frame, so the interrupted SP is PSP+32.
 ARMV8M_MAINLINE_MPU_INTEGER = SavedStackContext(
     profile_id="freertos/armv8-m.mainline/mpu-v2",
-    verified=True,
+    validation="live",
     pointer_size=4,
     registers=tuple((register, -80 + (register - 4) * 4) for register in range(4, 12))
     + ((0, -48), (1, -44), (2, -40), (3, -36), (12, -32)),
@@ -91,6 +94,7 @@ ARMV8M_MAINLINE_MPU_INTEGER = SavedStackContext(
     lr_offset=-28,
     status_offset=-20,
     sp_offset=0,
+    context_span=(-80, 0),
     sp_slot_offset=-16,
     sp_slot_bias=32,
     fill_word=0x04040404,
@@ -118,8 +122,10 @@ def _riscv_context(isa: Isa, word: int) -> SavedStackContext:
         lr_offset=word,
         status_offset=None,
         sp_offset=31 * word,
+        context_span=(0, 31 * word),
+        slot_aliases=(("r1", "lr"),),
         fill_word=int.from_bytes(bytes([0xA5]) * word, "little"),
-        verified=True,
+        validation="live",
     )
 
 

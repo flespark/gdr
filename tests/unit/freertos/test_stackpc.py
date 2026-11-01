@@ -41,7 +41,8 @@ def test_last_pc_layout_is_projected_from_the_saved_context():
         lr_offset=52,
         status_offset=60,
         sp_offset=64,
-        verified=True,
+        context_span=(0, 64),
+        validation="live",
     )
     assert pc_layout(context) == SavedPcLayout(56, 4, 60)
 

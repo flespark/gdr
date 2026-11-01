@@ -7,8 +7,9 @@ from dataclasses import replace
 import pytest
 
 import core.unwind as driver
+import core.unwind_cfi as cfi
 from core.unwind import SeedFrame, unwind_chain
-from core.unwind_cfi import CfaRule, CfiRow, RegisterRule
+from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
 from core.unwind_ehabi import EhabiTable, _ExidxEntry
 from core.unwind_meta import CodeSymbol
 from tests.unit.core.test_unwind import _cfi_bytes, _cfi_metadata, _Memory
@@ -228,3 +229,165 @@ def test_block_reader_checks_size_bounds_and_short_reads():
         )
     assert driver.read_block(lambda _a, _n: b"x", 0x2000, 4) is None
     assert driver.read_block(lambda _a, _n: b"abcd", 0x2000, 4) == b"abcd"
+
+
+@pytest.mark.parametrize(
+    "rule,reason",
+    [
+        (RegisterRule("undefined"), "cfi-register-undefined"),
+        (RegisterRule("offset", -4), "cfi-memory-error"),
+        (RegisterRule("register", register=8), "cfi-register-source-missing"),
+    ],
+)
+def test_unavailable_register_drops_old_value_and_retains_failure(rule, reason):
+    options = dict(
+        read=_Memory({}),
+        ptr_size=4,
+        endian="little",
+        return_register=14,
+        stack_low=0x2000,
+        stack_high=0x2200,
+    )
+    original = {7: 0x2080, 13: 0x2040, 14: 0x1104}
+    result = driver._unwind_cfi(
+        CfiRow(CfaRule(13, 8), {7: rule}), regs=original, sp=0x2040, **options
+    )
+    assert isinstance(result, tuple)
+    regs, sp, _pc = result
+    assert 7 not in regs and original[7] == 0x2080
+    assert (
+        driver._unwind_cfi(CfiRow(CfaRule(7, 8)), regs=regs, sp=sp, **options) == reason
+    )
+    assert driver._rule_value(
+        RegisterRule("register", register=7),
+        cfa=sp,
+        regs=regs,
+        **{key: value for key, value in options.items() if key != "return_register"},
+    ) == (None, reason)
+    assert (
+        driver._unwind_frame_pointer(
+            arch="arm",
+            regs=regs,
+            sp=sp,
+            frame_pointer_register=7,
+            **{
+                key: value for key, value in options.items() if key != "return_register"
+            },
+        )
+        == reason
+    )
+    restored = driver._unwind_cfi(
+        CfiRow(CfaRule(13, 0), {7: RegisterRule("val_offset", 8)}),
+        regs=regs,
+        sp=sp,
+        **options,
+    )
+    assert restored[0][7] == sp + 8
+    assert 7 not in restored[0].unavailable
+
+
+def test_register_failures_survive_multiple_driver_steps(monkeypatch):
+    rows = {
+        0x1004: CfiRow(
+            CfaRule(13, 8),
+            {7: RegisterRule("undefined"), 14: RegisterRule("val_offset", -0x1040)},
+        ),
+        0x1008: CfiRow(CfaRule(13, 8), {14: RegisterRule("val_offset", -0x1044)}),
+        0x100C: CfiRow(CfaRule(7, 8)),
+    }
+    monkeypatch.setattr(CfiTable, "row_for", lambda _self, pc: rows.get(pc))
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2040, {7: 0x2080, 13: 0x2040, 14: 0x1200}),
+        _cfi_metadata(_cfi_bytes()),
+        read=_Memory({}),
+        stack_low=0x2000,
+        stack_high=0x2200,
+    )
+    assert [frame.pc for frame in result.frames] == [0x1004, 0x1008, 0x100C]
+    assert result.stop_reason == "cfi-register-undefined" and not result.complete
+
+
+@pytest.mark.parametrize(
+    "patch,reason",
+    [
+        (lambda blob: blob[:13] + b"\x0f" + blob[14:], "cfi-expression-unsupported"),
+        (lambda blob: blob[:13] + b"\x05" + blob[14:], "cfi-opcode-unsupported"),
+        (lambda blob: blob[:8] + b"\x09" + blob[9:], "cfi-cie-version-unsupported"),
+        (lambda blob: blob[:20] + b"\xfe\xff\xff\xff" + blob[24:], "cfi-cie-missing"),
+        (lambda blob: blob[:-1], "cfi-truncated-unit"),
+    ],
+)
+def test_parse_failures_cannot_enable_frame_pointer(patch, reason):
+    metadata = _cfi_metadata(patch(_cfi_bytes()))
+    reads = []
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2000, {7: 0x2040, 13: 0x2000}),
+        metadata,
+        read=lambda a, n: reads.append((a, n)),
+        stack_low=0x2000,
+        stack_high=0x2200,
+    )
+    assert len(result.frames) == 1 and result.stop_reason == reason
+    assert reads == [] and not result.complete
+
+
+@pytest.mark.parametrize("has_independent_cfi", [False, True])
+def test_unknown_coverage_error_allows_only_independent_metadata(has_independent_cfi):
+    metadata = _cfi_metadata(_cfi_bytes(instructions=b"\x0c\x0d\x00"))
+    broken = CfiTable((), address_size=4, endian="little", error="cfi-malformed-fde")
+    metadata = replace(
+        metadata,
+        cfi_tables=(broken, *metadata.cfi_tables) if has_independent_cfi else (broken,),
+    )
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2040, {7: 0x2080, 13: 0x2040, 14: 0x1104}, root_pc=0x1104),
+        metadata,
+        read=_Memory({}),
+        stack_low=0x2000,
+        stack_high=0x2200,
+    )
+    if has_independent_cfi:
+        assert result.complete and result.frames[-1].method == "cfi"
+    else:
+        assert result.stop_reason == "cfi-malformed-fde" and len(result.frames) == 1
+
+
+def test_clean_uncovered_pc_still_allows_bounded_frame_pointer():
+    metadata = _cfi_metadata(_cfi_bytes(start=0x1200))
+    memory = _Memory(
+        {0x2040: (0x2080).to_bytes(4, "little") + (0x1100).to_bytes(4, "little")}
+    )
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2000, {7: 0x2040, 13: 0x2000}, root_pc=0x1100),
+        metadata,
+        read=memory,
+        stack_low=0x2000,
+        stack_high=0x2200,
+    )
+    assert result.complete and result.frames[-1].method == "frame-pointer"
+
+
+@pytest.mark.parametrize(
+    "budget,limit,reason",
+    [
+        ("MAX_CIE_COUNT", 0, "cfi-record-limit"),
+        ("MAX_FDE_COUNT", 0, "cfi-record-limit"),
+        ("MAX_CFI_OPCODES", 1, "cfi-opcode-limit"),
+    ],
+)
+def test_parser_budget_failures_cannot_enable_frame_pointer(
+    monkeypatch, budget, limit, reason
+):
+    monkeypatch.setattr(cfi, budget, limit)
+    metadata = _cfi_metadata(_cfi_bytes())
+    assert metadata.cfi_tables[0].error == reason
+    reads = []
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2000, {7: 0x2040, 13: 0x2000}),
+        metadata,
+        read=lambda address, size: reads.append((address, size)),
+        stack_low=0x2000,
+        stack_high=0x2200,
+    )
+    assert result.stop_reason == reason and len(result.frames) == 1
+    assert reads == [] and not result.complete

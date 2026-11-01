@@ -19,7 +19,8 @@ def test_saved_context_validates_width_registers_and_tcb_sp_proof():
         lr_offset=8,
         status_offset=12,
         sp_offset=16,
-        verified=True,
+        context_span=(0, 16),
+        validation="live",
     )
     assert SavedStackContext(**base).profile_id == "test/armv7-m"
     with pytest.raises(ValueError, match="invalid saved-context profile"):

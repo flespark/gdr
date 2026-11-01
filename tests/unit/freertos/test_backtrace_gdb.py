@@ -1,5 +1,6 @@
 """FreeRTOS orchestration contracts without a live GDB process."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -90,16 +91,133 @@ def test_m33_profile_requires_explicit_smp_or_mpu_configuration(monkeypatch):
     elf = SimpleNamespace(symbol_address=lambda _name: 0x1000)
 
     single_core = ports.select_context(elf)
-    smp = ports.select_context(elf, smp=True, macros={"configENABLE_MPU": "0"})
+    macros = {"configENABLE_FPU": "0", "configENABLE_TRUSTZONE": "0"}
+    smp = ports.select_context(elf, smp=True, macros=macros | {"configENABLE_MPU": "0"})
     mpu = ports.select_context(
         elf,
         mpu=True,
-        macros={"configENABLE_MPU": "1", "configUSE_MPU_WRAPPERS_V1": "0"},
+        macros=macros | {"configENABLE_MPU": "1", "configUSE_MPU_WRAPPERS_V1": "0"},
     )
 
     assert single_core.context is None and single_core.reason == "unverified-port"
     assert smp.context is ARMV8M_MAINLINE_SMP_INTEGER and smp.reason == "ok"
     assert mpu.context is ARMV8M_MAINLINE_MPU_INTEGER and mpu.reason == "ok"
+    assert smp.evidence == (
+        ".ARM.attributes Tag_CPU_arch/profile",
+        "port symbols",
+        "kernel configuration",
+    )
+
+
+@pytest.mark.parametrize(
+    "mpu,missing",
+    [
+        (mpu, name)
+        for mpu in (False, True)
+        for name in ("configENABLE_FPU", "configENABLE_TRUSTZONE", "configENABLE_MPU")
+    ]
+    + [(True, "configUSE_MPU_WRAPPERS_V1")],
+)
+def test_m33_missing_required_configuration_never_selects_a_profile(
+    monkeypatch, mpu, missing
+):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu("armv8-m.mainline", "arm", "ok", "aapcs32")
+    )
+    macros = {
+        "configENABLE_FPU": "0",
+        "configENABLE_TRUSTZONE": "0",
+        "configENABLE_MPU": str(int(mpu)),
+        "configUSE_MPU_WRAPPERS_V1": "0",
+    }
+    del macros[missing]
+    selected = ports.select_context(
+        SimpleNamespace(symbol_address=lambda _name: 0x1000),
+        smp=not mpu,
+        mpu=mpu,
+        macros=macros,
+    )
+    assert (
+        selected.context is None and selected.reason == "port-configuration-unavailable"
+    )
+    assert selected.isa == "armv8-m.mainline" and selected.abi == "aapcs32"
+
+
+@pytest.mark.parametrize(
+    "name,value,reason",
+    [
+        ("configENABLE_FPU", "1", "unsupported-extension-context"),
+        ("configENABLE_MVE", "1", "unsupported-extension-context"),
+        ("configENABLE_TRUSTZONE", "1", "port-configuration-unavailable"),
+        ("configENABLE_MPU", "1", "port-configuration-conflict"),
+    ],
+)
+def test_m33_conflicting_configuration_remains_rejected(
+    monkeypatch, name, value, reason
+):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu("armv8-m.mainline", "arm", "ok")
+    )
+    macros = {
+        "configENABLE_FPU": "0",
+        "configENABLE_TRUSTZONE": "0",
+        "configENABLE_MPU": "0",
+        name: value,
+    }
+    selected = ports.select_context(
+        SimpleNamespace(symbol_address=lambda _name: 0x1000), smp=True, macros=macros
+    )
+    assert selected.context is None and selected.reason == reason
+
+
+@pytest.mark.parametrize("validation", ["synthetic", "file-only"])
+def test_nonlive_profiles_are_rejected_before_port_evidence(monkeypatch, validation):
+    monkeypatch.setattr(ports, "cpu_of", lambda _elf: Cpu("armv7-m", "arm", "ok"))
+    monkeypatch.setattr(
+        ports, "ARMV7M_INTEGER", replace(ARMV7M_INTEGER, validation=validation)
+    )
+    elf = SimpleNamespace(symbol_address=lambda _name: pytest.fail("nonlive port read"))
+    result = ports.select_context(elf)
+    assert result.context is None and result.reason == "unverified-port"
+
+
+@pytest.mark.parametrize("missing", ["PendSV_Handler", "pxPortInitialiseStack"])
+def test_arm_profile_requires_each_port_symbol(monkeypatch, missing):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu("armv7-m", "arm", "ok", "aapcs32")
+    )
+    selected = ports.select_context(
+        SimpleNamespace(symbol_address=lambda name: None if name == missing else 0x1000)
+    )
+    assert (
+        selected.context is None
+        and selected.reason == "unrecognizable-stack-frame-layout"
+    )
+    assert selected.isa == "armv7-m" and selected.abi == "aapcs32"
+
+
+def test_arm_evidence_does_not_claim_compiled_riscv_proof(monkeypatch):
+    monkeypatch.setattr(ports, "cpu_of", lambda _elf: Cpu("armv7-m", "arm", "ok"))
+    selected = ports.select_context(
+        SimpleNamespace(symbol_address=lambda _name: 0x1000)
+    )
+    assert selected.evidence == (".ARM.attributes Tag_CPU_arch/profile", "port symbols")
+
+
+def test_mpu_wrapper_conflict_is_not_a_valid_context(monkeypatch):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu("armv8-m.mainline", "arm", "ok")
+    )
+    macros = {
+        "configENABLE_FPU": "0",
+        "configENABLE_TRUSTZONE": "0",
+        "configENABLE_MPU": "1",
+        "configUSE_MPU_WRAPPERS_V1": "1",
+    }
+    selected = ports.select_context(
+        SimpleNamespace(symbol_address=lambda _name: 0x1000), mpu=True, macros=macros
+    )
+    assert selected.context is None and selected.reason == "port-configuration-conflict"
 
 
 def test_unverified_profile_selection_precedes_stack_watermark_reads(monkeypatch):

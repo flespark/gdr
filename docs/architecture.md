@@ -43,7 +43,7 @@ duplicating what GDB already displays well. Design rationale lives in
 | `unwind.py` | Bounded task unwind driver: seed frames, EHABI/CFI/frame-pointer selection, stack/PC/progress validation, per-frame method and stop reason. Pure; no GDB import. |
 | `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
 | `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence from ELF attributes; contains no RTOS policy. |
-| `stack_frame_parser.py` | Validated saved-frame profiles and bounded RISC-V code evidence. |
+| `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. Also provides bounded RISC-V code evidence; adapter selectors own image/configuration proof. |
 | `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`) tables and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
 | `unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
 | `help.py` | Structured help schema with terminal/Markdown renderers; command metadata stays structured so the same source feeds GDB now and docs later. |
@@ -115,6 +115,13 @@ rtt/frt backtrace <task> / gdr api backtrace -> adapter
   -> core.unwind (metadata selection, optional frame pointer, bounds/depth proof)
   -> frames + method + complete/stop_reason
 ```
+
+CFI register recovery removes unavailable values and carries their failure
+reasons into subsequent steps; an undefined or unreadable register cannot
+serve as a later CFA base or register-copy source. Known FDE ranges retain
+CIE/rule errors. Parse failures with undecodable coverage prohibit
+frame-pointer fallback unless an independent metadata rule covers the PC;
+clean uncovered PCs retain the bounded fallback.
 
 Native inspection stays separate:
 

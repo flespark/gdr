@@ -412,7 +412,7 @@ def _select_arm_context(
         (
             ".ARM.attributes Tag_CPU_arch/profile",
             "port symbols",
-            "kernel configuration",
+            *(("kernel configuration",) if cpu.isa == "armv8-m.mainline" else ()),
         ),
     )
 
@@ -432,10 +432,15 @@ def _arm_profile(isa: str | None, *, smp: bool, mpu: bool) -> SavedStackContext 
 
 def _arm_configuration_evidence(macros: Mapping[str, str], *, mpu: bool) -> str | None:
     """Return a rejection reason for an unsupported M33 configuration."""
+    required = ("configENABLE_FPU", "configENABLE_TRUSTZONE", "configENABLE_MPU")
+    if mpu:
+        required += ("configUSE_MPU_WRAPPERS_V1",)
+    if any(name not in macros for name in required):
+        return "port-configuration-unavailable"
     for name in ("configENABLE_FPU", "configENABLE_MVE"):
-        if macros.get(name) not in ("0", None):
+        if macros.get(name, "0") != "0":
             return "unsupported-extension-context"
-    if macros.get("configENABLE_TRUSTZONE") not in ("0", None):
+    if macros["configENABLE_TRUSTZONE"] != "0":
         return "port-configuration-unavailable"
     if macros.get("configENABLE_MPU") != ("1" if mpu else "0") or (
         mpu and macros.get("configUSE_MPU_WRAPPERS_V1") != "0"

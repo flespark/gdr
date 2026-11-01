@@ -138,6 +138,22 @@ def _read_value(
     return int.from_bytes(raw, endian)
 
 
+class _RecoveredRegisters(dict[int, int]):
+    """Keep unavailable-register reasons outside the readable register values."""
+
+    def __init__(self, regs: Mapping[int, int]) -> None:
+        super().__init__(regs)
+        self.unavailable: dict[int, str] = (
+            dict(regs.unavailable) if isinstance(regs, _RecoveredRegisters) else {}
+        )
+
+
+def _register_failure(regs: Mapping[int, int], register: int, default: str) -> str:
+    if isinstance(regs, _RecoveredRegisters):
+        return regs.unavailable.get(register, default)
+    return default
+
+
 def _rule_value(
     rule: RegisterRule,
     *,
@@ -156,6 +172,10 @@ def _rule_value(
     if rule.kind == "register":
         source = rule.register
         if source is None or source not in regs:
+            if source is not None:
+                return None, _register_failure(
+                    regs, source, "cfi-register-source-missing"
+                )
             return None, "cfi-register-source-missing"
         return regs[source], None
     if rule.kind == "val_offset":
@@ -191,7 +211,7 @@ def _unwind_cfi(
         return "cfi-no-cfa"
     cfa_base = regs.get(row.cfa.register)
     if cfa_base is None:
-        return "cfi-cfa-register-missing"
+        return _register_failure(regs, row.cfa.register, "cfi-cfa-register-missing")
     cfa = cfa_base + row.cfa.offset
     if cfa < sp:
         return "cfi-no-progress"
@@ -199,7 +219,7 @@ def _unwind_cfi(
         return "cfi-stack-underflow"
     if stack_high is not None and cfa > stack_high:
         return "cfi-stack-overflow"
-    new_regs = dict(regs)
+    new_regs = _RecoveredRegisters(regs)
     for register, rule in row.registers.items():
         value, failure = _rule_value(
             rule,
@@ -214,9 +234,12 @@ def _unwind_cfi(
         if failure is not None:
             if register == return_register:
                 return failure
+            new_regs.pop(register, None)
+            new_regs.unavailable[register] = failure
             continue
         if value is not None:
             new_regs[register] = value
+            new_regs.unavailable.pop(register, None)
     return_rule = row.registers.get(return_register)
     if return_rule is None or return_rule.kind == "same":
         caller_pc = regs.get(return_register)
@@ -234,9 +257,12 @@ def _unwind_cfi(
         if failure is not None:
             return failure
     if caller_pc is None:
-        return "cfi-return-address-missing"
+        return _register_failure(regs, return_register, "cfi-return-address-missing")
     new_regs[return_register] = caller_pc
-    new_regs[13 if return_register == 14 else 2] = cfa
+    sp_register = 13 if return_register == 14 else 2
+    new_regs[sp_register] = cfa
+    new_regs.unavailable.pop(return_register, None)
+    new_regs.unavailable.pop(sp_register, None)
     return new_regs, cfa, caller_pc
 
 
@@ -252,8 +278,10 @@ def _unwind_frame_pointer(
     stack_low: int | None,
     stack_high: int | None,
 ) -> tuple[dict[int, int], int, int] | str:
-    if frame_pointer_register is None or frame_pointer_register not in regs:
+    if frame_pointer_register is None:
         return "fp-register-missing"
+    if frame_pointer_register not in regs:
+        return _register_failure(regs, frame_pointer_register, "fp-register-missing")
     frame_pointer = regs[frame_pointer_register]
     if frame_pointer <= 0 or frame_pointer % ptr_size != 0:
         return "fp-misaligned"
@@ -305,9 +333,11 @@ def _unwind_frame_pointer(
         return "fp-memory-error"
     if caller_sp <= sp:
         return "fp-no-progress"
-    new_regs = dict(regs)
+    new_regs = _RecoveredRegisters(regs)
     new_regs[frame_pointer_register] = caller_fp
     new_regs[13 if arch == "arm" else 2] = caller_sp
+    new_regs.unavailable.pop(frame_pointer_register, None)
+    new_regs.unavailable.pop(13 if arch == "arm" else 2, None)
     return new_regs, caller_sp, caller_pc
 
 
@@ -438,10 +468,13 @@ def unwind_chain(
             step_method = "cfi"
         if outcome is None and metadata is not None:
             row = None
+            parse_failures: list[str] = []
             for table in metadata.cfi_tables:
                 row = table.row_for(pc)
                 if row is not None:
                     break
+                if table.error is not None:
+                    parse_failures.append(table.error)
             if row is not None:
                 has_metadata = True
                 outcome = _unwind_cfi(
@@ -462,7 +495,8 @@ def unwind_chain(
                     attempts.append(outcome)
                     outcome = None
             else:
-                attempts.append("cfi-no-fde")
+                has_metadata = has_metadata or bool(parse_failures)
+                attempts.extend(parse_failures or ["cfi-no-fde"])
         if outcome is None and allow_frame_pointer and not has_metadata:
             outcome = _unwind_frame_pointer(
                 arch=arch,
@@ -516,7 +550,12 @@ def unwind_chain(
         method = step_method
         pc = caller_pc
         sp = new_sp
-        regs = new_regs
+        recovered = _RecoveredRegisters(new_regs)
+        if isinstance(regs, _RecoveredRegisters):
+            for register, reason in regs.unavailable.items():
+                if register not in recovered:
+                    recovered.unavailable.setdefault(register, reason)
+        regs = recovered
         if seed.root_pc is not None and pc == (
             seed.root_pc & ~1 if arch == "arm" else seed.root_pc
         ):

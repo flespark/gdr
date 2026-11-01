@@ -118,6 +118,10 @@ Cortex-M0 (`microbit`), Cortex-M3 (`mps2-an385`), Cortex-M33 SMP and MPU
 (`mps2-an521`), RV32 (`qemu-virt-rv32`) and RV64 (`qemu-virt-rv64`).
 The Cortex-M33 fixtures disable FPU and TrustZone; other extended-context
 configurations are not verified.
+Armv8-M profile selection requires explicit FPU, TrustZone and MPU configuration
+evidence (plus the wrapper version for MPU); absent required macros stop at
+`port-configuration-unavailable`. Arm selection uses attributes, port symbols
+and configuration rather than compiled save/restore instruction matching.
 Backtrace JSON reports canonical ISA in `architecture` and ELF ABI in `abi`;
 profile identity remains internal. RISC-V profiles require a bounded match of
 the compiled integer save/restore and initial-stack code; this does not prove
@@ -170,7 +174,8 @@ on a core other than the selected one reports `smp-no-context`; GDR never
 reads that core's live registers through another core's context.
 
 **No stack scanning and no inferior calls.** The frame-pointer fallback is
-used only when EHABI/CFI has no row; it validates alignment, stack bounds,
+used only when EHABI/CFI has no row and CFI coverage is not obscured by a
+parse error; it validates alignment, stack bounds,
 progress and that the return PC is executable. GDR never scans a stack for
 plausible return addresses, calls an inferior function, or writes target
 memory.

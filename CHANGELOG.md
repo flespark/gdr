@@ -22,6 +22,17 @@ All notable changes to GDR are documented in this file.
   paths; loading GDR inside GDB is unchanged.
 - MPU task `Used` and `HighWater` use the task stack rather than TCB context
   storage.
+- Backtrace JSON uses canonical `architecture` and `abi`, replacing `port`
+  and duplicate `isa` fields; the envelope schema is 3.
+
+### Fixed
+
+- Backtraces discard undefined or unreadable register values and preserve
+  their failure reasons instead of reusing them in subsequent frames.
+- CFI parse failures cannot enable frame-pointer fallback; valid independent
+  metadata and clean uncovered-PC fallback remain available.
+- Armv8-M saved-context selection rejects missing required configuration
+  evidence instead of treating absent FPU or TrustZone macros as disabled.
 
 ## [2026.04] - 2026-10-13
 

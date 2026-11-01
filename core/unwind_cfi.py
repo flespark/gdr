@@ -78,6 +78,7 @@ class _Fde:
     cie: _Cie
     instructions: bytes
     section_address: int
+    error: str | None = None
 
 
 class CfiTable:
@@ -141,12 +142,12 @@ def parse_cfi_section(
 ) -> CfiTable:
     """Parse one ``.debug_frame``/``.eh_frame`` section.
 
-    A section that cannot be parsed as a whole returns an empty table carrying
-    ``error``; individual malformed CIE/FDE records are skipped.  The caller
-    treats either as an unavailable metadata source.
+    Known FDE ranges retain their CIE/rule failures. An error whose coverage
+    cannot be decoded is retained on the table and forbids unproven fallback
+    at PCs without a valid independent rule.
     """
     order = "<" if endian == "little" else ">"
-    cies: dict[int, _Cie] = {}
+    cies: dict[int, _Cie | str] = {}
     fdes: list[_Fde] = []
     index = 0
     error: str | None = None
@@ -191,15 +192,16 @@ def parse_cfi_section(
                 order=order,
                 address_size=address_size,
             )
-            if parsed is None:
-                index = unit_end
-                continue
             cies[unit_start] = parsed
+            if isinstance(parsed, str):
+                error = error or parsed
             index = unit_end
             continue
         cie_offset = id_offset - identifier if is_eh_frame else identifier
         cie = cies.get(cie_offset)
-        if cie is None:
+        if cie is None or isinstance(cie, str):
+            failure = cie if isinstance(cie, str) else "cfi-cie-missing"
+            error = error or failure
             index = unit_end
             continue
         parsed_fde = _parse_fde(
@@ -213,6 +215,10 @@ def parse_cfi_section(
             is_eh_frame=is_eh_frame,
             opcode_budget=opcode_budget,
         )
+        if isinstance(parsed_fde, str):
+            error = error or parsed_fde
+            index = unit_end
+            continue
         if parsed_fde is None:
             index = unit_end
             continue
@@ -239,75 +245,79 @@ def _parse_cie(
     *,
     order: str,
     address_size: int,
-) -> _Cie | None:
+) -> _Cie | str:
     if index >= end:
-        return None
+        return "cfi-malformed-cie"
     byteorder = "little" if order == "<" else "big"
     version = data[index]
     index += 1
     aug_end = data.find(b"\x00", index, end)
     if aug_end < 0:
-        return None
+        return "cfi-malformed-cie"
     augmentation = data[index:aug_end].decode("ascii", errors="replace")
     index = aug_end + 1
     if version not in (1, 3, 4):
-        return None
+        return "cfi-cie-version-unsupported"
     if version == 4:
         if index + 2 > end or data[index] != address_size or data[index + 1] != 0:
-            return None
+            return "cfi-cie-address-size-unsupported"
         index += 2
     code = _read_uleb(data, index, end)
     if code is None:
-        return None
+        return "cfi-malformed-cie"
     code_alignment, index = code
     data_align = _read_sleb(data, index, end)
     if data_align is None:
-        return None
+        return "cfi-malformed-cie"
     data_alignment, index = data_align
     if version == 1:
         if index >= end:
-            return None
+            return "cfi-malformed-cie"
         return_register = data[index]
         index += 1
     else:
         decoded = _read_uleb(data, index, end)
         if decoded is None:
-            return None
+            return "cfi-malformed-cie"
         return_register, index = decoded
     fde_encoding: int | None = None
     if augmentation.startswith("z"):
         decoded = _read_uleb(data, index, end)
         if decoded is None:
-            return None
+            return "cfi-malformed-cie"
         aug_length, index = decoded
         aug_end_data = index + aug_length
         if aug_end_data > end:
-            return None
+            return "cfi-malformed-cie"
         cursor = index
         for char in augmentation[1:]:
             if char == "R":
                 if cursor >= aug_end_data:
-                    return None
+                    return "cfi-malformed-cie"
                 fde_encoding = data[cursor]
                 cursor += 1
             elif char == "L":
+                if cursor >= aug_end_data:
+                    return "cfi-malformed-cie"
                 cursor += 1
             elif char == "P":
                 if cursor >= aug_end_data:
-                    return None
+                    return "cfi-malformed-cie"
                 encoding = data[cursor]
                 cursor += 1
                 skipped = _encoded_pointer_skip(
                     data, cursor, encoding, aug_end_data, address_size=address_size
                 )
                 if skipped is None:
-                    return None
+                    return "cfi-malformed-cie"
                 cursor = skipped
             elif char in "SB":
                 continue
             else:
-                cursor = aug_end_data
+                return "cfi-augmentation-unsupported"
         index = aug_end_data
+    elif augmentation:
+        return "cfi-augmentation-unsupported"
     initial = _run_cfi(
         data[index:end],
         CfiRow(cfa=CfaRule(register=0, offset=0)),
@@ -321,7 +331,7 @@ def _parse_cie(
         max_steps=MAX_CFI_OPCODES,
     )
     if isinstance(initial, str):
-        return None
+        initial = CfiRow(error=initial)
     return _Cie(
         code_alignment=code_alignment,
         data_alignment=data_alignment,
@@ -436,7 +446,7 @@ def _parse_fde(
     section_address: int,
     is_eh_frame: bool,
     opcode_budget: int,
-) -> tuple[_Fde, int] | None:
+) -> tuple[_Fde, int] | str | None:
     byteorder = "little" if order == "<" else "big"
     if is_eh_frame and cie.fde_encoding is not None:
         start_pos = index
@@ -451,7 +461,7 @@ def _parse_fde(
             absolute_position=start_pos,
         )
         if decoded is None:
-            return None
+            return "cfi-fde-pointer-unavailable"
         start, index = decoded
         fmt = cie.fde_encoding & 0x0F
         size_map = {
@@ -465,26 +475,30 @@ def _parse_fde(
         }
         size = size_map.get(fmt)
         if size is None or index + size > end:
-            return None
+            return "cfi-malformed-fde"
         length = int.from_bytes(data[index : index + size], byteorder)
         index += size
     else:
         if index + address_size * 2 > end:
-            return None
+            return "cfi-malformed-fde"
         start = int.from_bytes(data[index : index + address_size], byteorder)
         index += address_size
         length = int.from_bytes(data[index : index + address_size], byteorder)
         index += address_size
+    if length == 0 or start == 0:
+        return None
+    if start + length > 1 << (address_size * 8):
+        return "cfi-fde-range-invalid"
+    failure = None
     if cie.augmentation.startswith("z"):
         decoded = _read_uleb(data, index, end)
         if decoded is None:
-            return None
-        aug_length, index = decoded
-        if index + aug_length > end:
-            return None
-        index += aug_length
-    if length == 0 or start + length <= start:
-        return None
+            failure = "cfi-malformed-fde"
+        else:
+            aug_length, index = decoded
+            if index + aug_length > end:
+                failure = "cfi-malformed-fde"
+            index += aug_length
     instructions = data[index:end]
     used = min(len(instructions) + 1, opcode_budget)
     return (
@@ -494,6 +508,7 @@ def _parse_fde(
             cie=cie,
             instructions=instructions,
             section_address=section_address,
+            error=failure,
         ),
         used,
     )
@@ -506,6 +521,8 @@ def _execute_cfi(
     address_size: int,
     endian: Endian,
 ) -> CfiRow:
+    if fde.error is not None or fde.cie.initial.error is not None:
+        return CfiRow(error=fde.error or fde.cie.initial.error)
     result = _run_cfi(
         fde.instructions,
         fde.cie.initial,

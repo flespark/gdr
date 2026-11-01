@@ -288,3 +288,77 @@ def test_alignment_uses_virtual_address_and_personality_pointer_width():
         assert cfi._encoded_pointer_skip(b"\x80", 0, encoding, 1) is None
     assert cfi._encoded_pointer_skip(b"", 0, 0xFF, 0) == 0
     assert cfi._encoded_pointer_skip(b"", 0, 7, 0) is None
+
+
+@pytest.mark.parametrize("eh", [False, True])
+def test_cie_initial_failure_keeps_known_fde_coverage(eh):
+    blob = _section(eh=eh).replace(b"\x0c\x0d\x00", b"\x0f\x0d\x00", 1)
+    table = cfi.parse_cfi_section(
+        blob, section_address=0, address_size=4, endian="little", is_eh_frame=eh
+    )
+    assert table.row_for(0x1004).error == "cfi-expression-unsupported"
+    assert table.row_for(0x2000) is None and table.error is None
+
+
+@pytest.mark.parametrize("eh", [False, True])
+def test_unknown_cie_is_not_silent_absence(eh):
+    blob = bytearray(_section(eh=eh))
+    fde_start = int.from_bytes(blob[:4], "little") + 4
+    blob[fde_start + 4 : fde_start + 8] = b"\xfe\xff\xff\xff"
+    table = cfi.parse_cfi_section(
+        bytes(blob), section_address=0, address_size=4, endian="little", is_eh_frame=eh
+    )
+    assert table.error == "cfi-cie-missing"
+    assert table.row_for(0x1004) is None
+
+
+def test_known_fde_with_truncated_augmentation_keeps_range():
+    blob = bytearray(_section(eh=True, augmentation=b"zR", aug_data=b"\x00"))
+    fde_start = int.from_bytes(blob[:4], "little") + 4
+    blob[fde_start + 16] = 0x7F
+    table = cfi.parse_cfi_section(
+        bytes(blob),
+        section_address=0,
+        address_size=4,
+        endian="little",
+        is_eh_frame=True,
+    )
+    assert table.row_for(0x1004).error == "cfi-malformed-fde"
+    assert table.row_for(0x2000) is None and table.error is None
+
+
+@pytest.mark.parametrize(
+    "augmentation,aug_data,reason",
+    [
+        (b"zX", b"", "cfi-augmentation-unsupported"),
+        (b"zL", b"", "cfi-malformed-cie"),
+        (b"eh", b"", "cfi-augmentation-unsupported"),
+    ],
+)
+def test_augmentation_failures_are_retained(augmentation, aug_data, reason):
+    table = cfi.parse_cfi_section(
+        _section(eh=True, augmentation=augmentation, aug_data=aug_data),
+        section_address=0,
+        address_size=4,
+        endian="little",
+        is_eh_frame=True,
+    )
+    assert table.error == reason
+
+
+def test_budget_and_truncation_do_not_hide_valid_independent_ranges(monkeypatch):
+    blob = _section()
+    table = cfi.parse_cfi_section(
+        blob + b"!",
+        section_address=0,
+        address_size=4,
+        endian="little",
+        is_eh_frame=False,
+    )
+    assert table.error == "cfi-truncated-length"
+    assert table.row_for(0x1004).error is None
+    monkeypatch.setattr(cfi, "MAX_FDE_COUNT", 0)
+    limited = cfi.parse_cfi_section(
+        blob, section_address=0, address_size=4, endian="little", is_eh_frame=False
+    )
+    assert limited.error == "cfi-record-limit"
