@@ -19,6 +19,33 @@ The compiler family follows the board (`arm-none-eabi-*` or
 The shared CLI's `doctor` command probes the selected tools before source
 preparation.
 
+## Container tools and cache
+
+For container runs, `ci/.cache/tools/linux-*` holds registered tool links,
+not a self-contained installation of the Linux tools. The links resolve
+inside the running container, for example:
+
+```text
+arm/                -> /opt/xpack-arm-none-eabi-gcc-<version>/bin
+riscv/              -> /opt/xpack-riscv-none-elf-gcc-<version>/bin
+bin/qemu-system-arm -> /usr/bin/qemu-system-arm
+bin/gdb-multiarch   -> /usr/bin/gdb-multiarch
+```
+
+`setup` registers installed tools; it does not download or copy them.
+`ci/containers/Dockerfile` and `ci/containers/Dockerfile.gdb12` must retain
+their tool installation steps: without the matching image contents, the
+links have no targets and tool preflight fails. The GDB 12 profile resolves
+`/usr/bin/gdb-multiarch` in its own image, not in the default QEMU image.
+Tool downloads occur when the relevant image build steps execute; repeated
+test runs reuse installed tools through the image, not through the links.
+See the shared [container instructions](../README.md#containers) for image
+reuse and `--no-build`.
+
+Kernel source checkouts are separate cached data, not links to image
+contents. Their reuse and validation follow the shared
+[cache rules](../README.md#cache-and-provenance).
+
 ## Live lanes
 
 ### Cortex-M0 (`microbit`, variant `full`)
