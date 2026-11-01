@@ -19,6 +19,8 @@ cleanly to its own BSP and toolchain; do not share patches between the
 Cortex-A9 and RV64 directories without verifying both. A9 sets
 `RT_NAME_MAX=16` to match canonical fixture names. Shared coverage and matrix
 policy are documented in [testing](../../docs/testing.md).
+RT-Thread 3.1.4 layers its messagequeue sender-wait fixture onto the shared
+3.1.x fixture; 3.1.0–3.1.3 have no sender-wait API.
 
 ## Build dependencies
 

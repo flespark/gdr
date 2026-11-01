@@ -115,6 +115,9 @@ collect_patch_dirs() {
             PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.3-3.1.5")
             ;;
         esac
+        if [[ "$REF" == "v3.1.4" ]]; then
+            PATCH_DIRS+=("$PATCH_ROOT/$TARGET/3.1.4")
+        fi
         # NOTE: v3.1.5 has a different main.c baseline, but still needs the
         # non-fixture compatibility patches shared by the full 3.1 series.
         if [[ "$REF" == "v3.1.5" ]]; then

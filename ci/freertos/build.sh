@@ -179,6 +179,11 @@ compile_fixture() {
         cflags+=(-funwind-tables)
     fi
     local -a link_flags=(-Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num)
+    if [[ "$TARGET" == "mps2-an385" && "$VERSION" == "11.1.0" && "$VARIANT" == "full" ]]; then
+        # NOTE: merged entries hide function-start evidence from the EHABI
+        # fixture; preserve it independently from CFI.
+        link_flags+=(-Wl,--no-merge-exidx-entries)
+    fi
     # NOTE: set -u treats "${chip_include_paths[@]}" on an empty array as
     # an unbound-variable error on older bash (the same reason port_sources
     # is gated below), so only expand when the target added paths.

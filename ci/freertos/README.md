@@ -39,7 +39,11 @@ backtrace chain.
 `build.sh` reads the prepared kernel tag and links it with
 `portable/GCC/ARM_CM3` plus `fixture/board/mps2-an385/`. QEMU machine is
 `qemu-system-arm -M mps2-an385`. Source checkouts are immutable; only the
-private build directory receives compiler output.
+private build directory receives compiler output. The 11.1.0 `full` link
+retains separate `.ARM.exidx` entries for adjacent kernel functions with
+identical unwind opcodes, so the live backtrace fixture can assert EHABI
+coverage directly.
+
 This lane carries both matrices: the config variants at 10.3.1 (the
 `V10.3.1-kernel-only` tag) and the version sweep. The tags matter because they
 bracket ABI

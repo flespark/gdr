@@ -1,0 +1,100 @@
+--- a/bsp/qemu-vexpress-a9/applications/main.c
++++ b/bsp/qemu-vexpress-a9/applications/main.c
+@@ -11,8 +11,7 @@
+  * - Mailboxes: "test_mailbox" (one queued value), "wait_mb_recv" (empty,
+  *   worker7 waits), "wait_mb_send" (full, worker8 send-waits)
+  * - Message queues: "test_msgqueue" (one queued message), "wait_mq_recv"
+- *   (empty, worker9 waits). No sender waiter: this kernel version has no
+- *   rt_mq_send_wait, so SendWaiters renders N/A.
++ *   (empty, worker9 waits), "wait_mq_send" (full, worker10 send-waits)
+  * - Memory pools: "test_mempool" (one allocated block), "wait_mp"
+  *   (exhausted; worker11 alloc-waits)
+  * - Timers: "test_timer" (periodic, 100 ticks)
+@@ -43,6 +42,7 @@
+ static struct rt_mailbox wait_mb_send;
+ static struct rt_messagequeue test_msgqueue;
+ static struct rt_messagequeue wait_mq_recv;
++static struct rt_messagequeue wait_mq_send;
+ static struct rt_mempool test_mempool;
+ static struct rt_mempool wait_mp;
+ 
+@@ -51,6 +51,7 @@
+ static rt_ubase_t wait_mb_send_pool[MAILBOX_SIZE];
+ static rt_ubase_t test_msgqueue_pool[MQ_POOL_WORDS];
+ static rt_ubase_t wait_mq_recv_pool[MQ_POOL_WORDS];
++static rt_ubase_t wait_mq_send_pool[MQ_POOL_WORDS];
+ static rt_ubase_t test_mempool_pool[MEMPOOL_WORDS];
+ static rt_ubase_t wait_mp_pool[MEMPOOL_WORDS];
+ static rt_uint8_t test_message[MESSAGE_SIZE] = {0, 1, 2, 3, 4, 5, 6, 7};
+@@ -67,6 +68,7 @@
+ static rt_uint8_t worker7_stack[THREAD_STACK_SIZE];
+ static rt_uint8_t worker8_stack[THREAD_STACK_SIZE];
+ static rt_uint8_t worker9_stack[THREAD_STACK_SIZE];
++static rt_uint8_t worker10_stack[THREAD_STACK_SIZE];
+ static rt_uint8_t worker11_stack[THREAD_STACK_SIZE];
+ 
+ static struct rt_thread locker_thread;
+@@ -79,6 +81,7 @@
+ static struct rt_thread worker7_thread;
+ static struct rt_thread worker8_thread;
+ static struct rt_thread worker9_thread;
++static struct rt_thread worker10_thread;
+ static struct rt_thread worker11_thread;
+ 
+ static void test_timer_timeout(void *parameter)
+@@ -213,6 +216,18 @@
+     }
+ }
+ 
++/* worker10: send-waits on the full wait_mq_send -> messagequeue sender. */
++static void worker10_entry(void *parameter)
++{
++    (void)parameter;
++
++    rt_mq_send_wait(&wait_mq_send, test_message, sizeof(test_message),
++                    RT_WAITING_FOREVER);
++    while (1)
++    {
++        rt_thread_mdelay(100);
++    }
++}
+ 
+ /* worker11: alloc-waits on the exhausted wait_mp -> mempool waiter. */
+ static void worker11_entry(void *parameter)
+@@ -266,6 +281,18 @@
+     RT_ASSERT(rt_mq_init(&wait_mq_recv, "wait_mq_recv", wait_mq_recv_pool,
+                          sizeof(test_message), sizeof(wait_mq_recv_pool),
+                          RT_IPC_FLAG_FIFO) == RT_EOK);
++    /* wait_mq_send fills every slot so worker10 send-waits. */
++    RT_ASSERT(rt_mq_init(&wait_mq_send, "wait_mq_send", wait_mq_send_pool,
++                         sizeof(test_message), sizeof(wait_mq_send_pool),
++                         RT_IPC_FLAG_FIFO) == RT_EOK);
++    {
++        rt_size_t i;
++        for (i = 0; i < sizeof(wait_mq_send_pool) / (sizeof(test_message) + sizeof(void *)); i++)
++        {
++            RT_ASSERT(rt_mq_send(&wait_mq_send, test_message,
++                                 sizeof(test_message)) == RT_EOK);
++        }
++    }
+ 
+     RT_ASSERT(rt_mp_init(&test_mempool, "test_mempool", test_mempool_pool,
+                          sizeof(test_mempool_pool),
+@@ -323,6 +350,9 @@
+     rt_thread_init(&worker9_thread, "worker9", worker9_entry, RT_NULL,
+                    worker9_stack, sizeof(worker9_stack),
+                    THREAD_PRIORITY + 8, 10);
++    rt_thread_init(&worker10_thread, "worker10", worker10_entry, RT_NULL,
++                   worker10_stack, sizeof(worker10_stack),
++                   THREAD_PRIORITY + 9, 10);
+     rt_thread_init(&worker11_thread, "worker11", worker11_entry, RT_NULL,
+                    worker11_stack, sizeof(worker11_stack),
+                    THREAD_PRIORITY + 10, 10);
+@@ -337,6 +367,7 @@
+     rt_thread_startup(&worker7_thread);
+     rt_thread_startup(&worker8_thread);
+     rt_thread_startup(&worker9_thread);
++    rt_thread_startup(&worker10_thread);
+     rt_thread_startup(&worker11_thread);
+ 
+     /* Allow every waiter to reach its blocked state before announcing
