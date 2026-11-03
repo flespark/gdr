@@ -141,10 +141,15 @@ the validated frame-pointer chain is used instead.
 **CFI supports a bounded integer-rule subset.** `DW_CFA_offset_extended`,
 CIE return columns and signal-CIE exact PCs are supported; an undefined
 return column stops at `cfi-return-address-undefined` with `complete=false`.
-The three expression rules stop at `cfi-expression-unsupported`. Pointer
-encodings requiring unavailable text/function bases or indirect reads are
-rejected. The standalone `.eh_frame` verification scope is recorded in
-[testing](testing.md#standalone-eh_frame-unwinding).
+The three expression rules use a bounded integer evaluator, not the full
+DWARF location language. Register-location descriptions (`DW_OP_reg*`),
+CFI-forbidden operations and unsupported typed/composite operations are
+rejected; `DW_OP_stack_value` is accepted only as a terminal direct-value
+operation. Pointer encodings require explicit text/data/function bases or an
+indirect reader when applicable; missing context is rejected. Those explicit
+non-PC-relative/indirect contexts have synthetic unit evidence only, not live
+verification. The standalone `.eh_frame` scope is recorded in
+[testing](testing.md#isolated-eh_frame-variant).
 
 **FreeRTOS does not record a stack end in every build.** Without
 `configRECORD_STACK_HIGH_ADDRESS` or another retained stack-end field, the
@@ -155,7 +160,9 @@ supplies `stack_addr`/`stack_size`; unavailable bounds also prevent a walk.
 PC to equal the TCB entry and the integer context to carry the port's initial
 fill. FreeRTOS retains no independent task-entry field, so its adapter never
 reports `source=unstarted` from initial registers, xPSR or an exit sentinel
-alone. The pure decoder requires an independently supplied entry address.
+alone. The pure decoder requires an independently supplied entry address;
+the verified first-SVC path supplies the exact sized ELF function entry as
+part of its separate startup proof.
 
 **RISC-V first-task return state is not a normal call chain.** The FreeRTOS
 port starts its first task with RA equal to the entry PC, not a call's resume
@@ -166,13 +173,46 @@ be promoted to an exact PC or a proven task root. Repeated `(PC, SP)` pairs
 still stop at `loop`. Other tasks can reach the recorded `xTaskReturnAddress`
 value, including zero, and finish at `task-exit`.
 
-**Hard-interrupt and nested-exception cross-stack unwinding is not supported.**
-Recovering a task seed from a port's saved hardware exception frame does not
-provide handler-to-task unwinding. The driver uses a single stack span; it
-does not decode exception-return transitions, switch task/interrupt stack
-bounds, or join nested handler frames to the interrupted task. Saved-context
-lanes exercise blocked/yielding tasks. FPU/TrustZone extended frames and other
-unverified context variants are outside the verified matrix.
+**Hardware exception cross-stack unwinding is verified on basic M0/M3 IRQ fixtures.**
+FreeRTOS `microbit/11.1.0/full` (Armv6-M, ARM_CM0) and
+`mps2-an385/10.3.1/full` (Armv7-M, ARM_CM3) verify external exception numbers
+24/25, nested handlers, ordinary handler calls and four-byte padding with
+linker-owned MSP bounds. `core/unwind_arm.py` shares the basic eight-word frame
+layout while keeping ISA exception policies explicit;
+Armv6-M has a six-bit IPSR and mandatory 8-byte entry alignment, while Armv7-M
+has a nine-bit IPSR and CCR.STKALIGN-controlled alignment. Both require readable
+xPSR/MSP/PSP and running-scheduler ownership. M3 requires ICTR capacity. M0
+requires Cortex-M0 CPUID, a fixed-zero
+vector table, its end symbol and an explicit 32-line linker fact; missing or
+conflicting evidence fails closed. M0+, relocated vector tables and other
+M0 ports/versions have no live acceptance. Capacity upper bound 47 does not
+establish a live handler for every IRQ; only exception numbers 24/25 have
+fixture coverage. NMI and SysTick (plus M3 DebugMonitor) stop as
+`exception-number-unverified`; synchronous faults, Armv8-M/M33, FPU/lazy frames,
+TrustZone and SMP handler contexts remain gated. Other saved-context lanes
+do not establish handler-mode support. M0 SVC/PendSV remain
+`scheduler-transition-unproven`; M3 uses the separate scheduler rules below.
+
+**Scheduler backtraces require the verified FreeRTOS 10.3.1 ARM_CM3 profile.**
+Only `portable/GCC/ARM_CM3` with a matching
+`freertos/armv7-m/arm-cm3-pendsv-v1` compiled profile is supported; changing
+compiler output or configuration can invalidate the match. The verified
+stages are PendSV entry, save-pending, save-written, TCB-writeback, switch-call,
+after-switch, select, saved-SP, restored-before-PSP, PSP-written and
+exception-return; `vTaskSwitchContext` entry and immediately before/after
+its current-TCB store; and first SVC entry, saved-SP, restored-before-PSP,
+PSP-written and exception-return. Every other PC inside these functions is
+refused. Live evidence is limited to the
+[AN385 scheduler fixture](testing.md#freertos-suite-organization-and-capability-coverage).
+
+First SVC returns `source=unstarted` and `task-entry` only with initial
+registers, exit sentinel and exact sized ELF function-entry evidence. Its
+software-prebuilt frame requires ALIGN=0, no padding and a 4-byte-aligned
+base; CCR.STKALIGN does not describe its construction, though the live path
+still requires readable CCR. Before SVC executes there is no running-task
+seed. PendSV selection of a never-started task remains refused. Other
+versions/ports, unmatched profiles, extended contexts, SMP and unproven
+scheduling windows are not established by this support.
 
 **SMP tasks on another core have no saved context.** A task currently running
 on a core other than the selected one reports `smp-no-context`; GDR never

@@ -10,10 +10,10 @@ shared test infrastructure and the per-RTOS integration test coverage.
 ## Unit test coverage boundary
 
 `uv run pytest tests/unit --cov` enforces branch coverage (`fail_under = 85`)
-across all 28 hardware-independent modules in `core/`, `rtthread/`, and
+across the configured hardware-independent modules in `core/`, `rtthread/`, and
 `freertos/` (`adapter`, `api`, `commands`, `constants`, `formatting`,
 `heapmap`, `help`, `version`, `layout`, `stackpc`, `views`, `diagnostics`,
-`objects`, `heap`, `unwind`, `unwind_meta`, `unwind_cfi`, `unwind_ehabi`,
+`objects`, `heap`, `unwind`, `unwind_meta`, `unwind_cfi`, `unwind_expr`, `unwind_ehabi`,
 `backtrace`). Direct `gdb.Value` / DWARF / target-memory traversal modules
 (`core/gdb_bridge.py`, `core/layout.py`,
 `rtthread/navigation.py`, `freertos/navigation.py`) and the two
@@ -179,7 +179,7 @@ Verification spans three complementary execution arms:
      against `portable/GCC/ARM_CM0` with the expanded QEMU memory setup (see
      the [lane README](../ci/freertos/README.md#cortex-m0-microbit-variant-full));
      verifies the Thumb-1 context frame, EHABI/CFI selection and rejection of
-     false unstarted-task classification.
+      false unstarted-task classification, plus the exception checks below.
    - **32-bit RISC-V (`qemu-virt-rv32` / `11.1.0` / `base`)**: Builds
      `rv32imac_zicsr` with 4-byte words; verifies RV32 saved-context offsets,
      pointer width and CFI unwinding.
@@ -203,22 +203,91 @@ Verification spans three complementary execution arms:
 | `test_snapshot.py` | File-only negative testing for `frt check` and inline `Check[...]` failure/mismatch/corrupt verdicts on `freertos.elf` and `snapshot_heap.elf`. |
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
 | `test_backtrace.py` | Ordered saved-context chains, canonical ISA/method/bounds, proven exit completeness versus partial RISC-V first-task chains, independent entry/lookup-symbol checks, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
+| `test_irq_backtrace.py` | Real microbit nRF51 and AN385 CMSDK timer IRQs: task-to-handler and nested-handler transitions, exact stacked PCs, handler CFI calls, alignment padding, linker-owned MSP bounds, independent exception budgets and read-only queries. |
+| `test_scheduler_backtrace.py` | Real ARM_CM3 transition breakpoints with raw TCB/register/stack oracles: cooperative yield, SysTick preemption, nested timer IRQ scheduling, first SVC startup, exact-stage ownership and explicit refusal of unproven stops. |
+
+### Exception unwind acceptance
+
+Architecture and RTOS-port acceptance are separate requirements. Passing
+one does not establish the other; synthetic frames and offline ELF mutations
+test rejection behavior, not live port support.
+
+| Layer | Acceptance requirements | Evidence |
+| --- | --- | --- |
+| Architecture | ISA-specific EXC_RETURN/IPSR widths and exception tables; shared eight-word frame register layout; Armv6-M mandatory 8-byte entry alignment versus Armv7-M CCR.STKALIGN; exact stacked PC, padding, bounds and independent budgets. | `core/unwind_arm.py`, `tests/unit/core/test_unwind_armv6m.py`, `test_unwind_armv7m.py` and shared driver tests. |
+| RTOS port | Proven task ownership and stack spans, target-specific capacity/vector evidence, ISA hook selection and fail-before-unwind refusals; actual IRQ, nested handler and handler C-call chains; raw frame oracles and unchanged target state. | `tests/unit/freertos/test_backtrace_armv6m.py`, `test_backtrace_gdb.py` and `tests/integration/freertos/test_irq_backtrace.py`. |
+
+The live IRQ tests select `freertos/microbit/11.1.0/full` or
+`freertos/mps2-an385/10.3.1/full`. Their oracle reads GDB MSP/PSP, xPSR,
+CONTROL, raw hardware frames, task bounds and linker symbols independently
+of GDR's transition result. Register, task/IRQ-stack hashes, current TCB and
+tick snapshots must remain unchanged across a query. Both lanes exercise
+single IRQs, nesting, ordinary handler calls, four-byte alignment padding,
+vector-entry proof, missing MSP bounds and separate exception budgets.
+
+M0 port tests require Cortex-M0 CPUID, fixed-zero vectors and explicit
+linker capacity; the live read oracle rejects ICTR, VTOR and CCR accesses.
+Missing/conflicting version, CPUID, vector or capacity facts and missing
+scheduler ownership fail closed. Reserved IPSR values, faults and scheduler
+exceptions retain their separate refusal reasons. M3 capacity tests check
+ICTR upper bound 47 and reject malformed/unreadable ICTR or out-of-capacity
+live/restored exception numbers. Only exception numbers 24/25 have live
+vector/handler coverage; capacity acceptance of 47 is not a live handler proof.
+Other ports and extended frames need their own fixtures. Build facts live in
+the [M0](../ci/freertos/README.md#cortex-m0-microbit-variant-full) and
+[AN385](../ci/freertos/README.md#an385-basic-irq-fixture-full) fixture guides.
+
+```bash
+uv run pytest tests/unit/core/test_unwind_armv6m.py tests/unit/core/test_unwind_armv7m.py tests/unit/freertos/test_backtrace_armv6m.py tests/unit/freertos/test_backtrace_gdb.py
+python3 ci/test.py run freertos microbit 11.1.0 full -- tests/integration/freertos/test_irq_backtrace.py
+python3 ci/test.py run freertos mps2-an385 10.3.1 full -- tests/integration/freertos/test_irq_backtrace.py
+```
+
+After consolidating both ISA decoders and shared Cortex-M frame recovery in
+`core/unwind_arm.py`, the 2026-11-02 regression passed 2244 unit tests at
+86.66% repository
+coverage, M0 IRQ live checks (10 passed), M3 IRQ checks (9 passed, one
+M0-only check skipped), M3 scheduler checks (9 passed), the M0 full lane
+(60 passed, 40 configuration-specific skips) and M3 saved-context checks
+(5 passed, one RISC-V-only skip). Ruff, formatting, diff checks, extension
+type checks and extension tests (206 passed, one unconfigured ST adapter
+skip) passed. Full command output and JUnit/coverage artifacts are retained
+under `ci/.cache/logs/armv6m-extension/20261102-104059/`. GDB 12/Python 3.10,
+container/hosted CI, physical M0 hardware and other M0 ports were not tested.
+
+### Scheduler unwind acceptance
+
+The scheduler tests run only on `freertos/mps2-an385/10.3.1/sched`. Nine tests
+check compiled instruction bytes and raw TCBs, saved core registers, hardware
+frames, PSP/MSP and xPSR independently of GDR's stage decision. Breakpoints
+observe SysTick before PendSV, the current-TCB store before/after execution,
+restored registers before PSP writeback, real timer1 preemption of timer0
+before scheduling, and the first SVC path. Refusal tests cover unmatched
+profiles and unproven stops. Unit/synthetic mutations and offline ELF
+perturbations test rejection but do not establish additional live support.
+The repository coverage percentage excludes `freertos.scheduler_switch` and
+`freertos.backtrace_gdb`; it is not scheduler-module coverage. Build facts
+live in the [scheduler fixture guide](../ci/freertos/README.md#an385-scheduler-fixture-sched);
+the supported stages and exclusions live in [errata](errata.md#task-backtraces).
 
 ## Isolated `.eh_frame` variant
 
 `tests/integration/freertos/test_eh_frame.py` uses the
 `freertos/qemu-virt-rv64/11.1.0/eh-frame` cell. Its GNU-assembled RV64 image
 has `.eh_frame`, no `.debug_frame` or EHABI, and frame-pointer fallback
-disabled. Five tests verify an ordered four-frame chain with an extended
-offset and virtual return column 128, a signal-CIE exact boundary PC, and
-missing/truncated metadata or an unavailable `textrel` base. Undefined return
-columns remain partial endpoints. Signal-CIE coverage does not verify
-hardware exception decoding or cross-stack unwinding. Build details live in
+disabled. Seven tests verify an ordered four-frame chain with an extended
+offset and virtual return column 128, a signal-CIE exact boundary PC, all
+three CFI expression rules, rejection of a forbidden expression without
+fallback, and missing/truncated metadata or an unavailable `textrel` base.
+Undefined return columns remain partial endpoints. Explicit non-PC-relative
+pointer bases and indirect reads have synthetic unit coverage only.
+Signal-CIE coverage does not verify hardware exception decoding or
+cross-stack unwinding. Build details live in
 [the fixture README](../ci/freertos/fixture/eh-frame/README.md).
 
 The cell belongs to `freertos-ports` in the shared matrix, including CNB and
-GitHub RTOS verification. Future CFI-expression, IRQ/multistack and PendSV
-cases must add deterministic RTOS-owned fixture inputs and independent
+GitHub RTOS verification. Additional exception modes and scheduler
+stages must add deterministic RTOS-owned fixture inputs and independent
 assertions through the [same lane extension contract](../ci/README.md#layering-and-new-lanes).
 
 ## Summary comparison of RT-Thread vs FreeRTOS test strategies

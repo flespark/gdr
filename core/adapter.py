@@ -13,6 +13,7 @@ from .formatting import (
     format_optional_int,
     format_symbol_or_address,
 )
+from .unwind_segments import SegmentTransition, StackSegment
 
 try:
     import gdb
@@ -52,8 +53,9 @@ class BacktraceFrame:
     """One recovered task frame before symbol resolution.
 
     ``pc`` is the even instruction address; ``method`` names the evidence
-    (``seed``, ``ehabi``, ``cfi`` or ``frame-pointer``).  The adapter fills
-    ``symbol`` and ``source`` from GDB's read-only symbol/line tables.
+    (``seed``, ``exception``, ``ehabi``, ``cfi`` or ``frame-pointer``).  The
+    adapter fills ``symbol`` and ``source`` from GDB's read-only symbol/line
+    tables; ``segment`` is the internal stack identity used by the driver.
     """
 
     index: int
@@ -61,11 +63,16 @@ class BacktraceFrame:
     method: str
     symbol: str | None = None
     source: SourceLoc | None = None
+    segment: str | None = None
 
 
 @dataclass
 class BacktraceReport:
-    """One task's bounded backtrace and the exact evidence behind it."""
+    """One task's bounded backtrace and the exact evidence behind it.
+
+    ``segments`` and ``transitions`` retain the typed multi-stack evidence;
+    they are internal Python fields and are not part of the JSON contract.
+    """
 
     task: str
     address: int
@@ -80,6 +87,8 @@ class BacktraceReport:
     frames: list[BacktraceFrame]
     messages: list[str] = field(default_factory=list)
     abi: str | None = None
+    segments: list[StackSegment] = field(default_factory=list)
+    transitions: list[SegmentTransition] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

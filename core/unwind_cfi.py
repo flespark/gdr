@@ -1,4 +1,4 @@
-"""Bounded DWARF call-frame tables and encoded pointers (pure)."""
+"""Bounded DWARF call-frame tables, expressions and encoded pointers (pure)."""
 
 from __future__ import annotations
 
@@ -24,11 +24,13 @@ from .unwind_meta import (
     DW_EH_PE_UDATA4,
     DW_EH_PE_UDATA8,
     DW_EH_PE_ULEB128,
+    MAX_CFI_EXPRESSION_BYTES,
     MAX_CFI_OPCODES,
     MAX_CIE_COUNT,
     MAX_FDE_COUNT,
     MAX_STATE_DEPTH,
     Endian,
+    Reader,
     _read_sleb,
     _read_uleb,
 )
@@ -36,20 +38,56 @@ from .unwind_meta import (
 
 @dataclass(frozen=True)
 class CfaRule:
-    """Canonical frame address: ``register + offset`` or an unsupported rule."""
+    """Canonical frame address as ``register + offset`` or an expression.
+
+    Exactly one form is valid: a register/offset rule has ``expression`` set to
+    ``None``; an expression rule has ``register`` set to ``None`` and
+    ``offset`` set to zero. ``error`` marks an unusable parsed rule.
+    """
 
     register: int | None = None
     offset: int = 0
     error: str | None = None
+    expression: bytes | None = None
 
 
 @dataclass(frozen=True)
 class RegisterRule:
-    """How one register is recovered in the caller's frame."""
+    """How one register is recovered in the caller's frame.
 
-    kind: Literal["offset", "val_offset", "same", "undefined", "register"]
+    ``expression`` computes the save address; ``val_expression`` computes the
+    register value directly. Both are encoded DWARF expressions and carry
+    their bytes in ``expression``.
+    """
+
+    kind: Literal[
+        "offset",
+        "val_offset",
+        "same",
+        "undefined",
+        "register",
+        "expression",
+        "val_expression",
+    ]
     value: int = 0
     register: int | None = None
+    expression: bytes | None = None
+
+
+@dataclass(frozen=True)
+class EncodedPointerContext:
+    """Explicit bases and reader for non-PC-relative EH pointer encodings.
+
+    An absent field is unavailable, not a guessed zero. ``text_base`` is the
+    start of ``.text``, ``data_base`` the EH data base (``.got`` or
+    ``.eh_frame_hdr``) and ``function_base`` the start of the containing
+    function. ``read`` resolves ``DW_EH_PE_indirect`` pointers.
+    """
+
+    data_base: int | None = None
+    text_base: int | None = None
+    function_base: int | None = None
+    read: Reader | None = None
 
 
 @dataclass(frozen=True)
@@ -141,12 +179,15 @@ def parse_cfi_section(
     address_size: int,
     endian: Endian,
     is_eh_frame: bool,
+    pointer_context: EncodedPointerContext | None = None,
 ) -> CfiTable:
     """Parse one ``.debug_frame``/``.eh_frame`` section.
 
     Known FDE ranges retain their CIE/rule failures. An error whose coverage
     cannot be decoded is retained on the table and forbids unproven fallback
-    at PCs without a valid independent rule.
+    at PCs without a valid independent rule. ``pointer_context`` supplies
+    explicit bases for non-PC-relative EH pointer encodings; absent bases make
+    those FDEs unavailable.
     """
     order = "<" if endian == "little" else ">"
     cies: dict[int, _Cie | str] = {}
@@ -216,6 +257,7 @@ def parse_cfi_section(
             section_address=section_address,
             is_eh_frame=is_eh_frame,
             opcode_budget=opcode_budget,
+            pointer_context=pointer_context,
         )
         if isinstance(parsed_fde, str):
             error = error or parsed_fde
@@ -382,16 +424,22 @@ def _decode_encoded_pointer(
     endian: str,
     section_address: int,
     absolute_position: int | None = None,
+    context: EncodedPointerContext | None = None,
 ) -> tuple[int, int] | None:
+    """Decode one EH pointer with explicit non-PC-relative bases.
+
+    ``pcrel`` uses the section address and pointer position. ``textrel``,
+    ``datarel`` and ``funcrel`` require the corresponding base from *context*;
+    a missing base or absent indirect reader rejects the pointer. No base is
+    inferred from a different section or from zero. Signed encodings are
+    sign-extended before the base is added; the base, the base-plus-offset
+    result and an indirect read range must all stay inside the target address
+    space, so a negative or wrapped target is rejected.
+    """
     if encoding == DW_EH_PE_OMIT:
         return 0, index
     fmt = encoding & 0x0F
     application = encoding & 0x70
-    if encoding & DW_EH_PE_INDIRECT or application in (
-        DW_EH_PE_TEXTREL,
-        DW_EH_PE_FUNCREL,
-    ):
-        return None
     if application == DW_EH_PE_ALIGNED:
         alignment = address_size
         index += (-(section_address + index)) % alignment
@@ -427,14 +475,41 @@ def _decode_encoded_pointer(
         value, index = decoded
     else:
         return None
+    address_limit = 1 << (address_size * 8)
     base = 0
     if application == DW_EH_PE_PCREL:
         base = section_address + pointer_position
+    elif application == DW_EH_PE_TEXTREL:
+        if context is None or context.text_base is None:
+            return None
+        base = context.text_base
     elif application == DW_EH_PE_DATAREL:
-        base = section_address
+        if context is None or context.data_base is None:
+            return None
+        base = context.data_base
+    elif application == DW_EH_PE_FUNCREL:
+        if context is None or context.function_base is None:
+            return None
+        base = context.function_base
     elif application not in (0, DW_EH_PE_ALIGNED):
         return None
-    return value + base, index
+    if not 0 <= base < address_limit:
+        return None
+    result = value + base
+    if not 0 <= result < address_limit:
+        return None
+    if encoding & DW_EH_PE_INDIRECT:
+        if context is None or context.read is None or result <= 0:
+            return None
+        if result >= address_limit or address_size > address_limit - result:
+            return None
+        pointer = context.read(result, address_size)
+        if pointer is None or len(pointer) != address_size:
+            return None
+        result = int.from_bytes(pointer, endian)
+        if not 0 <= result < address_limit:
+            return None
+    return result, index
 
 
 def _parse_fde(
@@ -448,6 +523,7 @@ def _parse_fde(
     section_address: int,
     is_eh_frame: bool,
     opcode_budget: int,
+    pointer_context: EncodedPointerContext | None = None,
 ) -> tuple[_Fde, int] | str | None:
     byteorder = "little" if order == "<" else "big"
     if is_eh_frame and cie.fde_encoding is not None:
@@ -461,6 +537,7 @@ def _parse_fde(
             endian=byteorder,
             section_address=section_address,
             absolute_position=start_pos,
+            context=pointer_context,
         )
         if decoded is None:
             return "cfi-fde-pointer-unavailable"
@@ -489,7 +566,8 @@ def _parse_fde(
         index += address_size
     if length == 0 or start == 0:
         return None
-    if start + length > 1 << (address_size * 8):
+    address_limit = 1 << (address_size * 8)
+    if start < 0 or start >= address_limit or length > address_limit - start:
         return "cfi-fde-range-invalid"
     failure = None
     if cie.augmentation.startswith("z"):
@@ -548,6 +626,22 @@ def _execute_cfi(
         return_register=fde.cie.return_register,
         signal_frame="S" in fde.cie.augmentation,
     )
+
+
+def _read_expression_block(
+    data: bytes, index: int, end: int
+) -> tuple[bytes, int] | str:
+    """Read a ULEB128-sized CFI expression block with bounded length."""
+    decoded = _read_uleb(data, index, end)
+    if decoded is None:
+        return "cfi-truncated-uleb"
+    length, index = decoded
+    if length > MAX_CFI_EXPRESSION_BYTES:
+        return "cfi-expression-too-long"
+    block_end = index + length
+    if block_end > end:
+        return "cfi-truncated-expression"
+    return data[index:block_end], block_end
 
 
 def _run_cfi(
@@ -688,6 +782,8 @@ def _run_cfi(
             decoded = _read_uleb(instructions, index, len(instructions))
             if decoded is None:
                 return "cfi-truncated-uleb"
+            if row.cfa.expression is not None or row.cfa.register is None:
+                return "cfi-cfa-rule-invalid"
             reg, index = decoded
             row = CfiRow(
                 cfa=CfaRule(register=reg, offset=row.cfa.offset),
@@ -698,14 +794,38 @@ def _run_cfi(
             decoded = _read_uleb(instructions, index, len(instructions))
             if decoded is None:
                 return "cfi-truncated-uleb"
+            if row.cfa.expression is not None or row.cfa.register is None:
+                return "cfi-cfa-rule-invalid"
             offset, index = decoded
             row = CfiRow(
                 cfa=CfaRule(register=row.cfa.register, offset=offset),
                 registers=dict(row.registers),
             )
             continue
-        if opcode in (0x0F, 0x10, 0x16):
-            return "cfi-expression-unsupported"
+        if opcode == 0x0F:
+            decoded = _read_expression_block(instructions, index, len(instructions))
+            if isinstance(decoded, str):
+                return decoded
+            expression, index = decoded
+            row = CfiRow(
+                cfa=CfaRule(expression=expression),
+                registers=dict(row.registers),
+            )
+            continue
+        if opcode in (0x10, 0x16):
+            reg = _read_uleb(instructions, index, len(instructions))
+            if reg is None:
+                return "cfi-truncated-uleb"
+            reg_value, index = reg
+            decoded = _read_expression_block(instructions, index, len(instructions))
+            if isinstance(decoded, str):
+                return decoded
+            expression, index = decoded
+            row.registers[reg_value] = RegisterRule(
+                kind="expression" if opcode == 0x10 else "val_expression",
+                expression=expression,
+            )
+            continue
         if opcode in (0x05, 0x11):
             reg = _read_uleb(instructions, index, len(instructions))
             if reg is None:
@@ -739,6 +859,8 @@ def _run_cfi(
             decoded = _read_sleb(instructions, index, len(instructions))
             if decoded is None:
                 return "cfi-truncated-sleb"
+            if row.cfa.expression is not None or row.cfa.register is None:
+                return "cfi-cfa-rule-invalid"
             offset, index = decoded
             row = CfiRow(
                 cfa=CfaRule(register=row.cfa.register, offset=offset * data_alignment),
@@ -793,6 +915,10 @@ def _run_cfi(
         return "cfi-opcode-unsupported"
     if row.cfa.error is not None:
         return row.cfa.error
+    if row.cfa.expression is not None:
+        if row.cfa.register is not None or row.cfa.offset:
+            return "cfi-cfa-rule-invalid"
+        return row
     if row.cfa.register is None:
         return "cfi-no-cfa"
     return row

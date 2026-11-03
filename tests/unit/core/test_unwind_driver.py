@@ -47,7 +47,7 @@ def test_same_sp_can_reach_a_caller_but_repeating_pc_sp_is_not_a_root():
 
 
 def test_failed_metadata_does_not_fall_back_to_a_plausible_frame_pointer():
-    metadata = _cfi_metadata(_cfi_bytes(instructions=b"\x10\x0e\x00"))
+    metadata = _cfi_metadata(_cfi_bytes(instructions=b"\x10\x0e\x01\x9c"))
     memory = _Memory(
         {0x2040: (0x2080).to_bytes(4, "little") + (0x1100).to_bytes(4, "little")}
     )
@@ -59,7 +59,31 @@ def test_failed_metadata_does_not_fall_back_to_a_plausible_frame_pointer():
         stack_high=0x2100,
     )
     assert len(result.frames) == 1
-    assert result.stop_reason == "cfi-expression-unsupported"
+    assert result.stop_reason == "cfi-expression-forbidden"
+
+
+@pytest.mark.parametrize(
+    "instructions",
+    [
+        b"\x0f\x03\x51\x31\x22",
+        b"\x10\x0e\x03\x51\x31\x22",
+        b"\x16\x0e\x03\x51\x31\x22",
+    ],
+)
+def test_register_location_expression_failure_does_not_fall_back(instructions):
+    metadata = _cfi_metadata(_cfi_bytes(instructions=instructions))
+    memory = _Memory(
+        {0x2040: (0x2080).to_bytes(4, "little") + (0x1100).to_bytes(4, "little")}
+    )
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2000, {7: 0x2040, 13: 0x2000}),
+        metadata,
+        read=memory,
+        stack_low=0x2000,
+        stack_high=0x2100,
+    )
+    assert len(result.frames) == 1
+    assert result.stop_reason == "cfi-expression-register-location"
 
 
 def test_task_root_and_depth_have_distinct_completeness():
@@ -318,7 +342,7 @@ def test_register_failures_survive_multiple_driver_steps(monkeypatch):
 @pytest.mark.parametrize(
     "patch,reason",
     [
-        (lambda blob: blob[:13] + b"\x0f" + blob[14:], "cfi-expression-unsupported"),
+        (lambda blob: blob[:13] + b"\x0f" + blob[14:], "cfi-truncated-expression"),
         (lambda blob: blob[:13] + b"\x17" + blob[14:], "cfi-opcode-unsupported"),
         (lambda blob: blob[:8] + b"\x09" + blob[9:], "cfi-cie-version-unsupported"),
         (lambda blob: blob[:20] + b"\xfe\xff\xff\xff" + blob[24:], "cfi-cie-missing"),

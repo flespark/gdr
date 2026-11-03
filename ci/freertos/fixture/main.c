@@ -691,6 +691,13 @@ static void gdr_init_heap_regions(void)
 }
 #endif
 
+#if defined(GDR_FIXTURE_IRQ_TESTS) && defined(GDR_BOARD_HAS_IRQ_FIXTURE)
+void gdr_irq_fixture_start(void);
+#endif
+#if defined(GDR_FIXTURE_SCHED_TESTS)
+void gdr_sched_fixture_start(void);
+#endif
+
 int main(void)
 {
 #ifdef GDR_FIXTURE_HEAP_5
@@ -1032,6 +1039,13 @@ int main(void)
     gdr_create_task_static(gdr_waiter_only_eg_task, "gdr_egw",
                            gdr_waiter_only_eg_stack, GDR_STACK_WORDS, 2,
                            &gdr_waiter_only_eg_tcb, &gdr_waiter_only_eg_handle);
+#endif
+
+#if defined(GDR_FIXTURE_IRQ_TESTS) && defined(GDR_BOARD_HAS_IRQ_FIXTURE)
+    gdr_irq_fixture_start();
+#endif
+#if defined(GDR_FIXTURE_SCHED_TESTS)
+    gdr_sched_fixture_start();
 #endif
 
     vTaskStartScheduler();

@@ -67,6 +67,7 @@ class Lane:
 CONFIG_VARIANTS = (
     "base",
     "full",
+    "sched",
     "static-only",
     "static-dynamic",
     "trace-off",
@@ -125,6 +126,7 @@ FREERTOS_PORTS = (
     Lane("freertos", "mps2-an521", "11.1.0", "snapshot"),
     Lane("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame"),
 )
+FREERTOS_SCHED = (Lane("freertos", "mps2-an385", "10.3.1", "sched"),)
 GROUPS = {
     "rtthread-a9": RTTHREAD_A9,
     "rtthread-rv64": RTTHREAD_RV64,
@@ -135,6 +137,7 @@ GROUPS = {
 }
 GROUPS["rtthread"] = RTTHREAD_A9 + RTTHREAD_RV64
 GROUPS["freertos"] = FREERTOS_CONFIG + FREERTOS_VERSION + FREERTOS_PORTS
+GROUPS["freertos-sched"] = FREERTOS_SCHED
 GROUPS["all"] = GROUPS["rtthread"] + GROUPS["freertos"]
 GROUPS["smoke"] = (
     Lane("rtthread", "cortex-a9", "4.0.5"),

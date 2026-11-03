@@ -1,4 +1,4 @@
-/* Cortex-M3 reset vector for the QEMU mps2-an385 machine. */
+/* Cortex-M0 vectors for the QEMU micro:bit machine. */
     .syntax unified
     .cpu cortex-m0
     .thumb
@@ -11,18 +11,28 @@ g_pfnVectors:
     .word Reset_Handler
     .word NMI_Handler
     .word HardFault_Handler
-    .word MemManage_Handler
-    .word BusFault_Handler
-    .word UsageFault_Handler
+    .word 0
+    .word 0
+    .word 0
     .word 0
     .word 0
     .word 0
     .word 0
     .word SVC_Handler
-    .word DebugMon_Handler
+    .word 0
     .word 0
     .word PendSV_Handler
     .word SysTick_Handler
+    .rept 8
+    .word Default_Handler
+    .endr
+    .word Timer0_Handler
+    .word Timer1_Handler
+    .rept 22
+    .word Default_Handler
+    .endr
+    .global __gdr_vector_table_end
+__gdr_vector_table_end:
 
     .text
     .thumb
@@ -70,10 +80,8 @@ Default_Handler:
 
     weak_alias NMI_Handler
     weak_alias HardFault_Handler
-    weak_alias MemManage_Handler
-    weak_alias BusFault_Handler
-    weak_alias UsageFault_Handler
     weak_alias SVC_Handler
-    weak_alias DebugMon_Handler
     weak_alias PendSV_Handler
     weak_alias SysTick_Handler
+    weak_alias Timer0_Handler
+    weak_alias Timer1_Handler

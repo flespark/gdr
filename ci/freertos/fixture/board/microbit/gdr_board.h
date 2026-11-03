@@ -12,6 +12,7 @@
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION 0
 #endif
 #define GDR_PORT_PROVIDES_SYSTICK_HANDLER 1
+#define GDR_BOARD_HAS_IRQ_FIXTURE 1
 
 #ifndef configCPU_CLOCK_HZ
 #define configCPU_CLOCK_HZ ((unsigned long)16000000)

@@ -46,8 +46,6 @@ plans/
 
 # Local agent workspace: scratch files and runs (never committed)
 .pi/
-.agents/
-skills-lock.json
 
 # Extension (vscode/): Node output and the generated GDR runtime copy
 node_modules/

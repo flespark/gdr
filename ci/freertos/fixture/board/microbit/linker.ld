@@ -2,6 +2,7 @@
 ENTRY(Reset_Handler)
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
+__gdr_armv6m_irq_count = 32;
 
 MEMORY
 {
@@ -64,4 +65,15 @@ SECTIONS
         . = . + 1K;
         gdr_heap_limit = .;
     } > RAM
+
+    .irq_stack ORIGIN(RAM) + LENGTH(RAM) - 4K (NOLOAD) :
+    {
+        __gdr_irq_stack_low = .;
+        . += 4K;
+        __gdr_irq_stack_top = .;
+    } > RAM
 }
+
+ASSERT(__gdr_irq_stack_top == _estack, "interrupt stack must end at RAM top")
+ASSERT(__gdr_irq_stack_low >= _ebss, "interrupt stack overlaps .bss")
+ASSERT(__gdr_irq_stack_low >= gdr_heap_limit, "interrupt stack overlaps heap")

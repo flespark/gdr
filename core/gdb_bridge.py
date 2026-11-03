@@ -590,6 +590,22 @@ def eval_identifier(name: str) -> gdb.Value | None:
         return None
 
 
+def linker_symbol_address(name: str) -> int | None:
+    """Return one linker-defined symbol's address without resuming the target.
+
+    Absolute labels such as ``_estack`` have no DWARF type, so a bare
+    ``parse_and_eval`` rejects them.  Taking the address is an address
+    computation only; the name is still restricted to one plain identifier.
+    """
+    if not is_plain_identifier(name):
+        return None
+    _ensure_gdb()
+    try:
+        return int(gdb.parse_and_eval(f"&{name}"))
+    except (gdb.error, *_SYMBOL_LOOKUP_ERRORS, TypeError, ValueError):
+        return None
+
+
 def read_macro_int(name: str) -> int | None:
     """Read a preprocessor macro or integer constant as ``int``.
 

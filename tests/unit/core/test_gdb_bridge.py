@@ -660,6 +660,17 @@ def test_eval_identifier_rejects_call_and_index_expressions(monkeypatch):
     assert fake.parsed == []
 
 
+def test_linker_symbol_address_uses_identifier_only_address_of(monkeypatch):
+    """Untyped linker labels are resolved without evaluating arbitrary C."""
+    fake = _EvalGdb({"&_estack": 0x20400000})
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.linker_symbol_address("_estack") == 0x20400000
+    assert bridge.linker_symbol_address("_estack + 4") is None
+    assert bridge.linker_symbol_address("foo()") is None
+    assert fake.parsed == ["&_estack"]
+
+
 def test_read_macro_int_uses_checked_parse_and_eval(monkeypatch):
     """GDB expands identifier macros, including packed version arithmetic."""
     fake = _EvalGdb(
@@ -685,7 +696,7 @@ def test_read_macro_int_uses_checked_parse_and_eval(monkeypatch):
 
 
 def test_production_code_does_not_evaluate_gdb_expressions():
-    """Only ``eval_identifier`` in gdb_bridge may call ``gdb.parse_and_eval``."""
+    """Only the checked bridge helpers may evaluate GDB expressions."""
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[3]
@@ -700,6 +711,7 @@ def test_production_code_does_not_evaluate_gdb_expressions():
         assert "eval_safe" not in text, path
         if path.name == "gdb_bridge.py":
             assert "gdb.parse_and_eval(name)" in text
+            assert 'gdb.parse_and_eval(f"&{name}")' in text
             continue
         assert "parse_and_eval" not in text, path
 

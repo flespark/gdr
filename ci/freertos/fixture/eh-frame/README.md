@@ -30,16 +30,34 @@ GNU as emits a data alignment of -4 for this fixture; the explicit
 `DW_CFA_offset_extended` factor 2 therefore addresses CFA-8.
 `frames.txt` records the assembler's emitted CIE/FDE rules for inspection.
 
+## Expression rules
+
+The `cfi_expr_*` chain is emitted entirely by GNU as through `.cfi_escape`;
+`frames.txt` shows the assembler printing `DW_CFA_def_cfa_expression`,
+`DW_CFA_expression: r1 (ra)` and `DW_CFA_val_expression: r128`.
+
+- `cfi_expr_leaf` computes CFA from `DW_OP_breg2 32` and the RA save address
+  from `DW_OP_lit24; DW_OP_minus` (CFA-24).
+- `cfi_expr_checkpoint` uses a virtual return column whose
+  `DW_OP_drop; DW_OP_breg2 8; DW_OP_deref` value expression produces the
+  saved caller PC directly. The driver must not dereference that result
+  again.
+
 ## Deterministic checkpoints
 
 The ordinary checkpoint is inside `cfi_checkpoint`, with the expected chain
-`cfi_checkpoint -> cfi_leaf -> cfi_middle -> cfi_root`. The signal entry
-loads a synthetic exact PC in x5 and jumps to `cfi_signal_checkpoint`; the
-recovered address is the first byte of `cfi_signal_resume`. It is not a
-hardware interrupt fixture.
+`cfi_checkpoint -> cfi_leaf -> cfi_middle -> cfi_root`. The expression entry
+sets `sp` and calls the `cfi_expr_*` chain; `cfi_expr_checkpoint_ready` is
+reached after the checkpoint prologue and yields
+`cfi_expr_checkpoint -> cfi_expr_leaf -> cfi_expr_middle -> cfi_expr_root`.
+The signal entry loads a synthetic exact PC in x5 and jumps to
+`cfi_signal_checkpoint`; the recovered address is the first byte of
+`cfi_signal_resume`. It is not a hardware interrupt fixture.
 
 Damage tests replace only the parser's in-memory ELF section bytes, not
-target memory: remove `.eh_frame`, truncate its length header, or change
-both used `zR`/return-column-1 CIE encodings from `pcrel` to `textrel` with no
-base. Expected stops are `no-unwind-info`, `cfi-truncated-length` and
-`cfi-fde-pointer-unavailable`, respectively.
+target memory: remove `.eh_frame`, truncate its length header, change both
+used `zR`/return-column-1 CIE encodings from `pcrel` to `textrel` with no
+base, or replace the first `val_expression` operator with the DWARF-forbidden
+`DW_OP_call_frame_cfa`. Expected stops are `no-unwind-info`,
+`cfi-truncated-length`, `cfi-fde-pointer-unavailable` and
+`cfi-expression-forbidden`, respectively.

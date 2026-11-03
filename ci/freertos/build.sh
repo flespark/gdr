@@ -229,6 +229,12 @@ compile_fixture() {
     if [[ -n "$heap" ]]; then
         sources+=("$heap")
     fi
+    if [[ ( "$TARGET" == "mps2-an385" || "$TARGET" == "microbit" ) && "$VARIANT" == "full" ]]; then
+        sources+=("$board_dir/irq.c")
+    fi
+    if [[ "$TARGET" == "mps2-an385" && "$VARIANT" == "sched" ]]; then
+        sources+=("$board_dir/sched.c")
+    fi
 
     # NOTE: --specs=nano.specs/nosys.specs are ARM multilib specs; the
     # RISC-V toolchain carries its own nano/nosys variants, so gate the

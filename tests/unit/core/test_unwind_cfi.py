@@ -116,9 +116,13 @@ def test_location_advance_changes_only_subsequent_rows(advance):
         (b"\x2e", "cfi-truncated-uleb"),
         (b"\x2f", "cfi-truncated-uleb"),
         (b"\x2f\x0e", "cfi-truncated-uleb"),
-        (b"\x0f", "cfi-expression-unsupported"),
-        (b"\x10", "cfi-expression-unsupported"),
-        (b"\x16", "cfi-expression-unsupported"),
+        (b"\x0f", "cfi-truncated-uleb"),
+        (b"\x0f\x01", "cfi-truncated-expression"),
+        (b"\x10", "cfi-truncated-uleb"),
+        (b"\x10\x0e", "cfi-truncated-uleb"),
+        (b"\x10\x0e\x01", "cfi-truncated-expression"),
+        (b"\x16", "cfi-truncated-uleb"),
+        (b"\x16\x0e\x01", "cfi-truncated-expression"),
         (b"\x17", "cfi-opcode-unsupported"),
     ],
 )
@@ -206,6 +210,72 @@ def test_eh_frame_augmentation_and_pcrel_fde():
     assert table.row_for(0x1004).cfa.offset == 8
 
 
+def _eh_section(
+    *,
+    encoding,
+    start,
+    length,
+    address_size=4,
+    signed_start=False,
+    instructions=b"\x0e\x08",
+):
+    cie_body = (
+        b"\x00" * 4
+        + b"\x03"
+        + b"zR\x00"
+        + b"\x01"
+        + b"\x7c"
+        + b"\x0e"
+        + b"\x01"
+        + bytes([encoding])
+        + b"\x0c\x0d\x00"
+    )
+    cie = struct.pack("<I", len(cie_body)) + cie_body
+    fde_id_offset = len(cie) + 4
+    body = struct.pack("<I", fde_id_offset)
+    body += int(start).to_bytes(address_size, "little", signed=signed_start)
+    body += int(length).to_bytes(address_size, "little")
+    body += b"\x00" + instructions
+    return cie + struct.pack("<I", len(body)) + body
+
+
+@pytest.mark.parametrize(
+    "address_size,encoding,start,length,signed_start,error",
+    [
+        (4, 0x03, 0xFFFFFF80, 0x80, False, None),
+        (4, 0x03, 0xFFFFFF80, 0x81, False, "cfi-fde-range-invalid"),
+        (4, 0x03, 0xFFFFFFFF, 1, False, None),
+        (4, 0x03, 0xFFFFFFFF, 2, False, "cfi-fde-range-invalid"),
+        (4, 0x0B, -8, 1, True, "cfi-fde-pointer-unavailable"),
+        (8, 0x04, 2**64 - 0x80, 0x80, False, None),
+        (8, 0x04, 2**64 - 0x80, 0x81, False, "cfi-fde-range-invalid"),
+        (8, 0x0C, -8, 1, True, "cfi-fde-pointer-unavailable"),
+    ],
+)
+def test_fde_start_and_range_stay_inside_the_address_space(
+    address_size, encoding, start, length, signed_start, error
+):
+    blob = _eh_section(
+        encoding=encoding,
+        start=start,
+        length=length,
+        address_size=address_size,
+        signed_start=signed_start,
+    )
+    table = cfi.parse_cfi_section(
+        blob,
+        section_address=0,
+        address_size=address_size,
+        endian="little",
+        is_eh_frame=True,
+    )
+    if error is not None:
+        assert table.error == error
+        return
+    assert table.error is None
+    assert table.row_for(start) is not None
+
+
 @pytest.mark.parametrize(
     "encoding,size,signed",
     [
@@ -221,7 +291,16 @@ def test_eh_frame_augmentation_and_pcrel_fde():
 def test_fixed_encoded_pointers_are_not_accidentally_aligned(encoding, size, signed):
     value = -12 if signed else 12
     data = b"!" + value.to_bytes(size, "little", signed=signed)
-    for application, base in ((0, 0), (0x10, 0x4001), (0x30, 0x4000)):
+    context = cfi.EncodedPointerContext(
+        data_base=0x3000, text_base=0x2000, function_base=0x1000
+    )
+    for application, base in (
+        (0, 0),
+        (0x10, 0x4001),
+        (0x20, 0x2000),
+        (0x30, 0x3000),
+        (0x40, 0x1000),
+    ):
         result = cfi._decode_encoded_pointer(
             data,
             1,
@@ -230,8 +309,12 @@ def test_fixed_encoded_pointers_are_not_accidentally_aligned(encoding, size, sig
             address_size=4,
             endian="little",
             section_address=0x4000,
+            context=context,
         )
-        assert result == (base + value, len(data))
+        if signed and application == 0:
+            assert result is None
+        else:
+            assert result == (base + value, len(data))
     assert (
         cfi._decode_encoded_pointer(
             data,
@@ -247,18 +330,92 @@ def test_fixed_encoded_pointers_are_not_accidentally_aligned(encoding, size, sig
 
 
 @pytest.mark.parametrize(
-    "encoding,data,value", [(1, b"\x81\x01", 129), (9, b"\x7e", -2), (0xFF, b"", 0)]
+    "address_size,encoding,value,base,section_address,expected",
+    [
+        (4, 0x33, b"\xff\xff\xff\xff", 1, 0, None),
+        (4, 0x33, b"\xf0\xff\xff\xff", 0x20, 0, None),
+        (4, 0x33, b"\xef\xff\xff\xff", 0x10, 0, (0xFFFFFFFF, 4)),
+        (4, 0x3B, b"\xff\xff\xff\xff", 1, 0, (0, 4)),
+        (4, 0x3B, b"\xfe\xff\xff\xff", 1, 0, None),
+        (4, 0x1B, b"\xf4\xff\xff\xff", 0, 0x4001, (0x3FF5, 4)),
+        (4, 0x13, b"\xff\xff\xff\xff", 0, 0, (0xFFFFFFFF, 4)),
+        (4, 0x13, b"\xff\xff\xff\xff", 0, 1, None),
+        (8, 0x34, b"\xff" * 8, 1, 0, None),
+        (8, 0x34, (2**64 - 2).to_bytes(8, "little"), 1, 0, (2**64 - 1, 8)),
+        (8, 0x3C, b"\xff" * 8, 1, 0, (0, 8)),
+        (8, 0x3C, b"\xfe" + b"\xff" * 7, 1, 0, None),
+    ],
 )
-def test_variable_pointer_encodings(encoding, data, value):
-    assert cfi._decode_encoded_pointer(
-        data,
+def test_encoded_pointer_base_and_offset_stay_inside_the_address_space(
+    address_size, encoding, value, base, section_address, expected
+):
+    context = cfi.EncodedPointerContext(data_base=base)
+    result = cfi._decode_encoded_pointer(
+        value,
         0,
-        len(data),
+        len(value),
         encoding=encoding,
-        address_size=4,
+        address_size=address_size,
+        endian="little",
+        section_address=section_address,
+        context=context,
+    )
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "address_size,pointer,result",
+    [
+        (4, 0xFFFFFFFC, 0x2000),
+        (4, 0xFFFFFFFD, None),
+        (8, 2**64 - 8, 0x2000),
+        (8, 2**64 - 7, None),
+    ],
+)
+def test_indirect_pointer_read_stays_inside_the_address_space(
+    address_size, pointer, result
+):
+    calls = []
+
+    def read(address, size):
+        calls.append((address, size))
+        return (0x2000).to_bytes(size, "little")
+
+    context = cfi.EncodedPointerContext(read=read)
+    decoded = cfi._decode_encoded_pointer(
+        int(pointer).to_bytes(address_size, "little"),
+        0,
+        address_size,
+        encoding=0x83 if address_size == 4 else 0x84,
+        address_size=address_size,
         endian="little",
         section_address=0,
-    ) == (value, len(data))
+        context=context,
+    )
+    if result is None:
+        assert decoded is None and calls == []
+    else:
+        assert decoded == (result, address_size)
+        assert calls == [(pointer, address_size)]
+
+
+@pytest.mark.parametrize(
+    "encoding,data,value", [(1, b"\x81\x01", 129), (9, b"\x7e", None), (0xFF, b"", 0)]
+)
+def test_variable_pointer_encodings(encoding, data, value):
+    expected = None if value is None else (value, len(data))
+    assert (
+        cfi._decode_encoded_pointer(
+            data,
+            0,
+            len(data),
+            encoding=encoding,
+            address_size=4,
+            endian="little",
+            section_address=0,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize("encoding", [0x20, 0x40, 0x80, 0x60, 0x07])
@@ -268,6 +425,22 @@ def test_unknown_bases_and_indirection_are_rejected(encoding):
             b"\x00" * 8,
             0,
             8,
+            encoding=encoding,
+            address_size=4,
+            endian="little",
+            section_address=0,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("encoding", [0x23, 0x33, 0x43])
+def test_non_pc_relative_pointer_without_a_context_is_rejected(encoding):
+    assert (
+        cfi._decode_encoded_pointer(
+            b"\x10\x00\x00\x00",
+            0,
+            4,
             encoding=encoding,
             address_size=4,
             endian="little",
@@ -302,7 +475,7 @@ def test_cie_initial_failure_keeps_known_fde_coverage(eh):
     table = cfi.parse_cfi_section(
         blob, section_address=0, address_size=4, endian="little", is_eh_frame=eh
     )
-    assert table.row_for(0x1004).error == "cfi-expression-unsupported"
+    assert table.row_for(0x1004).error == "cfi-truncated-expression"
     assert table.row_for(0x2000) is None and table.error is None
 
 

@@ -4,6 +4,10 @@
 
 #include <stdint.h>
 
+/* The mps2-an385 fixture reserves a linker-owned MSP region and uses CMSDK
+ * APB timer IRQs to produce deterministic live exception frames. */
+#define GDR_BOARD_HAS_IRQ_FIXTURE 1
+
 #ifndef configCPU_CLOCK_HZ
 #define configCPU_CLOCK_HZ ((unsigned long)25000000)
 #endif

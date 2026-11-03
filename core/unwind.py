@@ -3,18 +3,26 @@
 The driver consumes :mod:`core.unwind_ehabi` and :mod:`core.unwind_cfi` tables and
 falls back to a validated frame-pointer chain only when those tables do not
 cover a PC.  It never calls an inferior function and never writes target
-memory. Every frame preserves or advances SP, stays inside the supplied bounds and
-is bounded by a maximum depth; a malformed or unsupported record becomes a
-stop reason, never a guessed register value.
+memory.  Every ordinary frame preserves or advances SP inside the current stack
+segment; crossing to another segment requires an architecture-owned exception
+transition proof.  Each walk is bounded by a maximum depth, and a malformed or
+unsupported record becomes a stop reason, never a guessed register value.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from .unwind_cfi import CfiRow, CfiTable, RegisterRule, parse_cfi_section
+from .unwind_cfi import (
+    CfiRow,
+    CfiTable,
+    EncodedPointerContext,
+    RegisterRule,
+    parse_cfi_section,
+)
 from .unwind_ehabi import EhabiTable, parse_ehabi, unwind_ehabi
+from .unwind_expr import evaluate_cfi_expression
 from .unwind_meta import (
     EM_RISCV,
     MAX_FRAME_READ,
@@ -25,6 +33,18 @@ from .unwind_meta import (
     Method,
     Reader,
 )
+from .unwind_segments import (
+    MAX_EXCEPTION_DEPTH,
+    MAX_EXCEPTION_READ_BYTES,
+    ExceptionBudget,
+    ExceptionDetector,
+    ExceptionHook,
+    ExceptionTransitionContext,
+    ExceptionTransitionResult,
+    SegmentTransition,
+    StackSegment,
+    TransitionGuard,
+)
 
 # ---------------------------------------------------------------------------
 # Unwind driver
@@ -33,7 +53,11 @@ from .unwind_meta import (
 
 @dataclass(frozen=True)
 class SeedFrame:
-    """The first frame of a task: registers decoded by the RTOS adapter."""
+    """The first frame of a task: registers decoded by the RTOS adapter.
+
+    ``process_sp``, ``exception_number`` and ``at_exception_entry`` describe a
+    live handler seed; a saved task seed leaves them unset.
+    """
 
     pc: int
     sp: int
@@ -41,6 +65,9 @@ class SeedFrame:
     source: str = "saved"
     root_pc: int | None = None
     root_reason: str = "task-entry"
+    process_sp: int | None = None
+    exception_number: int | None = None
+    at_exception_entry: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +78,7 @@ class UnwindFrame:
     pc: int
     method: Method
     lookup_pc: int | None = None
+    segment: str | None = None
 
     @property
     def address_in_block(self) -> int:
@@ -68,6 +96,8 @@ class UnwindResult:
     truncated: bool
     seed_source: str
     method: str
+    segments: tuple[StackSegment, ...] = ()
+    transitions: tuple[SegmentTransition, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,8 +112,19 @@ class UnwindMetadata:
     frame_pointer_register: int | None
 
     @classmethod
-    def from_elf(cls, elf: ElfImage) -> UnwindMetadata:
-        """Build every available source; an absent source stays ``None``."""
+    def from_elf(
+        cls,
+        elf: ElfImage,
+        *,
+        pointer_context: EncodedPointerContext | None = None,
+    ) -> UnwindMetadata:
+        """Build every available source; an absent source stays ``None``.
+
+        ``pointer_context`` is only passed through to CFI parsing; the ELF
+        sections do not provide the ABI's ``.got``/``.eh_frame_hdr`` data base,
+        so non-PC-relative encodings stay unavailable unless the caller
+        supplies explicit bases.
+        """
         arch: Arch = "riscv" if elf.machine == EM_RISCV else "arm"
         cfi_tables: list[CfiTable] = []
         for name, is_eh in ((".eh_frame", True), (".debug_frame", False)):
@@ -97,6 +138,7 @@ class UnwindMetadata:
                     address_size=elf.pointer_size,
                     endian=elf.endian,
                     is_eh_frame=is_eh,
+                    pointer_context=pointer_context,
                 )
             )
         ehabi = None
@@ -170,6 +212,7 @@ def _rule_value(
     endian: Endian,
     stack_low: int | None,
     stack_high: int | None,
+    register_count: int | None = None,
 ) -> tuple[int | None, str | None]:
     if rule.kind == "same":
         return None, None
@@ -184,6 +227,39 @@ def _rule_value(
                 )
             return None, "cfi-register-source-missing"
         return regs[source], None
+    if rule.kind in ("expression", "val_expression"):
+        if rule.expression is None:
+            return None, "cfi-expression-missing"
+        result = evaluate_cfi_expression(
+            rule.expression,
+            registers=regs,
+            initial_stack=(cfa,),
+            read=read,
+            address_size=ptr_size,
+            endian=endian,
+            purpose="value" if rule.kind == "val_expression" else "address",
+            stack_low=stack_low,
+            stack_high=stack_high,
+            register_limit=register_count,
+            register_failure=lambda register: _register_failure(
+                regs, register, "cfi-expression-register-missing"
+            ),
+        )
+        if isinstance(result, str):
+            return None, result
+        if rule.kind == "val_expression":
+            return result, None
+        value = _read_value(
+            read,
+            result,
+            ptr_size,
+            endian,
+            stack_low=stack_low,
+            stack_high=stack_high,
+        )
+        if value is None:
+            return None, "cfi-memory-error"
+        return value, None
     if rule.kind == "val_offset":
         return cfa + rule.value, None
     value = _read_value(
@@ -230,19 +306,41 @@ def _unwind_cfi(
         return "cfi-return-register-unsupported"
     if return_rule is not None and return_rule.kind == "undefined":
         return "cfi-return-address-undefined"
-    if row.cfa.register is None:
-        return "cfi-no-cfa"
-    if not 0 <= row.cfa.register < register_count:
-        return "cfi-cfa-register-unsupported"
+    if row.cfa.expression is None:
+        if row.cfa.register is None:
+            return "cfi-no-cfa"
+        if not 0 <= row.cfa.register < register_count:
+            return "cfi-cfa-register-unsupported"
+    elif row.cfa.register is not None or row.cfa.offset:
+        return "cfi-cfa-rule-invalid"
     for register, rule in row.registers.items():
         if (not 0 <= register < register_count and register != return_register) or (
             rule.register is not None and not 0 <= rule.register < register_count
         ):
             return "cfi-register-unsupported"
-    cfa_base = regs.get(row.cfa.register)
-    if cfa_base is None:
-        return _register_failure(regs, row.cfa.register, "cfi-cfa-register-missing")
-    cfa = cfa_base + row.cfa.offset
+    if row.cfa.expression is not None:
+        cfa_result = evaluate_cfi_expression(
+            row.cfa.expression,
+            registers=regs,
+            read=read,
+            address_size=ptr_size,
+            endian=endian,
+            purpose="cfa",
+            stack_low=stack_low,
+            stack_high=stack_high,
+            register_limit=register_count,
+            register_failure=lambda register: _register_failure(
+                regs, register, "cfi-expression-register-missing"
+            ),
+        )
+        if isinstance(cfa_result, str):
+            return cfa_result
+        cfa = cfa_result
+    else:
+        cfa_base = regs.get(row.cfa.register)
+        if cfa_base is None:
+            return _register_failure(regs, row.cfa.register, "cfi-cfa-register-missing")
+        cfa = cfa_base + row.cfa.offset
     if cfa < sp:
         return "cfi-no-progress"
     if stack_low is not None and cfa < stack_low:
@@ -260,6 +358,7 @@ def _unwind_cfi(
             endian=endian,
             stack_low=stack_low,
             stack_high=stack_high,
+            register_count=register_count,
         )
         if failure is not None:
             if register == return_register:
@@ -283,6 +382,7 @@ def _unwind_cfi(
             endian=endian,
             stack_low=stack_low,
             stack_high=stack_high,
+            register_count=register_count,
         )
         if failure is not None:
             return failure
@@ -383,14 +483,25 @@ def unwind_chain(
     stack_high: int | None = None,
     allow_frame_pointer: bool = True,
     is_code: Callable[[int], bool] | None = None,
+    segments: Sequence[StackSegment] | None = None,
+    current_segment: str | None = None,
+    exception_detector: ExceptionDetector | None = None,
+    exception_hook: ExceptionHook | None = None,
+    exception_guard: TransitionGuard | None = None,
+    max_exception_depth: int = MAX_EXCEPTION_DEPTH,
+    max_exception_bytes: int = MAX_EXCEPTION_READ_BYTES,
+    stkalign: bool = True,
 ) -> UnwindResult:
     """Walk a seed frame through metadata, bounded by *max_depth*.
 
     The first frame is the seed exactly as the RTOS adapter decoded it.  Each
-    further frame must not decrease the stack pointer, must stay inside the supplied
-    bounds and be produced by a metadata rule or a validated frame-pointer
-    record. Repeated PC/SP pairs are loops. ``complete`` requires the adapter's
-    independently supplied root or exit sentinel; other termination is partial.
+    further frame must either stay inside the current stack segment or cross
+    only through an architecture hook that proves and decodes an exception
+    frame.  Ordinary steps must not decrease the stack pointer, must stay
+    inside the current segment and be produced by a metadata rule or a
+    validated frame-pointer record.  Repeated segment/PC/SP triples are loops.
+    ``complete`` requires the adapter's independently supplied root or exit
+    sentinel; other termination is partial.
 
     Args:
         seed: Decoded PC/SP/registers and the optional task entry.
@@ -401,9 +512,22 @@ def unwind_chain(
         stack_high: One-past-highest valid stack byte, or ``None``.
         allow_frame_pointer: Permit the validated frame-pointer fallback.
         is_code: Executable-address predicate; defaults to the ELF text ranges.
+        segments: Optional typed stack segments.  When present, the segment
+            bounds replace *stack_low*/*stack_high* for ordinary steps.
+        current_segment: Identity of the seed's segment in *segments*.
+        exception_detector: Whether a raw return value is an exception-return
+            candidate; no candidate is ever decoded without this hook.
+        exception_hook: Architecture-owned proof/decoder for one transition.
+        exception_guard: Optional policy hook returning a stop reason for a
+            proven interrupted exception number (the adapter decides which
+            exception contexts the driver must not interpret further).
+        max_exception_depth: Independent maximum number of crossed frames.
+        max_exception_bytes: Independent budget for exception-frame reads.
+        stkalign: Whether the target enforces 8-byte exception stack alignment.
 
     Returns:
-        Frames, the exact stop reason, completeness and truncation state.
+        Frames, the exact stop reason, completeness, truncation state and the
+        typed segment/transition evidence used by the walk.
     """
     if max_depth < 1:
         max_depth = 1
@@ -424,49 +548,209 @@ def unwind_chain(
     return_register = metadata.return_register if metadata is not None else 14
     sp_register = 13 if arch == "arm" else 2
 
+    segment_index: dict[str, StackSegment] = {}
+    current: StackSegment | None = None
+    if segments is not None:
+        for segment in segments:
+            if segment.ident in segment_index:
+                return UnwindResult(
+                    (), "segment-duplicate", False, False, seed.source, seed.source
+                )
+            segment_index[segment.ident] = segment
+        if current_segment is None:
+            return UnwindResult(
+                (), "segment-unknown", False, False, seed.source, seed.source
+            )
+        current = segment_index.get(current_segment)
+        if current is None:
+            return UnwindResult(
+                (), "segment-unknown", False, False, seed.source, seed.source
+            )
+    low = current.low if current is not None else stack_low
+    high = current.high if current is not None else stack_high
+    budget = ExceptionBudget(
+        max_depth=max(0, max_exception_depth),
+        max_bytes=max(0, max_exception_bytes),
+    )
+    transitions: list[SegmentTransition] = []
+    process_sp = seed.process_sp
+
+    def _result(
+        frames: list[UnwindFrame],
+        reason: str,
+        complete: bool,
+        truncated: bool,
+        method: str,
+    ) -> UnwindResult:
+        return UnwindResult(
+            tuple(frames),
+            reason,
+            complete,
+            truncated,
+            seed.source,
+            method,
+            tuple(segment_index.values()),
+            tuple(transitions),
+        )
+
+    def _apply_transition(
+        raw_pc: int,
+        source_regs: Mapping[int, int],
+        frame_sp: int,
+        source_segment: StackSegment | None,
+    ) -> ExceptionTransitionResult | str | None:
+        if (
+            source_segment is None
+            or exception_detector is None
+            or exception_hook is None
+        ):
+            return None
+        if not exception_detector(raw_pc):
+            return None
+        if budget.depth >= budget.max_depth:
+            return "exception-depth-exceeded"
+        context = ExceptionTransitionContext(
+            value=raw_pc,
+            registers=source_regs,
+            frame_sp=frame_sp,
+            current_segment=source_segment,
+            segments=segment_index,
+            process_sp=process_sp,
+            read=read,
+            stkalign=stkalign,
+            remaining_exception_bytes=budget.remaining_bytes,
+            guard=exception_guard,
+        )
+        result = exception_hook(context)
+        if result is None:
+            return "exception-context-unproven"
+        if isinstance(result, str):
+            return result
+        if result.bytes_read < 0 or result.bytes_read > budget.remaining_bytes:
+            return "exception-read-budget-exceeded"
+        if result.segment.low is None or result.segment.high is None:
+            return "exception-target-bounds-unavailable"
+        if not result.segment.contains(result.sp, 0):
+            return "exception-target-outside-bounds"
+        if result.pc <= 0 or not code(result.pc):
+            return "exception-frame-pc-outside-code"
+        existing = segment_index.get(result.segment.ident)
+        if existing is not None and (
+            existing.low != result.segment.low
+            or existing.high != result.segment.high
+            or existing.owner != result.segment.owner
+            or existing.stack != result.segment.stack
+            or existing.source != result.segment.source
+            or existing.kind != result.segment.kind
+        ):
+            return "exception-context-conflict"
+        budget.depth += 1
+        budget.bytes += result.bytes_read
+        segment_index[result.segment.ident] = result.segment
+        return result
+
     pc = seed.pc & ~1 if arch == "arm" else seed.pc
     sp = seed.sp
     regs = dict(seed.regs)
     if pc <= 0:
-        return UnwindResult(
-            (), "seed-pc-invalid", False, False, seed.source, seed.source
-        )
-    if stack_low is not None and sp < stack_low:
-        return UnwindResult(
-            (), "seed-stack-underflow", False, False, seed.source, seed.source
-        )
-    if stack_high is not None and sp > stack_high:
-        return UnwindResult(
-            (), "seed-stack-overflow", False, False, seed.source, seed.source
-        )
+        return _result([], "seed-pc-invalid", False, False, seed.source)
+    if low is not None and sp < low:
+        return _result([], "seed-stack-underflow", False, False, seed.source)
+    if high is not None and sp > high:
+        return _result([], "seed-stack-overflow", False, False, seed.source)
     if metadata is not None and not metadata.elf.is_code(pc):
-        return UnwindResult(
-            (), "seed-pc-outside-code", False, False, seed.source, seed.source
-        )
+        return _result([], "seed-pc-outside-code", False, False, seed.source)
     if arch == "arm":
         regs[15] = pc
         regs[13] = sp
     else:
         regs[2] = sp
-    frames: list[UnwindFrame] = [UnwindFrame(0, pc, "seed")]
+    frames: list[UnwindFrame] = [
+        UnwindFrame(
+            0,
+            pc,
+            "seed",
+            segment=current.ident if current is not None else None,
+        )
+    ]
     lookup_pc = pc
-    seen: set[tuple[int, int]] = {(pc, sp)}
+    segment_key = current.ident if current is not None else ""
+    seen: set[tuple[str, int, int]] = {(segment_key, pc, sp)}
     method = seed.source
     stop_reason = "no-unwind-info"
     complete = False
     truncated = False
-    if seed.root_pc is not None and (pc & ~1 if arch == "arm" else pc) == (
-        seed.root_pc & ~1 if arch == "arm" else seed.root_pc
-    ):
-        return UnwindResult(
-            frames=tuple(frames),
-            stop_reason=seed.root_reason,
-            complete=True,
-            truncated=False,
-            seed_source=seed.source,
-            method=method,
-        )
-    for index in range(1, max_depth):
+    root_pc = (
+        seed.root_pc & ~1
+        if seed.root_pc is not None and arch == "arm"
+        else seed.root_pc
+    )
+    if root_pc is not None and pc == root_pc:
+        return _result(frames, seed.root_reason, True, False, method)
+
+    next_index = 1
+    if seed.at_exception_entry and current is not None and max_depth > 1:
+        raw_entry = regs.get(return_register)
+        if (
+            raw_entry is None
+            or exception_detector is None
+            or exception_hook is None
+            or not exception_detector(raw_entry)
+        ):
+            return _result(frames, "exception-return-unproven", False, False, method)
+        transition = _apply_transition(raw_entry, regs, sp, current)
+        if isinstance(transition, str):
+            return _result(frames, transition, False, False, method)
+        if transition is not None:
+            key = (transition.segment.ident, transition.pc, transition.sp)
+            if key in seen:
+                return _result(frames, "loop", False, False, method)
+            seen.add(key)
+            frames.append(
+                UnwindFrame(
+                    1,
+                    transition.pc,
+                    transition.method,
+                    transition.pc,
+                    segment=transition.segment.ident,
+                )
+            )
+            transitions.append(
+                SegmentTransition(
+                    from_segment=current.ident,
+                    to_segment=transition.segment.ident,
+                    method=transition.method,
+                    source=transition.source,
+                    pc=transition.pc,
+                    sp=transition.sp,
+                    value=transition.value,
+                    exact_pc=transition.exact_pc,
+                    evidence=transition.evidence,
+                )
+            )
+            recovered_entry = _RecoveredRegisters(transition.registers)
+            if isinstance(regs, _RecoveredRegisters):
+                for register, reason in regs.unavailable.items():
+                    if register not in recovered_entry:
+                        recovered_entry.unavailable[register] = reason
+            regs = recovered_entry
+            if arch == "arm":
+                regs[15] = transition.pc
+                regs[13] = transition.sp
+                regs.unavailable.pop(15, None)
+                regs.unavailable.pop(13, None)
+            current = transition.segment
+            pc = transition.pc
+            lookup_pc = transition.pc
+            sp = transition.sp
+            method = transition.method
+            next_index = 2
+            if root_pc is not None and pc == root_pc:
+                return _result(frames, seed.root_reason, True, False, method)
+
+    for index in range(next_index, max_depth):
+        low = current.low if current is not None else stack_low
+        high = current.high if current is not None else stack_high
         attempts: list[str] = []
         has_metadata = False
         exact_caller_pc = False
@@ -485,8 +769,8 @@ def unwind_chain(
                     sp=sp,
                     regs=regs,
                     read=read,
-                    stack_low=stack_low,
-                    stack_high=stack_high,
+                    stack_low=low,
+                    stack_high=high,
                     endian=endian,
                 )
                 if isinstance(outcome, tuple):
@@ -526,8 +810,8 @@ def unwind_chain(
                     endian=endian,
                     return_register=return_register,
                     sp_register=sp_register,
-                    stack_low=stack_low,
-                    stack_high=stack_high,
+                    stack_low=low,
+                    stack_high=high,
                 )
                 if isinstance(outcome, tuple):
                     new_regs, new_sp, new_pc = outcome
@@ -548,8 +832,8 @@ def unwind_chain(
                 ptr_size=ptr_size,
                 endian=endian,
                 frame_pointer_register=fp_register,
-                stack_low=stack_low,
-                stack_high=stack_high,
+                stack_low=low,
+                stack_high=high,
             )
             if isinstance(outcome, tuple):
                 new_regs, new_sp, new_pc = outcome
@@ -567,14 +851,68 @@ def unwind_chain(
             else:
                 stop_reason = attempts[0] if attempts else "no-unwind-info"
             break
-        caller_pc = new_pc & ~1 if arch == "arm" else new_pc
+
+        raw_caller = new_pc
+        transition = _apply_transition(raw_caller, new_regs, new_sp, current)
+        if isinstance(transition, str):
+            stop_reason = transition
+            break
+        if transition is not None:
+            key = (transition.segment.ident, transition.pc, transition.sp)
+            if key in seen:
+                stop_reason = "loop"
+                break
+            seen.add(key)
+            frames.append(
+                UnwindFrame(
+                    index,
+                    transition.pc,
+                    transition.method,
+                    transition.pc,
+                    segment=transition.segment.ident,
+                )
+            )
+            transitions.append(
+                SegmentTransition(
+                    from_segment=current.ident if current is not None else "",
+                    to_segment=transition.segment.ident,
+                    method=transition.method,
+                    source=transition.source,
+                    pc=transition.pc,
+                    sp=transition.sp,
+                    value=transition.value,
+                    exact_pc=transition.exact_pc,
+                    evidence=transition.evidence,
+                )
+            )
+            recovered_transition = _RecoveredRegisters(transition.registers)
+            if isinstance(new_regs, _RecoveredRegisters):
+                for register, reason in new_regs.unavailable.items():
+                    if register not in recovered_transition:
+                        recovered_transition.unavailable[register] = reason
+            regs = recovered_transition
+            if arch == "arm":
+                regs[15] = transition.pc
+                regs[13] = transition.sp
+                regs.unavailable.pop(15, None)
+                regs.unavailable.pop(13, None)
+            current = transition.segment
+            pc = transition.pc
+            lookup_pc = transition.pc
+            sp = transition.sp
+            method = transition.method
+            if root_pc is not None and pc == root_pc:
+                stop_reason = seed.root_reason
+                complete = True
+                break
+            continue
+
+        caller_pc = raw_caller & ~1 if arch == "arm" else raw_caller
         if caller_pc == 0:
             complete = seed.root_pc == 0
             stop_reason = seed.root_reason if complete else "return-address-zero"
             break
-        at_root = seed.root_pc is not None and caller_pc == (
-            seed.root_pc & ~1 if arch == "arm" else seed.root_pc
-        )
+        at_root = root_pc is not None and caller_pc == root_pc
         caller_lookup_pc = caller_pc if exact_caller_pc or at_root else caller_pc - 1
         if not code(caller_lookup_pc):
             stop_reason = "return-address-outside-code"
@@ -582,17 +920,26 @@ def unwind_chain(
         if new_sp < sp:
             stop_reason = "no-progress"
             break
-        if stack_low is not None and new_sp < stack_low:
+        if low is not None and new_sp < low:
             stop_reason = "stack-underflow"
             break
-        if stack_high is not None and new_sp > stack_high:
+        if high is not None and new_sp > high:
             stop_reason = "stack-overflow"
             break
-        if (caller_pc, new_sp) in seen:
+        segment_id = current.ident if current is not None else ""
+        if (segment_id, caller_pc, new_sp) in seen:
             stop_reason = "loop"
             break
-        seen.add((caller_pc, new_sp))
-        frames.append(UnwindFrame(index, caller_pc, step_method, caller_lookup_pc))
+        seen.add((segment_id, caller_pc, new_sp))
+        frames.append(
+            UnwindFrame(
+                index,
+                caller_pc,
+                step_method,
+                caller_lookup_pc,
+                segment=current.ident if current is not None else None,
+            )
+        )
         method = step_method
         pc = caller_pc
         lookup_pc = caller_lookup_pc
@@ -613,14 +960,7 @@ def unwind_chain(
     else:
         stop_reason = "max-depth"
         truncated = True
-    return UnwindResult(
-        frames=tuple(frames),
-        stop_reason=stop_reason,
-        complete=complete,
-        truncated=truncated,
-        seed_source=seed.source,
-        method=method,
-    )
+    return _result(frames, stop_reason, complete, truncated, method)
 
 
 # The following two helpers are used by RTOS adapters to read a frame slot

@@ -40,11 +40,14 @@ duplicating what GDB already displays well. Design rationale lives in
 | `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`backtrace`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
 | `commands.py` | Shared collectors and guarded text renderers, the stop-time watch set, and convenience functions (`$gdr_task`, `$gdr_object`, `$gdr_json`). |
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
-| `unwind.py` | Bounded task unwind driver: seed frames, EHABI/CFI/frame-pointer selection, stack/PC/progress validation, per-frame method and stop reason. Pure; no GDB import. |
+| `unwind.py` | Bounded task unwind driver: seed frames, EHABI/CFI/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. Pure; no GDB import. |
+| `unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
+| `unwind_arm.py` | Shared eight-word Cortex-M integer frame recovery plus Armv6-M six-bit IPSR/mandatory alignment and Armv7-M nine-bit IPSR/CCR.STKALIGN/ICTR policies. |
 | `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
 | `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence from ELF attributes; contains no RTOS policy. |
 | `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. Also provides bounded RISC-V code evidence; adapter selectors own image/configuration proof. |
 | `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`) tables and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
+| `unwind_expr.py` | Pure integer CFI expression evaluation for CFA, register-save addresses and direct register values, with independent bytecode, step, stack and memory-read budgets. |
 | `unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
 | `help.py` | Structured help schema with terminal/Markdown renderers; command metadata stays structured so the same source feeds GDB now and docs later. |
 
@@ -69,7 +72,8 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | Config/DWARF probes, struct paths, version policy and probe evidence. |
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
 | `stackpc.py` | Last PC projection from the selected saved-context profile. |
-| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (M0/M3/M33 SMP/MPU/RV32/RV64) and the GDB-facing seed/task orchestration for verified FreeRTOS ports. |
+| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (M0/M3/M33 SMP/MPU/RV32/RV64) and GDB-facing seed/task orchestration; basic handler-frame transitions use ISA-specific validation and verified port evidence. |
+| `scheduler_switch.py` | Pure compiled ARM_CM3 transition profiles, instruction-relative stage classification and owner-consistent scheduler seeds; GDB-facing collection remains in `backtrace_gdb.py`. |
 | `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled RISC-V save-layout evidence for verified profile selection. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |
@@ -110,9 +114,11 @@ the loaded ELF's unwind sections and walk bounded frames:
 ```text
 rtt/frt backtrace <task> / gdr api backtrace -> adapter
   -> saved/live seed registers + task stack bounds
+  -> for a gated Armv6-M/Armv7-M handler seed: linker-owned MSP span + PSP + xPSR
   -> core.unwind_meta (ELF sections and symbols)
   -> core.unwind_cfi / core.unwind_ehabi (unwind metadata)
-  -> core.unwind (metadata selection, optional frame pointer, bounds/depth proof)
+  -> core.unwind (metadata selection, optional frame pointer, segment/bounds/depth proof)
+  -> evidence-gated exception transition -> exact stacked PC and restored context
   -> frames + method + complete/stop_reason
 ```
 
@@ -123,6 +129,64 @@ CIE/rule errors. Parse failures with undecodable coverage prohibit
 frame-pointer fallback unless an independent metadata rule covers the PC;
 clean uncovered PCs retain the bounded fallback.
 
+`DW_CFA_def_cfa_expression` computes CFA; `DW_CFA_expression` computes a
+register-save address, while `DW_CFA_val_expression` computes the register
+value without a second dereference. The pure evaluator uses target-width
+integers and independent bytecode, step, stack and read budgets; branch
+targets must be instruction boundaries and reads must fit the target address
+space and current stack bounds. Expression failures stop the walk rather
+than enabling frame-pointer fallback. Non-PC-relative encoded pointers
+require explicit text/data/function bases or an indirect reader; missing
+context is rejected rather than inferred from a section address.
+
+Exception transitions carry typed stack segments with identity, owner, bounds
+and source. Ordinary unwind steps stay within their current segment and retain
+the progress and bounds checks; only an architecture hook may cross segments
+after validating the return value and frame. Armv6-M and Armv7-M decoders own
+their EXC_RETURN candidates/whitelists and IPSR field widths/tables, then pass
+the selected stack mode, exception classifier and IPSR mask to the shared
+eight-word hardware-frame reader. That reader restores r0-r3, r12, LR, PC,
+SP and the stacked xPSR alignment padding while enforcing segment bounds and
+exception read budgets. Armv6-M has a six-bit IPSR and supports exception
+numbers through 47; exception entry always aligns SP to eight bytes and stacked
+xPSR[9] records whether the original SP needed four bytes of padding. Armv7-M
+has a nine-bit IPSR and exception numbers through 511; CCR.STKALIGN controls
+whether entry realigns SP and whether stacked xPSR[9] restores padding. A frame
+with IPSR bits above the selected ISA's field width is rejected.
+The FreeRTOS adapter requires linker-owned MSP bounds, readable live
+PSP/MSP/xPSR and running-scheduler ownership; missing evidence refuses the seed.
+Proven vector entries require a candidate EXC_RETURN and both transition
+hooks. Saved task contexts require stacked IPSR zero. ISA-specific classifiers
+reject invalid exception numbers; adapter policy separately refuses unverified
+system exceptions and fault contexts. Scheduler contexts require the separate
+compiled-stage proof described below. Armv7-M reads ICTR for its external
+interrupt capacity and VTOR for vector entries. The Armv6-M port gate requires
+FreeRTOS 11.1.0, Cortex-M0 CPUID, fixed-zero vector symbols and an explicit
+32-line linker fact; it reads vectors directly and never reads ICTR, VTOR or
+CCR. Both paths apply capacity/exception guards to live and restored frames.
+Crossed exception PCs are exact resume PCs, not ordinary
+return addresses subject to `PC - 1`. Segment and transition records remain
+internal; JSON schema 3 uses the existing `method`, `stop_reason` and
+`messages` fields for the transition result/evidence.
+
+Independent architecture and RTOS-port acceptance requirements live in
+[testing](testing.md#exception-unwind-acceptance). Verified lanes and
+exception-mode limits live in [errata](errata.md#task-backtraces).
+
+Scheduler seeds require a matching compiled ARM_CM3 profile. The pure decoder
+retains instruction direction, load/store, writeback, register operands and
+branch targets, and verifies the complete `vTaskSwitchContext` instruction
+stream and its current-TCB update. Exact instruction addresses denote stops
+before execution; unknown PCs inside a transition function are refused.
+Stage-specific TCB, register, saved-buffer and PSP checks choose the old or
+new task context without joining registers from different tasks. Hardware
+seed paths share frame-base, stacked ALIGN, CCR.STKALIGN and restored-SP
+validation; a separate software-prebuilt-frame rule applies to first SVC.
+First-start seeds also require initial-register/exit-sentinel evidence and
+an exact sized ELF function entry. Supported stages and exclusions live in
+[errata](errata.md#task-backtraces); live verification lives in
+[testing](testing.md#freertos-suite-organization-and-capability-coverage).
+
 Each CFI row carries its CIE return-address column and signal-frame flag;
 the architecture selects SP independently. Virtual return columns require
 an explicit recovery rule and are not propagated as machine registers.
@@ -130,8 +194,9 @@ An undefined return column ends a partial chain, not a proven task root.
 Frames retain the normalized resume PC; ordinary caller metadata, symbols
 and source locations use `PC - 1`, while the seed, signal-CIE caller and
 independently proven task root use the exact PC. This lookup adjustment does
-not decode instruction lengths or implement exception-stack transitions; the
-JSON contract is unchanged.
+not decode instruction lengths. Hardware exception transitions are decoded
+only by their separately gated architecture path; the JSON contract is
+unchanged.
 
 Native inspection stays separate:
 
@@ -195,7 +260,7 @@ Boundary details behind each row live in `errata.md`.
 
 | Debugging dimension | RT-Thread (`rtt`) | FreeRTOS (`frt`) |
 | --- | --- | --- |
-| **Versions and architectures** | `3.1.0–3.1.5`, `4.0.0–4.1.1` (ARM Cortex-A9 32-bit, RISC-V 64-bit) | `10.3.0–11.3.x` (ARM Cortex-M3 / M33 SMP and MPU 32-bit, RISC-V 64-bit) |
+| **Versions and architectures** | `3.1.0–3.1.5`, `4.0.0–4.1.1` (ARM Cortex-A9 32-bit, RISC-V 64-bit) | `10.3.0–11.3.x` (ARM Cortex-M0/M3, M33 SMP and MPU 32-bit; RISC-V 32/64-bit) |
 | **Object discovery** | Kernel global object registry plus the active timer lists | Six-channel evidence merge (MPU pool, registry, active lists, symbols, waiter hosts, user addresses) with `Src` provenance and a `Queue_t` discriminator (`?` when inferred) |
 | **Task basics** | TCB keeps `Entry`; `Stack`/`Used`/`HighWater` always derivable; `Error` and `RemainingTick`; SMP `CPU`/`Bind` | No retained `Entry`; `Stack`/`Used`/`HighWater` need `pxEndOfStack`; `Runtime`, `WakeTick`/`BlockedOn`, `Notify[n]`; SMP `CPU`/`Affinity` |
 | **Last PC (`stackpc.py`)** | Slot keyed by version and pointer width; entry/call/code proof | Slot keyed by port evidence (build attributes and port symbols); code symbol plus Cortex-M Thumb-bit proof |

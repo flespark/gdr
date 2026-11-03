@@ -14,7 +14,7 @@ from typing import Literal
 
 Endian = Literal["little", "big"]
 Arch = Literal["arm", "riscv"]
-Method = Literal["seed", "ehabi", "cfi", "frame-pointer"]
+Method = Literal["seed", "ehabi", "cfi", "frame-pointer", "exception"]
 
 Reader = Callable[[int, int], "bytes | None"]
 
@@ -49,6 +49,11 @@ MAX_SECTION_COUNT = 8192
 MAX_CIE_COUNT = 4096
 MAX_FDE_COUNT = 65536
 MAX_CFI_OPCODES = 200_000
+MAX_CFI_EXPRESSION_BYTES = 1024
+MAX_CFI_EXPRESSION_STEPS = 4096
+MAX_CFI_EXPRESSION_STACK = 64
+MAX_CFI_EXPRESSION_READS = 32
+MAX_CFI_EXPRESSION_READ_BYTES = 256
 MAX_EHABI_OPCODES = 4096
 MAX_STATE_DEPTH = 64
 MAX_FRAMES = 64

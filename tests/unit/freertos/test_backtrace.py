@@ -211,6 +211,22 @@ def test_missing_or_non_thumb_saved_context_is_not_a_frame():
     )
 
 
+def test_saved_context_rejects_a_handler_ipsr():
+    memory = _Memory()
+    top = 0x2000
+    _arm_saved_context(memory, top)
+    memory.word(top + 60, 0x01000018)
+    seed, reason = decode_saved_context(
+        ARMV7M_INTEGER,
+        top,
+        memory,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+    )
+    assert seed is None and reason == "saved-frame-ipsr-invalid"
+
+
 def test_initial_context_requires_the_unstarted_proof():
     memory = _Memory()
     top = 0x2000

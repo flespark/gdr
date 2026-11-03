@@ -139,10 +139,12 @@ orchestrate pytest. Extension packaging and schema scripts live under
 and [RT-Thread](rt-thread/README.md) lane READMEs; coverage lives in
 [testing](../docs/testing.md).
 
-For CFI-expression, IRQ/multistack, or PendSV work, add deterministic
-board/config/assembly inputs under the owning RTOS and declare the lane's
-coordinates and artifacts. Add independent positive and negative expectations
-under `tests/integration/<rtos>/`, then include the lane in an appropriate
-matrix. The `eh-frame` variant preserves isolated metadata-source proof; a
-signal CIE alone does not prove hardware IRQ or cross-stack support. New
-capabilities must have a falsifiable fixture before runtime support is opened.
+For unwind work, add deterministic board/config/assembly inputs under the
+owning RTOS and declare the lane coordinates and artifacts. CFI-expression
+semantics have an isolated `.eh_frame` lane. Exception and scheduler work
+requires separate architecture and RTOS-port acceptance; see
+[verification requirements](../docs/testing.md#exception-unwind-acceptance).
+A signal CIE alone does not prove hardware IRQ or cross-stack support.
+Add independent positive and negative expectations under
+`tests/integration/<rtos>/`, then include the lane in an appropriate matrix.
+New capabilities need a falsifiable fixture before runtime support is opened.

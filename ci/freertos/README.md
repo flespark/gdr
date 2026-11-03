@@ -10,6 +10,8 @@ are described in [testing](../../docs/testing.md).
 | Live kernel-direct | `build.sh` | Clean `FreeRTOS-Kernel` tag, shared application, board and config headers. |
 | File-only `snapshot` | `build.sh` | Kernel headers and `fixture/config/snapshot/` data-only sources. |
 | Isolated `eh-frame` | `fixture/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
+| M0/M3 IRQ full fixtures | `build.sh` | Board-specific `irq.c` under `microbit/` or `mps2-an385/`, full config and linker-reserved MSP stack; other boards/variants omit the IRQ task. |
+| AN385 scheduler fixture | `build.sh` | `fixture/board/mps2-an385/sched.c`, `config/sched/` and the linker-reserved MSP stack; excludes the full fixture's IRQ task. |
 
 The shared runner supplies explicit source, build, compiler and install
 paths. `build.sh` rejects a modified or mismatched tag checkout and never
@@ -61,6 +63,21 @@ GDB uses `arm` and the same semihosting ready marker. This lane verifies the Cor
 offset (EXC_RETURN at the top, PC at +60, xPSR at +64) and the Thumb-1
 backtrace chain.
 
+The 11.1.0 `full` fixture also compiles `board/microbit/irq.c`. The linker
+reserves the top 4 KiB as `.irq_stack`, exporting `__gdr_irq_stack_low`
+(`0x2003F000`) and `__gdr_irq_stack_top` (`0x20040000`); overlap assertions
+protect `.bss` and heap storage. `g_pfnVectors` is zero,
+`__gdr_vector_table_end` is 192, and absolute symbol
+`__gdr_armv6m_irq_count` is 32. The vector table has 16 system and 32
+external slots; only TIMER0/1 handlers are exercised by this IRQ fixture.
+
+nRF51 TIMER0 (`0x40008000`, IRQ8, priority `0xC0`) and TIMER1
+(`0x40009000`, IRQ9, priority `0x40`) generate real exceptions. TIMER1
+preempts TIMER0; a separate task wait reduces SP by four bytes to exercise
+hardware padding. Acceptance and support limits live in
+[testing](../../docs/testing.md#exception-unwind-acceptance) and
+[errata](../../docs/errata.md#task-backtraces).
+
 ### Kernel-direct (`mps2-an385`)
 
 `build.sh` reads the prepared kernel tag and links it with
@@ -94,6 +111,39 @@ PC is read.
 fixture returns a fixed non-zero canary (0xBEEF) so tests can XOR heap link
 fields back and prove the obfuscation is really active - a zero canary would
 silently degrade to the unprotected layout.
+
+### AN385 basic IRQ fixture (`full`)
+
+`build.sh` compiles `fixture/board/mps2-an385/irq.c` only for AN385 `full`.
+The linker reserves the top 16 KiB of RAM as `.irq_stack`, exporting
+`__gdr_irq_stack_low` at `0x203FC000` and `__gdr_irq_stack_top` at
+`0x20400000`; `_estack` equals the upper bound. Linker assertions reject
+overlap with `.bss` or the heap.
+
+The `gdr_irq` task drives CMSDK timer0 at `0x40000000` (IRQ8, priority
+`0xFF`) and timer1 at `0x40001000` (IRQ9, priority `0x40`). Timer1 is armed
+inside the timer0 handler to produce nesting. The fixture cycles single IRQ,
+nested IRQ and four-byte SP misalignment to exercise STKALIGN padding;
+handlers also make ordinary C calls. The live exception test scope is
+FreeRTOS 10.3.1 (`V10.3.1-kernel-only`); see
+[capability coverage](../../docs/testing.md#freertos-suite-organization-and-capability-coverage)
+for the independent oracle and limits.
+
+### AN385 scheduler fixture (`sched`)
+
+`mps2-an385/10.3.1/sched` links `V10.3.1-kernel-only` with
+`portable/GCC/ARM_CM3`, `fixture/config/sched/FreeRTOSConfig.h` and
+`fixture/board/mps2-an385/sched.c`. The config retains stack-end recording,
+runtime statistics and overflow checks. The full fixture's `irq.c` is absent
+so its high-priority task cannot interfere with scheduler scenarios. The
+MSP stack uses the board's linker-owned span described above.
+
+`gdr_sched_gate` selects cooperative yield, tick preemption or nested CMSDK
+timer IRQ scheduling. Separate task handles and scenario counters expose
+the old/new task states; `gdr_sched_first` supplies the first-start SVC
+scenario in a reset session. Gate writes and target execution are fixture
+setup, not operations performed by GDR queries. Verification and oracle
+scope live in [testing](../../docs/testing.md#freertos-suite-organization-and-capability-coverage).
 
 ### Kernel-direct SMP (`mps2-an521`)
 

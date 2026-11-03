@@ -254,6 +254,8 @@ def decode_saved_context(
             return None, "saved-context-unreadable"
         if not xpsr & (1 << 24):
             return None, "saved-frame-not-thumb"
+        if xpsr & 0x1FF:
+            return None, "saved-frame-ipsr-invalid"
         if xpsr & (1 << 9):
             sp += 4
             registers[13] = sp

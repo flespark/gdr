@@ -11,6 +11,14 @@ All notable changes to GDR are documented in this file.
 - `rtt backtrace`, `frt backtrace` and `gdr api backtrace` show bounded task
   stacks with symbols, source locations, per-frame evidence and explicit
   completeness/stop reasons; `--max-depth` limits the walk.
+- CFI backtraces evaluate bounded CFA, register-save-address and direct-value
+  expressions, with explicit stops for unsupported operations or exhausted budgets.
+- FreeRTOS AN385 backtraces cross verified basic IRQ24/25 and nested exception
+  frames with linker-owned MSP bounds; unverified exception modes stop explicitly.
+- FreeRTOS 11.1.0 ARM_CM0 backtraces cross basic Armv6-M IRQ and nested
+  frames on the verified microbit port; M0 scheduler transitions remain gated.
+- FreeRTOS 10.3.1 ARM_CM3 backtraces resolve proven PendSV/SVC scheduling
+  stages with a matching compiled profile; unproven windows stop explicitly.
 
 ### Changed
 

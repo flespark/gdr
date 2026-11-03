@@ -23,6 +23,23 @@ g_pfnVectors:
     .word 0
     .word PendSV_Handler
     .word SysTick_Handler
+    /* External IRQs 0..15; the fixture uses CMSDK timers 0/1 on IRQ 8/9. */
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word Timer0_Handler
+    .word Timer1_Handler
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    .word 0
 
     .text
     .thumb
@@ -74,3 +91,5 @@ Default_Handler:
     weak_alias DebugMon_Handler
     weak_alias PendSV_Handler
     weak_alias SysTick_Handler
+    weak_alias Timer0_Handler
+    weak_alias Timer1_Handler

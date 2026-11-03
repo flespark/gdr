@@ -31,6 +31,11 @@ def pytest_ignore_collect(collection_path: Path) -> bool | None:
         and collection_path.name != "test_eh_frame.py"
     ):
         return True
+    if (
+        SPEC.variant != "sched"
+        and collection_path.name == "test_scheduler_backtrace.py"
+    ):
+        return True
     return None
 
 

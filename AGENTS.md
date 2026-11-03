@@ -28,6 +28,9 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   cpus.py              bounded Arm/RISC-V CPU attributes and ISA/ABI evidence
   stack_frame_parser.py validated task-frame profiles and RISC-V code evidence
   unwind_cfi.py        bounded DWARF CFI tables and encoded-pointer decoding
+  unwind_expr.py       bounded integer CFI expressions and guarded memory reads
+  unwind_segments.py   typed stack segments, transition evidence and exception budgets
+  unwind_arm.py       shared Cortex-M frame recovery and Armv6-M/Armv7-M rules
   unwind_ehabi.py      bounded ARM EHABI tables and virtual-register unwinding
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            ABI layouts + build_layouts(config) + version/probe policy
@@ -46,6 +49,7 @@ freertos/              FreeRTOS adapter
   stackpc.py           last PC from the saved frame (pure; port evidence + proofs)
   backtrace.py         saved-context layouts and seed decoding (pure)
   backtrace_gdb.py     GDB-facing task backtrace orchestration
+  scheduler_switch.py compiled ARM_CM3 transition profiles, exact stages and owner-consistent seeds
   stack_frame_profile.py compiled save-layout evidence and profile selection
   objects.py           per-kind decode: timers, event groups, stream buffers
   heap.py              heap_1..5 snapshot, canary, walks and cross-check verdicts

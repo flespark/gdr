@@ -65,4 +65,21 @@ SECTIONS
         . = . + 32K;
         gdr_heap_limit = .;
     } > RAM
+
+    /* Reserved main-stack (MSP / interrupt) region.  The lower bound is an
+     * explicit linker fact: _estack only names the top of RAM and cannot be
+     * used to infer how much stack the handlers may consume. */
+    .irq_stack ORIGIN(RAM) + LENGTH(RAM) - 16K (NOLOAD) :
+    {
+        __gdr_irq_stack_low = .;
+        . += 16K;
+        __gdr_irq_stack_top = .;
+    } > RAM
 }
+
+ASSERT(__gdr_irq_stack_top == ORIGIN(RAM) + LENGTH(RAM),
+       "interrupt stack must end at the RAM top")
+ASSERT(__gdr_irq_stack_low >= _ebss,
+       "interrupt stack overlaps .bss")
+ASSERT(__gdr_irq_stack_low >= gdr_heap_limit,
+       "interrupt stack overlaps the heap reserve")

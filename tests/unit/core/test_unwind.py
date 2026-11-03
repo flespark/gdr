@@ -228,16 +228,17 @@ def test_cfi_row_at_entry_and_after_prologue():
     assert inside.registers[4].value == -8
 
 
-def test_cfi_unsupported_expression_is_a_stop_reason_not_a_guess():
-    table = parse_cfi_section(
-        _cfi_bytes(instructions=b"\x0e\x08\x10\x01\x00"),
-        section_address=0,
-        address_size=4,
-        endian="little",
-        is_eh_frame=False,
+def test_cfi_forbidden_expression_is_a_stop_reason_not_a_guess():
+    metadata = _cfi_metadata(_cfi_bytes(instructions=b"\x0e\x08\x10\x0e\x01\x9c"))
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2040, {13: 0x2040, 14: 0x1104}),
+        metadata,
+        read=_Memory({}),
+        stack_low=0x2000,
+        stack_high=0x2200,
     )
-    row = table.row_for(0x1004)
-    assert row is not None and row.error == "cfi-expression-unsupported"
+    assert len(result.frames) == 1
+    assert result.stop_reason == "cfi-expression-forbidden"
 
 
 def test_cfi_truncated_and_malformed_sections_are_empty():

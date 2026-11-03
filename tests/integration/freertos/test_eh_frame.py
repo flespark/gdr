@@ -40,6 +40,9 @@ def eh_frame_image():
     frames = (output / "frames.txt").read_text()
     assert "DW_CFA_offset_extended: r128" in frames
     assert "DW_CFA_offset_extended: r1" in frames
+    assert "DW_CFA_def_cfa_expression" in frames
+    assert "DW_CFA_expression: r1 (ra)" in frames
+    assert "DW_CFA_val_expression: r128" in frames
     return output
 
 
@@ -72,10 +75,15 @@ def eh_frame_session(eh_frame_image):
         qemu.stop()
 
 
-def _trace(session, *, signal=False, damage="none"):
-    checkpoint = "cfi_signal_checkpoint" if signal else "cfi_checkpoint"
+def _trace(session, *, signal=False, chain="ordinary", damage="none"):
     if signal:
+        checkpoint = "cfi_signal_checkpoint"
         session.run("set $pc = cfi_signal_entry")
+    elif chain == "expression":
+        checkpoint = "cfi_expr_checkpoint_ready"
+        session.run("set $pc = cfi_expr_entry")
+    else:
+        checkpoint = "cfi_checkpoint"
     session.run(f"break {checkpoint}")
     output = session.run("continue", timeout=20)
     assert "Breakpoint 1" in output, output
@@ -94,6 +102,10 @@ elif damage != 'none':
     data = bytearray(section.data)
     if damage == 'truncated':
         data = data[:3]
+    elif damage == 'expression':
+        expression = bytes((0x13, 0x72, 0x08, 0x06))
+        assert data.count(expression) == 1
+        data = data.replace(expression, bytes((0x9c, 0x72, 0x08, 0x06)))
     else:
         encoding = bytes((122, 82, 0, 1, 0x7c, 1, 1, 0x1b))
         assert data.count(encoding) == 2
@@ -141,6 +153,23 @@ def test_real_eh_frame_handles_extended_offsets_and_virtual_return_column(
     assert not result["complete"] and not result["truncated"]
 
 
+def test_real_eh_frame_executes_all_three_bounded_expression_rules(
+    eh_frame_session,
+):
+    result = _trace(eh_frame_session, chain="expression")
+    assert result["tables"] == 1 and not result["ehabi"]
+    assert [f["symbol"] for f in result["frames"]] == [
+        "cfi_expr_checkpoint",
+        "cfi_expr_leaf",
+        "cfi_expr_middle",
+        "cfi_expr_root",
+    ], result
+    assert all(f["method"] == "cfi" for f in result["frames"][1:])
+    assert all(f["lookup"] == f["pc"] - 1 for f in result["frames"][1:])
+    assert result["reason"] == "cfi-return-address-undefined"
+    assert not result["complete"] and not result["truncated"]
+
+
 def test_real_signal_cie_retains_the_exact_boundary_pc(eh_frame_session):
     result = _trace(eh_frame_session, signal=True)
     assert [f["symbol"] for f in result["frames"]] == [
@@ -152,6 +181,12 @@ def test_real_signal_cie_retains_the_exact_boundary_pc(eh_frame_session):
     )
     assert result["reason"] == "cfi-return-address-undefined"
     assert not result["complete"]
+
+
+def test_forbidden_real_expression_stops_without_fallback(eh_frame_session):
+    result = _trace(eh_frame_session, chain="expression", damage="expression")
+    assert len(result["frames"]) == 1 and result["reason"] == "cfi-expression-forbidden"
+    assert not result["complete"] and not result["truncated"]
 
 
 @pytest.mark.parametrize(
