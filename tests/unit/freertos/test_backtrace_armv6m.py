@@ -36,8 +36,11 @@ def _port(monkeypatch, *, version="11.1.0", cpuid=0x410CC200, **symbols):
 
 
 @pytest.mark.parametrize("cpuid", [0x410CC200, 0x411CC201])
-def test_m0_capacity_requires_fixed_zero_vectors_and_explicit_count(monkeypatch, cpuid):
-    reads = _port(monkeypatch, cpuid=cpuid)
+@pytest.mark.parametrize("version", ["10.3.1", "11.1.0"])
+def test_m0_capacity_requires_fixed_zero_vectors_and_explicit_count(
+    monkeypatch, cpuid, version
+):
+    reads = _port(monkeypatch, version=version, cpuid=cpuid)
     assert bridge._armv6m_port_limit() == 47
     assert reads == [(0xE000ED00, 4)]
 
@@ -45,7 +48,6 @@ def test_m0_capacity_requires_fixed_zero_vectors_and_explicit_count(monkeypatch,
 @pytest.mark.parametrize(
     "changes",
     [
-        {"version": "10.3.1"},
         {"cpuid": None},
         {"cpuid": b"bad"},
         {"cpuid": 0x410FC231},
@@ -55,15 +57,14 @@ def test_m0_capacity_requires_fixed_zero_vectors_and_explicit_count(monkeypatch,
         {"__gdr_vector_table_end": None},
         {"__gdr_vector_table_end": 188},
         {"__gdr_armv6m_irq_count": None},
+        {"__gdr_armv6m_irq_count": 0},
         {"__gdr_armv6m_irq_count": 31},
         {"__gdr_armv6m_irq_count": 33},
     ],
 )
 def test_unproven_m0_port_evidence_fails_closed(monkeypatch, changes):
-    reads = _port(monkeypatch, **changes)
+    _port(monkeypatch, **changes)
     assert bridge._armv6m_port_limit() is None
-    if "version" in changes:
-        assert reads == []
 
 
 @pytest.mark.parametrize("ipsr", [0, 1, 4, 6, 12, 48, 511, -1])

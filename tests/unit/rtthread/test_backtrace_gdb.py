@@ -184,3 +184,72 @@ def test_symbols_and_source_use_lookup_pc_without_changing_resume_pc(monkeypatch
         "function_10ff",
     ]
     assert [frame.source for frame in report.frames] == ["source_1004", "source_10ff"]
+
+
+def test_saved_pc_setup_reset_and_live_riscv_seed(monkeypatch):
+    from core.unwind_arm_gdb import (
+        arm_ccr_stkalign,
+        arm_cpuid,
+        arm_external_exception_limit,
+        armv6m_vector_entry,
+        armv7m_vector_entry,
+        cached_unwind_metadata,
+        live_seed,
+    )
+
+    adapter = SimpleNamespace(version="4.0.5")
+    bridge.reset_adapter(adapter)
+    monkeypatch.setattr(bridge, "loaded_object_path", lambda: None)
+    assert bridge._backtrace_context().reason == "port-undetermined"
+    assert bridge.saved_pc_setup(adapter, False) is None
+    assert bridge.saved_pc_setup(adapter, True) is None
+    assert bridge._unwind_metadata(adapter) is None
+
+    regs = {"sp": 0x2080, "ra": 0x1004, "s0": 0x2090}
+    for index in range(1, 12):
+        regs[f"s{index}"] = 0x2000 + index
+    frame = SimpleNamespace(
+        pc=lambda: 0x1000,
+        read_register=lambda name: regs[name],
+    )
+    fake_gdb = SimpleNamespace(error=RuntimeError, newest_frame=lambda: frame)
+    seed = live_seed("riscv", "riscv64", root_pc=0x900, gdb_module=fake_gdb)
+    assert seed is not None and seed.pc == 0x1000 and seed.sp == 0x2080
+
+    arm_regs = {f"r{i}": i for i in range(13)} | {
+        "sp": 0x2000,
+        "lr": 0x1005,
+    }
+    arm_frame = SimpleNamespace(
+        pc=lambda: 0x1001,
+        read_register=lambda name: arm_regs[name],
+    )
+    fake_arm_gdb = SimpleNamespace(error=RuntimeError, newest_frame=lambda: arm_frame)
+    arm_seed = live_seed(
+        "arm",
+        "armv7-a",
+        root_pc=0x800,
+        require_exception_registers=False,
+        gdb_module=fake_arm_gdb,
+    )
+    assert arm_seed is not None and arm_seed.pc == 0x1000 and arm_seed.sp == 0x2000
+
+    mem = {
+        0xE000ED14: (1 << 9).to_bytes(4, "little"),
+        0xE000E004: (1).to_bytes(4, "little"),
+        0xE000ED00: (0x410CC200).to_bytes(4, "little"),
+        0xE000ED08: (0x08000000).to_bytes(4, "little"),
+        0x08000000 + 4 * 15: (0x08000101).to_bytes(4, "little"),
+        4 * 15: (0x00000201).to_bytes(4, "little"),
+    }
+
+    def reader(addr: int, _size: int) -> bytes | None:
+        return mem.get(addr)
+
+    assert arm_ccr_stkalign(read=reader) is True
+    assert arm_external_exception_limit(read=reader) == 79
+    assert arm_cpuid(read=reader) == 0x410CC200
+    assert armv6m_vector_entry(15, read=reader) == 0x200
+    assert armv7m_vector_entry(15, read=reader) == 0x08000100
+    adapter = SimpleNamespace()
+    assert cached_unwind_metadata(adapter, path_reader=lambda: None) is None

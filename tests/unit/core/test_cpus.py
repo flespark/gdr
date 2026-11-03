@@ -213,3 +213,142 @@ def test_riscv_xlen_abi_conflict_and_nonstandard_extension_are_rejected():
     assert cpu_of(_image(243, False, blob)).reason == "cpu-evidence-conflict"
     no_c = _attributes(b"riscv", [(5, "rv64i2p1_m2p0")])
     assert cpu_of(_image(243, True, no_c, flags=1)).reason == ("cpu-evidence-conflict")
+
+
+def test_freertos_and_rtthread_arm_and_riscv_profile_selection():
+    from core.unwind_meta import ElfSection
+    from freertos.stack_frame_profile import (
+        _arm_configuration_evidence,
+    )
+    from freertos.stack_frame_profile import (
+        select_context as frt_select,
+    )
+    from rtthread.stack_frame_profile import select_context as rtt_select
+
+    v7m_image = _image(40, False, _arm_file("cpu", 10, "M"))
+    assert rtt_select(v7m_image).reason == "unverified-port"
+    assert frt_select(v7m_image).reason == "unrecognizable-stack-frame-layout"
+
+    anchored_v7m = ElfImage(
+        v7m_image.pointer_size,
+        v7m_image.endian,
+        v7m_image.machine,
+        v7m_image.sections,
+        v7m_image.symbols,
+        v7m_image.flags,
+        (("PendSV_Handler", 0x100), ("pxPortInitialiseStack", 0x200)),
+    )
+    selected = frt_select(anchored_v7m)
+    assert selected.reason == "ok" and selected.context is not None
+    assert selected.convention is not None and selected.convention.sp_register == 13
+
+    v8m_image = _image(40, False, _arm_file("cpu", 17, "M"))
+    anchored_v8m = ElfImage(
+        v8m_image.pointer_size,
+        v8m_image.endian,
+        v8m_image.machine,
+        v8m_image.sections,
+        v8m_image.symbols,
+        v8m_image.flags,
+        (("PendSV_Handler", 0x100), ("pxPortInitialiseStack", 0x200)),
+    )
+    assert frt_select(anchored_v8m, smp=True, macros={}).reason == (
+        "port-configuration-unavailable"
+    )
+    assert (
+        _arm_configuration_evidence(
+            {
+                "configENABLE_FPU": "1",
+                "configENABLE_TRUSTZONE": "0",
+                "configENABLE_MPU": "0",
+            },
+            mpu=False,
+        )
+        == "unsupported-extension-context"
+    )
+    assert (
+        _arm_configuration_evidence(
+            {
+                "configENABLE_FPU": "0",
+                "configENABLE_TRUSTZONE": "0",
+                "configENABLE_MPU": "1",
+                "configUSE_MPU_WRAPPERS_V1": "0",
+            },
+            mpu=True,
+        )
+        is None
+    )
+    rv_blob = _attributes(b"riscv", [(5, "rv32imac"), (4, 16)])
+    rv_image = _image(243, False, rv_blob)
+    assert frt_select(rv_image, smp=True).reason == "unsupported-extension-context"
+    assert frt_select(rv_image).reason == "unrecognizable-stack-frame-layout"
+    assert rtt_select(rv_image).reason == "unverified-port"
+    _ = ElfSection
+
+
+def test_riscv_route_and_initial_stack_helpers():
+    from freertos.stack_frame_profile import (
+        _riscv_initial_stack,
+        _riscv_route_pc_store,
+        _riscv_slots_include,
+    )
+    from tests.unit.core.test_stack_frame_parser import _i, _s
+
+    assert _riscv_route_pc_store(
+        {
+            0x1000: ("addi", 6, 5, 4),
+            0x1004: ("sw", 6, 2, 0),
+        },
+        mepc_register=5,
+        addend=4,
+    )
+    assert _riscv_slots_include({1: {4, 8}}, {1: 4})
+    assert not _riscv_slots_include({1: {4}}, {1: 8})
+
+    text = b"".join(
+        word.to_bytes(4, "little")
+        for word in (
+            _i(0x13, 10, 0, 10, -124),  # addi a0, a0, -124
+            _s(0x23, 10, 11, 0, 2),  # sw a1, 0(a0)
+            _s(0x23, 10, 12, 28, 2),  # sw a2, 28(a0)
+            _s(0x23, 10, 0, 116, 2),  # sw zero, 116(a0)
+            _i(0x73, 5, 2, 0, 0x300),  # csrr t0, mstatus
+            _i(0x13, 5, 7, 5, 0x7FF),  # andi t0, t0, 0x7ff
+            _i(0x13, 6, 0, 0, 1),  # addi t1, zero, 1
+            _i(0x13, 6, 1, 6, 3),  # slli t1, t1, 3
+            0x0062E2B3,  # or t0, t0, t1
+            _s(0x23, 10, 5, 120, 2),  # sw t0, 120(a0)
+            0x00000317,  # auipc t1, 0
+            _i(0x03, 6, 2, 6, 0),  # lw t1, 0(t1)
+            _s(0x23, 10, 6, 4, 2),  # sw t1, 4(a0)
+            0x00008067,  # ret
+        )
+    )
+    raw_elf = ElfImage.from_bytes(
+        _elf(
+            is_64=False,
+            endian="little",
+            machine=243,
+            sections=[(".text", 0x1000, text, 1, 4)],
+        )
+    )
+    assert raw_elf is not None
+    anchored = ElfImage(
+        raw_elf.pointer_size,
+        raw_elf.endian,
+        raw_elf.machine,
+        raw_elf.sections,
+        raw_elf.symbols,
+        raw_elf.flags,
+        (
+            ("pxPortInitialiseStack", 0x1000),
+            ("xTaskReturnAddress", 0x1028),
+            ("xPortStartFirstTask", 0x1038),
+        ),
+    )
+    initial = _riscv_initial_stack(anchored, 4)
+    assert initial is not None
+    size, stores = initial
+    assert size == 124 and stores[0] == ("arg", 1)
+    assert stores[4] == ("symbol", "xTaskReturnAddress")
+    assert stores[120] == ("csr", 0x300)

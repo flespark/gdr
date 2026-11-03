@@ -123,11 +123,10 @@ testpaths = ["tests"]
 addopts = "-ra"
 
 # ---------------------------------------------------------------------------
-# Coverage: every hardware-independent module in core/, rtthread/, freertos/
-# (excludes core.gdb_bridge, core.layout, rtthread.navigation,
-# freertos.navigation, and the <rtos>.stack_frame_profile modules, whose live
-# gdb.Value/DWARF/memory walks and compiled save-layout proofs belong to the
-# QEMU integration suite).
+# Coverage: every module in core/, rtthread/, freertos/ except the low-level
+# GDB/DWARF bridge and raw target-memory walkers (core.gdb_bridge, core.layout,
+# rtthread.navigation, freertos.navigation), whose live gdb.Value/DWARF/memory
+# walks belong to the QEMU integration suite.
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 branch = true
@@ -139,10 +138,13 @@ source = [
     "core.formatting",
     "core.heapmap",
     "core.help",
+    "core.insn_riscv",
+    "core.insn_thumb",
     "core.unwind",
     "core.unwind_meta",
     "core.unwind_segments",
     "core.unwind_arm",
+    "core.unwind_arm_gdb",
     "core.cpus",
     "core.stack_frame_parser",
     "core.unwind_cfi",
@@ -154,6 +156,8 @@ source = [
     "rtthread.diagnostics",
     "rtthread.layout",
     "rtthread.backtrace",
+    "rtthread.backtrace_gdb",
+    "rtthread.stack_frame_profile",
     "rtthread.stackpc",
     "rtthread.views",
     "freertos.adapter",
@@ -162,7 +166,10 @@ source = [
     "freertos.heap",
     "freertos.layout",
     "freertos.backtrace",
+    "freertos.backtrace_gdb",
     "freertos.objects",
+    "freertos.scheduler_switch",
+    "freertos.stack_frame_profile",
     "freertos.stackpc",
     "freertos.views",
 ]

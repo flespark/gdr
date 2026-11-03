@@ -11,13 +11,17 @@ from dataclasses import replace
 
 import pytest
 
+from core.insn_thumb import (
+    decode_thumb32 as _decode_thumb32,
+)
+from core.insn_thumb import (
+    semantic_token as _semantic_token,
+)
 from core.stack_frame_parser import SavedStackContext
 from core.unwind_meta import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
 from freertos.backtrace import ARMV7M_INTEGER
 from freertos.scheduler_switch import (
     SchedulerStage,
-    _decode_thumb32,
-    _semantic_token,
     build_profile,
     build_stage_seed,
     classify_stage,
