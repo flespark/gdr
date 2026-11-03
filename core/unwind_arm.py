@@ -1,4 +1,4 @@
-"""Cortex-M basic exception frames with Armv6-M and Armv7-M policy."""
+"""Arm M-profile basic exception frames with Armv6-M and Armv7-M policy."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ from .unwind_segments import (
     ExceptionTransitionContext,
     ExceptionTransitionResult,
     StackSegment,
+    TransitionGuard,
     segment_for_address,
 )
 
-# Common Cortex-M frame model
+# Common Arm M-profile frame model
 
 EXCEPTION_FRAME_SIZE = 0x20
 
@@ -350,3 +351,43 @@ def armv7m_exception_transition(
         ipsr_mask=ARMV7M_IPSR_MASK,
         source="armv7m-basic-exception-frame",
     )
+
+
+def arm_exception_guard(
+    exception_number: int, pc: int, isa: str = "armv7-m"
+) -> str | None:
+    """Refuse exception frames whose interrupted PC is not a proven resume PC."""
+    del pc
+    classifier = (
+        armv6m_exception_number_kind
+        if isa == "armv6-m"
+        else armv7m_exception_number_kind
+    )
+    kind = classifier(exception_number)
+    if kind == "invalid":
+        return "exception-number-invalid"
+    if kind == "scheduler":
+        return "scheduler-transition-unproven"
+    if kind == "fault":
+        return "exception-frame-type-unproven"
+    if kind == "system":
+        return "exception-number-unverified"
+    return None
+
+
+def arm_capacity_exception_guard(
+    max_exception: int, isa: str = "armv7-m"
+) -> TransitionGuard:
+    """Return a guard that refuses external IDs beyond target ICTR capacity."""
+
+    def guard(exception_number: int, pc: int) -> str | None:
+        reason = arm_exception_guard(exception_number, pc, isa)
+        if reason is not None:
+            return reason
+        if exception_number >= ARMV7M_FIRST_EXTERNAL_EXCEPTION and (
+            exception_number > max_exception
+        ):
+            return "exception-number-unimplemented"
+        return None
+
+    return guard

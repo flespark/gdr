@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+from .cpus import convention_for_arch
 from .unwind_cfi import (
     CfiRow,
     CfiTable,
@@ -126,6 +127,7 @@ class UnwindMetadata:
         supplies explicit bases.
         """
         arch: Arch = "riscv" if elf.machine == EM_RISCV else "arm"
+        convention = convention_for_arch(arch)
         cfi_tables: list[CfiTable] = []
         for name, is_eh in ((".eh_frame", True), (".debug_frame", False)):
             section = elf.section(name)
@@ -156,8 +158,8 @@ class UnwindMetadata:
             arch=arch,
             cfi_tables=tuple(cfi_tables),
             ehabi=ehabi,
-            return_register=1 if arch == "riscv" else 14,
-            frame_pointer_register=8 if arch == "riscv" else 7,
+            return_register=convention.return_register,
+            frame_pointer_register=convention.frame_pointer_register,
         )
 
     def available(self) -> bool:
@@ -465,11 +467,12 @@ def _unwind_frame_pointer(
         return "fp-memory-error"
     if caller_sp <= sp:
         return "fp-no-progress"
+    convention = convention_for_arch(arch)
     new_regs = _RecoveredRegisters(regs)
     new_regs[frame_pointer_register] = caller_fp
-    new_regs[13 if arch == "arm" else 2] = caller_sp
+    new_regs[convention.sp_register] = caller_sp
     new_regs.unavailable.pop(frame_pointer_register, None)
-    new_regs.unavailable.pop(13 if arch == "arm" else 2, None)
+    new_regs.unavailable.pop(convention.sp_register, None)
     return new_regs, caller_sp, caller_pc
 
 
@@ -533,6 +536,7 @@ def unwind_chain(
         max_depth = 1
     max_depth = min(max_depth, MAX_FRAMES)
     arch: Arch = metadata.arch if metadata is not None else "arm"
+    convention = convention_for_arch(arch)
     ptr_size = metadata.elf.pointer_size if metadata is not None else 4
     endian: Endian = metadata.elf.endian if metadata is not None else "little"
     code = is_code or (metadata.elf.is_code if metadata is not None else None)
@@ -543,10 +547,12 @@ def unwind_chain(
     fp_register = (
         metadata.frame_pointer_register
         if metadata is not None
-        else (8 if arch == "riscv" else 7)
+        else convention.frame_pointer_register
     )
-    return_register = metadata.return_register if metadata is not None else 14
-    sp_register = 13 if arch == "arm" else 2
+    return_register = (
+        metadata.return_register if metadata is not None else convention.return_register
+    )
+    sp_register = convention.sp_register
 
     segment_index: dict[str, StackSegment] = {}
     current: StackSegment | None = None
@@ -649,7 +655,7 @@ def unwind_chain(
         segment_index[result.segment.ident] = result.segment
         return result
 
-    pc = seed.pc & ~1 if arch == "arm" else seed.pc
+    pc = convention.normalize_pc(seed.pc)
     sp = seed.sp
     regs = dict(seed.regs)
     if pc <= 0:
@@ -660,11 +666,9 @@ def unwind_chain(
         return _result([], "seed-stack-overflow", False, False, seed.source)
     if metadata is not None and not metadata.elf.is_code(pc):
         return _result([], "seed-pc-outside-code", False, False, seed.source)
-    if arch == "arm":
-        regs[15] = pc
-        regs[13] = sp
-    else:
-        regs[2] = sp
+    if convention.pc_register is not None:
+        regs[convention.pc_register] = pc
+    regs[sp_register] = sp
     frames: list[UnwindFrame] = [
         UnwindFrame(
             0,
@@ -681,9 +685,7 @@ def unwind_chain(
     complete = False
     truncated = False
     root_pc = (
-        seed.root_pc & ~1
-        if seed.root_pc is not None and arch == "arm"
-        else seed.root_pc
+        convention.normalize_pc(seed.root_pc) if seed.root_pc is not None else None
     )
     if root_pc is not None and pc == root_pc:
         return _result(frames, seed.root_reason, True, False, method)
@@ -734,11 +736,11 @@ def unwind_chain(
                     if register not in recovered_entry:
                         recovered_entry.unavailable[register] = reason
             regs = recovered_entry
-            if arch == "arm":
-                regs[15] = transition.pc
-                regs[13] = transition.sp
-                regs.unavailable.pop(15, None)
-                regs.unavailable.pop(13, None)
+            if convention.pc_register is not None:
+                regs[convention.pc_register] = transition.pc
+                regs[sp_register] = transition.sp
+                regs.unavailable.pop(convention.pc_register, None)
+                regs.unavailable.pop(sp_register, None)
             current = transition.segment
             pc = transition.pc
             lookup_pc = transition.pc
@@ -891,11 +893,11 @@ def unwind_chain(
                     if register not in recovered_transition:
                         recovered_transition.unavailable[register] = reason
             regs = recovered_transition
-            if arch == "arm":
-                regs[15] = transition.pc
-                regs[13] = transition.sp
-                regs.unavailable.pop(15, None)
-                regs.unavailable.pop(13, None)
+            if convention.pc_register is not None:
+                regs[convention.pc_register] = transition.pc
+                regs[sp_register] = transition.sp
+                regs.unavailable.pop(convention.pc_register, None)
+                regs.unavailable.pop(sp_register, None)
             current = transition.segment
             pc = transition.pc
             lookup_pc = transition.pc
@@ -907,7 +909,7 @@ def unwind_chain(
                 break
             continue
 
-        caller_pc = raw_caller & ~1 if arch == "arm" else raw_caller
+        caller_pc = convention.normalize_pc(raw_caller)
         if caller_pc == 0:
             complete = seed.root_pc == 0
             stop_reason = seed.root_reason if complete else "return-address-zero"
@@ -950,9 +952,9 @@ def unwind_chain(
                 if register not in recovered:
                     recovered.unavailable.setdefault(register, reason)
         regs = recovered
-        if arch == "arm":
-            regs[15] = pc
-            regs.unavailable.pop(15, None)
+        if convention.pc_register is not None:
+            regs[convention.pc_register] = pc
+            regs.unavailable.pop(convention.pc_register, None)
         if at_root:
             stop_reason = seed.root_reason
             complete = True

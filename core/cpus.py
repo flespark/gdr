@@ -6,9 +6,11 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from .unwind_meta import ElfImage, _read_uleb
+from .unwind_meta import EM_ARM, EM_RISCV, Arch, ElfImage, _read_uleb
 
 MAX_ATTRIBUTE_BYTES = 64 * 1024
+
+CpuFamily = Literal["arm", "riscv", "unknown"]
 
 Isa = Literal[
     "armv6-m",
@@ -21,6 +23,71 @@ Isa = Literal[
     "riscv32",
     "riscv64",
 ]
+
+
+@dataclass(frozen=True)
+class RegisterConvention:
+    """Architecture register numbers, GDB names and PC normalization rules."""
+
+    family: Arch
+    sp_register: int
+    return_register: int
+    frame_pointer_register: int
+    pc_register: int | None
+    pc_mask: int
+    live_registers: tuple[tuple[int, str], ...]
+
+    def normalize_pc(self, pc: int) -> int:
+        """Clear instruction-state marker bits (such as Arm Thumb bit 0)."""
+        return pc & self.pc_mask
+
+
+ARM_CONVENTION = RegisterConvention(
+    family="arm",
+    sp_register=13,
+    return_register=14,
+    frame_pointer_register=7,
+    pc_register=15,
+    pc_mask=~1,
+    live_registers=(
+        *((register, f"r{register}") for register in range(13)),
+        (13, "sp"),
+        (14, "lr"),
+        (15, "pc"),
+    ),
+)
+
+RISCV_CONVENTION = RegisterConvention(
+    family="riscv",
+    sp_register=2,
+    return_register=1,
+    frame_pointer_register=8,
+    pc_register=None,
+    pc_mask=-1,
+    live_registers=(
+        (1, "ra"),
+        (2, "sp"),
+        (8, "s0"),
+        (9, "s1"),
+        (18, "s2"),
+        (19, "s3"),
+        (20, "s4"),
+        (21, "s5"),
+        (22, "s6"),
+        (23, "s7"),
+        (24, "s8"),
+        (25, "s9"),
+        (26, "s10"),
+        (27, "s11"),
+    ),
+)
+
+
+def convention_for_arch(arch: str) -> RegisterConvention:
+    """Return the register convention for an architecture family or ISA name."""
+    if arch.startswith("riscv"):
+        return RISCV_CONVENTION
+    return ARM_CONVENTION
 
 
 def file_attributes(
@@ -155,15 +222,22 @@ class Cpu:
     """Image CPU ISA/ABI evidence; a recognized ISA does not prove a save layout."""
 
     isa: Isa | None
-    family: str
+    family: CpuFamily
     reason: str
     abi: str | None = None
     extensions: frozenset[str] = frozenset()
 
+    @property
+    def convention(self) -> RegisterConvention | None:
+        """Return the register convention when the architecture family is known."""
+        if self.family == "unknown":
+            return None
+        return convention_for_arch(self.family)
+
 
 def cpu_of(elf: ElfImage) -> Cpu:
     """Classify canonical ISA attributes, rejecting unsupported or conflicting ABI."""
-    if elf.machine == 40:
+    if elf.machine == EM_ARM:
         attrs = file_attributes(
             elf.section_data(".ARM.attributes") or b"", b"aeabi", elf.endian
         )
@@ -196,7 +270,7 @@ def cpu_of(elf: ElfImage) -> Cpu:
             return Cpu(isa, "arm", "unsupported-abi")
         abi = "aapcs32-vfp" if vfp_args == 1 else "aapcs32"
         return Cpu(isa, "arm", "ok", abi)
-    if elf.machine != 243:
+    if elf.machine != EM_RISCV:
         return Cpu(None, "unknown", "unsupported-cpu")
     attrs = file_attributes(
         elf.section_data(".riscv.attributes") or b"", b"riscv", elf.endian

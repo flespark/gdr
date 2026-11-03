@@ -86,6 +86,35 @@ def render_backtrace(target: str, max_depth: int = 32) -> None:
     )
 
 
+def invoke_backtrace_command(argument: str, usage: str) -> None:
+    """Parse ``backtrace <target> [--max-depth N]`` and render the frame table."""
+    words = argument.split(None, 1)
+    if len(words) != 2 or not words[1].strip():
+        warn(usage)
+        return
+    rest = words[1].strip()
+    max_depth = 32
+    marker = rest.rfind("--max-depth")
+    if marker >= 0:
+        option = rest[marker:].split()
+        if len(option) != 2:
+            warn(usage)
+            return
+        try:
+            max_depth = int(option[1])
+        except ValueError:
+            warn(f"invalid --max-depth: {option[1]}")
+            return
+        rest = rest[:marker].strip()
+    if not rest:
+        warn(usage)
+        return
+    if max_depth < 1 or max_depth > 64:
+        warn("--max-depth must be between 1 and 64")
+        return
+    render_backtrace(rest, max_depth)
+
+
 @gdb_command_guard
 def render_object_detail(kind: str, target: str) -> None:
     """Render one object's complete detail as a Key: Value block.
