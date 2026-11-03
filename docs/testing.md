@@ -86,9 +86,9 @@ answers.
 | --- | --- | --- | --- | --- |
 | `cortex-a9` | RT-Thread | `qemu-system-arm -M vexpress-a9 -kernel rtthread.elf` | `rtthread.elf` | 32-bit ARM |
 | `rv64` | RT-Thread | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | 64-bit RISC-V (`riscv:rv64`) |
-| `mps2-an385` | FreeRTOS | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Cortex-M3 |
-| `mps2-an521` | FreeRTOS | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit dual Cortex-M33 (SSE-200) |
-| `microbit` | FreeRTOS | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Cortex-M0 (Thumb-1) |
+| `mps2-an385` | FreeRTOS | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv7-M (Cortex-M3) |
+| `mps2-an521` | FreeRTOS | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv8-M Mainline (dual Cortex-M33, SSE-200) |
+| `microbit` | FreeRTOS | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv6-M (Cortex-M0, Thumb-1) |
 | `qemu-virt-rv32` | FreeRTOS | `qemu-system-riscv32 -M virt -cpu rv32 -m 256M -bios freertos.bin -semihosting-config enable=on` | `freertos.elf` | 32-bit RISC-V (`riscv:rv32`) |
 | `qemu-virt-rv64` | FreeRTOS | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios freertos.bin -semihosting-config enable=on` | `freertos.elf` | 64-bit RISC-V (`riscv:rv64`) |
 
@@ -151,7 +151,7 @@ and per-variant headers (`fixture/config/<variant>/FreeRTOSConfig.h`) into
 `ci/.cache/fixtures/freertos/<target>/<version>/<variant>/freertos.elf`.
 Verification spans three complementary execution arms:
 
-1. **Config-variant and version matrix on Cortex-M3 (`mps2-an385`)**:
+1. **Config-variant and version matrix on Armv7-M (`mps2-an385`)**:
    - **14 config variants at `10.3.1`**: `base` (default backward-compatible
      `pvContainer`, `heap_4`, trace on, no `pxEndOfStack`), `full`
      (`pxEndOfStack`, runtime stats, queue sets), `static-only` (no heap),
@@ -175,11 +175,11 @@ Verification spans three complementary execution arms:
    - **64-bit RISC-V (`qemu-virt-rv64` / `11.1.0` / `rv64`)**: Verifies
      64-bit pointers, 64-bit `TickType_t` event-group control masks, and
      64-bit heap allocation-bitmask arithmetic.
-   - **Cortex-M0 (`microbit` / `11.1.0` / `full`)**: Builds the shared fixture
+   - **Armv6-M (`microbit` / `11.1.0` / `full`)**: Builds the shared fixture
      against `portable/GCC/ARM_CM0` with the expanded QEMU memory setup (see
      the [lane README](../ci/freertos/README.md#cortex-m0-microbit-variant-full));
      verifies the Thumb-1 context frame, EHABI/CFI selection and rejection of
-      false unstarted-task classification, plus the exception checks below.
+     false unstarted-task classification, plus the exception checks below.
    - **32-bit RISC-V (`qemu-virt-rv32` / `11.1.0` / `base`)**: Builds
      `rv32imac_zicsr` with 4-byte words; verifies RV32 saved-context offsets,
      pointer width and CFI unwinding.
@@ -225,16 +225,16 @@ tick snapshots must remain unchanged across a query. Both lanes exercise
 single IRQs, nesting, ordinary handler calls, four-byte alignment padding,
 vector-entry proof, missing MSP bounds and separate exception budgets.
 
-M0 port tests require Cortex-M0 CPUID, fixed-zero vectors and explicit
+Armv6-M port tests require Cortex-M0 CPUID (`0x410CC200`), fixed-zero vectors and explicit
 linker capacity; the live read oracle rejects ICTR, VTOR and CCR accesses.
-Missing/conflicting version, CPUID, vector or capacity facts and missing
+Missing/conflicting CPUID, vector or capacity facts and missing
 scheduler ownership fail closed. Reserved IPSR values, faults and scheduler
-exceptions retain their separate refusal reasons. M3 capacity tests check
+exceptions retain their separate refusal reasons. Armv7-M capacity tests check
 ICTR upper bound 47 and reject malformed/unreadable ICTR or out-of-capacity
 live/restored exception numbers. Only exception numbers 24/25 have live
 vector/handler coverage; capacity acceptance of 47 is not a live handler proof.
 Other ports and extended frames need their own fixtures. Build facts live in
-the [M0](../ci/freertos/README.md#cortex-m0-microbit-variant-full) and
+the [microbit](../ci/freertos/README.md#cortex-m0-microbit-variant-full) and
 [AN385](../ci/freertos/README.md#an385-basic-irq-fixture-full) fixture guides.
 
 ```bash
@@ -242,18 +242,6 @@ uv run pytest tests/unit/core/test_unwind_armv6m.py tests/unit/core/test_unwind_
 python3 ci/test.py run freertos microbit 11.1.0 full -- tests/integration/freertos/test_irq_backtrace.py
 python3 ci/test.py run freertos mps2-an385 10.3.1 full -- tests/integration/freertos/test_irq_backtrace.py
 ```
-
-After consolidating both ISA decoders and shared Cortex-M frame recovery in
-`core/unwind_arm.py`, the 2026-11-02 regression passed 2244 unit tests at
-86.66% repository
-coverage, M0 IRQ live checks (10 passed), M3 IRQ checks (9 passed, one
-M0-only check skipped), M3 scheduler checks (9 passed), the M0 full lane
-(60 passed, 40 configuration-specific skips) and M3 saved-context checks
-(5 passed, one RISC-V-only skip). Ruff, formatting, diff checks, extension
-type checks and extension tests (206 passed, one unconfigured ST adapter
-skip) passed. Full command output and JUnit/coverage artifacts are retained
-under `ci/.cache/logs/armv6m-extension/20261102-104059/`. GDB 12/Python 3.10,
-container/hosted CI, physical M0 hardware and other M0 ports were not tested.
 
 ### Scheduler unwind acceptance
 
@@ -265,9 +253,7 @@ restored registers before PSP writeback, real timer1 preemption of timer0
 before scheduling, and the first SVC path. Refusal tests cover unmatched
 profiles and unproven stops. Unit/synthetic mutations and offline ELF
 perturbations test rejection but do not establish additional live support.
-The repository coverage percentage excludes `freertos.scheduler_switch` and
-`freertos.backtrace_gdb`; it is not scheduler-module coverage. Build facts
-live in the [scheduler fixture guide](../ci/freertos/README.md#an385-scheduler-fixture-sched);
+Build facts live in the [scheduler fixture guide](../ci/freertos/README.md#an385-scheduler-fixture-sched);
 the supported stages and exclusions live in [errata](errata.md#task-backtraces).
 
 ## Isolated `.eh_frame` variant
@@ -296,6 +282,6 @@ assertions through the [same lane extension contract](../ci/README.md#layering-a
 | --- | --- | --- |
 | **Firmware source** | Upstream RT-Thread repo + per-BSP/version patch sets | Upstream `FreeRTOS-Kernel` tags + shared `fixture/main.c`, `board/`, `config/<variant>/` |
 | **Primary matrix axis** | Kernel release history (`3.1.0–3.1.5`, `4.0.0–4.1.1`) across 32-bit ARM and 64-bit RV64 | Compile-time `FreeRTOSConfig.h` feature matrix (19 variants) + kernel version sweep (`10.3.1–11.3.1`) |
-| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv64` (`virt`) | `microbit` (CM0), `mps2-an385` (CM3), `mps2-an521` (CM33 SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
+| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv64` (`virt`) | `microbit` (Armv6-M), `mps2-an385` (Armv7-M), `mps2-an521` (Armv8-M Mainline SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
 | **Negative / corruption testing** | Unit tests + reset-vector `NULL`-head startup session (`test_startup.py`) | Dedicated file-only static ELF pair (`test_snapshot.py`: `freertos.elf` + `snapshot_heap.elf`) |
 | **Expectation oracle** | `tests/support/rtthread_fixture_profiles.py` | `tests/support/freertos_fixture_profiles.py` |

@@ -100,5 +100,6 @@ proof. For RT-Thread the frame slot is keyed by version and pointer width,
 and a value must equal the thread's entry, follow a call to
 `rt_hw_context_switch`, or name a symbolised code address. For FreeRTOS the
 slot is keyed by port evidence (build attributes and port symbols, since
-Cortex-M3/M33 share `PendSV_Handler`), and a frame must name code with the
-Thumb bit set (Cortex-M) or a symbol (RISC-V). Anything unproven renders `N/A`.
+Armv6-M, Armv7-M and Armv8-M Mainline ports share `PendSV_Handler`), and a
+frame must name code with the Thumb bit set (Arm M-profile) or a symbol
+(RISC-V). Anything unproven renders `N/A`.

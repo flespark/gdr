@@ -42,10 +42,13 @@ duplicating what GDB already displays well. Design rationale lives in
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
 | `unwind.py` | Bounded task unwind driver: seed frames, EHABI/CFI/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. Pure; no GDB import. |
 | `unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
-| `unwind_arm.py` | Shared eight-word Cortex-M integer frame recovery plus Armv6-M six-bit IPSR/mandatory alignment and Armv7-M nine-bit IPSR/CCR.STKALIGN/ICTR policies. |
+| `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery plus Armv6-M six-bit IPSR/mandatory alignment and Armv7-M nine-bit IPSR/CCR.STKALIGN/ICTR policies. |
+| `unwind_arm_gdb.py` | GDB-side live register seeds, Arm SCB/VTOR/vector-table readers and handler-mode unwind setup. |
 | `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
-| `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence from ELF attributes; contains no RTOS policy. |
-| `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. Also provides bounded RISC-V code evidence; adapter selectors own image/configuration proof. |
+| `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence and `RegisterConvention` contracts from ELF attributes; contains no RTOS policy. |
+| `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, common slot decoding and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. |
+| `insn_riscv.py` | Bounded RISC-V instruction decoder and ELF code-range primitives for port evidence checks. |
+| `insn_thumb.py` | Bounded Arm Thumb/Thumb-2 instruction and stream decoder for port evidence checks. |
 | `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`) tables and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
 | `unwind_expr.py` | Pure integer CFI expression evaluation for CFA, register-save addresses and direct register values, with independent bytecode, step, stack and memory-read budgets. |
 | `unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
@@ -72,8 +75,8 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | Config/DWARF probes, struct paths, version policy and probe evidence. |
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
 | `stackpc.py` | Last PC projection from the selected saved-context profile. |
-| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (M0/M3/M33 SMP/MPU/RV32/RV64) and GDB-facing seed/task orchestration; basic handler-frame transitions use ISA-specific validation and verified port evidence. |
-| `scheduler_switch.py` | Pure compiled ARM_CM3 transition profiles, instruction-relative stage classification and owner-consistent scheduler seeds; GDB-facing collection remains in `backtrace_gdb.py`. |
+| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic handler-frame transitions use ISA-specific validation and verified port evidence. |
+| `scheduler_switch.py` | Pure compiled Armv7-M (`ARM_CM3`) transition profiles, instruction-relative stage classification and owner-consistent scheduler seeds; GDB-facing collection remains in `backtrace_gdb.py`. |
 | `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled RISC-V save-layout evidence for verified profile selection. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |
@@ -161,8 +164,8 @@ reject invalid exception numbers; adapter policy separately refuses unverified
 system exceptions and fault contexts. Scheduler contexts require the separate
 compiled-stage proof described below. Armv7-M reads ICTR for its external
 interrupt capacity and VTOR for vector entries. The Armv6-M port gate requires
-FreeRTOS 11.1.0, Cortex-M0 CPUID, fixed-zero vector symbols and an explicit
-32-line linker fact; it reads vectors directly and never reads ICTR, VTOR or
+Cortex-M0 CPUID (`0x410CC200`), fixed-zero vector symbols and an explicit
+1..32 IRQ-count linker fact; it reads vectors directly and never reads ICTR, VTOR or
 CCR. Both paths apply capacity/exception guards to live and restored frames.
 Crossed exception PCs are exact resume PCs, not ordinary
 return addresses subject to `PC - 1`. Segment and transition records remain
@@ -260,11 +263,11 @@ Boundary details behind each row live in `errata.md`.
 
 | Debugging dimension | RT-Thread (`rtt`) | FreeRTOS (`frt`) |
 | --- | --- | --- |
-| **Versions and architectures** | `3.1.0–3.1.5`, `4.0.0–4.1.1` (ARM Cortex-A9 32-bit, RISC-V 64-bit) | `10.3.0–11.3.x` (ARM Cortex-M0/M3, M33 SMP and MPU 32-bit; RISC-V 32/64-bit) |
+| **Versions and architectures** | `3.1.0–3.1.5`, `4.0.0–4.1.1` (Armv7-A 32-bit, RISC-V 64-bit) | `10.3.0–11.3.x` (Armv6-M, Armv7-M, Armv8-M Mainline SMP and MPU 32-bit; RISC-V 32/64-bit) |
 | **Object discovery** | Kernel global object registry plus the active timer lists | Six-channel evidence merge (MPU pool, registry, active lists, symbols, waiter hosts, user addresses) with `Src` provenance and a `Queue_t` discriminator (`?` when inferred) |
 | **Task basics** | TCB keeps `Entry`; `Stack`/`Used`/`HighWater` always derivable; `Error` and `RemainingTick`; SMP `CPU`/`Bind` | No retained `Entry`; `Stack`/`Used`/`HighWater` need `pxEndOfStack`; `Runtime`, `WakeTick`/`BlockedOn`, `Notify[n]`; SMP `CPU`/`Affinity` |
-| **Last PC (`stackpc.py`)** | Slot keyed by version and pointer width; entry/call/code proof | Slot keyed by port evidence (build attributes and port symbols); code symbol plus Cortex-M Thumb-bit proof |
-| **Task backtrace (`backtrace`)** | RV64 verified; A9 stays on `stackpc`, M0/M3/M33/RV32 report `unverified-port` | M0/M3/M33 SMP+MPU/RV32/RV64 verified on integer-only port configurations; EHABI preferred, DWARF CFI and validated frame-pointer fallback; SMP task on another core reports `smp-no-context` |
+| **Last PC (`stackpc.py`)** | Slot keyed by version and pointer width; entry/call/code proof | Slot keyed by port evidence (build attributes and port symbols); code symbol plus Arm M-profile Thumb-bit proof |
+| **Task backtrace (`backtrace`)** | RV64 verified; Armv7-A stays on `stackpc`, Armv6-M/Armv7-M/Armv8-M Mainline/RV32 report `unverified-port` | Armv6-M, Armv7-M, Armv8-M Mainline SMP+MPU, RV32 and RV64 verified on integer-only port configurations; EHABI preferred, DWARF CFI and validated frame-pointer fallback; SMP task on another core reports `smp-no-context` |
 | **IPC and sync objects** | Semaphores, mutexes, events, mailboxes (with slot addresses), message queues, memory pools; unified `FIFO`/`PRIO` policy | Queue family (queues with FIFO item addresses and set membership, binary/counting semaphores, recursive mutexes), event groups with per-waiter conditions, stream/message/batch buffers |
 | **Software timers** | Hard/soft and one-shot/periodic modes; registry vs active-list `Src` evidence | Current/overflow epoch handling, symbolic IDs, daemon command-queue decode |
 | **Heap (`heap` / `heap dump`)** | `small_mem`, `memheap`, `slab`; per-thread owner colours with `MEMTRACE`; walk-vs-counter accounting | `heap_1..5` (heap_3 wraps malloc); no owner field so no per-task attribution; protector canary decode; free-list/linear cross-check |

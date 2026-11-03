@@ -39,9 +39,10 @@ fabricated 0.
 
 ## FreeRTOS
 
-**Live coverage is 32-bit Cortex-M0/M3/M33 plus RV32/RV64 RISC-V.**
-The 32-bit ARM lanes are `microbit` Cortex-M0, `mps2-an385` Cortex-M3,
-`mps2-an521` dual-core Cortex-M33 and the Cortex-M33 static snapshot; the
+**Live coverage is 32-bit Armv6-M/Armv7-M/Armv8-M Mainline plus RV32/RV64 RISC-V.**
+The 32-bit Arm lanes are `microbit` (Armv6-M, Cortex-M0), `mps2-an385`
+(Armv7-M, Cortex-M3), `mps2-an521` (Armv8-M Mainline, dual-core Cortex-M33)
+and the Armv8-M Mainline static snapshot; the
 RISC-V lanes are `qemu-virt-rv32` (rv32imac) and `qemu-virt-rv64`
 (rv64imac); the latter covers 64-bit pointers and 64-bit ticks (the RISC-V port hardcodes
 `TickType_t` to the architecture width; the lane's config also declares
@@ -74,7 +75,7 @@ buffers), `mpu` (single-core `configENABLE_MPU`, wrappers v2), `smp`
 capabilities live in `tests/support/freertos_fixture_profiles.py` and must not
 be derived from `freertos/layout.py`.
 
-The historical `base` combination remains: single-core / Cortex-M3 / heap_4
+The historical `base` combination remains: single-core / Armv7-M (`mps2-an385`) / heap_4
 / trace_facility=on / FreeRTOS 10.3.1 / `configENABLE_BACKWARD_COMPATIBILITY=1`
 (member name `pvContainer`) / no `pxEndOfStack` / scalar `ucNotifyState` /
 no runtime statistics / `configMAX_PRIORITIES=6` / stack grows down. Default
@@ -114,11 +115,11 @@ allocated-bit cell lives in a second, heap-only ELF (`snapshot_heap.c`).
 ## Task backtraces
 
 **Verified saved-context matrix.** FreeRTOS backtraces are verified on
-Cortex-M0 (`microbit`), Cortex-M3 (`mps2-an385`), Cortex-M33 SMP and MPU
+Armv6-M (`microbit`), Armv7-M (`mps2-an385`), Armv8-M Mainline SMP and MPU
 (`mps2-an521`), RV32 (`qemu-virt-rv32`) and RV64 (`qemu-virt-rv64`).
-The Cortex-M33 fixtures disable FPU and TrustZone; other extended-context
+The Armv8-M Mainline fixtures disable FPU and TrustZone; other extended-context
 configurations are not verified.
-Armv8-M profile selection requires explicit FPU, TrustZone and MPU configuration
+Armv8-M Mainline profile selection requires explicit FPU, TrustZone and MPU configuration
 evidence (plus the wrapper version for MPU); absent required macros stop at
 `port-configuration-unavailable`. Arm selection uses attributes, port symbols
 and configuration rather than compiled save/restore instruction matching.
@@ -126,9 +127,10 @@ Backtrace JSON reports canonical ISA in `architecture` and ELF ABI in `abi`;
 profile identity remains internal. RISC-V profiles require a bounded match of
 the compiled integer save/restore and initial-stack code; this does not prove
 vendor-private traps.
-RT-Thread backtraces are verified on RV64; its M0/M3/M33/RV32 context layouts
+RT-Thread backtraces are verified on RV64; its Armv6-M, Armv7-M,
+Armv8-M Mainline and RV32 context layouts
 are implemented and unit-tested but report `unverified-port` until a QEMU BSP
-fixture exists. Cortex-A9 remains on the existing `stackpc` path and is not a
+fixture exists. Armv7-A (`cortex-a9`) remains on the existing `stackpc` path and is not a
 first-version backtrace target.
 
 **EHABI entries require a matching ELF function symbol.** Without
@@ -173,25 +175,27 @@ be promoted to an exact PC or a proven task root. Repeated `(PC, SP)` pairs
 still stop at `loop`. Other tasks can reach the recorded `xTaskReturnAddress`
 value, including zero, and finish at `task-exit`.
 
-**Hardware exception cross-stack unwinding is verified on basic M0/M3 IRQ fixtures.**
-FreeRTOS `microbit/11.1.0/full` (Armv6-M, ARM_CM0) and
-`mps2-an385/10.3.1/full` (Armv7-M, ARM_CM3) verify external exception numbers
+**Hardware exception cross-stack unwinding is verified on basic Armv6-M/Armv7-M IRQ fixtures.**
+FreeRTOS `microbit/11.1.0/full` (Armv6-M, `ARM_CM0`) and
+`mps2-an385/10.3.1/full` (Armv7-M, `ARM_CM3`) verify external exception numbers
 24/25, nested handlers, ordinary handler calls and four-byte padding with
 linker-owned MSP bounds. `core/unwind_arm.py` shares the basic eight-word frame
 layout while keeping ISA exception policies explicit;
 Armv6-M has a six-bit IPSR and mandatory 8-byte entry alignment, while Armv7-M
 has a nine-bit IPSR and CCR.STKALIGN-controlled alignment. Both require readable
-xPSR/MSP/PSP and running-scheduler ownership. M3 requires ICTR capacity. M0
-requires Cortex-M0 CPUID, a fixed-zero
-vector table, its end symbol and an explicit 32-line linker fact; missing or
-conflicting evidence fails closed. M0+, relocated vector tables and other
-M0 ports/versions have no live acceptance. Capacity upper bound 47 does not
+xPSR/MSP/PSP, running-scheduler ownership and linker-exported MSP bounds
+(`__gdr_irq_stack_low`, `__gdr_irq_stack_top`). Armv7-M requires ICTR capacity. Armv6-M
+requires Cortex-M0 CPUID (`0x410CC200`), a fixed-zero
+vector table (`g_pfnVectors`), its end symbol (`__gdr_vector_table_end`) and an explicit
+IRQ-count linker symbol (`__gdr_armv6m_irq_count`, 1..32); missing or
+conflicting evidence fails closed. Cortex-M0+ CPUs, relocated vector tables and
+unproven Armv6-M vector configurations have no live acceptance. Capacity upper bound 47 does not
 establish a live handler for every IRQ; only exception numbers 24/25 have
-fixture coverage. NMI and SysTick (plus M3 DebugMonitor) stop as
-`exception-number-unverified`; synchronous faults, Armv8-M/M33, FPU/lazy frames,
+fixture coverage. NMI and SysTick (plus Armv7-M DebugMonitor) stop as
+`exception-number-unverified`; synchronous faults, Armv8-M Mainline, FPU/lazy frames,
 TrustZone and SMP handler contexts remain gated. Other saved-context lanes
-do not establish handler-mode support. M0 SVC/PendSV remain
-`scheduler-transition-unproven`; M3 uses the separate scheduler rules below.
+do not establish handler-mode support. Armv6-M SVC/PendSV remain
+`scheduler-transition-unproven`; Armv7-M (`ARM_CM3`) uses the separate scheduler rules below.
 
 **Scheduler backtraces require the verified FreeRTOS 10.3.1 ARM_CM3 profile.**
 Only `portable/GCC/ARM_CM3` with a matching

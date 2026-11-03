@@ -21,8 +21,8 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 
 | RTOS | 版本 | 状态 |
 |------------|-------------------------------|----------------------------------------------------------------------------------------------------------------------------|
-| RT-Thread  | 3.1.x、4.0.x、4.1.x           | 已实现；Cortex-A9 在两个版本区间均已验证，RV64 自 4.0.4 起                                       |
-| FreeRTOS   | V10.3.0–V11.3.x               | 已实现；在 QEMU MPS2-AN385（Cortex-M3）、MPS2-AN521（双 Cortex-M33 SMP/MPU）、micro:bit（Cortex-M0）与 RISC-V virt（RV32/RV64）验证 |
+| RT-Thread  | 3.1.x、4.0.x、4.1.x           | 已实现；Armv7-A（`cortex-a9`）在两个版本区间均已验证，RV64 自 4.0.4 起                                       |
+| FreeRTOS   | V10.3.0–V11.3.x               | 已实现；已在 Armv7-M（`mps2-an385`）、Armv8-M Mainline SMP/MPU（`mps2-an521`）、Armv6-M（`microbit`）与 RISC-V（`virt` RV32/RV64）验证 |
 
 ## 快速开始
 
@@ -191,6 +191,10 @@ add_compile_options(-O0 -ggdb3)
 （考虑 RTOS 实现和编译配置的差异， 可能无法从 ELF 推断出准确的 RTOS 版本）。
 内核 *配置特性* （SMP、堆管理器类型、已启用的 IPC 组件）会在启动时通过符号是否
 存在自动探测。
+
+Armv6-M / Armv7-M 跨栈 IRQ 回溯需要链接脚本导出显式 MSP 栈边界符号
+（`__gdr_irq_stack_low`、`__gdr_irq_stack_top`）；Armv6-M 额外需要
+`g_pfnVectors`、`__gdr_vector_table_end` 与 `__gdr_armv6m_irq_count`。
 
 ## 贡献
 

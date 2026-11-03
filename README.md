@@ -22,8 +22,8 @@ the [Asterinas GDB helper](#acknowledgements):
 
 | RTOS | Versions | Status |
 |------|----------|--------|
-| RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Cortex-A9 verified across both ranges, RV64 from 4.0.4 |
-| FreeRTOS | V10.3.0–V11.3.x | implemented; verified on QEMU MPS2-AN385 (Cortex-M3), MPS2-AN521 (dual Cortex-M33 SMP/MPU), micro:bit (Cortex-M0), and RISC-V virt (RV32/RV64) |
+| RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Armv7-A (`cortex-a9`) verified across both ranges, RV64 from 4.0.4 |
+| FreeRTOS | V10.3.0–V11.3.x | implemented; verified on Armv7-M (`mps2-an385`), Armv8-M Mainline SMP/MPU (`mps2-an521`), Armv6-M (`microbit`), and RISC-V (`virt` RV32/RV64) |
 
 ## Quick start
 
@@ -196,6 +196,11 @@ there is **no auto-detection** of the RTOS type or version (Consider variance of
 version declare in RTOS and ELF compilation). Kernel *config features* (SMP, heap
 manager kind, enabled IPC components) are probed automatically by symbol
 presence at startup.
+
+Cross-stack IRQ unwinding on Armv6-M / Armv7-M requires the linker script to
+export explicit MSP bounds (`__gdr_irq_stack_low`, `__gdr_irq_stack_top`);
+Armv6-M additionally requires `g_pfnVectors`, `__gdr_vector_table_end` and
+`__gdr_armv6m_irq_count`.
 
 ## Contribute
 

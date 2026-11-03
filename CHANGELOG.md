@@ -15,9 +15,9 @@ All notable changes to GDR are documented in this file.
   expressions, with explicit stops for unsupported operations or exhausted budgets.
 - FreeRTOS AN385 backtraces cross verified basic IRQ24/25 and nested exception
   frames with linker-owned MSP bounds; unverified exception modes stop explicitly.
-- FreeRTOS 11.1.0 ARM_CM0 backtraces cross basic Armv6-M IRQ and nested
-  frames on the verified microbit port; M0 scheduler transitions remain gated.
-- FreeRTOS 10.3.1 ARM_CM3 backtraces resolve proven PendSV/SVC scheduling
+- FreeRTOS 11.1.0 Armv6-M (`ARM_CM0`) backtraces cross basic IRQ and nested
+  frames on the verified microbit port; Armv6-M scheduler transitions remain gated.
+- FreeRTOS 10.3.1 Armv7-M (`ARM_CM3`) backtraces resolve proven PendSV/SVC scheduling
   stages with a matching compiled profile; unproven windows stop explicitly.
 
 ### Changed
