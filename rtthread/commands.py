@@ -14,8 +14,8 @@ from core.commands import (
     add_watch,
     complete_command_tree,
     complete_watch,
+    invoke_backtrace_command,
     remove_watch,
-    render_backtrace,
     render_heap,
     render_heap_dump,
     render_heap_dump_options,
@@ -809,31 +809,9 @@ def _invoke_command(argument: str) -> None:
 
 def _invoke_backtrace(argument: str) -> None:
     """Parse ``backtrace <thread> [--max-depth N]`` without touching target state."""
-    words = argument.split(None, 1)
-    if len(words) != 2 or not words[1].strip():
-        warn("usage: rtthread backtrace <thread> [--max-depth N]")
-        return
-    rest = words[1].strip()
-    max_depth = 32
-    marker = rest.rfind("--max-depth")
-    if marker >= 0:
-        option = rest[marker:].split()
-        if len(option) != 2:
-            warn("usage: rtthread backtrace <thread> [--max-depth N]")
-            return
-        try:
-            max_depth = int(option[1])
-        except ValueError:
-            warn(f"invalid --max-depth: {option[1]}")
-            return
-        rest = rest[:marker].strip()
-    if not rest:
-        warn("usage: rtthread backtrace <thread> [--max-depth N]")
-        return
-    if max_depth < 1 or max_depth > 64:
-        warn("--max-depth must be between 1 and 64")
-        return
-    render_backtrace(rest, max_depth)
+    invoke_backtrace_command(
+        argument, "usage: rtthread backtrace <thread> [--max-depth N]"
+    )
 
 
 def _command_vocabulary() -> list[str]:

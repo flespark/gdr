@@ -2,8 +2,8 @@
 
 ``struct rt_thread::sp`` points at the context frame left by
 ``rt_hw_context_switch``/the port's exception entry.  The frame shape is a
-property of ``libcpu`` and, on Cortex-M33, of the TrustZone/FPU branch; the
-tables here cover the integer-only paths exercised by the fixtures.  A port
+property of ``libcpu`` and, on Armv8-M Mainline, of the TrustZone/FPU branch;
+the tables here cover the integer-only paths exercised by the fixtures.  A port
 without a closed-loop fixture returns an explicit unverified reason rather than
 a guessed context.
 """
@@ -11,8 +11,12 @@ a guessed context.
 from __future__ import annotations
 
 from core.cpus import Isa
-from core.stack_frame_parser import SavedStackContext, ValidationLevel
-from core.unwind import Endian, Reader, SeedFrame, read_slot
+from core.stack_frame_parser import (
+    SavedStackContext,
+    ValidationLevel,
+    decode_profile_slots,
+)
+from core.unwind import Endian, Reader, SeedFrame
 
 
 def _arm_integer(isa: Isa) -> SavedStackContext:
@@ -89,60 +93,20 @@ def decode_saved_context(
     with the port's initial fill pattern proves an unstarted thread; a running
     frame with the same entry remains ``saved`` unless the fill is present.
     """
-    if sp <= 0:
-        return None, "no-saved-context"
-    pc = read_slot(
+    decoded, reason = decode_profile_slots(
+        context,
+        sp,
         read,
-        sp + context.pc_offset,
-        context.pointer_size,
-        endian,
+        endian=endian,
         stack_low=stack_low,
         stack_high=stack_high,
+        check_ipsr_and_align=False,
     )
-    if pc is None or pc == 0:
-        return None, "no-saved-context"
-    registers: dict[int, int] = {}
-    for register, offset in context.registers:
-        value = read_slot(
-            read,
-            sp + offset,
-            context.pointer_size,
-            endian,
-            stack_low=stack_low,
-            stack_high=stack_high,
-        )
-        if value is None:
-            return None, "saved-context-unreadable"
-        registers[register] = value
-    lr = read_slot(
-        read,
-        sp + context.lr_offset,
-        context.pointer_size,
-        endian,
-        stack_low=stack_low,
-        stack_high=stack_high,
-    )
-    if lr is not None:
-        registers[14 if context.status_offset is not None else 1] = lr
-    caller_sp = sp + context.sp_offset
-    registers[13 if context.status_offset is not None else 2] = caller_sp
-    if context.status_offset is not None:
-        registers[15] = pc
-        xpsr = read_slot(
-            read,
-            sp + context.status_offset,
-            4,
-            endian,
-            stack_low=stack_low,
-            stack_high=stack_high,
-        )
-        if xpsr is None:
-            return None, "saved-context-unreadable"
-        if not xpsr & (1 << 24):
-            return None, "saved-frame-not-thumb"
-    code_pc = pc & ~1 if context.status_offset is not None else pc
-    if code_pc == 0:
-        return None, "saved-context-unreadable"
+    if decoded is None:
+        return None, reason
+    registers = decoded.registers
+    code_pc = decoded.code_pc
+    caller_sp = decoded.sp
     unstarted = False
     if entry:
         core = [registers.get(register, 0) for register in range(4, 12)]

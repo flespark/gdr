@@ -63,8 +63,9 @@ SMP_ERA_FIELD = "xTaskRunState"
 SMP_ERA_SYMBOL = "pxCurrentTCBs"
 
 # The port the image was built for, read from its symbols (see freertos/stackpc.py).
-# RISC-V's port has xPortStartFirstTask; Cortex-M's has PendSV_Handler, which both
-# Cortex-M3 and Cortex-M33 carry, so the ARM CPU name tells them apart.
+# RISC-V's port has xPortStartFirstTask; Arm M-profile ports have PendSV_Handler,
+# which Armv6-M, Armv7-M, and Armv8-M Mainline share, so ELF build attributes
+# tell them apart.
 PORT_RISCV_SYMBOL = "xPortStartFirstTask"
 # Runtime symbol retained in the RISC-V port image even when portASM.S has no
 # DWARF; it is the fallback port evidence for the 32-bit lane.

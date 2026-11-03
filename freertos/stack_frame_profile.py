@@ -5,17 +5,19 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from core.cpus import Cpu, cpu_of
-from core.stack_frame_parser import (
+from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
-    SavedStackContext,
-    StackContextSelection,
     riscv_all_store_offsets,
     riscv_frame_accesses,
     riscv_next_pc,
     riscv_slot_map,
     riscv_stack_frame_size,
     riscv_target_loads,
+)
+from core.stack_frame_parser import (
+    SavedStackContext,
+    StackContextSelection,
 )
 from core.unwind_meta import ElfImage
 
@@ -431,7 +433,7 @@ def _arm_profile(isa: str | None, *, smp: bool, mpu: bool) -> SavedStackContext 
 
 
 def _arm_configuration_evidence(macros: Mapping[str, str], *, mpu: bool) -> str | None:
-    """Return a rejection reason for an unsupported M33 configuration."""
+    """Return a rejection reason for an unsupported Armv8-M Mainline configuration."""
     required = ("configENABLE_FPU", "configENABLE_TRUSTZONE", "configENABLE_MPU")
     if mpu:
         required += ("configUSE_MPU_WRAPPERS_V1",)

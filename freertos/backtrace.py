@@ -2,21 +2,21 @@
 
 ``struct tskTaskControlBlock::pxTopOfStack`` points at the frame the port saved
 when the task last left the CPU.  The frame shape is a property of the port
-(and, on Cortex-M33, of the MPU/non-MPU save path), not of the kernel version,
-so the tables below are keyed by port evidence.  The module only decodes; the
-unwind itself lives in :mod:`core.unwind`.
+(and, on Armv8-M Mainline, of the MPU/non-MPU save path), not of the kernel
+version, so the tables below are keyed by port evidence.  The module only
+decodes; the unwind itself lives in :mod:`core.unwind`.
 """
 
 from __future__ import annotations
 
 from core.cpus import Isa
-from core.stack_frame_parser import SavedStackContext
-from core.unwind import Endian, Reader, SeedFrame, read_block, read_slot
+from core.stack_frame_parser import SavedStackContext, decode_profile_slots
+from core.unwind import Endian, Reader, SeedFrame, read_block
 
 _ARM_FILL = 0xA5A5A5A5
 
 
-# Cortex-M3/M0: pxTopOfStack points at r4; the hardware frame is above it.
+# Armv7-M / Armv6-M: pxTopOfStack points at r4; the hardware frame is above it.
 ARMV7M_INTEGER = SavedStackContext(
     profile_id="freertos/armv7-m/integer",
     validation="live",
@@ -55,8 +55,8 @@ ARMV6M_INTEGER = SavedStackContext(
     ),
 )
 
-# CM33 non-MPU (SMP lane): pxTopOfStack = psp-40; the saved hardware frame
-# begins at +40 and the original SP is one hardware frame above it.
+# Armv8-M Mainline non-MPU (SMP lane): pxTopOfStack = psp-40; the saved hardware
+# frame begins at +40 and the original SP is one hardware frame above it.
 ARMV8M_MAINLINE_SMP_INTEGER = SavedStackContext(
     profile_id="freertos/armv8-m.mainline/non-mpu-smp",
     validation="live",
@@ -81,9 +81,10 @@ ARMV8M_MAINLINE_SMP_INTEGER = SavedStackContext(
     ),
 )
 
-# CM33 MPU wrappers v2: the port's context array ends at pxTopOfStack.  The
-# hardware frame copy is at -48..-21, PC at -24, and the original PSP slot at
-# -16; that PSP names the hardware frame, so the interrupted SP is PSP+32.
+# Armv8-M Mainline MPU wrappers v2: the port's context array ends at
+# pxTopOfStack.  The hardware frame copy is at -48..-21, PC at -24, and the
+# original PSP slot at -16; that PSP names the hardware frame, so the
+# interrupted SP is PSP+32.
 ARMV8M_MAINLINE_MPU_INTEGER = SavedStackContext(
     profile_id="freertos/armv8-m.mainline/mpu-v2",
     validation="live",
@@ -133,33 +134,6 @@ RISCV32_INTEGER = _riscv_context("riscv32", 4)
 RISCV64_INTEGER = _riscv_context("riscv64", 8)
 
 
-def _registers(
-    context: SavedStackContext,
-    top: int,
-    read: Reader,
-    *,
-    endian: Endian,
-    stack_low: int | None,
-    stack_high: int | None,
-    context_low: int | None,
-    context_high: int | None,
-) -> dict[int, int] | None:
-    result: dict[int, int] = {}
-    for register, offset in context.registers:
-        value = read_slot(
-            read,
-            top + offset,
-            context.pointer_size,
-            endian,
-            stack_low=context_low if context_low is not None else stack_low,
-            stack_high=context_high if context_high is not None else stack_high,
-        )
-        if value is None:
-            return None
-        result[register] = value
-    return result
-
-
 def decode_saved_context(
     context: SavedStackContext,
     top: int,
@@ -179,23 +153,7 @@ def decode_saved_context(
     ``xTaskReturnAddress``) when the adapter can resolve it.  It is used only
     as evidence for an unstarted task, never as a fabricated frame.
     """
-    if top <= 0:
-        return None, "no-saved-context"
-    if context.context_in_tcb and (context_low is None or context_high is None):
-        return None, "context-bounds-unavailable"
-    read_low = context_low if context_low is not None else stack_low
-    read_high = context_high if context_high is not None else stack_high
-    pc = read_slot(
-        read,
-        top + context.pc_offset,
-        context.pointer_size,
-        endian,
-        stack_low=context_low if context_low is not None else stack_low,
-        stack_high=context_high if context_high is not None else stack_high,
-    )
-    if pc is None or pc == 0:
-        return None, "no-saved-context"
-    registers = _registers(
+    decoded, reason = decode_profile_slots(
         context,
         top,
         read,
@@ -204,70 +162,14 @@ def decode_saved_context(
         stack_high=stack_high,
         context_low=context_low,
         context_high=context_high,
+        check_ipsr_and_align=True,
     )
-    if registers is None:
-        return None, "saved-context-unreadable"
-    if context.sp_slot_offset is not None:
-        psp = read_slot(
-            read,
-            top + context.sp_slot_offset,
-            context.pointer_size,
-            endian,
-            stack_low=read_low,
-            stack_high=read_high,
-        )
-        if psp is None:
-            return None, "saved-context-unreadable"
-        sp = psp + context.sp_slot_bias
-    else:
-        sp = top + context.sp_offset
-    if stack_low is not None and sp < stack_low:
-        return None, "saved-stack-underflow"
-    if stack_high is not None and sp > stack_high:
-        return None, "saved-stack-overflow"
-    lr = read_slot(
-        read,
-        top + context.lr_offset,
-        context.pointer_size,
-        endian,
-        stack_low=read_low,
-        stack_high=read_high,
-    )
-    if lr is not None:
-        registers[
-            14 if context.pointer_size == 4 and context.status_offset is not None else 1
-        ] = lr
-    registers[
-        13 if context.pointer_size == 4 and context.status_offset is not None else 2
-    ] = sp
-    if context.status_offset is not None:
-        registers[15] = pc
-        xpsr = read_slot(
-            read,
-            top + context.status_offset,
-            4,
-            endian,
-            stack_low=read_low,
-            stack_high=read_high,
-        )
-        if xpsr is None:
-            return None, "saved-context-unreadable"
-        if not xpsr & (1 << 24):
-            return None, "saved-frame-not-thumb"
-        if xpsr & 0x1FF:
-            return None, "saved-frame-ipsr-invalid"
-        if xpsr & (1 << 9):
-            sp += 4
-            registers[13] = sp
-            if stack_high is not None and sp > stack_high:
-                return None, "saved-stack-overflow"
-    code_pc = (
-        pc & ~1
-        if context.pointer_size == 4 and context.status_offset is not None
-        else pc
-    )
-    if code_pc == 0:
-        return None, "saved-context-unreadable"
+    if decoded is None:
+        return None, reason
+    registers = decoded.registers
+    lr = decoded.lr
+    code_pc = decoded.code_pc
+    sp = decoded.sp
     unstarted = False
     if context.status_offset is not None:
         core = tuple(registers.get(register, 0) for register in range(4, 12))
@@ -278,7 +180,7 @@ def decode_saved_context(
         unstarted = unstarted and (
             exit_pc is not None and lr is not None and (lr & ~1) == (exit_pc & ~1)
         )
-        if xpsr != 0x01000000:
+        if decoded.status != 0x01000000:
             unstarted = False
     else:
         # RISC-V initial context: pc is the task entry, ra is the port's

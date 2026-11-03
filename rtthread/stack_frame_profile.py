@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from core.cpus import Cpu, cpu_of
-from core.stack_frame_parser import (
+from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
-    SavedStackContext,
-    StackContextSelection,
     riscv_all_store_offsets,
     riscv_frame_accesses,
     riscv_slot_map,
     riscv_stack_frame_size,
+)
+from core.stack_frame_parser import (
+    SavedStackContext,
+    StackContextSelection,
 )
 from core.unwind_meta import ElfImage
 

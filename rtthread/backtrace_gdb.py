@@ -26,6 +26,12 @@ from core.unwind import (
     UnwindMetadata,
     unwind_chain,
 )
+from core.unwind_arm_gdb import (
+    cached_unwind_metadata,
+)
+from core.unwind_arm_gdb import (
+    live_seed as _core_live_seed,
+)
 from rtthread.adapter import value_to_thread
 from rtthread.backtrace import decode_saved_context as decode_backtrace_context
 from rtthread.layout import RT_THREAD_STACK_FILL
@@ -41,15 +47,7 @@ except ImportError:
 
 def _unwind_metadata(adapter) -> UnwindMetadata | None:
     """Parse the loaded image's unwind tables once per ELF path."""
-    path = loaded_object_path()
-    if path is None:
-        return None
-    if adapter._unwind_cache is not None and adapter._unwind_cache[0] == path:
-        return adapter._unwind_cache[1]
-    elf = ElfImage.from_path(path)
-    metadata = UnwindMetadata.from_elf(elf) if elf is not None else None
-    adapter._unwind_cache = (path, metadata)
-    return metadata
+    return cached_unwind_metadata(adapter, path_reader=loaded_object_path)
 
 
 _context_cache: tuple[str, StackContextSelection] | None = None
@@ -112,55 +110,11 @@ def reset_adapter(adapter) -> None:
 
 def _live_seed(arch: str, root_pc: int | None) -> SeedFrame | None:
     """Read the selected core's live registers without driving the target."""
-    if gdb is None:
-        return None
-    try:
-        frame = gdb.newest_frame()
-        pc = int(frame.pc())
-        sp = int(frame.read_register("sp"))
-    except (gdb.error, AttributeError, RuntimeError, TypeError):
-        return None
-    registers: dict[int, int] = {}
-    if arch.startswith("arm"):
-        for register in range(13):
-            try:
-                registers[register] = int(frame.read_register(f"r{register}"))
-            except (gdb.error, AttributeError, RuntimeError, TypeError):  # noqa: PERF203
-                return None
-        registers[13] = sp
-        try:
-            registers[14] = int(frame.read_register("lr"))
-            registers[15] = pc
-        except (gdb.error, AttributeError, RuntimeError, TypeError):
-            return None
-    else:
-        for register, name in {
-            1: "ra",
-            2: "sp",
-            8: "s0",
-            9: "s1",
-            18: "s2",
-            19: "s3",
-            20: "s4",
-            21: "s5",
-            22: "s6",
-            23: "s7",
-            24: "s8",
-            25: "s9",
-            26: "s10",
-            27: "s11",
-        }.items():
-            try:
-                registers[register] = int(frame.read_register(name))
-            except (gdb.error, AttributeError, RuntimeError, TypeError):  # noqa: PERF203
-                return None
-        registers[2] = sp
-    return SeedFrame(
-        pc=pc & ~1 if arch.startswith("arm") else pc,
-        sp=sp,
-        regs=registers,
-        source="current",
+    return _core_live_seed(
+        arch,
         root_pc=root_pc,
+        require_exception_registers=False,
+        gdb_module=gdb,
     )
 
 

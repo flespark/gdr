@@ -25,13 +25,38 @@ from core.gdb_bridge import (
 )
 from core.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
 from core.unwind_arm import (
-    armv6m_exception_number_kind,
-    armv6m_exception_return_candidate,
-    armv6m_exception_transition,
-    armv7m_exception_number_kind,
-    armv7m_exception_return_candidate,
-    armv7m_exception_transition,
-    armv7m_max_external_exception,
+    arm_capacity_exception_guard as _capacity_exception_guard,
+)
+from core.unwind_arm import (
+    arm_exception_guard as _exception_guard,
+)
+from core.unwind_arm_gdb import (
+    ArmSnapshot as _ArmSnapshot,
+)
+from core.unwind_arm_gdb import (
+    arm_ccr_stkalign as _core_ccr_stkalign,
+)
+from core.unwind_arm_gdb import (
+    arm_cpuid as _core_cpuid,
+)
+from core.unwind_arm_gdb import (
+    arm_external_exception_limit as _core_external_exception_limit,
+)
+from core.unwind_arm_gdb import (
+    arm_snapshot as _core_arm_snapshot,
+)
+from core.unwind_arm_gdb import (
+    armv6m_vector_entry as _core_armv6m_vector_entry,
+)
+from core.unwind_arm_gdb import (
+    armv7m_vector_entry as _core_armv7m_vector_entry,
+)
+from core.unwind_arm_gdb import (
+    cached_unwind_metadata,
+    prepare_arm_handler_unwind,
+)
+from core.unwind_arm_gdb import (
+    live_seed_detail as _core_live_seed_detail,
 )
 from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
@@ -48,15 +73,7 @@ except ImportError:
 
 def _unwind_metadata(adapter) -> UnwindMetadata | None:
     """Parse this image's unwind tables once per loaded ELF path."""
-    path = loaded_object_path()
-    if path is None:
-        return None
-    if adapter._unwind_cache is not None and adapter._unwind_cache[0] == path:
-        return adapter._unwind_cache[1]
-    elf = ElfImage.from_path(path)
-    metadata = UnwindMetadata.from_elf(elf) if elf is not None else None
-    adapter._unwind_cache = (path, metadata)
-    return metadata
+    return cached_unwind_metadata(adapter, path_reader=loaded_object_path)
 
 
 def _exit_pc() -> int | None:
@@ -67,133 +84,19 @@ def _exit_pc() -> int | None:
     return read_int(eval_identifier("xTaskReturnAddress"))
 
 
-@dataclass(frozen=True)
-class _ArmSnapshot:
-    """Raw live Arm registers; the scheduler stages read the same snapshot."""
-
-    pc: int
-    sp: int
-    msp: int
-    psp: int
-    xpsr: int
-    registers: dict[int, int]
-
-
 def _arm_snapshot() -> tuple[_ArmSnapshot | None, str]:
-    """Read Arm live registers without rejecting an unset PSP.
-
-    The ordinary live seed still refuses a zero PSP; the scheduler path needs
-    the raw value so it can prove the SVC first-task restore itself.
-    """
-    if gdb is None:
-        return None, "live-registers-unavailable"
-    try:
-        frame = gdb.newest_frame()
-        pc = int(frame.pc()) & 0xFFFFFFFF
-        sp = int(frame.read_register("sp")) & 0xFFFFFFFF
-    except (gdb.error, AttributeError, RuntimeError, TypeError):
-        return None, "live-registers-unavailable"
-    registers: dict[int, int] = {}
-    for register in range(13):
-        try:
-            registers[register] = int(frame.read_register(f"r{register}")) & 0xFFFFFFFF
-        except (gdb.error, AttributeError, RuntimeError, TypeError):  # noqa: PERF203
-            return None, "live-registers-unavailable"
-    registers[13] = sp
-    try:
-        registers[14] = int(frame.read_register("lr")) & 0xFFFFFFFF
-        registers[15] = pc
-        xpsr = int(frame.read_register("xpsr")) & 0xFFFFFFFF
-        msp = int(frame.read_register("msp")) & 0xFFFFFFFF
-        psp = int(frame.read_register("psp")) & 0xFFFFFFFF
-    except (gdb.error, AttributeError, RuntimeError, TypeError):
-        return None, "exception-registers-unavailable"
-    return _ArmSnapshot(pc, sp, msp, psp, xpsr, registers), "ok"
+    return _core_arm_snapshot(gdb_module=gdb)
 
 
 def _live_seed_detail(
     arch: str, isa: str | None = None
 ) -> tuple[SeedFrame | None, str]:
-    """Read the selected core's live registers without driving the target.
-
-    ``isa`` is the selected profile evidence.  A live handler seed requires it
-    so architecture-specific exception-number rules are applied only to the
-    matching profile; an unknown profile is refused rather than assumed.
-    """
-    if arch == "arm":
-        snapshot, reason = _arm_snapshot()
-        if snapshot is None:
-            return None, reason
-        exception_number = snapshot.xpsr & 0x1FF
-        if snapshot.msp <= 0 or snapshot.psp <= 0:
-            return None, "live-registers-unavailable"
-        if exception_number:
-            if not snapshot.xpsr & (1 << 24):
-                return None, "exception-frame-not-thumb"
-            if isa is None:
-                return None, "unsupported-exception-model"
-            classifier = (
-                armv6m_exception_number_kind
-                if isa == "armv6-m"
-                else armv7m_exception_number_kind
-            )
-            if (
-                isa in ("armv6-m", "armv7-m")
-                and classifier(exception_number) == "invalid"
-            ):
-                return None, "exception-number-invalid"
-            if snapshot.sp != snapshot.msp:
-                return None, "live-stack-selection-invalid"
-        return (
-            SeedFrame(
-                pc=snapshot.pc & ~1,
-                sp=snapshot.sp,
-                regs=dict(snapshot.registers),
-                source="current",
-                process_sp=snapshot.psp,
-                exception_number=exception_number,
-            ),
-            "ok",
-        )
-    if gdb is None:
-        return None, "live-registers-unavailable"
-    try:
-        frame = gdb.newest_frame()
-        pc = int(frame.pc())
-        sp = int(frame.read_register("sp"))
-    except (gdb.error, AttributeError, RuntimeError, TypeError):
-        return None, "live-registers-unavailable"
-    registers: dict[int, int] = {}
-    names = {
-        1: "ra",
-        2: "sp",
-        8: "s0",
-        9: "s1",
-        18: "s2",
-        19: "s3",
-        20: "s4",
-        21: "s5",
-        22: "s6",
-        23: "s7",
-        24: "s8",
-        25: "s9",
-        26: "s10",
-        27: "s11",
-    }
-    for register, name in names.items():
-        try:
-            registers[register] = int(frame.read_register(name))
-        except (gdb.error, AttributeError, RuntimeError, TypeError):  # noqa: PERF203
-            return None, "live-registers-unavailable"
-    registers[2] = sp
-    return (
-        SeedFrame(pc=pc, sp=sp, regs=registers, source="current"),
-        "ok",
+    return _core_live_seed_detail(
+        arch, isa, gdb_module=gdb, snapshot_reader=_arm_snapshot
     )
 
 
 def _live_seed(arch: str, isa: str | None = None) -> SeedFrame | None:
-    """Compatibility wrapper returning only the decoded live seed."""
     seed, _reason = _live_seed_detail(arch, isa)
     return seed
 
@@ -217,62 +120,32 @@ def _irq_stack_bounds() -> tuple[int, int] | None:
 
 
 def _ccr_stkalign() -> bool | None:
-    """Read CCR.STKALIGN without writing target state."""
-    raw = read_bytes(0xE000ED14, 4)
-    if raw is None or len(raw) != 4:
-        return None
-    return bool(int.from_bytes(raw, "little") & (1 << 9))
+    return _core_ccr_stkalign(read=read_bytes)
 
 
 def _external_exception_limit() -> int | None:
-    """Read ICTR and return the highest implemented external IPSR, or ``None``."""
-    raw = read_bytes(0xE000E004, 4)
-    if raw is None or len(raw) != 4:
-        return None
-    return armv7m_max_external_exception(int.from_bytes(raw, "little"))
+    return _core_external_exception_limit(read=read_bytes)
 
 
 def _armv6m_port_limit() -> int | None:
-    """Verify the M0 fixture's fixed vector map and explicit IRQ-count fact."""
-    if session_meta()[1] != "11.1.0":
-        return None
-    cpuid = read_bytes(0xE000ED00, 4)
-    if cpuid is None or len(cpuid) != 4:
-        return None
-    if int.from_bytes(cpuid, "little") & 0xFF0FFFF0 != 0x410CC200:
+    """Verify the Armv6-M fixed-zero vector map and explicit IRQ-count fact."""
+    cpuid = _core_cpuid(read=read_bytes)
+    if cpuid is None or cpuid & 0xFF0FFFF0 != 0x410CC200:
         return None
     base = linker_symbol_address("g_pfnVectors")
     end = linker_symbol_address("__gdr_vector_table_end")
     count = linker_symbol_address("__gdr_armv6m_irq_count")
-    if base != 0 or count != 32 or end != (16 + count) * 4:
+    if base != 0 or count is None or not 1 <= count <= 32 or end != (16 + count) * 4:
         return None
     return 16 + count - 1
 
 
 def _armv6m_vector_entry(exception_number: int) -> int | None:
-    """Read a vector from the proven M0 fixed-zero vector map, never VTOR."""
-    if not 0 < exception_number <= 47 or armv6m_exception_number_kind(
-        exception_number
-    ) in ("thread", "invalid"):
-        return None
-    raw = read_bytes(4 * exception_number, 4)
-    if raw is None or len(raw) != 4:
-        return None
-    value = int.from_bytes(raw, "little")
-    return value & ~1 if value & 1 else None
+    return _core_armv6m_vector_entry(exception_number, read=read_bytes)
 
 
 def _vector_entry(exception_number: int) -> int | None:
-    """Return the current vector-table target for one exception number."""
-    raw_vtor = read_bytes(0xE000ED08, 4)
-    if raw_vtor is None or len(raw_vtor) != 4 or exception_number <= 0:
-        return None
-    vtor = int.from_bytes(raw_vtor, "little")
-    raw_entry = read_bytes(vtor + 4 * exception_number, 4)
-    if raw_entry is None or len(raw_entry) != 4:
-        return None
-    entry = int.from_bytes(raw_entry, "little")
-    return entry & ~1 if entry else None
+    return _core_armv7m_vector_entry(exception_number, read=read_bytes)
 
 
 def _scheduler_running() -> bool | None:
@@ -281,42 +154,6 @@ def _scheduler_running() -> bool | None:
     if value is None:
         return None
     return value != 0
-
-
-def _exception_guard(
-    exception_number: int, pc: int, isa: str = "armv7-m"
-) -> str | None:
-    """Refuse exception frames whose interrupted PC is not a proven resume PC."""
-    del pc
-    classifier = (
-        armv6m_exception_number_kind
-        if isa == "armv6-m"
-        else armv7m_exception_number_kind
-    )
-    kind = classifier(exception_number)
-    if kind == "invalid":
-        return "exception-number-invalid"
-    if kind == "scheduler":
-        return "scheduler-transition-unproven"
-    if kind == "fault":
-        return "exception-frame-type-unproven"
-    if kind == "system":
-        return "exception-number-unverified"
-    return None
-
-
-def _capacity_exception_guard(max_exception: int, isa: str = "armv7-m"):
-    """Return a guard that refuses external IDs beyond target ICTR capacity."""
-
-    def guard(exception_number: int, pc: int) -> str | None:
-        reason = _exception_guard(exception_number, pc, isa)
-        if reason is not None:
-            return reason
-        if exception_number >= 16 and exception_number > max_exception:
-            return "exception-number-unimplemented"
-        return None
-
-    return guard
 
 
 def _task_segment(task: FreeRtosTask, low: int, high: int) -> StackSegment:
@@ -375,7 +212,7 @@ def _scheduler_live_decision(
                 reason=profile_reason,
                 message=(
                     "the compiled scheduler transition does not match the "
-                    "verified Arm Cortex-M3 profile"
+                    "verified Armv7-M (ARM_CM3) profile"
                 ),
             )
         return None
@@ -661,110 +498,35 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         segments = [task_segment]
         current_segment = task_segment.ident
         if handler_mode:
-            if selection.isa not in ("armv6-m", "armv7-m"):
-                return _stop(
-                    "unsupported-exception-model",
-                    "handler-mode seeds require a verified Armv6-M/Armv7-M model",
-                )
-            guard_reason = _exception_guard(
-                seed.exception_number, seed.pc, selection.isa
+            setup = prepare_arm_handler_unwind(
+                seed,
+                selection.isa,
+                scheduler_running=_scheduler_running,
+                irq_stack_bounds=_irq_stack_bounds,
+                irq_stack_source="linker:__gdr_irq_stack_low..__gdr_irq_stack_top",
+                capacity_reader=(
+                    _armv6m_port_limit
+                    if selection.isa == "armv6-m"
+                    else _external_exception_limit
+                ),
+                stkalign_reader=_ccr_stkalign,
+                vector_entry_reader=(
+                    _armv6m_vector_entry
+                    if selection.isa == "armv6-m"
+                    else _vector_entry
+                ),
+                guard_fn=_exception_guard,
+                capacity_guard_factory=_capacity_exception_guard,
             )
-            if guard_reason == "scheduler-transition-unproven":
-                return _stop(
-                    guard_reason,
-                    "the stop is inside the scheduler's SVC/PendSV transition path",
-                )
-            if guard_reason == "exception-frame-type-unproven":
-                return _stop(
-                    guard_reason,
-                    "a synchronous fault frame does not name a proven resume PC",
-                )
-            if guard_reason == "exception-number-unverified":
-                return _stop(
-                    guard_reason,
-                    "the live exception number is architecturally valid but "
-                    "outside the verified external-IRQ proof scope",
-                )
-            if guard_reason == "exception-number-invalid":
-                return _stop(
-                    guard_reason,
-                    "the live IPSR names no architecturally valid exception",
-                )
-            running_scheduler = _scheduler_running()
-            if running_scheduler is None:
-                return _stop(
-                    "scheduler-state-unavailable",
-                    "xSchedulerRunning is not readable; task ownership is unproven",
-                )
-            if not running_scheduler:
-                return _stop(
-                    "scheduler-not-running",
-                    "handler mode without a running scheduler has no task owner",
-                )
-            irq_bounds = _irq_stack_bounds()
-            if irq_bounds is None:
-                return _stop(
-                    "exception-stack-bounds-unavailable",
-                    "no explicit linker/port symbols define the interrupt stack span",
-                )
-            irq_low, irq_high = irq_bounds
-            if not irq_low <= seed.sp <= irq_high:
-                return _stop(
-                    "exception-stack-outside-bounds",
-                    "the live MSP is outside the linker-owned interrupt stack",
-                )
-            capacity = (
-                _armv6m_port_limit()
-                if selection.isa == "armv6-m"
-                else _external_exception_limit()
-            )
-            if capacity is None:
-                return _stop(
-                    "exception-capacity-unavailable",
-                    "the target's implemented external interrupt capacity is not readable",
-                )
-            if seed.exception_number >= 16 and seed.exception_number > capacity:
-                return _stop(
-                    "exception-number-unimplemented",
-                    "the live IPSR names an external exception beyond the target's "
-                    "implemented interrupt capacity",
-                )
-            alignment = True if selection.isa == "armv6-m" else _ccr_stkalign()
-            if alignment is None:
-                return _stop(
-                    "exception-alignment-unavailable",
-                    "CCR.STKALIGN is not readable; the frame layout is unproven",
-                )
-            stkalign = alignment
-            exception_segment = StackSegment(
-                ident=f"exception:{seed.exception_number}",
-                owner=f"exception:{seed.exception_number}",
-                low=irq_low,
-                high=irq_high,
-                source="linker:__gdr_irq_stack_low..__gdr_irq_stack_top",
-                stack="main",
-                kind="exception",
-            )
-            segments.append(exception_segment)
-            current_segment = exception_segment.ident
-            entry = (
-                _armv6m_vector_entry(seed.exception_number)
-                if selection.isa == "armv6-m"
-                else _vector_entry(seed.exception_number)
-            )
-            if entry is not None and entry == seed.pc:
-                seed = replace(seed, at_exception_entry=True)
-            exception_detector = (
-                armv6m_exception_return_candidate
-                if selection.isa == "armv6-m"
-                else armv7m_exception_return_candidate
-            )
-            exception_hook = (
-                armv6m_exception_transition
-                if selection.isa == "armv6-m"
-                else armv7m_exception_transition
-            )
-            exception_guard = _capacity_exception_guard(capacity, selection.isa)
+            if isinstance(setup, tuple):
+                return _stop(setup[0], setup[1])
+            seed = setup.seed
+            stkalign = setup.stkalign
+            segments.append(setup.exception_segment)
+            current_segment = setup.exception_segment.ident
+            exception_detector = setup.exception_detector
+            exception_hook = setup.exception_hook
+            exception_guard = setup.exception_guard
 
     exit_pc = _exit_pc()
     if seed.source != "unstarted" and exit_pc is not None:

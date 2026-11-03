@@ -14,8 +14,8 @@ from core.commands import (
     add_watch,
     complete_command_tree,
     complete_watch,
+    invoke_backtrace_command,
     remove_watch,
-    render_backtrace,
     render_heap,
     render_heap_dump,
     render_heap_dump_options,
@@ -138,7 +138,7 @@ def _tasks_list_help() -> CommandHelp:
             ("Affinity", "SMP core-affinity mask, when present."),
             (
                 "PC",
-                "Last PC as <symbol+offset>, proven from the saved context frame (Cortex-M and RISC-V ports). N/A when no proof admits it.",
+                "Last PC as <symbol+offset>, proven from the saved context frame (Arm M-profile and RISC-V ports). N/A when no proof admits it.",
             ),
             ("Addr", "Task control block address; the row identity."),
         ),
@@ -386,9 +386,10 @@ def _backtrace_help() -> CommandHelp:
         configuration=(
             "The firmware must retain an ELF symbol table and applicable unwind data (ARM EHABI or DWARF CFI), or compile frame-pointer records.",
             "Task stack bounds must be retained, for example with configRECORD_STACK_HIGH_ADDRESS.",
+            "Handler-mode IRQ unwinding requires linker-exported interrupt stack bounds (__gdr_irq_stack_low and __gdr_irq_stack_top); Armv6-M also requires g_pfnVectors, __gdr_vector_table_end and __gdr_armv6m_irq_count.",
         ),
         limitations=(
-            "Cortex-M33 FPU/TrustZone context variants are not verified.",
+            "Armv8-M Mainline FPU/TrustZone context variants are not verified.",
             "Initial registers alone do not prove an unstarted task; repeated PC/SP pairs remain partial loops.",
             "A frame-pointer record is used only when alignment, stack bounds, progress and the return PC validate.",
             "The target stays halted and GDR never calls inferior code or writes target memory.",
@@ -882,31 +883,9 @@ def _invoke_command(argument: str) -> None:
 
 def _invoke_backtrace(argument: str) -> None:
     """Parse ``backtrace <task> [--max-depth N]`` without touching target state."""
-    words = argument.split(None, 1)
-    if len(words) != 2 or not words[1].strip():
-        warn("usage: freertos backtrace <task> [--max-depth N]")
-        return
-    rest = words[1].strip()
-    max_depth = 32
-    marker = rest.rfind("--max-depth")
-    if marker >= 0:
-        option = rest[marker:].split()
-        if len(option) != 2:
-            warn("usage: freertos backtrace <task> [--max-depth N]")
-            return
-        try:
-            max_depth = int(option[1])
-        except ValueError:
-            warn(f"invalid --max-depth: {option[1]}")
-            return
-        rest = rest[:marker].strip()
-    if not rest:
-        warn("usage: freertos backtrace <task> [--max-depth N]")
-        return
-    if max_depth < 1 or max_depth > 64:
-        warn("--max-depth must be between 1 and 64")
-        return
-    render_backtrace(rest, max_depth)
+    invoke_backtrace_command(
+        argument, "usage: freertos backtrace <task> [--max-depth N]"
+    )
 
 
 def _command_vocabulary() -> list[str]:
