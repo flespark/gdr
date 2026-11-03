@@ -183,11 +183,16 @@ linker-owned MSP bounds. `core/unwind_arm.py` shares the basic eight-word frame
 layout while keeping ISA exception policies explicit;
 Armv6-M has a six-bit IPSR and mandatory 8-byte entry alignment, while Armv7-M
 has a nine-bit IPSR and CCR.STKALIGN-controlled alignment. Both require readable
-xPSR/MSP/PSP, running-scheduler ownership and linker-exported MSP bounds
-(`__gdr_irq_stack_low`, `__gdr_irq_stack_top`). Armv7-M requires ICTR capacity. Armv6-M
-requires Cortex-M0 CPUID (`0x410CC200`), a fixed-zero
-vector table (`g_pfnVectors`), its end symbol (`__gdr_vector_table_end`) and an explicit
-IRQ-count linker symbol (`__gdr_armv6m_irq_count`, 1..32); missing or
+xPSR/MSP/PSP, running-scheduler ownership and a proven MSP span resolved from
+explicit `__gdr_irq_stack_low`/`__gdr_irq_stack_top` overrides, standard
+CMSIS/toolchain symbols (`__StackLimit`..`__StackTop`, `_sstack`..`_estack`),
+dedicated ELF stack sections (`.irq_stack`, `.isr_stack`, `.stack`), or the
+vector-table initial MSP paired with a non-overlapping halted MSP. Armv7-M
+requires ICTR capacity. Armv6-M requires Cortex-M0 CPUID (`0x410CC200`), a
+fixed-zero vector table (`g_pfnVectors` or `__Vectors` at `0x0`), and external
+IRQ capacity (1..32) resolved from explicit `__gdr_vector_table_end` and
+`__gdr_armv6m_irq_count` overrides, `__Vectors_End`, `.isr_vector` section size,
+or the first executable symbol after `0x0`; missing or
 conflicting evidence fails closed. Cortex-M0+ CPUs, relocated vector tables and
 unproven Armv6-M vector configurations have no live acceptance. Capacity upper bound 47 does not
 establish a live handler for every IRQ; only exception numbers 24/25 have

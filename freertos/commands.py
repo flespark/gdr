@@ -386,7 +386,7 @@ def _backtrace_help() -> CommandHelp:
         configuration=(
             "The firmware must retain an ELF symbol table and applicable unwind data (ARM EHABI or DWARF CFI), or compile frame-pointer records.",
             "Task stack bounds must be retained, for example with configRECORD_STACK_HIGH_ADDRESS.",
-            "Handler-mode IRQ unwinding requires linker-exported interrupt stack bounds (__gdr_irq_stack_low and __gdr_irq_stack_top); Armv6-M also requires g_pfnVectors, __gdr_vector_table_end and __gdr_armv6m_irq_count.",
+            "Handler-mode IRQ unwinding resolves interrupt stack bounds from standard linker symbols (__StackLimit..__StackTop, _sstack.._estack), ELF stack sections (.irq_stack, .isr_stack, .stack), or the vector-table initial MSP paired with the halted MSP (with __gdr_irq_stack_low/__gdr_irq_stack_top as optional overrides); Armv6-M vector capacity resolves from .isr_vector, __Vectors_End, or the first code symbol after 0x0 (with __gdr_vector_table_end/__gdr_armv6m_irq_count as optional overrides).",
         ),
         limitations=(
             "Armv8-M Mainline FPU/TrustZone context variants are not verified.",

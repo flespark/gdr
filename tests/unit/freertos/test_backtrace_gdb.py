@@ -664,6 +664,56 @@ def test_irq_bounds_require_both_explicit_linker_symbols(monkeypatch):
     assert bridge._irq_stack_bounds() is None
 
 
+def test_irq_bounds_agnostic_tiers_resolve_cmsis_sections_and_vector_msp(monkeypatch):
+    # Tier 2: CMSIS / GCC standard stack symbols (__StackLimit..__StackTop).
+    symbols = {"__StackLimit": 0x2001C000, "__StackTop": 0x20020000}
+    monkeypatch.setattr(bridge, "linker_symbol_address", lambda name: symbols.get(name))
+    assert bridge._irq_stack_bounds() == (0x2001C000, 0x20020000)
+
+    # Tier 3: Dedicated ELF stack section (.stack) when only _estack is exported.
+    symbols = {"_estack": 0x20020000}
+    elf = SimpleNamespace(
+        symbol_address=lambda _name: None,
+        section_bounds=lambda name: (
+            (0x2001E000, 0x20020000) if name == ".stack" else None
+        ),
+    )
+    assert bridge._irq_stack_bounds(elf=elf) == (0x2001E000, 0x20020000)
+
+    # Tier 4a: Vector-table word 0 (via VTOR) + standard low symbol (_sstack).
+    symbols = {"_sstack": 0x2001F000}
+    memory = _WordMemory({0xE000ED08: 0x08000000, 0x08000000: 0x20020000})
+    monkeypatch.setattr(bridge, "read_bytes", memory.read)
+    assert bridge._irq_stack_bounds(isa="armv7-m") == (0x2001F000, 0x20020000)
+
+    # Tier 4b: Vector-table word 0 + halted live_msp with non-overlapping task stack.
+    symbols = {}
+    assert bridge._irq_stack_bounds(
+        isa="armv7-m",
+        live_msp=0x2001FF80,
+        task_bounds=(0x20001000, 0x20002000),
+    ) == (0x2001FF80, 0x20020000)
+
+    # Armv6-M vector word 0 at 0x0 + halted live_msp.
+    memory_v6m = _WordMemory({0x0: 0x20008000})
+    monkeypatch.setattr(bridge, "read_bytes", memory_v6m.read)
+    assert bridge._irq_stack_bounds(
+        isa="armv6-m",
+        live_msp=0x20007F00,
+        task_bounds=(0x20001000, 0x20002000),
+    ) == (0x20007F00, 0x20008000)
+
+    # Overlap with task_bounds must fail closed.
+    assert (
+        bridge._irq_stack_bounds(
+            isa="armv7-m",
+            live_msp=0x2001FF80,
+            task_bounds=(0x2001F000, 0x20020000),
+        )
+        is None
+    )
+
+
 def _handler_session(monkeypatch, *, exception_number=24, isa="armv7-m"):
     adapter, task = _session(monkeypatch, isa=isa, smp=isa == "armv8-m.mainline")
     monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [(0, task.address)])

@@ -197,10 +197,13 @@ version declare in RTOS and ELF compilation). Kernel *config features* (SMP, hea
 manager kind, enabled IPC components) are probed automatically by symbol
 presence at startup.
 
-Cross-stack IRQ unwinding on Armv6-M / Armv7-M requires the linker script to
-export explicit MSP bounds (`__gdr_irq_stack_low`, `__gdr_irq_stack_top`);
-Armv6-M additionally requires `g_pfnVectors`, `__gdr_vector_table_end` and
-`__gdr_armv6m_irq_count`.
+Cross-stack IRQ unwinding on Armv6-M / Armv7-M resolves interrupt stack bounds
+from standard linker symbols (`__StackLimit`..`__StackTop`, `_sstack`..`_estack`),
+dedicated ELF stack sections (`.irq_stack`, `.isr_stack`, `.stack`), or the
+vector-table initial MSP (`__gdr_irq_stack_low` / `__gdr_irq_stack_top` can
+override). Armv6-M external IRQ capacity is derived from `.isr_vector`,
+`__Vectors_End`, or the first code symbol after `0x0` (`__gdr_vector_table_end`
+and `__gdr_armv6m_irq_count` can override).
 
 ## Contribute
 

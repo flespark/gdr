@@ -67,6 +67,53 @@ def test_unproven_m0_port_evidence_fails_closed(monkeypatch, changes):
     assert bridge._armv6m_port_limit() is None
 
 
+def test_m0_capacity_agnostic_tiers_resolve_without_gdr_symbols(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        bridge,
+        "read_bytes",
+        lambda address, size: (
+            (0x410CC200).to_bytes(4, "little")
+            if (address, size) == (0xE000ED00, 4)
+            else None
+        ),
+    )
+
+    # Sub-tier 2a: CMSIS __Vectors + __Vectors_End without __gdr_* symbols.
+    symbols = {"__Vectors": 0, "__Vectors_End": (16 + 28) * 4}
+    monkeypatch.setattr(bridge, "linker_symbol_address", lambda name: symbols.get(name))
+    assert bridge._armv6m_port_limit() == 16 + 28 - 1
+
+    # Sub-tier 2b: Dedicated .isr_vector section at 0x0.
+    symbols = {}
+    elf = SimpleNamespace(
+        symbol_address=lambda _name: None,
+        section_bounds=lambda name: (
+            (0, (16 + 20) * 4) if name == ".isr_vector" else None
+        ),
+        symbols=(),
+    )
+    assert bridge._armv6m_port_limit(elf=elf) == 16 + 20 - 1
+
+    # Sub-tier 2c: g_pfnVectors at 0x0 + first executable symbol after vector table.
+    symbols = {"g_pfnVectors": 0}
+    elf_code = SimpleNamespace(
+        symbol_address=lambda _name: None,
+        section_bounds=lambda _name: None,
+        symbols=(SimpleNamespace(start=(16 + 16) * 4),),
+    )
+    assert bridge._armv6m_port_limit(elf=elf_code) == 16 + 16 - 1
+
+    # Fails closed when first executable symbol is beyond max Armv6-M vector size.
+    elf_far = SimpleNamespace(
+        symbol_address=lambda _name: None,
+        section_bounds=lambda _name: None,
+        symbols=(SimpleNamespace(start=0x400),),
+    )
+    assert bridge._armv6m_port_limit(elf=elf_far) is None
+
+
 @pytest.mark.parametrize("ipsr", [0, 1, 4, 6, 12, 48, 511, -1])
 def test_invalid_fixed_vector_indices_do_not_read_memory(monkeypatch, ipsr):
     monkeypatch.setattr(

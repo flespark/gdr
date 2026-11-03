@@ -109,6 +109,7 @@ class ElfImage:
     symbols: tuple[CodeSymbol, ...] = ()
     flags: int = 0
     anchors: tuple[tuple[str, int], ...] = ()
+    nobits_sections: tuple[tuple[str, int, int], ...] = ()
 
     def symbol_address(self, name: str) -> int | None:
         """Return a defined symbol's unique address, including zero-size labels."""
@@ -120,6 +121,16 @@ class ElfImage:
         for section in self.sections:
             if section.name == name:
                 return section
+        return None
+
+    def section_bounds(self, name: str) -> tuple[int, int] | None:
+        """Return ``(low, high)`` for a named file-backed or allocated NOBITS section."""
+        for section in self.sections:
+            if section.name == name and section.data:
+                return section.address, section.address + len(section.data)
+        for sec_name, address, size in self.nobits_sections:
+            if sec_name == name and size > 0:
+                return address, address + size
         return None
 
     def section_data(self, name: str) -> bytes | None:
@@ -244,6 +255,7 @@ class ElfImage:
             return None
 
         sections: list[ElfSection] = []
+        nobits_sections: list[tuple[str, int, int]] = []
         all_headers: list[tuple[int, int, int, int, int, int, int]] = []
         for index in range(shnum):
             (
@@ -258,17 +270,17 @@ class ElfImage:
             all_headers.append(
                 (name_offset, section_type, flags, address, offset, size, link)
             )
-            if (
-                section_type == 0
-                or section_type == SHT_NOBITS
-                or name_offset >= len(names)
-            ):
+            if section_type == 0 or name_offset >= len(names):
                 continue
             end = names.find(b"\0", name_offset)
             if end < 0:
                 return None
             name = names[name_offset:end].decode("ascii", errors="replace")
             if not name or size == 0:
+                continue
+            if section_type == SHT_NOBITS:
+                if flags & 2 and address > 0:
+                    nobits_sections.append((name, address, size))
                 continue
             if offset > len(data) or size > len(data) - offset:
                 return None
@@ -298,6 +310,7 @@ class ElfImage:
             symbols=symbols,
             flags=struct.unpack_from(f"{order}I", data, 48 if is_64 else 36)[0],
             anchors=anchors,
+            nobits_sections=tuple(nobits_sections),
         )
 
     @classmethod

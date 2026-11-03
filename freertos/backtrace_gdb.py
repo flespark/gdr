@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from core.adapter import BacktraceFrame, BacktraceReport, session_meta
+from core.adapter import BacktraceFrame, BacktraceReport, active, session_meta
 from core.gdb_bridge import (
     arch_or_default,
     eval_identifier,
@@ -37,9 +37,6 @@ from core.unwind_arm_gdb import (
     arm_ccr_stkalign as _core_ccr_stkalign,
 )
 from core.unwind_arm_gdb import (
-    arm_cpuid as _core_cpuid,
-)
-from core.unwind_arm_gdb import (
     arm_external_exception_limit as _core_external_exception_limit,
 )
 from core.unwind_arm_gdb import (
@@ -54,6 +51,9 @@ from core.unwind_arm_gdb import (
 from core.unwind_arm_gdb import (
     cached_unwind_metadata,
     prepare_arm_handler_unwind,
+    resolve_arm_irq_stack_bounds,
+    resolve_arm_irq_stack_bounds_detail,
+    resolve_armv6m_vector_limit,
 )
 from core.unwind_arm_gdb import (
     live_seed_detail as _core_live_seed_detail,
@@ -110,13 +110,25 @@ def _task_bounds(task: FreeRtosTask) -> tuple[int | None, int | None, str]:
     return task.stack_base, None, "unknown"
 
 
-def _irq_stack_bounds() -> tuple[int, int] | None:
-    """Return the linker-owned MSP span, or ``None`` when it is not exported."""
-    low = linker_symbol_address("__gdr_irq_stack_low")
-    high = linker_symbol_address("__gdr_irq_stack_top")
-    if low is None or high is None or low <= 0 or high <= low:
-        return None
-    return low, high
+def _irq_stack_bounds(
+    *,
+    isa: str | None = "armv7-m",
+    elf: ElfImage | None = None,
+    live_msp: int | None = None,
+    task_bounds: tuple[int, int] | None = None,
+) -> tuple[int, int] | None:
+    """Return the resolved MSP span, or ``None`` when bounds are unproven."""
+    return resolve_arm_irq_stack_bounds(
+        symbol_lookup=linker_symbol_address,
+        read=read_bytes,
+        isa=isa,
+        elf=elf,
+        live_msp=live_msp,
+        task_bounds=task_bounds,
+    )
+
+
+_DEFAULT_IRQ_STACK_BOUNDS = _irq_stack_bounds
 
 
 def _ccr_stkalign() -> bool | None:
@@ -127,17 +139,22 @@ def _external_exception_limit() -> int | None:
     return _core_external_exception_limit(read=read_bytes)
 
 
-def _armv6m_port_limit() -> int | None:
-    """Verify the Armv6-M fixed-zero vector map and explicit IRQ-count fact."""
-    cpuid = _core_cpuid(read=read_bytes)
-    if cpuid is None or cpuid & 0xFF0FFFF0 != 0x410CC200:
-        return None
-    base = linker_symbol_address("g_pfnVectors")
-    end = linker_symbol_address("__gdr_vector_table_end")
-    count = linker_symbol_address("__gdr_armv6m_irq_count")
-    if base != 0 or count is None or not 1 <= count <= 32 or end != (16 + count) * 4:
-        return None
-    return 16 + count - 1
+def _armv6m_port_limit(*, elf: ElfImage | None = None) -> int | None:
+    """Verify the Armv6-M fixed-zero vector map and external IRQ capacity."""
+    if elf is None:
+        active_adapter = active()
+        if active_adapter is not None:
+            metadata = _unwind_metadata(active_adapter)
+            if metadata is not None:
+                elf = metadata.elf
+    return resolve_armv6m_vector_limit(
+        symbol_lookup=linker_symbol_address,
+        read=read_bytes,
+        elf=elf,
+    )
+
+
+_DEFAULT_ARMV6M_PORT_LIMIT = _armv6m_port_limit
 
 
 def _armv6m_vector_entry(exception_number: int) -> int | None:
@@ -248,17 +265,29 @@ def _scheduler_live_decision(
             reason="scheduler-handler-mode-unproven",
             message="the live SP is not the handler MSP at a scheduler transition",
         )
-    irq_bounds = _irq_stack_bounds()
+    irq_bounds = (
+        _irq_stack_bounds(
+            isa="armv7-m",
+            elf=elf,
+            live_msp=snapshot.msp,
+            task_bounds=(low, high),
+        )
+        if _irq_stack_bounds is _DEFAULT_IRQ_STACK_BOUNDS
+        else _irq_stack_bounds()
+    )
     if irq_bounds is None:
         return _SchedulerDecision(
             reason="exception-stack-bounds-unavailable",
-            message="no explicit linker/port symbols define the interrupt stack span",
+            message=(
+                "the interrupt stack span could not be resolved from symbols, "
+                "ELF sections, or vector-table initial MSP"
+            ),
         )
     irq_low, irq_high = irq_bounds
     if not irq_low <= snapshot.msp <= irq_high:
         return _SchedulerDecision(
             reason="exception-stack-outside-bounds",
-            message="the live MSP is outside the linker-owned interrupt stack",
+            message="the live MSP is outside the resolved interrupt stack span",
         )
     stkalign = _ccr_stkalign()
     if stkalign is None:
@@ -498,14 +527,34 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         segments = [task_segment]
         current_segment = task_segment.ident
         if handler_mode:
+            elf_image = metadata.elf if metadata is not None else None
+            bounds_reader = (
+                (
+                    lambda: resolve_arm_irq_stack_bounds_detail(
+                        symbol_lookup=linker_symbol_address,
+                        read=read_bytes,
+                        isa=selection.isa,
+                        elf=elf_image,
+                        live_msp=seed.sp,
+                        task_bounds=(low, high),
+                    )
+                )
+                if _irq_stack_bounds is _DEFAULT_IRQ_STACK_BOUNDS
+                else _irq_stack_bounds
+            )
+            armv6m_limit_reader = (
+                (lambda: _armv6m_port_limit(elf=elf_image))
+                if _armv6m_port_limit is _DEFAULT_ARMV6M_PORT_LIMIT
+                else _armv6m_port_limit
+            )
             setup = prepare_arm_handler_unwind(
                 seed,
                 selection.isa,
                 scheduler_running=_scheduler_running,
-                irq_stack_bounds=_irq_stack_bounds,
+                irq_stack_bounds=bounds_reader,
                 irq_stack_source="linker:__gdr_irq_stack_low..__gdr_irq_stack_top",
                 capacity_reader=(
-                    _armv6m_port_limit
+                    armv6m_limit_reader
                     if selection.isa == "armv6-m"
                     else _external_exception_limit
                 ),

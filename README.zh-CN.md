@@ -192,9 +192,11 @@ add_compile_options(-O0 -ggdb3)
 内核 *配置特性* （SMP、堆管理器类型、已启用的 IPC 组件）会在启动时通过符号是否
 存在自动探测。
 
-Armv6-M / Armv7-M 跨栈 IRQ 回溯需要链接脚本导出显式 MSP 栈边界符号
-（`__gdr_irq_stack_low`、`__gdr_irq_stack_top`）；Armv6-M 额外需要
-`g_pfnVectors`、`__gdr_vector_table_end` 与 `__gdr_armv6m_irq_count`。
+Armv6-M / Armv7-M 跨栈 IRQ 回溯支持从标准链接符号（`__StackLimit`..`__StackTop`、
+`_sstack`..`_estack`）、ELF 栈段（`.irq_stack`、`.isr_stack`、`.stack`）或向量表
+初始 MSP 自动推导中断栈边界（也可通过 `__gdr_irq_stack_low` / `__gdr_irq_stack_top`
+显式覆盖）；Armv6-M 外部中断容量支持从 `.isr_vector`、`__Vectors_End` 或 `0x0` 后首个
+代码符号自动推导（也可通过 `__gdr_vector_table_end` 与 `__gdr_armv6m_irq_count` 覆盖）。
 
 ## 贡献
 
