@@ -43,7 +43,7 @@ def _armv8m_mainline() -> SavedStackContext:
         )
         + ((0, 48), (1, 52), (2, 56), (3, 60), (12, 64)),
         pc_offset=72,
-        lr_offset=4,
+        lr_offset=68,
         status_offset=76,
         sp_offset=80,
         context_span=(0, 80),
