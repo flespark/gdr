@@ -32,8 +32,7 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   unwind_cfi.py        bounded DWARF CFI tables and encoded-pointer decoding
   unwind_expr.py       bounded integer CFI expressions and guarded memory reads
   unwind_segments.py   typed stack segments, transition evidence and exception budgets
-  unwind_arm.py        shared Arm M-profile frame recovery and Armv6-M/Armv7-M rules
-  unwind_arm_gdb.py    GDB-side live register seeds, Arm SCB/vector reads and handler setup
+  unwind_arm.py        Arm M-profile frame recovery, Armv6-M/Armv7-M rules, SCB/vector reads and handler setup
   unwind_ehabi.py      bounded ARM EHABI tables and virtual-register unwinding
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            ABI layouts + build_layouts(config) + version/probe policy

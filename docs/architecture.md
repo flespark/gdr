@@ -40,10 +40,9 @@ duplicating what GDB already displays well. Design rationale lives in
 | `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`backtrace`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
 | `commands.py` | Shared collectors and guarded text renderers, the stop-time watch set, and convenience functions (`$gdr_task`, `$gdr_object`, `$gdr_json`). |
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
-| `unwind.py` | Bounded task unwind driver: seed frames, EHABI/CFI/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. Pure; no GDB import. |
+| `unwind.py` | Bounded task unwind driver: seed frames, live register seed dispatch, ELF metadata cache, EHABI/CFI/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
 | `unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
-| `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery plus Armv6-M six-bit IPSR/mandatory alignment and Armv7-M nine-bit IPSR/CCR.STKALIGN/ICTR policies. |
-| `unwind_arm_gdb.py` | GDB-side live register seeds, Arm SCB/VTOR/vector-table readers and handler-mode unwind setup. |
+| `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
 | `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
 | `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence and `RegisterConvention` contracts from ELF attributes; contains no RTOS policy. |
 | `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, common slot decoding and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. |

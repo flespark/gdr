@@ -187,14 +187,16 @@ def test_symbols_and_source_use_lookup_pc_without_changing_resume_pc(monkeypatch
 
 
 def test_saved_pc_setup_reset_and_live_riscv_seed(monkeypatch):
-    from core.unwind_arm_gdb import (
+    from core.unwind import (
+        cached_unwind_metadata,
+        live_seed,
+    )
+    from core.unwind_arm import (
         arm_ccr_stkalign,
         arm_cpuid,
         arm_external_exception_limit,
         armv6m_vector_entry,
         armv7m_vector_entry,
-        cached_unwind_metadata,
-        live_seed,
     )
 
     adapter = SimpleNamespace(version="4.0.5")

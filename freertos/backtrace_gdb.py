@@ -23,40 +23,45 @@ from core.gdb_bridge import (
     source_location_at,
     value_address,
 )
-from core.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
+from core.unwind import (
+    ElfImage,
+    SeedFrame,
+    UnwindMetadata,
+    cached_unwind_metadata,
+    unwind_chain,
+)
+from core.unwind import (
+    live_seed_detail as _core_live_seed_detail,
+)
+from core.unwind_arm import (
+    ArmSnapshot as _ArmSnapshot,
+)
 from core.unwind_arm import (
     arm_capacity_exception_guard as _capacity_exception_guard,
 )
 from core.unwind_arm import (
-    arm_exception_guard as _exception_guard,
-)
-from core.unwind_arm_gdb import (
-    ArmSnapshot as _ArmSnapshot,
-)
-from core.unwind_arm_gdb import (
     arm_ccr_stkalign as _core_ccr_stkalign,
 )
-from core.unwind_arm_gdb import (
+from core.unwind_arm import (
+    arm_exception_guard as _exception_guard,
+)
+from core.unwind_arm import (
     arm_external_exception_limit as _core_external_exception_limit,
 )
-from core.unwind_arm_gdb import (
+from core.unwind_arm import (
     arm_snapshot as _core_arm_snapshot,
 )
-from core.unwind_arm_gdb import (
+from core.unwind_arm import (
     armv6m_vector_entry as _core_armv6m_vector_entry,
 )
-from core.unwind_arm_gdb import (
+from core.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
 )
-from core.unwind_arm_gdb import (
-    cached_unwind_metadata,
+from core.unwind_arm import (
     prepare_arm_handler_unwind,
     resolve_arm_irq_stack_bounds,
     resolve_arm_irq_stack_bounds_detail,
     resolve_armv6m_vector_limit,
-)
-from core.unwind_arm_gdb import (
-    live_seed_detail as _core_live_seed_detail,
 )
 from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask, find_task, value_to_task

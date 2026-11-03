@@ -24,12 +24,10 @@ from core.unwind import (
     ElfImage,
     SeedFrame,
     UnwindMetadata,
+    cached_unwind_metadata,
     unwind_chain,
 )
-from core.unwind_arm_gdb import (
-    cached_unwind_metadata,
-)
-from core.unwind_arm_gdb import (
+from core.unwind import (
     live_seed as _core_live_seed,
 )
 from rtthread.adapter import value_to_thread

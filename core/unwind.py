@@ -13,8 +13,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
-from .cpus import convention_for_arch
+from .cpus import RISCV_CONVENTION, convention_for_arch
+from .gdb_bridge import loaded_object_path
 from .unwind_cfi import (
     CfiRow,
     CfiTable,
@@ -1006,3 +1008,101 @@ def read_block(
     if raw is None or len(raw) != size:
         return None
     return raw
+
+
+try:
+    import gdb
+except ImportError:
+    gdb = None  # type: ignore[assignment]
+
+RISCV_LIVE_REGISTERS: dict[int, str] = dict(RISCV_CONVENTION.live_registers)
+
+
+def cached_unwind_metadata(
+    adapter: Any,
+    *,
+    path_reader: Callable[[], str | None] = loaded_object_path,
+) -> UnwindMetadata | None:
+    """Parse the loaded image's unwind tables once per ELF path."""
+    path = path_reader()
+    if path is None:
+        return None
+    cache = getattr(adapter, "_unwind_cache", None)
+    if cache is not None and cache[0] == path:
+        return cache[1]
+    elf = ElfImage.from_path(path)
+    metadata = UnwindMetadata.from_elf(elf) if elf is not None else None
+    adapter._unwind_cache = (path, metadata)
+    return metadata
+
+
+def live_seed_detail(
+    arch: str,
+    isa: str | None = None,
+    *,
+    root_pc: int | None = None,
+    require_exception_registers: bool = True,
+    gdb_module: Any = None,
+    snapshot_reader: Callable[[], tuple[Any, str]] | None = None,
+) -> tuple[SeedFrame | None, str]:
+    """Read the selected core's live registers without driving the target.
+
+    ``isa`` is the selected profile evidence. A live handler seed requires it
+    so architecture-specific exception-number rules are applied only to the
+    matching profile; an unknown profile is refused rather than assumed.
+    """
+    active_gdb = gdb if gdb_module is None else gdb_module
+    if arch.startswith("arm"):
+        from .unwind_arm import arm_live_seed_detail
+
+        return arm_live_seed_detail(
+            isa,
+            root_pc=root_pc,
+            require_exception_registers=require_exception_registers,
+            gdb_module=active_gdb,
+            snapshot_reader=snapshot_reader,
+        )
+    if active_gdb is None:
+        return None, "live-registers-unavailable"
+    try:
+        frame = active_gdb.newest_frame()
+        pc = int(frame.pc())
+        sp = int(frame.read_register("sp"))
+    except (active_gdb.error, AttributeError, RuntimeError, TypeError):
+        return None, "live-registers-unavailable"
+    registers: dict[int, int] = {}
+    for register, name in RISCV_LIVE_REGISTERS.items():
+        try:
+            registers[register] = int(frame.read_register(name))
+        except (active_gdb.error, AttributeError, RuntimeError, TypeError):  # noqa: PERF203
+            return None, "live-registers-unavailable"
+    registers[2] = sp
+    return (
+        SeedFrame(
+            pc=pc,
+            sp=sp,
+            regs=registers,
+            source="current",
+            root_pc=root_pc,
+        ),
+        "ok",
+    )
+
+
+def live_seed(
+    arch: str,
+    isa: str | None = None,
+    *,
+    root_pc: int | None = None,
+    require_exception_registers: bool = True,
+    gdb_module: Any = None,
+) -> SeedFrame | None:
+    """Compatibility wrapper returning only the decoded live seed."""
+    seed, _reason = live_seed_detail(
+        arch,
+        isa,
+        root_pc=root_pc,
+        require_exception_registers=require_exception_registers,
+        gdb_module=gdb_module,
+    )
+    return seed

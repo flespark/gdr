@@ -144,7 +144,6 @@ source = [
     "core.unwind_meta",
     "core.unwind_segments",
     "core.unwind_arm",
-    "core.unwind_arm_gdb",
     "core.cpus",
     "core.stack_frame_parser",
     "core.unwind_cfi",
