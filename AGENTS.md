@@ -26,6 +26,7 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   unwind.py            bounded task unwind driver (seed, stack/PC validation, stop reasons)
   unwind_meta.py       bounded ELF sections, code symbols and binary encodings
   unwind_leaf.py       bounded instruction proofs for stack-neutral scalar leaf returns
+  insn_arm.py          bounded ARM/A32 instruction decoder for code-evidence checks
   cpus.py              bounded Arm/RISC-V CPU attributes, conventions and ISA/ABI evidence
   stack_frame_parser.py validated task-frame profiles and common slot decoding
   insn_riscv.py        bounded RISC-V instruction decoding and code-range evidence
@@ -194,6 +195,7 @@ belongs in commit messages and run artifacts, not in repository docs.
 - Python 3.10+, PEP8, type hints, Google-style docstrings.
 - Files <= 1500 lines; split when approaching the limit.
 - Relative imports within packages.
+- Instruction-behaviour decisions in production logic must use decoder mnemonics and operands; direct matching of raw instruction encodings belongs only in architecture decoders and decoder tests.
 - No external runtime dependencies (GDB Python API only). Dev tools
   (ruff/pytest/pytest-cov/pre-commit/pexpect) live in `[dependency-groups].dev`.
   `pexpect` drives the persistent GDB session in tests.

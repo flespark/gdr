@@ -26,6 +26,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from core.insn_arm import decode_arm_word
+from core.insn_riscv import EvidenceError, riscv_code_decoder
 from core.stack_frame_parser import StackContextSelection
 
 Reader = Callable[[int, int], "bytes | None"]
@@ -118,24 +120,18 @@ def calls_switch(
         return False
     word = _word(insn, endian)
     if call == "arm_bl":
-        if (word >> 28) == 0xF or ((word >> 25) & 0x7) != 0x5 or not (word >> 24) & 1:
-            return False
-        imm = word & 0xFFFFFF
-        if imm & 0x800000:
-            imm -= 0x1000000
-        return insn_addr + 8 + (imm << 2) == switch_addr
+        decoded = decode_arm_word(insn_addr, word)
+        return (
+            decoded.mnemonic == "bl"
+            and decoded.operands.get("cond") != "nv"
+            and decoded.operands.get("target") == switch_addr
+        )
     # rv64_jal
-    if word & 0x7F != 0x6F or (word >> 7) & 0x1F != 1:
+    try:
+        decoded = riscv_code_decoder(word, 4, insn_addr, 64)
+    except EvidenceError:
         return False
-    imm = (
-        (((word >> 31) & 1) << 20)
-        | (((word >> 12) & 0xFF) << 12)
-        | (((word >> 20) & 1) << 11)
-        | (((word >> 21) & 0x3FF) << 1)
-    )
-    if imm & (1 << 20):
-        imm -= 1 << 21
-    return insn_addr + imm == switch_addr
+    return decoded[0] == "jal" and decoded[1] == 1 and decoded[2] == switch_addr
 
 
 def decode_saved_pc(

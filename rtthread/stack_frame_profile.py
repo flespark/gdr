@@ -5,6 +5,12 @@ from __future__ import annotations
 import hashlib
 
 from core.cpus import Cpu, cpu_of
+from core.insn_arm import (
+    decode_arm_prefix,
+    decode_arm_stream,
+    expect_arm_stream,
+    semantic_arm_stream_token,
+)
 from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
@@ -13,7 +19,7 @@ from core.insn_riscv import (
     riscv_slot_map,
     riscv_stack_frame_size,
 )
-from core.insn_thumb import decode_thumb_stream
+from core.insn_thumb import decode_thumb, decode_thumb_stream, semantic_token
 from core.stack_frame_parser import (
     SavedStackContext,
     StackContextSelection,
@@ -209,25 +215,30 @@ def _thumb_signature(
     span = _code_span(elf, name, end_name)
     if span is None or elf.endian != "little":
         return None
-    tokens, _reason = decode_thumb_stream(elf, name, *span, 256)
-    if tokens is None:
-        return None
     if name == "rt_hw_stack_init":
-        terminal = next(
-            (
-                i
-                for i, token in enumerate(tokens)
-                if token == "bx:rm=14"
-                or (
-                    token.startswith("pop:reglist=")
-                    and int(token.split("=", 1)[1]) & 0x100
-                )
-            ),
-            None,
-        )
-        if terminal is None:
+        tokens = []
+        address = span[0]
+        for _ in range(256):
+            instruction = decode_thumb(elf, address, span[1])
+            if isinstance(instruction, str) or instruction.mnemonic == "other":
+                return None
+            tokens.append(semantic_token(elf, instruction))
+            address += instruction.size
+            if instruction.mnemonic == "bx" and instruction.operands.get("rm") == 14:
+                break
+            if (
+                instruction.mnemonic == "pop"
+                and int(instruction.operands.get("reglist", 0)) & 0x100
+            ):
+                break
+        else:
             return None
-        tokens = tokens[: terminal + 1]
+    else:
+        tokens, _reason = decode_thumb_stream(
+            elf, name, *span, 256, reject_unknown=True
+        )
+        if tokens is None:
+            return None
     return hashlib.sha256("\n".join(tokens).encode()).hexdigest()
 
 
@@ -237,22 +248,22 @@ def _armv7m_verify_context(elf: ElfImage) -> bool:
         (
             "rt_hw_context_switch",
             "PendSV_Handler",
-            "0f5868d9842be4fa04dead19d1ff65be8c8579926d57e82068a4120d9fe9158a",
+            "0fb31e58d24712ec03e0ef2ab25044f14925b2d6f82e03a5b0d0e1c1038999af",
         ),
         (
             "PendSV_Handler",
             "rt_hw_context_switch_to",
-            "bc11661a5500e38b76176842799d58512d334fe0eba33189f4be10de33859221",
+            "346c3e28784a01c733fcfd138d50ff1ec2f986f49019ee30993f0b48b1105929",
         ),
         (
             "rt_hw_context_switch_to",
             "rt_hw_interrupt_thread_switch",
-            "646b53a98a601f62c7f533e62c8e0b2b366340fdd1870fb8b048b57f029aaa6e",
+            "a96bcbe0d18d1975ddbac7110ded93eff89ec171287baac86f8a427b798701fa",
         ),
         (
             "rt_hw_stack_init",
             None,
-            "f90ee4e9a5cb03bf03e74ced031313e0add3bc824278e0b51ea0ae51fc0f0e01",
+            "ed6e5dbbb9f844cacc4493d2fbad3c097da62733dee7e355dcb90183ebfb9425",
         ),
     )
     return all(
@@ -267,22 +278,22 @@ def _armv6m_verify_context(elf: ElfImage) -> bool:
         (
             "rt_hw_context_switch",
             "PendSV_Handler",
-            "ff798ab02ae631b7559c5c106a24906fd25c40b75f5771d6f99f885ec46c1a4d",
+            "87db45fbb0e7551a9788ebf6abf2ee923827614e9dce8fdba8835d11a2374360",
         ),
         (
             "PendSV_Handler",
             "rt_hw_context_switch_to",
-            "555c8712588b4f2f9ddfdf8301394f415736b9b9c79c08e69d4cd7450acaef7c",
+            "83f8cbb34a7c61a1b39cd0fe9aab2922fe32aa3091fd184fbc1f8eb304d389f5",
         ),
         (
             "rt_hw_context_switch_to",
             "rt_hw_interrupt_thread_switch",
-            "bc41615ad8dfa795e7ff2496e9374e08a670004945044a4163e02f0fa8a20a62",
+            "419e16e8cda9fdccb4ae3091adf6ec90d1ddbee5fd6a39c21033e35948617736",
         ),
         (
             "rt_hw_stack_init",
             None,
-            "3a0784f5d50ebe9b6f8565cae682076d64fb11783572179dac4812919c66cee7",
+            "d41d8887bba3e752e52a4f8cca03ef8e3d38edf3ced29d6dbf4a670027ee5b44",
         ),
     )
     return all(
@@ -291,84 +302,138 @@ def _armv6m_verify_context(elf: ElfImage) -> bool:
     )
 
 
-def _arm_words_match(elf: ElfImage, name: str, expected: tuple[int | str, ...]) -> bool:
-    """Match exact ARM words and symbol-relative unconditional branch operands."""
-    start = elf.symbol_address(name)
-    if start is None or start & 3 or elf.endian != "little":
+def _arm_instructions_match(
+    elf: ElfImage,
+    name: str,
+    expected: tuple[tuple[str, dict[str, int | bool | str]], ...],
+    end_name: str | None = None,
+) -> bool:
+    """Match a bounded A32 function using decoded mnemonics and operands."""
+    span = _code_span(elf, name, end_name)
+    if span is None:
         return False
-    for index, operand in enumerate(expected):
-        address = start + index * 4
-        if not elf.is_code(address + 3):
-            return False
-        raw = elf.read_at(address, 4)
-        if raw is None:
-            return False
-        word = int.from_bytes(raw, "little")
-        if isinstance(operand, int):
-            if word != operand:
-                return False
-        else:
-            operation, symbol = operand.split(":", 1)
-            opcode = 0xEB if operation == "call" else 0xEA
-            displacement = word & 0xFFFFFF
-            if displacement & 0x800000:
-                displacement -= 1 << 24
-            if (
-                word >> 24 != opcode
-                or address + 8 + displacement * 4 != elf.symbol_address(symbol)
-            ):
-                return False
-    return True
+    instructions = decode_arm_prefix(elf, *span, len(expected))
+    return instructions is not None and expect_arm_stream(
+        instructions, expected, elf=elf
+    )
 
 
 def _armv7a_verify_context(elf: ElfImage) -> bool:
     """Prove the integer LWP-header/SMP port without accepting FPU or user seeds."""
     switch = (
-        0xE92D4000,
-        0xE92D5FFF,
-        0xE10F4000,
-        0xE31E0001,
-        0x13844020,
-        0xE92D0010,
-        0xE94D6000,
-        0xE24DD008,
-        0xE580D000,
-        0xE591D000,
-        0xE1A00002,
-        "call:rt_cpus_lock_status_restore",
-        "jump:rt_hw_context_switch_exit",
+        (
+            "stmdb",
+            {
+                "cond": "al",
+                "rn": 13,
+                "wback": True,
+                "user_bank": False,
+                "reglist": 0x4000,
+            },
+        ),
+        (
+            "stmdb",
+            {
+                "cond": "al",
+                "rn": 13,
+                "wback": True,
+                "user_bank": False,
+                "reglist": 0x5FFF,
+            },
+        ),
+        ("mrs", {"cond": "al", "rd": 4, "psr": "cpsr"}),
+        ("tst", {"cond": "al", "rn": 14, "immediate": 1}),
+        ("orr", {"cond": "ne", "rd": 4, "rn": 4, "immediate": 32}),
+        ("stmdb", {"cond": "al", "rn": 13, "wback": True, "reglist": 0x10}),
+        (
+            "stmdb",
+            {
+                "cond": "al",
+                "rn": 13,
+                "wback": False,
+                "user_bank": True,
+                "reglist": 0x6000,
+            },
+        ),
+        ("sub", {"cond": "al", "rd": 13, "rn": 13, "immediate": 8}),
+        (
+            "str",
+            {
+                "cond": "al",
+                "rd": 13,
+                "rn": 0,
+                "offset": 0,
+                "pre": True,
+                "up": True,
+                "byte": False,
+                "wback": False,
+            },
+        ),
+        (
+            "ldr",
+            {
+                "cond": "al",
+                "rd": 13,
+                "rn": 1,
+                "offset": 0,
+                "pre": True,
+                "up": True,
+                "byte": False,
+                "wback": False,
+            },
+        ),
+        ("mov", {"cond": "al", "rd": 0, "rm": 2, "set_flags": False}),
+        ("bl", {"cond": "al", "target_symbol": "rt_cpus_lock_status_restore"}),
+        ("b", {"cond": "al", "target_symbol": "rt_hw_context_switch_exit"}),
     )
     first = (
-        0xE590D000,
-        0xE1A00001,
-        "call:rt_cpus_lock_status_restore",
-        "jump:rt_hw_context_switch_exit",
+        (
+            "ldr",
+            {
+                "cond": "al",
+                "rd": 13,
+                "rn": 0,
+                "offset": 0,
+                "pre": True,
+                "up": True,
+                "byte": False,
+                "wback": False,
+            },
+        ),
+        ("mov", {"cond": "al", "rd": 0, "rm": 1, "set_flags": False}),
+        ("bl", {"cond": "al", "target_symbol": "rt_cpus_lock_status_restore"}),
+        ("b", {"cond": "al", "target_symbol": "rt_hw_context_switch_exit"}),
     )
     restore = (
-        0xE1A0000D,
-        0xF1020012,
-        "call:rt_signal_check",
-        0xF1020013,
-        0xE1A0D000,
-        0xE8DD6000,
-        0xE28DD008,
-        0xE8BD0002,
-        0xE16FF001,
-        0xE8FDDFFF,
+        ("mov", {"cond": "al", "rd": 0, "rm": 13, "set_flags": False}),
+        ("cps", {"mode": 18, "flags": 0, "cond": "unconditional"}),
+        ("bl", {"cond": "al", "target_symbol": "rt_signal_check"}),
+        ("cps", {"mode": 19, "flags": 0, "cond": "unconditional"}),
+        ("mov", {"cond": "al", "rd": 13, "rm": 0, "set_flags": False}),
+        ("ldmia", {"rn": 13, "user_bank": True, "reglist": 0x6000}),
+        ("add", {"cond": "al", "rd": 13, "rn": 13, "immediate": 8, "set_flags": False}),
+        (
+            "ldmia",
+            {"cond": "al", "rn": 13, "wback": True, "user_bank": False, "reglist": 0x2},
+        ),
+        ("msr", {"cond": "al", "psr": "spsr", "fields": 0xF, "rm": 1}),
+        ("ldmia", {"rn": 13, "wback": True, "user_bank": True, "reglist": 0xDFFF}),
     )
     if not all(
-        _arm_words_match(elf, name, words)
-        for name, words in (
-            ("rt_hw_context_switch", switch),
-            ("rt_hw_context_switch_to", first),
-            ("rt_hw_context_switch_exit", restore),
+        _arm_instructions_match(elf, name, instructions, end_name)
+        for name, end_name, instructions in (
+            ("rt_hw_context_switch", "rt_hw_context_switch_interrupt", switch),
+            ("rt_hw_context_switch_to", "rt_hw_spin_lock_init", first),
+            ("rt_hw_context_switch_exit", "vector_fiq", restore),
         )
     ):
         return False
     span = _code_span(elf, "rt_hw_stack_init")
-    blob = elf.read_at(span[0], span[1] - span[0]) if span is not None else None
+    instructions = decode_arm_stream(elf, *span, 256) if span is not None else None
     return (
-        blob is not None
-        and hashlib.sha256(blob).hexdigest()
-        == "9abac72009f064ebd793c8b325fe7b2e0f7ec91254b103b7700f08118a7a73b4"
+        instructions is not None
+        and hashlib.sha256(
+            semantic_arm_stream_token(elf, instructions, *span).encode()
+        ).hexdigest()
+        == "66097d62f8807885e2d069dbfc09ffcd3ea79284a2e01c565f71c29b517f60f5"
     )

@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .cpus import Cpu, cpu_of
+from .insn_arm import decode_arm
 from .insn_riscv import EvidenceError, riscv_code_decoder
 from .insn_thumb import decode_thumb
 from .unwind_meta import CodeSymbol, ElfImage
@@ -78,6 +79,8 @@ def _thumb_step(
     if isinstance(instruction, str):
         return None
     mnemonic, operands = instruction.mnemonic, instruction.operands
+    if "cond" in operands and operands.get("cond") not in ("al", "unconditional"):
+        return None
     if mnemonic == "bx":
         return (instruction.size, None, True) if operands.get("rm") == 14 else None
     if mnemonic in {"nop", "cpsie", "cpsid", "dsb", "isb", "str_imm"}:
@@ -99,19 +102,53 @@ def _thumb_step(
 
 
 def _arm_step(elf: ElfImage, pc: int, end: int) -> tuple[int, int | None, bool] | None:
-    if pc & 3 or pc + 4 > end:
+    instruction = decode_arm(elf, pc, end)
+    if isinstance(instruction, str):
         return None
-    raw = elf.read_at(pc, 4)
-    if raw is None:
+    mnemonic, operands = instruction.mnemonic, instruction.operands
+    if operands.get("cond") not in ("al", "unconditional"):
         return None
-    word = int.from_bytes(raw, "little")
-    if word == 0xE12FFF1E:
-        return 4, None, True
-    if word in (0xE320F000, 0xF1080080, 0xF10C0080):
-        return 4, None, False
-    if word & 0xFFFF0FFF == 0xE10F0000:
-        register = word >> 12 & 15
-        return (4, register, False) if register not in (13, 14, 15) else None
+    if mnemonic == "bx":
+        return (instruction.size, None, True) if operands.get("rm") == 14 else None
+    if mnemonic == "nop":
+        return instruction.size, None, False
+    if mnemonic == "cps":
+        return (
+            (instruction.size, None, False)
+            if operands.get("mode") == 0 and operands.get("interrupt_mode") in (2, 3)
+            else None
+        )
+    if mnemonic == "mrs":
+        register = operands.get("rd")
+        return (
+            (instruction.size, int(register), False)
+            if isinstance(register, int) and register not in (13, 14, 15)
+            else None
+        )
+    if mnemonic in {
+        "and",
+        "eor",
+        "sub",
+        "rsb",
+        "add",
+        "adc",
+        "sbc",
+        "rsc",
+        "orr",
+        "mov",
+        "bic",
+        "mvn",
+        "and_imm",
+        "bic_imm",
+    }:
+        register = operands.get("rd")
+        return (
+            (instruction.size, int(register), False)
+            if isinstance(register, int) and register not in (13, 14, 15)
+            else None
+        )
+    if mnemonic in {"cmp", "cmn", "tst", "teq"}:
+        return instruction.size, None, False
     return None
 
 

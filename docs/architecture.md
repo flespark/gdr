@@ -45,6 +45,7 @@ duplicating what GDB already displays well. Design rationale lives in
 | `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
 | `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
 | `unwind_leaf.py` | Architecture-neutral, bounded scalar instruction proofs for straight-line functions that preserve SP/LR and return through LR. ELF function types and instruction state define the scan; unknown code, calls, branches and stack-bank changes refuse the proof. |
+| `insn_arm.py` | Bounded ARM/A32 instruction decoder with normalized mnemonic/operand evidence for instruction-leaf proofs and compiled port checks. |
 | `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence and `RegisterConvention` contracts from ELF attributes; contains no RTOS policy. |
 | `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, typed xPSR/CPSR status decoding and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. |
 | `insn_riscv.py` | Bounded RISC-V instruction decoder and ELF code-range primitives for port evidence checks. |

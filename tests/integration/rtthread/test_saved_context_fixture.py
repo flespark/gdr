@@ -77,8 +77,36 @@ print(json.dumps({
     assert evidence["unwind_tables"]
     instructions = evidence["instructions"]
     if SPEC.target == "microbit":
-        assert instructions.count(["other", {"first": 0xC1F0}]) == 2, instructions
-        assert instructions.count(["other", {"first": 0xC9F0}]) == 2, instructions
+        assert (
+            instructions.count(
+                [
+                    "stmia",
+                    {
+                        "rn": 1,
+                        "wback": True,
+                        "load": False,
+                        "direction": "ia",
+                        "reglist": 0xF0,
+                    },
+                ]
+            )
+            == 2
+        ), instructions
+        assert (
+            instructions.count(
+                [
+                    "ldmia",
+                    {
+                        "rn": 1,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": 0xF0,
+                    },
+                ]
+            )
+            == 2
+        ), instructions
         assert ["mrs", {"rd": 1, "sysm": 9}] in instructions
         assert ["msr", {"rn": 1, "sysm": 9}] in instructions
         return

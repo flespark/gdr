@@ -12,6 +12,25 @@ from dataclasses import dataclass
 
 from .unwind_meta import ElfImage, _sign_extend
 
+_THUMB_CONDITIONS = (
+    "eq",
+    "ne",
+    "cs",
+    "cc",
+    "mi",
+    "pl",
+    "vs",
+    "vc",
+    "hi",
+    "ls",
+    "ge",
+    "lt",
+    "gt",
+    "le",
+    "al",
+    "nv",
+)
+
 
 @dataclass(frozen=True)
 class ThumbInstruction:
@@ -115,6 +134,163 @@ def decode_thumb16(address: int, hw: int) -> ThumbInstruction:
         return ThumbInstruction(
             address, 2, "mov_imm", {"rd": (hw >> 8) & 7, "imm": hw & 0xFF}
         )
+    if hw & 0xF800 == 0xA800:
+        return ThumbInstruction(
+            address,
+            2,
+            "add_imm",
+            {"rd": (hw >> 8) & 7, "rn": 13, "imm": (hw & 0xFF) * 4},
+        )
+    if hw & 0xF000 == 0xC000:
+        load = bool(hw & 0x0800)
+        return ThumbInstruction(
+            address,
+            2,
+            "ldmia" if load else "stmia",
+            {
+                "rn": (hw >> 8) & 7,
+                "wback": True,
+                "load": load,
+                "direction": "ia",
+                "reglist": hw & 0xFF,
+            },
+        )
+    if hw & 0xFF00 == 0xB000:
+        return ThumbInstruction(
+            address,
+            2,
+            "add_sp" if hw & 0x0080 == 0 else "sub_sp",
+            {"imm": (hw & 0x7F) * 4},
+        )
+    if hw & 0xF800 in (0x0000, 0x0800, 0x1000):
+        operation = (hw >> 11) & 3
+        return ThumbInstruction(
+            address,
+            2,
+            ("lsls", "lsrs", "asrs")[operation],
+            {
+                "rd": hw & 7,
+                "rm": (hw >> 3) & 7,
+                "shift_amount": (hw >> 6) & 0x1F,
+                "set_flags": True,
+            },
+        )
+    if hw & 0xF500 == 0xB100:
+        offset = (((hw >> 9) & 1) << 6) | (((hw >> 3) & 0x1F) << 1)
+        return ThumbInstruction(
+            address,
+            2,
+            "cbnz" if hw & 0x0800 else "cbz",
+            {"rn": hw & 7, "target": address + 4 + offset},
+        )
+    if hw & 0xF000 == 0xD000:
+        condition = (hw >> 8) & 0xF
+        if condition < 0xE:
+            offset = _sign_extend(hw & 0xFF, 8) << 1
+            return ThumbInstruction(
+                address,
+                2,
+                "b_cond",
+                {"cond": _THUMB_CONDITIONS[condition], "target": address + 4 + offset},
+            )
+    if hw & 0xF800 == 0xE000:
+        offset = _sign_extend(hw & 0x7FF, 11) << 1
+        return ThumbInstruction(address, 2, "b", {"target": address + 4 + offset})
+    if hw & 0xF800 in (0x1800, 0x1A00, 0x1C00, 0x1E00):
+        immediate = bool(hw & 0x0400)
+        subtract = bool(hw & 0x0200)
+        operands: dict[str, int | bool | str] = {
+            "rd": hw & 7,
+            "set_flags": True,
+        }
+        if immediate:
+            operands["rn"] = (hw >> 3) & 7
+            operands["imm"] = (hw >> 6) & 7
+        else:
+            operands["rn"] = (hw >> 6) & 7
+            operands["rm"] = (hw >> 3) & 7
+        return ThumbInstruction(
+            address,
+            2,
+            "subs" if subtract else "adds",
+            operands,
+        )
+    if hw & 0xF800 in (0x2800, 0x3000, 0x3800):
+        operation = hw & 0xF800
+        register = (hw >> 8) & 7
+        immediate = hw & 0xFF
+        if operation == 0x2800:
+            return ThumbInstruction(
+                address, 2, "cmp", {"rn": register, "imm": immediate}
+            )
+        return ThumbInstruction(
+            address,
+            2,
+            "subs" if operation == 0x3800 else "adds",
+            {"rd": register, "rn": register, "imm": immediate, "set_flags": True},
+        )
+    if hw & 0xFC00 == 0x4000:
+        operation = (hw >> 6) & 0xF
+        names = (
+            "ands",
+            "eors",
+            "lsls",
+            "lsrs",
+            "asrs",
+            "adcs",
+            "sbcs",
+            "rors",
+            "tst",
+            "rsbs",
+            "cmp",
+            "cmn",
+            "orrs",
+            "muls",
+            "bics",
+            "mvns",
+        )
+        mnemonic = names[operation]
+        operands = {"rm": (hw >> 3) & 7, "set_flags": True}
+        operands["rn"] = hw & 7
+        if mnemonic not in {"tst", "cmp", "cmn"}:
+            operands["rd"] = hw & 7
+        return ThumbInstruction(address, 2, mnemonic, operands)
+    if hw & 0xFC00 == 0x4400:
+        operation = (hw >> 8) & 3
+        rm = (hw >> 3) & 0xF
+        rd = ((hw >> 4) & 8) | (hw & 7)
+        if operation == 3:
+            return ThumbInstruction(address, 2, "other", {"first": hw})
+        operands = {"rm": rm, "set_flags": operation == 1}
+        if operation == 1:
+            operands["rn"] = rd
+        else:
+            operands["rd"] = rd
+            if operation == 0:
+                operands["rn"] = rd
+        return ThumbInstruction(
+            address,
+            2,
+            ("add", "cmp", "mov")[operation],
+            operands,
+        )
+    if hw & 0xFE00 == 0xB200:
+        mnemonic = {0xB200: "sxth", 0xB240: "sxtb", 0xB280: "uxth", 0xB2C0: "uxtb"}[
+            hw & 0xFFC0
+        ]
+        return ThumbInstruction(
+            address,
+            2,
+            mnemonic,
+            {"rd": hw & 7, "rm": (hw >> 3) & 7},
+        )
+    if hw & 0xFE00 == 0x5800:
+        return ThumbInstruction(
+            address,
+            2,
+            "ldr_reg",
+            {"rt": hw & 7, "rn": (hw >> 3) & 7, "rm": (hw >> 6) & 7},
+        )
     return ThumbInstruction(address, 2, "other", {"first": hw})
 
 
@@ -165,22 +341,115 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
             "msr",
             {"rn": first & 0xF, "sysm": second & 0xFF},
         )
-    if first == 0xF04F and second & 0xF000 == 0:
-        return ThumbInstruction(
-            address, 4, "mov_imm", {"rd": (second >> 8) & 0xF, "imm": second & 0xFF}
+    if first & 0xFBF0 == 0xF040 and first & 0x000F == 0x000F and second & 0x8000 == 0:
+        imm12 = (
+            (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
         )
-    if first == 0xF04E and second & 0xF000 == 0:
+        return ThumbInstruction(
+            address,
+            4,
+            "mov_imm",
+            {"rd": (second >> 8) & 0xF, "imm": _thumb_expand_imm(imm12)},
+        )
+    if first & 0xFBF0 in (0xF000, 0xF020):
+        immediate = (
+            (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
+        )
+        mnemonic = "and_imm" if first & 0x0020 == 0 else "bic_imm"
+        return ThumbInstruction(
+            address,
+            4,
+            mnemonic,
+            {
+                "rd": (second >> 8) & 0xF,
+                "rn": first & 0xF,
+                "imm": _thumb_expand_imm(immediate),
+            },
+        )
+    if first == 0xF04E and second & 0x8000 == 0:
+        imm12 = (
+            (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
+        )
         return ThumbInstruction(
             address,
             4,
             "orr_imm",
-            {"rd": (second >> 8) & 0xF, "rn": first & 0xF, "imm": second & 0xFF},
+            {
+                "rd": (second >> 8) & 0xF,
+                "rn": first & 0xF,
+                "imm": _thumb_expand_imm(imm12),
+            },
+        )
+    if first & 0xFBE0 == 0xF040 and second & 0x8000 == 0:
+        imm12 = (
+            (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
+        )
+        return ThumbInstruction(
+            address,
+            4,
+            "mov_imm",
+            {"rd": (second >> 8) & 0xF, "imm": _thumb_expand_imm(imm12)},
+        )
+    if first & 0xFFF0 in (0xF8C0, 0xF8D0):
+        return ThumbInstruction(
+            address,
+            4,
+            "str_imm" if first & 0xFFF0 == 0xF8C0 else "ldr_imm",
+            {
+                "rn": first & 0xF,
+                "rt": (second >> 12) & 0xF,
+                "imm": second & 0xFFF,
+            },
         )
     block = decode_block_transfer(address, first, second)
     if block is not None:
         return block
     if first == 0xF3BF and second in (0x8F4F, 0x8F6F):
         return ThumbInstruction(address, 4, "dsb" if second == 0x8F4F else "isb", {})
+    mov_encoding = first & 0xFBF0
+    if mov_encoding in (0xF240, 0xF2C0):
+        immediate = (
+            (((first >> 10) & 1) << 11)
+            | ((first & 0xF) << 12)
+            | (((second >> 12) & 7) << 8)
+            | (second & 0xFF)
+        )
+        return ThumbInstruction(
+            address,
+            4,
+            "movt" if mov_encoding == 0xF2C0 else "movw",
+            {"rd": (second >> 8) & 0xF, "imm": immediate},
+        )
+    if first & 0xFFF0 == 0xFAB0 and second & 0xF0F0 == 0xF080:
+        return ThumbInstruction(
+            address, 4, "clz", {"rd": (second >> 8) & 0xF, "rm": second & 0xF}
+        )
+    if first & 0xFFF0 == 0xF850:
+        return ThumbInstruction(
+            address,
+            4,
+            "ldr_reg",
+            {
+                "rt": (second >> 12) & 0xF,
+                "rn": first & 0xF,
+                "rm": second & 0xF,
+                "shift_amount": (second >> 4) & 3,
+            },
+        )
+    if first & 0xFE00 == 0xEA00:
+        operation = (first >> 5) & 0xF
+        if operation == 0xD:
+            return ThumbInstruction(
+                address,
+                4,
+                "ubfx",
+                {
+                    "rn": first & 0xF,
+                    "rd": (second >> 8) & 0xF,
+                    "lsb": (((second >> 12) & 7) << 2) | ((second >> 6) & 3),
+                    "width": (second & 0x1F) + 1,
+                },
+            )
     if first & 0xF800 == 0xF000 and second & 0xD000 == 0xD000:
         s = (first >> 10) & 1
         i1 = (~(((second >> 13) & 1) ^ s)) & 1
@@ -194,7 +463,73 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
             25,
         )
         return ThumbInstruction(address, 4, "bl", {"target": address + 4 + offset})
+    if first & 0xF800 == 0xF000:
+        operation = (first >> 5) & 0xF
+        names = {
+            0: "and",
+            1: "bic",
+            2: "orr",
+            3: "orn",
+            4: "eor",
+            8: "add",
+            10: "adc",
+            11: "sbc",
+            13: "cmp",
+            14: "rsb",
+        }
+        mnemonic = names.get(operation)
+        if mnemonic is not None:
+            immediate = (
+                (((first >> 10) & 1) << 11)
+                | (((second >> 12) & 7) << 8)
+                | (second & 0xFF)
+            )
+            operands = {
+                "rn": first & 0xF,
+                "immediate": _thumb_expand_imm(immediate),
+                "set_flags": mnemonic == "cmp" or bool(second & 0x1000),
+            }
+            if mnemonic not in {"cmp", "cmn", "tst", "teq"}:
+                operands["rd"] = (second >> 8) & 0xF
+            return ThumbInstruction(address, 4, mnemonic, operands)
+    if first & 0xFE00 == 0xEA00:
+        operation = (first >> 5) & 0xF
+        names = {0: "and", 1: "bic", 2: "orr", 4: "eor", 8: "add", 13: "sub", 14: "rsb"}
+        mnemonic = names.get(operation)
+        if mnemonic is not None:
+            return ThumbInstruction(
+                address,
+                4,
+                mnemonic,
+                {
+                    "rn": first & 0xF,
+                    "rd": (second >> 8) & 0xF,
+                    "rm": second & 0xF,
+                    "shift": (second >> 4) & 3,
+                    "shift_amount": (((second >> 12) & 7) << 2) | ((second >> 6) & 3),
+                    "set_flags": bool(first & 0x10),
+                },
+            )
     return ThumbInstruction(address, 4, "other", {"first": first, "second": second})
+
+
+def _thumb_expand_imm(imm12: int) -> int:
+    """Expand the Thumb-2 modified-immediate field to its 32-bit value."""
+    imm8 = imm12 & 0xFF
+    if imm12 & 0xC00 == 0:
+        mode = (imm12 >> 8) & 3
+        if mode == 0:
+            return imm8
+        if imm8 == 0:
+            return 0
+        if mode == 1:
+            return (imm8 << 16) | imm8
+        if mode == 2:
+            return (imm8 << 24) | (imm8 << 8)
+        return (imm8 << 24) | (imm8 << 16) | (imm8 << 8) | imm8
+    unrotated = 0x80 | (imm12 & 0x7F)
+    rotation = (imm12 >> 7) & 0x1F
+    return ((unrotated >> rotation) | (unrotated << (32 - rotation))) & 0xFFFFFFFF
 
 
 def resolved_literal(elf: ElfImage, instruction: ThumbInstruction) -> int | None:
@@ -247,6 +582,14 @@ def semantic_token(elf: ElfImage, instruction: ThumbInstruction) -> str:
     if instruction.mnemonic == "bl":
         target = operands.get("target")
         return f"bl:{symbol_value_token(elf, int(target) if target is not None else 0)}"
+    if instruction.mnemonic in {"b", "b_cond", "cbz", "cbnz"}:
+        target = operands.pop("target", None)
+        token = (
+            symbol_value_token(elf, int(target)) if target is not None else "unknown"
+        )
+        return f"{instruction.mnemonic}:{token}:" + ",".join(
+            f"{key}={value}" for key, value in sorted(operands.items())
+        )
     operands.pop("literal", None)
     body = ",".join(f"{key}={value}" for key, value in sorted(operands.items()))
     return f"{instruction.mnemonic}:{body}"
@@ -276,6 +619,7 @@ def decode_thumb_stream(
     limit: int,
     *,
     prefix: str = "profile",
+    reject_unknown: bool = False,
 ) -> tuple[tuple[str, ...] | None, str]:
     """Decode every instruction and literal-pool word in one function span."""
     if end <= start or end - start < 2:
@@ -291,6 +635,8 @@ def decode_thumb_stream(
             return None, f"{prefix}-mismatch:{symbol}:{decoded}"
         if decoded.address + decoded.size > pool_start:
             return None, f"{prefix}-mismatch:{symbol}:truncated"
+        if reject_unknown and decoded.mnemonic == "other":
+            return None, f"{prefix}-mismatch:{symbol}:unsupported-instruction"
         tokens.append(semantic_token(elf, decoded))
         address += decoded.size
     if address != pool_start:
