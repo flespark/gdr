@@ -1,0 +1,123 @@
+diff --git a/bsp/gdr-mps2-an385/irq.c b/bsp/gdr-mps2-an385/irq.c
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-mps2-an385/irq.c
+@@ -0,0 +1,118 @@
++#include <rthw.h>
++#include <rtthread.h>
++
++#define REG32(address) (*(volatile rt_uint32_t *)(address))
++#define TIMER0 0x40000000u
++#define TIMER1 0x40001000u
++
++static volatile rt_uint32_t gdr_irq_done, gdr_irq_nested_seen, gdr_irq_scenario;
++static struct rt_thread gdr_irq_thread;
++static rt_uint8_t gdr_irq_stack[2048];
++
++static void timer_stop(rt_uint32_t base)
++{
++    REG32(base) = 0;
++    REG32(base + 12) = 1;
++}
++
++static void timer_arm(rt_uint32_t base, rt_uint32_t ticks)
++{
++    timer_stop(base);
++    REG32(base + 8) = ticks;
++    REG32(base + 4) = ticks;
++    REG32(base) = 9;
++}
++
++static void gdr_irq_single_leaf(void)
++{
++    __asm volatile(".global gdr_irq_single_stop\ngdr_irq_single_stop:\nnop" ::: "memory");
++}
++
++static void gdr_irq_nested_leaf(void)
++{
++    __asm volatile(".global gdr_irq_nested_stop\ngdr_irq_nested_stop:\nnop" ::: "memory");
++}
++
++static void gdr_irq_align_leaf(void)
++{
++    __asm volatile(".global gdr_irq_align_stop\ngdr_irq_align_stop:\nnop" ::: "memory");
++}
++
++static void gdr_irq_nested_wait(void)
++{
++    while (!gdr_irq_nested_seen) __asm volatile("nop" ::: "memory");
++}
++
++void Timer1_Handler(void)
++{
++    rt_interrupt_enter();
++    timer_stop(TIMER1);
++    gdr_irq_nested_leaf();
++    gdr_irq_nested_seen = 1;
++    rt_interrupt_leave();
++}
++
++void Timer0_Handler(void)
++{
++    rt_interrupt_enter();
++    timer_stop(TIMER0);
++    if (gdr_irq_scenario == 0) gdr_irq_single_leaf();
++    else if (gdr_irq_scenario == 1)
++    {
++        timer_arm(TIMER1, 2500);
++        gdr_irq_nested_wait();
++    }
++    else gdr_irq_align_leaf();
++    gdr_irq_done = 1;
++    rt_interrupt_leave();
++}
++
++static void gdr_irq_wait(void)
++{
++    while (!gdr_irq_done) __asm volatile("nop" ::: "memory");
++}
++
++static void gdr_irq_misaligned_wait(void)
++{
++    __asm volatile(
++        "mov r0, sp\n"
++        "movs r1, #7\n"
++        "bics r0, r1\n"
++        "mov sp, r0\n"
++        "sub sp, sp, #4"
++        ::: "r0", "r1", "memory");
++    while (!gdr_irq_done) __asm volatile("nop" ::: "memory");
++    __asm volatile("mov sp, r7" ::: "memory");
++}
++
++static void gdr_irq_entry(void *argument)
++{
++    (void)argument;
++    timer_stop(TIMER0);
++    timer_stop(TIMER1);
++    ((volatile rt_uint8_t *)0xE000E400u)[8] = 0xFF;
++    ((volatile rt_uint8_t *)0xE000E400u)[9] = 0x40;
++    REG32(0xE000E280u) = (1u << 8) | (1u << 9);
++    REG32(0xE000E100u) = (1u << 8) | (1u << 9);
++    rt_thread_mdelay(150);
++    while (1)
++    {
++        for (gdr_irq_scenario = 0; gdr_irq_scenario < 3; gdr_irq_scenario++)
++        {
++            rt_enter_critical();
++            gdr_irq_done = gdr_irq_nested_seen = 0;
++            timer_arm(TIMER0, 125000);
++            if (gdr_irq_scenario == 2) gdr_irq_misaligned_wait();
++            else gdr_irq_wait();
++            rt_exit_critical();
++            rt_thread_mdelay(100);
++        }
++    }
++}
++
++void gdr_irq_fixture_start(void)
++{
++    RT_ASSERT(rt_thread_init(&gdr_irq_thread, "gdr_irq", gdr_irq_entry, RT_NULL,
++                             gdr_irq_stack, sizeof(gdr_irq_stack), 18, 10) == RT_EOK);
++    RT_ASSERT(rt_thread_startup(&gdr_irq_thread) == RT_EOK);
++}

@@ -9,7 +9,6 @@ from core.stack_frame_parser import StackContextSelection
 from core.unwind import SeedFrame, UnwindFrame, UnwindResult
 from rtthread.adapter import Thread
 from rtthread.backtrace import (
-    ARMV6M_INTEGER,
     ARMV7M_INTEGER,
     ARMV8M_MAINLINE_INTEGER,
     RISCV32_INTEGER,
@@ -21,8 +20,6 @@ from rtthread.layout import RT_THREAD_STACK_FILL
 @pytest.mark.parametrize(
     "isa,context",
     [
-        ("armv6-m", ARMV6M_INTEGER),
-        ("armv7-m", ARMV7M_INTEGER),
         ("armv8-m.mainline", ARMV8M_MAINLINE_INTEGER),
         ("riscv32", RISCV32_INTEGER),
     ],
@@ -85,9 +82,7 @@ def test_unverified_port_selection_precedes_stack_watermark_reads(monkeypatch):
     monkeypatch.setattr(
         bridge,
         "_backtrace_context",
-        lambda: StackContextSelection(
-            "armv7-m", "arm", ARMV7M_INTEGER, "unverified-port"
-        ),
+        lambda: StackContextSelection("armv7-m", "arm", None, "unverified-port"),
     )
     monkeypatch.setattr(
         bridge, "read_bytes", lambda *_args: pytest.fail("unverified stack read")
@@ -255,3 +250,114 @@ def test_saved_pc_setup_reset_and_live_riscv_seed(monkeypatch):
     assert armv7m_vector_entry(15, read=reader) == 0x08000100
     adapter = SimpleNamespace()
     assert cached_unwind_metadata(adapter, path_reader=lambda: None) is None
+
+
+def _arm_current(monkeypatch, *, pending=0, exception=24, psp=0x2080):
+    thread = Thread(
+        name="worker",
+        address=0x4000,
+        entry=0x1200,
+        stack_addr=0x2000,
+        stack_size=0x400,
+        stack_grows_up=False,
+    )
+    monkeypatch.setattr(bridge, "find_thread", lambda *_args: object())
+    monkeypatch.setattr(bridge, "value_to_thread", lambda *_args, **_kwargs: thread)
+    monkeypatch.setattr(
+        bridge,
+        "_backtrace_context",
+        lambda: StackContextSelection("armv7-m", "arm", ARMV7M_INTEGER, "ok"),
+    )
+    monkeypatch.setattr(bridge, "get_current_thread", lambda: 0x4000)
+    monkeypatch.setattr(bridge, "value_address", lambda value: value)
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: pending if name == "rt_thread_switch_interrupt_flag" else None,
+    )
+    monkeypatch.setattr(bridge, "read_int", lambda value: value)
+    seed = SeedFrame(
+        0x1100,
+        0x3080,
+        {13: 0x3080, 14: 0xFFFFFFFD},
+        source="current",
+        process_sp=psp,
+        exception_number=exception,
+    )
+    monkeypatch.setattr(bridge, "_live_seed_detail", lambda *_args: (seed, "ok"))
+    monkeypatch.setattr(bridge, "_unwind_metadata", lambda _adapter: None)
+    symbols = {"__StackLimit": 0x3000, "__StackTop": 0x3400}
+    words = {0xE000ED08: 0x1000, 0xE000E004: 0, 0xE000ED14: 1 << 9, 0x1060: 0x1101}
+    monkeypatch.setattr(bridge, "linker_symbol_address", symbols.get)
+    monkeypatch.setattr(
+        bridge,
+        "read_bytes",
+        lambda address, size: words.get(address, 0).to_bytes(size, "little"),
+    )
+    return SimpleNamespace(layout=object())
+
+
+@pytest.mark.parametrize(
+    "pending,reason",
+    [(None, "scheduler-state-unavailable"), (1, "scheduler-transition-unproven")],
+)
+def test_pending_arm_switch_cannot_select_a_task_seed(monkeypatch, pending, reason):
+    adapter = _arm_current(monkeypatch, pending=pending)
+    monkeypatch.setattr(
+        bridge, "_live_seed_detail", lambda *_args: pytest.fail("unstable owner read")
+    )
+    report = bridge.backtrace(adapter, "worker")
+    assert report.stop_reason == reason and report.frames == []
+
+
+@pytest.mark.parametrize(
+    "exception,psp,reason",
+    [
+        (24, 0x2500, "exception-task-context-conflict"),
+        (15, 0x2080, "exception-number-unverified"),
+        (14, 0x2080, "scheduler-transition-unproven"),
+    ],
+)
+def test_arm_irq_ownership_and_exception_policy_precede_unwinding(
+    monkeypatch, exception, psp, reason
+):
+    adapter = _arm_current(monkeypatch, exception=exception, psp=psp)
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda *_args, **_kwargs: pytest.fail("unproven exception unwind"),
+    )
+    report = bridge.backtrace(adapter, "worker")
+    assert report.stop_reason == reason and report.frames == []
+
+
+def test_arm_irq_supplies_shared_segments_hooks_and_vector_entry_proof(monkeypatch):
+    adapter = _arm_current(monkeypatch)
+    seen = {}
+
+    def unwind(seed, metadata, **kwargs):
+        assert metadata is None and seed.at_exception_entry
+        seen.update(kwargs)
+        return UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "max-depth",
+            False,
+            True,
+            "current",
+            "seed",
+        )
+
+    monkeypatch.setattr(bridge, "unwind_chain", unwind)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    report = bridge.backtrace(adapter, "worker")
+    assert report.truncated and seen["current_segment"] == "exception:24"
+    assert [
+        (segment.kind, segment.low, segment.high) for segment in seen["segments"]
+    ] == [
+        ("task", 0x2000, 0x2400),
+        ("exception", 0x3000, 0x3400),
+    ]
+    assert seen["exception_detector"](0xFFFFFFFD)
+    assert callable(seen["exception_hook"]) and callable(seen["exception_guard"])
+    assert seen["stkalign"] is True

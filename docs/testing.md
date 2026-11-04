@@ -86,6 +86,8 @@ answers.
 | --- | --- | --- | --- | --- |
 | `cortex-a9` | RT-Thread | `qemu-system-arm -M vexpress-a9 -kernel rtthread.elf` | `rtthread.elf` | 32-bit ARM |
 | `rv64` | RT-Thread | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | 64-bit RISC-V (`riscv:rv64`) |
+| `mps2-an385` | RT-Thread | `qemu-system-arm -M mps2-an385 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv7-M (Cortex-M3) |
+| `microbit` | RT-Thread | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv6-M (Cortex-M0) |
 | `mps2-an385` | FreeRTOS | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv7-M (Cortex-M3) |
 | `mps2-an521` | FreeRTOS | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv8-M Mainline (dual Cortex-M33, SSE-200) |
 | `microbit` | FreeRTOS | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv6-M (Cortex-M0, Thumb-1) |
@@ -119,6 +121,12 @@ and caching `ci/.cache/fixtures/rtthread/<target>/<version>/rtthread.elf` (plus
   alignment, 64-bit switch-frame `PC` recovery, and BSP path transitions
   (`bsp/qemu-riscv-virt64` through `4.1.0`, `bsp/qemu-virt64-riscv` in
   `4.1.1`). Upstream has no QEMU RV64 BSP for `3.1.x`.
+- **`mps2-an385` (`4.0.5`)**: Runs the shared integration suite and independent
+  compiled-port/saved-frame checks on an RT-Thread-owned BSP. Build inputs live
+  in the [AN385 fixture guide](../ci/rt-thread/README.md#an385-armv7-m-port-fixture).
+- **`microbit` (`4.0.5`)**: Runs the shared suite and raw port-compatibility
+  checks on an RT-Thread-owned BSP. Build inputs and the Nordic tick source
+  live in the [microbit fixture guide](../ci/rt-thread/README.md#microbit-armv6-m-port-fixture).
 
 Each fixture spawns a deterministic set of healthy and blocked worker threads
 (`worker1`..`worker11`, `locker`) contended on canonical IPC objects
@@ -136,7 +144,10 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 | `test_commands.py` | Every `rtt` list and detail command (`threads`/`thread`, `semaphores`, `mutexes`, `events`, `mailboxes`, `msgqueues`, `mempools`, `timers`, `objects`, `system`, `heap`, `heap dump`, `check`, `watch`/`unwatch`), waiter chains (`count@names`), mailbox slot addresses, timer `Src` provenance (`registry+active`), and proven saved-frame `PC`. |
 | `test_api.py` | `$gdr_json`, `$gdr_json_chunk`, `$gdr_dump`, `gdr api <verb>`, `gdr probe` evidence, and `gdr reset` / `--force` / `--allow-unverified` session lifecycle. |
 | `test_startup.py` | Separate paused-at-reset QEMU session verifying that snapshots taken before kernel initialization safely stop on `NULL` timer-list heads instead of fabricating wrapped object addresses, and recover once the scheduler starts. |
-| `test_backtrace.py` | Blocked `worker1` chain through `rt_thread_mdelay` to `_thread_exit`, `task-exit` completeness, bounded text output and structured missing-thread failures (RV64 lane). Other RT-Thread ports report unverified. |
+| `test_backtrace.py` | Verified saved and current chains, independent unstarted roots, exit completeness, bounded output, structured missing-thread failures and unchanged halted state on the enabled lanes. |
+| `test_saved_context_fixture.py` | Basic Armv6-M/Armv7-M compiled save/restore instructions, independent port DWARF offsets, raw blocked/unstarted register frames and exit sentinel, and bounded MSP/heap/vector evidence. |
+| `test_irq_backtrace.py` | Exact basic IRQ24/25 hardware frames, nested handler/task transitions, hardware alignment padding, read-only queries and refusal of pending-switch ownership or incomplete MSP bounds. |
+| `test_microbit_fixture.py` | Architecture-valid first PendSV return and initial PC/LR state; real TIMER2 tick progress, hardware prescaler/compare/shortcut configuration, IRQ10 vector and unused SysTick vector. |
 
 ---
 
@@ -282,6 +293,6 @@ assertions through the [same lane extension contract](../ci/README.md#layering-a
 | --- | --- | --- |
 | **Firmware source** | Upstream RT-Thread repo + per-BSP/version patch sets | Upstream `FreeRTOS-Kernel` tags + shared `fixture/main.c`, `board/`, `config/<variant>/` |
 | **Primary matrix axis** | Kernel release history (`3.1.0–3.1.5`, `4.0.0–4.1.1`) across 32-bit ARM and 64-bit RV64 | Compile-time `FreeRTOSConfig.h` feature matrix (19 variants) + kernel version sweep (`10.3.1–11.3.1`) |
-| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv64` (`virt`) | `microbit` (Armv6-M), `mps2-an385` (Armv7-M), `mps2-an521` (Armv8-M Mainline SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
+| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv64` (`virt`), `mps2-an385` (Armv7-M port fixture) | `microbit` (Armv6-M), `mps2-an385` (Armv7-M), `mps2-an521` (Armv8-M Mainline SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
 | **Negative / corruption testing** | Unit tests + reset-vector `NULL`-head startup session (`test_startup.py`) | Dedicated file-only static ELF pair (`test_snapshot.py`: `freertos.elf` + `snapshot_heap.elf`) |
 | **Expectation oracle** | `tests/support/rtthread_fixture_profiles.py` | `tests/support/freertos_fixture_profiles.py` |

@@ -6,6 +6,8 @@ import pytest
 
 from core.unwind import unwind_chain
 from rtthread.backtrace import (
+    ARMV7A_INTEGER,
+    ARMV7A_LWP_INTEGER,
     ARMV7M_INTEGER,
     ARMV8M_MAINLINE_INTEGER,
     RISCV64_INTEGER,
@@ -51,7 +53,7 @@ def _m3_context(memory: _Memory, top: int, *, fill: bool = False) -> None:
 def test_m3_context_has_the_verified_rtthread_layout():
     context = ARMV7M_INTEGER
     assert context is not None
-    assert context.verified is False
+    assert context.verified is True
     assert context.pc_offset == 56 and context.sp_offset == 64
     memory = _Memory()
     top = 0x2000
@@ -210,3 +212,61 @@ def test_rtthread_unstarted_requires_entry_and_fill():
     )
     assert reason == "ok" and seed is not None
     assert seed.source == "unstarted" and seed.root_pc == 0x1000
+
+
+@pytest.mark.parametrize("context,bias", [(ARMV7A_INTEGER, 0), (ARMV7A_LWP_INTEGER, 8)])
+@pytest.mark.parametrize("fill", [False, True])
+def test_armv7a_cpsr_context_preserves_kernel_registers_and_frame_span(
+    context, bias, fill
+):
+    memory = _Memory()
+    top = 0x2000
+    if bias:
+        memory.word(top, 0x333)
+        memory.word(top + 4, 0x444)
+    memory.word(top + bias, 0x13)
+    for register in range(13):
+        memory.word(top + bias + 4 + register * 4, 0xDEADBEEF if fill else register)
+    memory.word(top + bias + 56, 0x1100)
+    memory.word(top + bias + 60, 0x1000)
+    seed, reason = decode_saved_context(
+        context,
+        top,
+        memory,
+        endian="little",
+        entry=0x1000,
+        stack_low=top,
+        stack_high=top + 0x200,
+    )
+    assert reason == "ok" and seed is not None
+    assert context.status_kind == "cpsr" and context.pc_offset == bias + 60
+    assert seed.pc == 0x1000 and seed.sp == top + bias + 64
+    assert seed.regs[13] == seed.sp and seed.regs[14] == 0x1100
+    assert seed.source == ("unstarted" if fill else "saved")
+
+
+def test_armv7a_user_mode_is_not_decoded_as_a_kernel_stack():
+    memory = _Memory()
+    top = 0x2000
+    for offset in range(0, 72, 4):
+        memory.word(top + offset, 0)
+    memory.word(top + 8, 0x10)
+    memory.word(top + 68, 0x1000)
+    assert decode_saved_context(ARMV7A_LWP_INTEGER, top, memory, endian="little") == (
+        None,
+        "unsupported-privilege-context",
+    )
+
+
+def test_armv7m_saved_context_honors_alignment_and_refuses_handler_ipsr():
+    memory = _Memory()
+    top = 0x2000
+    _m3_context(memory, top)
+    memory.word(top + 60, 0x01000200)
+    seed, reason = decode_saved_context(ARMV7M_INTEGER, top, memory, endian="little")
+    assert reason == "ok" and seed.sp == top + 68 and seed.regs[13] == seed.sp
+    memory.word(top + 60, 0x01000018)
+    assert decode_saved_context(ARMV7M_INTEGER, top, memory, endian="little") == (
+        None,
+        "saved-frame-ipsr-invalid",
+    )

@@ -2,7 +2,7 @@
 # Build an RT-Thread QEMU test fixture for GDR CI.
 #
 # Usage:
-#   build.sh --target <cortex-a9|rv64> --ref <version-ref> [options]
+#   build.sh --target <cortex-a9|rv64|mps2-an385> --ref <version-ref> [options]
 #
 # --ref is the RT-Thread release tag or branch to check out (for example
 # v4.0.5 or lts-v4.1.x). Patch sets and BSP paths are selected from that
@@ -72,6 +72,18 @@ resolve_target_defaults() {
             ;;
         *) die "RV64 QEMU BSP is available only for v4.0.4-v4.1.1" ;;
         esac
+        ;;
+    mps2-an385)
+        [[ "$REF" == "v4.0.5" ]] || die "AN385 fixture requires v4.0.5"
+        BSP_DIR="${BSP_DIR:-bsp/gdr-mps2-an385}"
+        TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-arm-none-eabi-}"
+        PATCH_SET="4.0.5"
+        ;;
+    microbit)
+        [[ "$REF" == "v4.0.5" ]] || die "microbit fixture requires v4.0.5"
+        BSP_DIR="${BSP_DIR:-bsp/gdr-microbit}"
+        TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-arm-none-eabi-}"
+        PATCH_SET="4.0.5"
         ;;
     *)
         die "unknown target=$TARGET"

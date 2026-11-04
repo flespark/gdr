@@ -174,6 +174,15 @@
     - name: pytest RV64 matrix (QEMU closed-loop)
       script: python3 ci/test.py matrix rtthread-rv64
 
+.rtthread-ports-target: &rtthread-ports-target
+  name: rtthread-ports-target
+  runner: *amd64-runner
+  docker:
+    build: *qemu-matrix-build
+  stages:
+    - name: RT-Thread port fixtures (QEMU closed-loop)
+      script: python3 ci/test.py matrix rtthread-ports
+
 # Every FreeRTOS matrix uses the same cache and lane runner.
 .freertos-kernel-scope: &freertos-kernel-scope
   name: freertos-kernel-scope
@@ -283,6 +292,7 @@ main: # branch: main
     - <<: *gdb12-compat-a9
     - <<: *rtthread-a9-target
     - <<: *rtthread-rv64-target
+    - <<: *rtthread-ports-target
     - <<: *freertos-kernel-scope
 
   pull_request:
@@ -293,6 +303,7 @@ main: # branch: main
     - <<: *gdb12-compat-a9
     - <<: *rtthread-a9-target
     - <<: *rtthread-rv64-target
+    - <<: *rtthread-ports-target
     - <<: *freertos-kernel-scope
 
 # `$` applies to every reference. CNB sets CNB_BRANCH to the pushed tag when

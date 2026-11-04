@@ -129,6 +129,29 @@ def test_rtthread_profile_uses_loader_paths():
     assert profile.firmware_path == profile.elf_path.with_suffix(".bin")
 
 
+def test_rtthread_armv7m_profile_uses_the_same_session_lifecycle():
+    from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
+    from tests.support.rtthread_qemu_profiles import get_rtthread_qemu_profile
+
+    spec = load_integration_spec(
+        {
+            "GDR_RTOS": "rtthread",
+            "GDR_QEMU_TARGET": "mps2-an385",
+            "GDR_VERSION": "4.0.5",
+        }
+    )
+    profile = get_rtthread_qemu_profile(Path("/unused"), spec)
+    assert profile.machine == "mps2-an385"
+    assert profile.qemu_binary == "qemu-system-arm"
+    assert profile.gdb_architecture == "arm" and profile.pointer_width == 4
+    assert profile.firmware_option == "-kernel" and profile.qemu_args == ()
+    assert profile.elf_path == CACHE / "fixtures/rtthread/mps2-an385/4.0.5/rtthread.elf"
+    assert profile.firmware_path == profile.elf_path
+    assert profile.init_command == "gdr init rtthread 4.0.5"
+    expected = get_rtthread_test_profile("4.0.5", "mps2-an385")
+    assert expected.current_thread_expression == "rt_current_thread"
+
+
 def test_freertos_profile_derives_machine_from_target():
     from tests.support.freertos_qemu_profiles import get_freertos_qemu_profile
 

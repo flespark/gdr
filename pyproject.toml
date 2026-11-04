@@ -142,6 +142,7 @@ source = [
     "core.insn_thumb",
     "core.unwind",
     "core.unwind_meta",
+    "core.unwind_leaf",
     "core.unwind_segments",
     "core.unwind_arm",
     "core.cpus",

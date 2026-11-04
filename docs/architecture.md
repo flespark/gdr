@@ -40,12 +40,13 @@ duplicating what GDB already displays well. Design rationale lives in
 | `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`backtrace`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
 | `commands.py` | Shared collectors and guarded text renderers, the stop-time watch set, and convenience functions (`$gdr_task`, `$gdr_object`, `$gdr_json`). |
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
-| `unwind.py` | Bounded task unwind driver: seed frames, live register seed dispatch, ELF metadata cache, EHABI/CFI/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
+| `unwind.py` | Bounded task unwind driver: seed frames, live register seed dispatch, ELF metadata cache, EHABI/CFI/instruction-leaf/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
 | `unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
 | `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
 | `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
+| `unwind_leaf.py` | Architecture-neutral, bounded scalar instruction proofs for straight-line functions that preserve SP/LR and return through LR. ELF function types and instruction state define the scan; unknown code, calls, branches and stack-bank changes refuse the proof. |
 | `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence and `RegisterConvention` contracts from ELF attributes; contains no RTOS policy. |
-| `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, common slot decoding and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. |
+| `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, typed xPSR/CPSR status decoding and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. |
 | `insn_riscv.py` | Bounded RISC-V instruction decoder and ELF code-range primitives for port evidence checks. |
 | `insn_thumb.py` | Bounded Arm Thumb/Thumb-2 instruction and stream decoder for port evidence checks. |
 | `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`) tables and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
@@ -60,8 +61,8 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** `RtConfig`, symbol-presence probing, `build_layouts(config)`, version policy and probe evidence. |
 | `navigation.py` | Registry/current-thread/tick symbols, type codes, timer traversal, halted system-heap snapshot. Returns raw `gdb.Value`. |
 | `stackpc.py` | Last PC from the version-specific frame, retaining the Cortex-A9 path. Verified RV64 uses the selected saved-context profile. |
-| `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing thread orchestration; only the compiled and closed-loop RV64 profile is enabled. |
-| `stack_frame_profile.py` | ISA selection and compiled RV64 context-switch evidence; unverified profiles remain gated. |
+| `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing orchestration for verified Armv6-M, Armv7-M, Armv7-A integer kernel contexts and RV64. Basic Arm handler contexts use shared segment/exception validation; pending switches refuse task ownership. |
+| `stack_frame_profile.py` | ISA selection and compiled Arm/RISC-V save/restore/initial-context evidence; unverified profiles remain gated. |
 | `adapter.py` | Intermediate models, value conversion, task/object tables, detail dispatch, system summaries. |
 | `views.py` | Column contracts, typed detail-table navigation cells, heap views and verdicts. |
 | `diagnostics.py` | Bounded raw-memory walks (IPC, heap), consistency diagnostics, and `rtt check`. |
@@ -130,6 +131,13 @@ serve as a later CFA base or register-copy source. Known FDE ranges retain
 CIE/rule errors. Parse failures with undecodable coverage prohibit
 frame-pointer fallback unless an independent metadata rule covers the PC;
 clean uncovered PCs retain the bounded fallback.
+
+Clean uncovered PCs first admit an instruction leaf only when ELF function
+types bound a complete, supported straight-line SP/LR-preserving return path.
+The scan uses ELF code, not target stack searches or function-name whitelists.
+Clobbered registers and the caller's unknown LR are unavailable to later rows;
+normal PC, segment, progress and depth guards apply. The `leaf` method and
+messages retain the instruction proof rather than presenting it as CFI.
 
 `DW_CFA_def_cfa_expression` computes CFA; `DW_CFA_expression` computes a
 register-save address, while `DW_CFA_val_expression` computes the register

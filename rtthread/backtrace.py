@@ -19,7 +19,9 @@ from core.stack_frame_parser import (
 from core.unwind import Endian, Reader, SeedFrame
 
 
-def _arm_integer(isa: Isa) -> SavedStackContext:
+def _arm_integer(
+    isa: Isa, *, validation: ValidationLevel = "synthetic"
+) -> SavedStackContext:
     return SavedStackContext(
         profile_id=f"rtthread/{isa}/integer",
         pointer_size=4,
@@ -31,6 +33,7 @@ def _arm_integer(isa: Isa) -> SavedStackContext:
         sp_offset=64,
         context_span=(0, 64),
         fill_word=0xDEADBEEF,
+        validation=validation,
     )
 
 
@@ -48,6 +51,23 @@ def _armv8m_mainline() -> SavedStackContext:
         sp_offset=80,
         context_span=(0, 80),
         fill_word=0xDEADBEEF,
+    )
+
+
+def _armv7a(*, lwp: bool) -> SavedStackContext:
+    bias = 8 if lwp else 0
+    return SavedStackContext(
+        profile_id="rtthread/armv7-a/integer" + ("-lwp" if lwp else ""),
+        pointer_size=4,
+        registers=tuple((register, bias + 4 + register * 4) for register in range(13)),
+        pc_offset=bias + 60,
+        lr_offset=bias + 56,
+        status_offset=bias,
+        status_kind="cpsr",
+        sp_offset=bias + 64,
+        context_span=(0, bias + 64),
+        fill_word=0xDEADBEEF,
+        validation="live" if lwp else "synthetic",
     )
 
 
@@ -70,9 +90,11 @@ def _riscv(isa: Isa, word: int, *, validation: ValidationLevel) -> SavedStackCon
     )
 
 
-ARMV6M_INTEGER = _arm_integer("armv6-m")
-ARMV7M_INTEGER = _arm_integer("armv7-m")
+ARMV6M_INTEGER = _arm_integer("armv6-m", validation="live")
+ARMV7M_INTEGER = _arm_integer("armv7-m", validation="live")
 ARMV8M_MAINLINE_INTEGER = _armv8m_mainline()
+ARMV7A_INTEGER = _armv7a(lwp=False)
+ARMV7A_LWP_INTEGER = _armv7a(lwp=True)
 RISCV32_INTEGER = _riscv("riscv32", 4, validation="synthetic")
 RISCV64_INTEGER = _riscv("riscv64", 8, validation="live")
 
@@ -100,10 +122,11 @@ def decode_saved_context(
         endian=endian,
         stack_low=stack_low,
         stack_high=stack_high,
-        check_ipsr_and_align=False,
     )
     if decoded is None:
         return None, reason
+    if context.status_kind == "cpsr" and decoded.status & 0x1F not in (0x13, 0x1F):
+        return None, "unsupported-privilege-context"
     registers = decoded.registers
     code_pc = decoded.code_pc
     caller_sp = decoded.sp

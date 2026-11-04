@@ -951,7 +951,7 @@ def prepare_arm_handler_unwind(
     if running is None:
         return (
             "scheduler-state-unavailable",
-            "xSchedulerRunning is not readable; task ownership is unproven",
+            "scheduler ownership is not readable; the task owner is unproven",
         )
     if not running:
         return (

@@ -1,0 +1,58 @@
+diff --git a/bsp/qemu-vexpress-a9/rtconfig.py b/bsp/qemu-vexpress-a9/rtconfig.py
+--- a/bsp/qemu-vexpress-a9/rtconfig.py
++++ b/bsp/qemu-vexpress-a9/rtconfig.py
+@@ -57,7 +57,7 @@
+     STRIP = PREFIX + 'strip'
+ 
+     DEVICE = ' -march=armv7-a -marm -msoft-float'
+-    CFLAGS = DEVICE + ' -Wall -Wno-error=implicit-function-declaration'
++    CFLAGS = DEVICE + ' -Wall -Wno-error=implicit-function-declaration -funwind-tables -fno-omit-frame-pointer'
+     AFLAGS = ' -c' + DEVICE + ' -x assembler-with-cpp -D__ASSEMBLY__ -I.'
+     LINK_SCRIPT = 'link.lds'
+     LFLAGS = DEVICE + ' -nostartfiles -Wl,--gc-sections,-Map=rtthread.map,-cref,-u,system_vectors'+\
+diff --git a/bsp/qemu-vexpress-a9/applications/main.c b/bsp/qemu-vexpress-a9/applications/main.c
+--- a/bsp/qemu-vexpress-a9/applications/main.c
++++ b/bsp/qemu-vexpress-a9/applications/main.c
+@@ -89,6 +89,24 @@
+ static struct rt_thread worker10_thread;
+ static struct rt_thread worker11_thread;
+ 
++static struct rt_thread gdr_unstarted_thread;
++static rt_uint8_t gdr_unstarted_stack[THREAD_STACK_SIZE];
++
++static void gdr_unstarted_entry(void *parameter)
++{
++    (void)parameter;
++}
++
++static void gdr_bt_live_leaf(void)
++{
++    __asm volatile(".global gdr_bt_live_stop\ngdr_bt_live_stop:\nnop" ::: "memory");
++}
++
++static void gdr_bt_live_middle(void)
++{
++    gdr_bt_live_leaf();
++}
++
+ static void test_timer_timeout(void *parameter)
+ {
+     (void)parameter;
+@@ -133,6 +151,7 @@ static void worker3_entry(void *parameter)
+ 
+     while (1)
+     {
++        gdr_bt_live_middle();
+         rt_thread_mdelay(200);
+     }
+ }
+@@ -320,6 +339,9 @@ int main(void)
+     rt_timer_start(&test_timer);
+ 
+     /* Create worker threads */
++    rt_thread_init(&gdr_unstarted_thread, "gdr_unstarted", gdr_unstarted_entry, RT_NULL,
++                   gdr_unstarted_stack, sizeof(gdr_unstarted_stack),
++                   THREAD_PRIORITY + 10, 10);
+     rt_thread_init(&locker_thread, "locker", locker_entry, RT_NULL,
+                    locker_stack, sizeof(locker_stack),
+                    THREAD_PRIORITY, 10);

@@ -101,6 +101,66 @@ def test_lane_catalog_preserves_compile_only_policy():
     assert not matrix.matrix_build_only(matrix.select("rtthread", "rv64", "4.0.5"))
 
 
+def test_rtthread_armv7m_fixture_uses_the_shared_lane_contract():
+    lane = matrix.select("rtthread", "mps2-an385", "v4.0.5")
+    assert lane.variant == "" and lane.tag == "v4.0.5"
+    assert lane.architecture == "arm" and lane.qemu == "qemu-system-arm"
+    assert lane.artifacts == ("rtthread.elf", ".debug-macros")
+    for group in ("rtthread-ports", "rtthread", "smoke", "all"):
+        assert lane in matrix.GROUPS[group]
+    with pytest.raises(ValueError, match="unsupported lane"):
+        matrix.select("rtthread", "mps2-an385", "4.1.1")
+
+
+def test_rtthread_armv7m_patches_preserve_upstream_context_code():
+    root = Path(__file__).resolve().parents[3]
+    patches = root / "ci/rt-thread/patches/mps2-an385/4.0.5"
+    changed = set()
+    for patch in sorted(patches.glob("*.patch")):
+        output = subprocess.check_output(
+            ["git", "apply", "--numstat", str(patch)], text=True
+        )
+        for line in output.splitlines():
+            added, removed, path = line.split("\t", 2)
+            assert int(added) > 0 and removed == "0"
+            assert path.startswith("bsp/gdr-mps2-an385/")
+            changed.add(Path(path).name)
+    assert changed == {
+        "SConstruct",
+        "SConscript",
+        "rtconfig.py",
+        "rtconfig.h",
+        "board.c",
+        "startup.S",
+        "linker.ld",
+        "main.c",
+        "irq.c",
+    }
+
+
+def test_microbit_fixture_compatibility_changes_are_explicit_and_do_not_use_systick():
+    root = Path(__file__).resolve().parents[3]
+    patches = root / "ci/rt-thread/patches/microbit/4.0.5"
+    for path in patches.glob("*.patch"):
+        subprocess.check_output(["git", "apply", "--numstat", str(path)])
+    compat = (patches / "003-port-compat.patch").read_text()
+    assert "+    MOVS    R0, #0x03" in compat
+    assert (
+        "+    stack_frame->exception_stack_frame.pc  = (unsigned long)tentry & ~1UL;"
+        in compat
+    )
+    assert "exception_stack_frame.lr" not in "\n".join(
+        line for line in compat.splitlines() if line.startswith("+")
+    )
+    bsp = (patches / "001-qemu-bsp.patch").read_text()
+    assert "0x4000A000u" in bsp and "+void Timer2_Handler(void)" in bsp
+    assert "REG32(TICK_TIMER2 + 0x200) = 1" in bsp
+    assert "SysTick_Handler" not in bsp
+    assert not any(
+        address in bsp for address in ("0xE000E010", "0xE000E014", "0xE000E018")
+    )
+
+
 def test_cli_list_and_invalid_coordinates_have_no_cache_side_effects(
     isolated_cache, capsys
 ):
@@ -222,6 +282,7 @@ def test_fresh_rejects_incomplete_or_invalid_manifests(manifest):
         ("freertos", "mps2-an521", "11.1.0", "snapshot"),
         ("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame"),
         ("rtthread", "rv64", "4.0.5", ""),
+        ("rtthread", "mps2-an385", "4.0.5", ""),
     ],
 )
 def test_build_publishes_complete_artifacts_and_reuses_manifest(

@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [gdb12, rtthread-a9, rtthread-rv64, freertos-config, freertos-version, freertos-ports]
+        group: [gdb12, rtthread-a9, rtthread-rv64, rtthread-ports, freertos-config, freertos-version, freertos-ports]
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:

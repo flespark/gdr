@@ -14,7 +14,7 @@ from typing import Literal
 
 Endian = Literal["little", "big"]
 Arch = Literal["arm", "riscv"]
-Method = Literal["seed", "ehabi", "cfi", "frame-pointer", "exception"]
+Method = Literal["seed", "ehabi", "cfi", "leaf", "frame-pointer", "exception"]
 
 Reader = Callable[[int, int], "bytes | None"]
 
@@ -81,11 +81,12 @@ class ElfSection:
 
 @dataclass(frozen=True)
 class CodeSymbol:
-    """One executable ELF symbol with a non-zero size."""
+    """One executable function symbol with size and optional Arm instruction state."""
 
     name: str
     start: int
     size: int
+    thumb: bool | None = None
 
     @property
     def end(self) -> int:
@@ -110,6 +111,7 @@ class ElfImage:
     flags: int = 0
     anchors: tuple[tuple[str, int], ...] = ()
     nobits_sections: tuple[tuple[str, int, int], ...] = ()
+    zero_size_functions: tuple[CodeSymbol, ...] = ()
 
     def symbol_address(self, name: str) -> int | None:
         """Return a defined symbol's unique address, including zero-size labels."""
@@ -294,7 +296,7 @@ class ElfImage:
                         section_type=section_type,
                     )
                 )
-        symbols, anchors = _parse_code_symbols(
+        symbols, anchors, zero_size_functions = _parse_code_symbols(
             data,
             all_headers,
             is_64=is_64,
@@ -311,6 +313,7 @@ class ElfImage:
             flags=struct.unpack_from(f"{order}I", data, 48 if is_64 else 36)[0],
             anchors=anchors,
             nobits_sections=tuple(nobits_sections),
+            zero_size_functions=zero_size_functions,
         )
 
     @classmethod
@@ -338,12 +341,13 @@ def _parse_code_symbols(
     endian: Endian,
     machine: int,
     section_count: int,
-) -> tuple[tuple[CodeSymbol, ...], tuple[tuple[str, int], ...]]:
-    """Parse sized functions and defined, allocated-section symbol anchors."""
+) -> tuple[tuple[CodeSymbol, ...], tuple[tuple[str, int], ...], tuple[CodeSymbol, ...]]:
+    """Retain function types/state separately from generic allocated-section anchors."""
     order = "<" if endian == "little" else ">"
     entry_size = 24 if is_64 else 16
     symbols: list[CodeSymbol] = []
     anchors: list[tuple[str, int]] = []
+    zero_size_functions: list[CodeSymbol] = []
     for index, (
         _name_offset,
         section_type,
@@ -361,16 +365,16 @@ def _parse_code_symbols(
             or offset > len(data)
             or size > len(data) - offset
         ):
-            return (), ()
+            return (), (), ()
         string_offset, string_type, _sf, _sa, strings_at, strings_size, _sl = headers[
             link
         ]
         del string_offset, string_type
         if strings_at > len(data) or strings_size > len(data) - strings_at:
-            return (), ()
+            return (), (), ()
         strings = data[strings_at : strings_at + strings_size]
         if entry_size == 0 or size % entry_size:
-            return (), ()
+            return (), (), ()
         for item in range(0, size - entry_size + 1, entry_size):
             base = offset + item
             name_at = struct.unpack_from(f"{order}I", data, base)[0]
@@ -391,6 +395,7 @@ def _parse_code_symbols(
                 or not headers[section_index][2] & 2
             ):
                 continue
+            thumb = bool(value & 1) if machine == EM_ARM else None
             if machine == EM_ARM:
                 value &= ~1
             end = strings.find(b"\0", name_at)
@@ -401,13 +406,16 @@ def _parse_code_symbols(
                 anchors.append((name, value))
                 if (
                     info & 0x0F == STT_FUNC
-                    and value_size > 0
                     and headers[section_index][2] & SHF_EXECINSTR
                 ):
-                    symbols.append(CodeSymbol(name=name, start=value, size=value_size))
+                    symbol = CodeSymbol(
+                        name=name, start=value, size=value_size, thumb=thumb
+                    )
+                    (symbols if value_size > 0 else zero_size_functions).append(symbol)
         break
     symbols.sort(key=lambda symbol: symbol.start)
-    return tuple(symbols), tuple(anchors)
+    zero_size_functions.sort(key=lambda symbol: symbol.start)
+    return tuple(symbols), tuple(anchors), tuple(zero_size_functions)
 
 
 def _read_section_header(

@@ -127,11 +127,12 @@ Backtrace JSON reports canonical ISA in `architecture` and ELF ABI in `abi`;
 profile identity remains internal. RISC-V profiles require a bounded match of
 the compiled integer save/restore and initial-stack code; this does not prove
 vendor-private traps.
-RT-Thread backtraces are verified on RV64; its Armv6-M, Armv7-M,
-Armv8-M Mainline and RV32 context layouts
-are implemented and unit-tested but report `unverified-port` until a QEMU BSP
-fixture exists. Armv7-A (`cortex-a9`) remains on the existing `stackpc` path and is not a
-first-version backtrace target.
+RT-Thread integer backtraces are verified on RV64, Armv6-M
+(`microbit/4.0.5`), Armv7-M (`mps2-an385/4.0.5`) and Armv7-A
+(`cortex-a9/4.0.5`). The Armv7-A profile covers the compiled SMP/signal/LWP-header
+kernel context; user-mode seeds and FPU contexts are refused, and frame-pointer
+fallback has no Armv7-A acceptance. Armv8-M Mainline and RV32 layouts remain
+unverified and report `unverified-port`.
 
 **EHABI entries require a matching ELF function symbol.** Without
 `-funwind-tables` the ARM fixtures expose only `EXIDX_CANTUNWIND`. With the
@@ -233,6 +234,13 @@ parse error; it validates alignment, stack bounds,
 progress and that the return PC is executable. GDR never scans a stack for
 plausible return addresses, calls an inferior function, or writes target
 memory.
+
+**Instruction leaf recovery uses a bounded scalar subset.** A clean metadata
+gap admits a `leaf` step only for a typed ELF function with a proven
+straight-line SP/LR-preserving register return. Unknown instructions, branches,
+calls, stack-bank changes, untyped entry labels and unavailable LR stop that
+path; failed or undecodable metadata cannot enable it. Clobbered registers are
+not propagated into the caller.
 
 **No `Entry` column.** The FreeRTOS TCB (`tskTaskControlBlock`) does not store
 the task entry function pointer after task creation; it exists only transiently

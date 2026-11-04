@@ -34,6 +34,7 @@ from .unwind import read_slot
 from .unwind_meta import Endian, Reader
 
 ValidationLevel = Literal["synthetic", "file-only", "live"]
+StatusKind = Literal["xpsr", "cpsr"]
 
 
 @dataclass(frozen=True)
@@ -47,8 +48,10 @@ class SavedStackContext:
             frame top; register numbers must be unique and non-negative.
         pc_offset: Offset of the saved program counter (or trap return PC).
         lr_offset: Offset of the saved link/return-address register.
-        status_offset: Offset of the architecture status word (Arm xPSR);
+        status_offset: Offset of the architecture status word (Arm xPSR/CPSR);
             ``None`` when the port has no such slot (for example RISC-V).
+        status_kind: Interpretation of a present status slot; xPSR by default,
+            CPSR for Arm A-profile. Ignored when no status slot is present.
         sp_offset: Offset from the frame top to the caller's SP; usually the
             frame size consumed by the save path.
         sp_slot_offset: Offset of a slot that stores the task SP instead of
@@ -81,6 +84,7 @@ class SavedStackContext:
     context_in_tcb: bool = False
     slot_aliases: tuple[tuple[str, str], ...] = ()
     validation: ValidationLevel = "synthetic"
+    status_kind: StatusKind = "xpsr"
 
     @property
     def verified(self) -> bool:
@@ -97,6 +101,10 @@ class SavedStackContext:
             raise ValueError("invalid saved-context profile")
         if self.validation not in ("synthetic", "file-only", "live"):
             raise ValueError("invalid saved-context validation")
+        if self.status_kind not in ("xpsr", "cpsr"):
+            raise ValueError("invalid saved-context status kind")
+        if self.status_kind == "cpsr" and self.status_offset is None:
+            raise ValueError("CPSR requires a saved status slot")
         numbers = [register for register, _offset in self.registers]
         if len(set(numbers)) != len(numbers):
             raise ValueError("duplicate saved-context register")
@@ -284,9 +292,26 @@ def decode_profile_slots(
         )
         if status is None:
             return None, "saved-context-unreadable"
-        if not status & (1 << 24):
+        if context.status_kind == "cpsr":
+            if status & 0x1F not in (
+                0x10,
+                0x11,
+                0x12,
+                0x13,
+                0x16,
+                0x17,
+                0x1A,
+                0x1B,
+                0x1F,
+            ):
+                return None, "saved-frame-cpsr-mode-invalid"
+            if status & (1 << 24):
+                return None, "saved-frame-instruction-set-unsupported"
+            if not status & (1 << 5) and pc & 3:
+                return None, "saved-frame-pc-misaligned"
+        elif not status & (1 << 24):
             return None, "saved-frame-not-thumb"
-        if check_ipsr_and_align:
+        elif check_ipsr_and_align:
             if status & 0x1FF:
                 return None, "saved-frame-ipsr-invalid"
             if status & (1 << 9):
@@ -315,6 +340,7 @@ __all__ = [
     "EvidenceError",
     "RiscvCodeParser",
     "SavedStackContext",
+    "StatusKind",
     "StackContextSelection",
     "ValidationLevel",
     "decode_profile_slots",

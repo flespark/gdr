@@ -19,6 +19,10 @@ All notable changes to GDR are documented in this file.
   frames on the verified microbit port; Armv6-M scheduler transitions remain gated.
 - FreeRTOS 10.3.1 Armv7-M (`ARM_CM3`) backtraces resolve proven PendSV/SVC scheduling
   stages with a matching compiled profile; unproven windows stop explicitly.
+- Backtraces recover instruction-proven leaf returns without requiring added
+  firmware CFI; clobbered registers remain unavailable to later frames.
+- RT-Thread integer backtraces support verified Armv6-M, Armv7-M and Armv7-A
+  kernel contexts, with bounded saved/live chains and independent entry roots.
 
 ### Changed
 

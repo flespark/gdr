@@ -98,6 +98,10 @@ RTTHREAD_A9 = tuple(
 RTTHREAD_RV64 = tuple(
     Lane("rtthread", "rv64", v) for v in ("4.0.4", "4.0.5", "4.1.0", "4.1.1")
 )
+RTTHREAD_PORTS = (
+    Lane("rtthread", "mps2-an385", "4.0.5"),
+    Lane("rtthread", "microbit", "4.0.5"),
+)
 FREERTOS_CONFIG = tuple(
     Lane("freertos", "mps2-an385", "10.3.1", v) for v in CONFIG_VARIANTS
 )
@@ -130,18 +134,20 @@ FREERTOS_SCHED = (Lane("freertos", "mps2-an385", "10.3.1", "sched"),)
 GROUPS = {
     "rtthread-a9": RTTHREAD_A9,
     "rtthread-rv64": RTTHREAD_RV64,
+    "rtthread-ports": RTTHREAD_PORTS,
     "freertos-config": FREERTOS_CONFIG,
     "freertos-version": FREERTOS_VERSION,
     "freertos-ports": FREERTOS_PORTS,
     "gdb12": (Lane("rtthread", "cortex-a9", "4.0.5"),),
 }
-GROUPS["rtthread"] = RTTHREAD_A9 + RTTHREAD_RV64
+GROUPS["rtthread"] = RTTHREAD_A9 + RTTHREAD_RV64 + RTTHREAD_PORTS
 GROUPS["freertos"] = FREERTOS_CONFIG + FREERTOS_VERSION + FREERTOS_PORTS
 GROUPS["freertos-sched"] = FREERTOS_SCHED
 GROUPS["all"] = GROUPS["rtthread"] + GROUPS["freertos"]
 GROUPS["smoke"] = (
     Lane("rtthread", "cortex-a9", "4.0.5"),
     Lane("rtthread", "rv64", "4.0.5"),
+    *RTTHREAD_PORTS,
     Lane("freertos", "mps2-an385", "11.1.0", "base"),
     *FREERTOS_PORTS,
 )

@@ -630,6 +630,11 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         f"({transition.evidence})"
         for transition in result.transitions
     )
+    messages.extend(
+        f"frame {item.index}: {evidence}"
+        for item in result.frames
+        for evidence in item.evidence
+    )
     return BacktraceReport(
         task=task.name or target,
         address=task.address,

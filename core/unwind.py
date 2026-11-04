@@ -1,8 +1,8 @@
 """Bounded, read-only task stack unwinding over ELF unwind metadata (pure).
 
 The driver consumes :mod:`core.unwind_ehabi` and :mod:`core.unwind_cfi` tables and
-falls back to a validated frame-pointer chain only when those tables do not
-cover a PC.  It never calls an inferior function and never writes target
+uses instruction-proven leaf returns or a validated frame-pointer chain only
+for clean uncovered PCs. It never calls an inferior function and never writes target
 memory.  Every ordinary frame preserves or advances SP inside the current stack
 segment; crossing to another segment requires an architecture-owned exception
 transition proof.  Each walk is bounded by a maximum depth, and a malformed or
@@ -26,6 +26,7 @@ from .unwind_cfi import (
 )
 from .unwind_ehabi import EhabiTable, parse_ehabi, unwind_ehabi
 from .unwind_expr import evaluate_cfi_expression
+from .unwind_leaf import prove_leaf_return
 from .unwind_meta import (
     EM_RISCV,
     MAX_FRAME_READ,
@@ -82,6 +83,7 @@ class UnwindFrame:
     method: Method
     lookup_pc: int | None = None
     segment: str | None = None
+    evidence: tuple[str, ...] = ()
 
     @property
     def address_in_block(self) -> int:
@@ -503,8 +505,8 @@ def unwind_chain(
     further frame must either stay inside the current stack segment or cross
     only through an architecture hook that proves and decodes an exception
     frame.  Ordinary steps must not decrease the stack pointer, must stay
-    inside the current segment and be produced by a metadata rule or a
-    validated frame-pointer record.  Repeated segment/PC/SP triples are loops.
+    inside the current segment and be produced by metadata, an instruction
+    proof or a validated frame-pointer record. Repeated segment/PC/SP triples are loops.
     ``complete`` requires the adapter's independently supplied root or exit
     sentinel; other termination is partial.
 
@@ -758,6 +760,7 @@ def unwind_chain(
         attempts: list[str] = []
         has_metadata = False
         exact_caller_pc = False
+        frame_evidence: tuple[str, ...] = ()
         if metadata is not None and metadata.ehabi is not None:
             symbol = metadata.elf.function_containing(lookup_pc)
             entry = metadata.ehabi.entry_for(lookup_pc)
@@ -827,6 +830,27 @@ def unwind_chain(
             else:
                 has_metadata = has_metadata or bool(parse_failures)
                 attempts.extend(parse_failures or ["cfi-no-fde"])
+        if outcome is None and not has_metadata and metadata is not None:
+            exidx = metadata.elf.section(".ARM.exidx")
+            if exidx is not None and len(exidx.data) % 8:
+                stop_reason = "ehabi-truncated-table"
+                break
+            proof = prove_leaf_return(metadata.elf, lookup_pc)
+            if proof is not None:
+                raw_return = regs.get(proof.return_register)
+                if raw_return is None:
+                    stop_reason = _register_failure(
+                        regs, proof.return_register, "leaf-return-address-missing"
+                    )
+                    break
+                new_regs = _RecoveredRegisters(regs)
+                for register in (*proof.clobbered, proof.return_register):
+                    new_regs.pop(register, None)
+                    new_regs.unavailable[register] = "leaf-register-unavailable"
+                new_sp, new_pc = sp, raw_return
+                outcome = new_regs, new_sp, new_pc
+                step_method = "leaf"
+                frame_evidence = proof.evidence
         if outcome is None and allow_frame_pointer and not has_metadata:
             outcome = _unwind_frame_pointer(
                 arch=arch,
@@ -942,6 +966,7 @@ def unwind_chain(
                 step_method,
                 caller_lookup_pc,
                 segment=current.ident if current is not None else None,
+                evidence=frame_evidence,
             )
         )
         method = step_method

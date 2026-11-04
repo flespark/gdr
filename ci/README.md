@@ -61,8 +61,8 @@ Individual capability-specific skips remain valid. Direct pytest runs can
 skip absent tools/artifacts, but never build or fetch firmware.
 
 Matrix groups are defined in `testing/matrix.py`: `rtthread-a9`,
-`rtthread-rv64`, `freertos-config`, `freertos-version`, `freertos-ports`,
-`gdb12`, `rtthread`, `freertos`, `smoke`, and `all`. The A9 matrix builds
+`rtthread-rv64`, `rtthread-ports`, `freertos-config`, `freertos-version`,
+`freertos-ports`, `gdb12`, `rtthread`, `freertos`, `smoke`, and `all`. The A9 matrix builds
 3.1.1, 3.1.2, and 3.1.4 without running tests; explicit `run` or forwarded
 pytest arguments execute them. `list all` also lists supported releases
 outside the default matrix.

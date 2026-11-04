@@ -25,6 +25,7 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   heapmap.py           heap grid, owner palette, PNG/inline frames, legend lettering
   unwind.py            bounded task unwind driver (seed, stack/PC validation, stop reasons)
   unwind_meta.py       bounded ELF sections, code symbols and binary encodings
+  unwind_leaf.py       bounded instruction proofs for stack-neutral scalar leaf returns
   cpus.py              bounded Arm/RISC-V CPU attributes, conventions and ISA/ABI evidence
   stack_frame_parser.py validated task-frame profiles and common slot decoding
   insn_riscv.py        bounded RISC-V instruction decoding and code-range evidence
@@ -155,6 +156,7 @@ BSP/toolchain before sharing a patch.
 | GDB 12 / Python 3.10 baseline | `gdb12-compat-a9` | `matrix gdb12` |
 | RT-Thread Cortex-A9 | `rtthread-a9-target` | `matrix rtthread-a9` |
 | RT-Thread RV64 | `rtthread-rv64-target` | `matrix rtthread-rv64` |
+| RT-Thread port fixtures | `rtthread-ports-target` | `matrix rtthread-ports` |
 | FreeRTOS config, version, ports and negative fixtures | `freertos-kernel-scope` | `matrix freertos` |
 | VSCode build and checks | `extension` | See `vscode/README.md`. |
 

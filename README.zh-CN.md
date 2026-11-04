@@ -149,7 +149,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | `<rtos> help [topic]` | 浏览命令树；topic 包含字段说明、使用 tips、配置依赖与实现限制 |
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |
 | `<rtos> <object> <name-or-address>` | 以纵向 `Key: Value` 显示指定对象的详情 |
-| `<rtos> backtrace <task> [--max-depth N]` | 通过 EHABI、DWARF CFI 或验证过的帧指针链回溯任务栈；输出帧 PC、符号/源码、方法、完整性和停止原因 |
+| `<rtos> backtrace <task> [--max-depth N]` | 通过 EHABI、DWARF CFI、指令证明的叶子返回或验证过的帧指针链回溯任务栈；输出帧 PC、符号/源码、方法、完整性和停止原因 |
 | `<rtos> check [scope] [name]` | 显式运行完整一致性检查 |
 | `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | 每次停机打印被 watch 的对象，类似gdb的 `display` 但不会使目标停下 |
 | `<rtos> heap dump [path]` | 绘制堆占用位图，iTerm2 或 Kitty 中内联显示，否则写入 PNG |

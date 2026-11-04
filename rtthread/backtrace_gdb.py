@@ -13,9 +13,11 @@ from core.adapter import BacktraceFrame, BacktraceReport
 from core.gdb_bridge import (
     arch_or_default,
     eval_identifier,
+    linker_symbol_address,
     loaded_object_path,
     lookup_symbol_at,
     read_bytes,
+    read_int,
     source_location_at,
     value_address,
 )
@@ -30,6 +32,17 @@ from core.unwind import (
 from core.unwind import (
     live_seed as _core_live_seed,
 )
+from core.unwind import live_seed_detail as _core_live_seed_detail
+from core.unwind_arm import (
+    arm_ccr_stkalign,
+    arm_external_exception_limit,
+    armv6m_vector_entry,
+    armv7m_vector_entry,
+    prepare_arm_handler_unwind,
+    resolve_arm_irq_stack_bounds_detail,
+    resolve_armv6m_vector_limit,
+)
+from core.unwind_segments import StackSegment
 from rtthread.adapter import value_to_thread
 from rtthread.backtrace import decode_saved_context as decode_backtrace_context
 from rtthread.layout import RT_THREAD_STACK_FILL
@@ -113,6 +126,51 @@ def _live_seed(arch: str, root_pc: int | None) -> SeedFrame | None:
         root_pc=root_pc,
         require_exception_registers=False,
         gdb_module=gdb,
+    )
+
+
+def _live_seed_detail(
+    arch: str, isa: str, root_pc: int | None
+) -> tuple[SeedFrame | None, str]:
+    m_profile = isa in ("armv6-m", "armv7-m", "armv8-m.mainline")
+    seed, reason = _core_live_seed_detail(
+        arch,
+        isa,
+        root_pc=root_pc,
+        require_exception_registers=m_profile,
+        gdb_module=gdb,
+    )
+    if seed is None:
+        return None, reason
+    if isa == "armv7-a":
+        try:
+            status = int(gdb.newest_frame().read_register("cpsr"))
+        except (gdb.error, AttributeError, RuntimeError, TypeError):
+            return None, "live-registers-unavailable"
+        if status & 0x1F not in (0x13, 0x1F):
+            return None, "unsupported-exception-model"
+    elif m_profile and not seed.exception_number and seed.sp != seed.process_sp:
+        return None, "live-stack-selection-invalid"
+    return seed, reason
+
+
+def _stop_report(
+    thread, architecture, abi, max_depth, reason, message, *, source="current"
+):
+    return BacktraceReport(
+        task=thread.name,
+        address=thread.address,
+        architecture=architecture,
+        method="none",
+        source=source,
+        complete=False,
+        stop_reason=reason,
+        truncated=False,
+        max_depth=max_depth,
+        bounds="recorded",
+        frames=[],
+        messages=[message],
+        abi=abi,
     )
 
 
@@ -224,6 +282,20 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             abi=selection.abi,
         )
     current = get_current_thread()
+    if architecture in ("armv6-m", "armv7-m", "armv8-m.mainline"):
+        pending = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
+        if pending is None or pending != 0:
+            return _stop_report(
+                thread,
+                architecture,
+                selection.abi,
+                max_depth,
+                "scheduler-state-unavailable"
+                if pending is None
+                else "scheduler-transition-unproven",
+                "the pending switch state cannot establish a stable task owner",
+                source="none",
+            )
     is_current = current is not None and value_address(current) == thread.address
     if is_current:
         selected = 0
@@ -251,7 +323,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 ],
                 abi=selection.abi,
             )
-        seed = _live_seed(arch, thread.entry or None)
+        seed, live_reason = _live_seed_detail(arch, architecture, thread.entry or None)
         if seed is None:
             return BacktraceReport(
                 task=thread.name or target,
@@ -260,7 +332,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 method="none",
                 source="current",
                 complete=False,
-                stop_reason="live-registers-unavailable",
+                stop_reason=live_reason,
                 truncated=False,
                 max_depth=max_depth,
                 bounds="recorded",
@@ -331,6 +403,67 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             root_reason="task-exit",
         )
     metadata = _unwind_metadata(adapter)
+    segments = None
+    current_segment = None
+    detector = hook = guard = None
+    stkalign = True
+    if seed.exception_number:
+        if seed.process_sp is None or not low <= seed.process_sp <= high:
+            return _stop_report(
+                thread,
+                architecture,
+                selection.abi,
+                max_depth,
+                "exception-task-context-conflict",
+                "the live PSP does not belong to the requested thread",
+            )
+        elf = metadata.elf if metadata is not None else None
+        setup = prepare_arm_handler_unwind(
+            seed,
+            architecture,
+            scheduler_running=lambda: current is not None,
+            irq_stack_bounds=lambda: resolve_arm_irq_stack_bounds_detail(
+                symbol_lookup=linker_symbol_address,
+                read=read_bytes,
+                isa=architecture,
+                elf=elf,
+                live_msp=seed.sp,
+                task_bounds=(low, high),
+            ),
+            capacity_reader=(
+                lambda: resolve_armv6m_vector_limit(
+                    symbol_lookup=linker_symbol_address, read=read_bytes, elf=elf
+                )
+            )
+            if architecture == "armv6-m"
+            else (lambda: arm_external_exception_limit(read=read_bytes)),
+            stkalign_reader=lambda: arm_ccr_stkalign(read=read_bytes),
+            vector_entry_reader=(
+                lambda number: armv6m_vector_entry(number, read=read_bytes)
+            )
+            if architecture == "armv6-m"
+            else (lambda number: armv7m_vector_entry(number, read=read_bytes)),
+        )
+        if isinstance(setup, tuple):
+            return _stop_report(thread, architecture, selection.abi, max_depth, *setup)
+        seed = setup.seed
+        task_segment = StackSegment(
+            ident=f"task:{thread.address:#x}",
+            owner=thread.name,
+            low=low,
+            high=high,
+            source="task-recorded",
+            stack="process",
+            kind="task",
+        )
+        segments = (task_segment, setup.exception_segment)
+        current_segment = setup.exception_segment.ident
+        detector, hook, guard = (
+            setup.exception_detector,
+            setup.exception_hook,
+            setup.exception_guard,
+        )
+        stkalign = setup.stkalign
     result = unwind_chain(
         seed,
         metadata,
@@ -338,7 +471,13 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         max_depth=max_depth,
         stack_low=low,
         stack_high=high,
-        allow_frame_pointer=True,
+        allow_frame_pointer=architecture != "armv7-a",
+        segments=segments,
+        current_segment=current_segment,
+        exception_detector=detector,
+        exception_hook=hook,
+        exception_guard=guard,
+        stkalign=stkalign,
     )
     frames = [
         BacktraceFrame(
@@ -347,6 +486,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             method=item.method,
             symbol=lookup_symbol_at(item.address_in_block),
             source=source_location_at(item.address_in_block),
+            segment=item.segment,
         )
         for item in result.frames
     ]
@@ -356,6 +496,15 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
     messages = []
     if metadata is None:
         messages.append("no ELF unwind metadata could be read")
+    messages.extend(
+        f"frame {item.index}: {evidence}"
+        for item in result.frames
+        for evidence in item.evidence
+    )
+    messages.extend(
+        f"exception transition {transition.from_segment} -> {transition.to_segment} at {transition.pc:#x} ({transition.evidence})"
+        for transition in result.transitions
+    )
     return BacktraceReport(
         task=thread.name or target,
         address=thread.address,

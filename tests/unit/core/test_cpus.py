@@ -226,7 +226,7 @@ def test_freertos_and_rtthread_arm_and_riscv_profile_selection():
     from rtthread.stack_frame_profile import select_context as rtt_select
 
     v7m_image = _image(40, False, _arm_file("cpu", 10, "M"))
-    assert rtt_select(v7m_image).reason == "unverified-port"
+    assert rtt_select(v7m_image).reason == "unrecognizable-stack-frame-layout"
     assert frt_select(v7m_image).reason == "unrecognizable-stack-frame-layout"
 
     anchored_v7m = ElfImage(
