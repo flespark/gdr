@@ -32,6 +32,13 @@ enforces repository-wide structural invariants on every run:
 - Adapter code uses `read_field` / `value_at` / bridge primitives rather than
   inline `read_path`, raw `gdb.lookup_type`, or raw DWARF `.sizeof` /
   `.fields()` access.
+- The runtime has zero third-party dependencies and never imports the dev-only
+  oracle packages `pyelftools` or `capstone`.
+
+`tests/unit/core/test_oracle_*.py` cross-check the bounded ELF/section, CFI,
+EHABI, DWARF-expression and Thumb/A32/RISC-V decoders against those two
+oracles. Deterministic in-memory corpora always run in CI; cached firmware ELFs
+under `ci/.cache/fixtures` are scanned only when the local cache is present.
 
 ## Shared closed-loop infrastructure
 

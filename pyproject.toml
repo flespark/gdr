@@ -39,6 +39,8 @@ dev = [
     "pytest-cov>=6",
     "pre-commit>=3.6",
     "pexpect>=4.9",
+    "pyelftools>=0.32",
+    "capstone>=5.0.5",
 ]
 
 # ---------------------------------------------------------------------------
@@ -138,6 +140,7 @@ source = [
     "core.formatting",
     "core.heapmap",
     "core.help",
+    "core.insn_arm",
     "core.insn_riscv",
     "core.insn_thumb",
     "core.unwind",

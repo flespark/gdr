@@ -36,6 +36,7 @@ from core.constants import (
     GDR_PROPAGATE_EXCEPTION,
 )
 from core.formatting import SourceLoc, format_table
+from core.unwind_meta import iter_elf_section_headers
 
 
 @dataclass(frozen=True)
@@ -1155,47 +1156,14 @@ def section_payloads(
     """
     if len(data) < 0x40 or data[:4] != b"\x7fELF":
         return {}
-    is_64 = data[4] == 2
-    big_endian = data[5] == 2
-    order = ">" if big_endian else "<"
-    try:
-        if is_64:
-            shoff = struct.unpack_from(f"{order}Q", data, 0x28)[0]
-            shentsize = struct.unpack_from(f"{order}H", data, 0x3A)[0]
-            shnum = struct.unpack_from(f"{order}H", data, 0x3C)[0]
-            shstrndx = struct.unpack_from(f"{order}H", data, 0x3E)[0]
-        else:
-            shoff = struct.unpack_from(f"{order}I", data, 0x20)[0]
-            shentsize = struct.unpack_from(f"{order}H", data, 0x2E)[0]
-            shnum = struct.unpack_from(f"{order}H", data, 0x30)[0]
-            shstrndx = struct.unpack_from(f"{order}H", data, 0x32)[0]
-    except struct.error:
+    table = iter_elf_section_headers(data)
+    if table is None:
         return {}
-    if shoff == 0 or shnum == 0 or shstrndx >= shnum:
-        return {}
-
-    offset_fmt = f"{order}{'Q' if is_64 else 'I'}"
-
-    def header(index: int) -> tuple[int, int, int]:
-        base = shoff + index * shentsize
-        try:
-            name = struct.unpack_from(f"{order}I", data, base)[0]
-            offset = struct.unpack_from(offset_fmt, data, base + (24 if is_64 else 16))[
-                0
-            ]
-            size = struct.unpack_from(offset_fmt, data, base + (32 if is_64 else 20))[0]
-        except struct.error:
-            return 0, 0, 0
-        return name, offset, size
-
-    _, names_offset, names_size = header(shstrndx)
-    names_blob = data[names_offset : names_offset + names_size]
     sections: dict[str, bytes] = {}
-    for index in range(shnum):
-        name_offset, offset, size = header(index)
-        name = _read_cstring(names_blob, name_offset)
-        if name in names and offset and size:
-            sections[name] = data[offset : offset + size]
+    for header in table.headers:
+        name = _read_cstring(table.names, header.name_offset)
+        if name in names and header.offset and header.size:
+            sections[name] = data[header.offset : header.offset + header.size]
     return sections
 
 

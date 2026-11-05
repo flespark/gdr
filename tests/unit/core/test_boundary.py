@@ -6,7 +6,13 @@ import ast
 import re
 from pathlib import Path
 
-_CORE_DIR = Path(__file__).resolve().parents[3] / "core"
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    import tomli as tomllib
+
+_ROOT = Path(__file__).resolve().parents[3]
+_CORE_DIR = _ROOT / "core"
 _RTTHREAD_TERMS = re.compile(
     r"\b(?:rt-?thread|rtthread|rt_[a-z0-9_]+)\b", re.IGNORECASE
 )
@@ -340,3 +346,43 @@ def test_no_raw_dwarf_attribute_access_outside_whitelist():
                     f"{source.name}: raw DWARF attribute access; use "
                     "core.gdb_bridge.type_size / array_bound / type_field_names"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Dev-only oracle packages: pyelftools and capstone are differential test
+# baselines, never runtime dependencies of the GDB Python runtime.
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_dependencies_stay_empty():
+    project = tomllib.loads((_ROOT / "pyproject.toml").read_text())
+    assert project["project"]["dependencies"] == []
+    dev = project["dependency-groups"]["dev"]
+    assert any(item.startswith("pyelftools") for item in dev)
+    assert any(item.startswith("capstone") for item in dev)
+
+
+def test_production_never_imports_oracle_packages():
+    roots = (_ROOT / "core", _ROOT / "freertos", _ROOT / "rtthread")
+    sources = [
+        _ROOT / "gdr.py",
+        *(path for root in roots for path in root.glob("*.py")),
+    ]
+    violations = []
+    for source in sources:
+        tree = ast.parse(source.read_text(), filename=str(source))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            else:
+                continue
+            violations.extend(
+                f"{source.relative_to(_ROOT)}:{node.lineno}: {name}"
+                for name in names
+                if name.split(".", 1)[0] in {"elftools", "capstone"}
+            )
+    assert not violations, "oracle package imported by production: " + ", ".join(
+        violations
+    )

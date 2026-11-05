@@ -7,10 +7,10 @@ The CFI and EHABI parsers consume these helpers without importing GDB.
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 Endian = Literal["little", "big"]
 Arch = Literal["arm", "riscv"]
@@ -193,124 +193,59 @@ class ElfImage:
         then report that no metadata is available instead of reading guessed
         offsets.
         """
-        if len(data) < 16 or data[:4] != b"\x7fELF" or data[6] != 1:
+        table = iter_elf_section_headers(data)
+        if table is None or data[6] != 1:
             return None
-        if data[4] not in (1, 2) or data[5] not in (1, 2):
-            return None
-        is_64 = data[4] == 2
-        endian: Endian = "little" if data[5] == 1 else "big"
-        order = "<" if endian == "little" else ">"
-        header_size = 64 if is_64 else 52
-        section_size = 64 if is_64 else 40
-        if len(data) < header_size:
-            return None
-        try:
-            machine = struct.unpack_from(f"{order}H", data, 18)[0]
-            if is_64:
-                shoff = struct.unpack_from(f"{order}Q", data, 0x28)[0]
-                shentsize = struct.unpack_from(f"{order}H", data, 0x3A)[0]
-                shnum = struct.unpack_from(f"{order}H", data, 0x3C)[0]
-                shstrndx = struct.unpack_from(f"{order}H", data, 0x3E)[0]
-            else:
-                shoff = struct.unpack_from(f"{order}I", data, 0x20)[0]
-                shentsize = struct.unpack_from(f"{order}H", data, 0x2E)[0]
-                shnum = struct.unpack_from(f"{order}H", data, 0x30)[0]
-                shstrndx = struct.unpack_from(f"{order}H", data, 0x32)[0]
-        except struct.error:
-            return None
-        if shoff == 0 or shentsize < section_size:
-            return None
-        if shoff > len(data) or shnum > MAX_SECTION_COUNT:
-            return None
-        if shnum == 0:
-            if shoff + section_size > len(data):
-                return None
-            shnum = _read_section_header(data, shoff, is_64, order, 0)[5]
-            if shnum <= 0 or shnum > MAX_SECTION_COUNT:
-                return None
-        if shnum > (len(data) - shoff) // shentsize:
-            return None
-        if shstrndx == 0xFFFF:
-            if shoff + section_size > len(data):
-                return None
-            shstrndx = _read_section_header(data, shoff, is_64, order, 0)[6]
-        if shstrndx == 0 or shstrndx >= shnum:
-            return None
-
-        def header(index: int) -> tuple[int, int, int, int, int, int, int]:
-            return _read_section_header(data, shoff, is_64, order, index)
-
-        (
-            names_name,
-            _names_type,
-            _names_flags,
-            names_addr,
-            names_offset,
-            names_size,
-            _,
-        ) = header(shstrndx)
-        del names_name, names_addr
-        if names_offset > len(data) or names_size > len(data) - names_offset:
-            return None
-        names = data[names_offset : names_offset + names_size]
+        names = table.names
         if not names or names[0] != 0:
             return None
 
         sections: list[ElfSection] = []
         nobits_sections: list[tuple[str, int, int]] = []
-        all_headers: list[tuple[int, int, int, int, int, int, int]] = []
-        for index in range(shnum):
-            (
-                name_offset,
-                section_type,
-                flags,
-                address,
-                offset,
-                size,
-                link,
-            ) = header(index)
-            all_headers.append(
-                (name_offset, section_type, flags, address, offset, size, link)
-            )
-            if section_type == 0 or name_offset >= len(names):
+        for header in table.headers:
+            if header.section_type == 0 or header.name_offset >= len(names):
                 continue
-            end = names.find(b"\0", name_offset)
+            end = names.find(b"\0", header.name_offset)
             if end < 0:
                 return None
-            name = names[name_offset:end].decode("ascii", errors="replace")
-            if not name or size == 0:
+            name = names[header.name_offset : end].decode("ascii", errors="replace")
+            if not name or header.size == 0:
                 continue
-            if section_type == SHT_NOBITS:
-                if flags & 2 and address > 0:
-                    nobits_sections.append((name, address, size))
+            if header.section_type == SHT_NOBITS:
+                if header.flags & 2 and header.address > 0:
+                    nobits_sections.append((name, header.address, header.size))
                 continue
-            if offset > len(data) or size > len(data) - offset:
+            if header.offset > len(data) or header.size > len(data) - header.offset:
                 return None
-            if section_type in (SHT_PROGBITS, SHT_ARM_EXIDX, SHT_ATTRIBUTES):
+            if header.section_type in (
+                SHT_PROGBITS,
+                SHT_ARM_EXIDX,
+                SHT_ATTRIBUTES,
+            ):
                 sections.append(
                     ElfSection(
                         name=name,
-                        address=address,
-                        data=data[offset : offset + size],
-                        flags=flags,
-                        section_type=section_type,
+                        address=header.address,
+                        data=data[header.offset : header.offset + header.size],
+                        flags=header.flags,
+                        section_type=header.section_type,
                     )
                 )
         symbols, anchors, zero_size_functions = _parse_code_symbols(
             data,
-            all_headers,
-            is_64=is_64,
-            endian=endian,
-            machine=machine,
-            section_count=shnum,
+            list(table.headers),
+            is_64=table.is_64,
+            endian=table.endian,
+            machine=table.machine,
+            section_count=len(table.headers),
         )
         return cls(
-            pointer_size=8 if is_64 else 4,
-            endian=endian,
-            machine=machine,
+            pointer_size=8 if table.is_64 else 4,
+            endian=table.endian,
+            machine=table.machine,
             sections=tuple(sections),
             symbols=symbols,
-            flags=struct.unpack_from(f"{order}I", data, 48 if is_64 else 36)[0],
+            flags=table.flags,
             anchors=anchors,
             nobits_sections=tuple(nobits_sections),
             zero_size_functions=zero_size_functions,
@@ -424,9 +359,10 @@ def _read_section_header(
     is_64: bool,
     order: str,
     index: int,
+    stride: int | None = None,
 ) -> tuple[int, int, int, int, int, int, int]:
     size = 64 if is_64 else 40
-    base = shoff + index * size
+    base = shoff + index * (size if stride is None else stride)
     if base < 0 or base + size > len(data):
         raise ValueError("section header out of range")
     name = struct.unpack_from(f"{order}I", data, base)[0]
@@ -443,6 +379,124 @@ def _read_section_header(
         size_value = struct.unpack_from(f"{order}I", data, base + 20)[0]
         link = struct.unpack_from(f"{order}I", data, base + 24)[0]
     return name, section_type, flags, address, offset, size_value, link
+
+
+class ElfSectionHeader(NamedTuple):
+    """One parsed ELF section header before any type filtering."""
+
+    name_offset: int
+    section_type: int
+    flags: int
+    address: int
+    offset: int
+    size: int
+    link: int
+
+
+@dataclass(frozen=True)
+class ElfSectionTable:
+    """The ELF header fields and the complete, unfiltered section table."""
+
+    is_64: bool
+    endian: Endian
+    machine: int
+    flags: int
+    shentsize: int
+    names: bytes
+    headers: tuple[ElfSectionHeader, ...]
+
+    def __iter__(self) -> Iterator[ElfSectionHeader]:
+        return iter(self.headers)
+
+
+def iter_elf_section_headers(data: bytes) -> ElfSectionTable | None:
+    """Parse the ELF header and section table, or ``None`` when malformed.
+
+    This is the stateless, section-type-agnostic walk shared by
+    :meth:`ElfImage.from_bytes` and ``core.gdb_bridge.section_payloads``.
+    Name resolution, the ELF-ident version check and per-section payload
+    bounds stay with each caller so their contracts do not change.
+    """
+    if len(data) < 16 or data[:4] != b"\x7fELF":
+        return None
+    if data[4] not in (1, 2) or data[5] not in (1, 2):
+        return None
+    is_64 = data[4] == 2
+    endian: Endian = "little" if data[5] == 1 else "big"
+    order = "<" if endian == "little" else ">"
+    header_size = 64 if is_64 else 52
+    section_size = 64 if is_64 else 40
+    if len(data) < header_size:
+        return None
+    try:
+        machine = struct.unpack_from(f"{order}H", data, 18)[0]
+        if is_64:
+            shoff = struct.unpack_from(f"{order}Q", data, 0x28)[0]
+            shentsize = struct.unpack_from(f"{order}H", data, 0x3A)[0]
+            shnum = struct.unpack_from(f"{order}H", data, 0x3C)[0]
+            shstrndx = struct.unpack_from(f"{order}H", data, 0x3E)[0]
+        else:
+            shoff = struct.unpack_from(f"{order}I", data, 0x20)[0]
+            shentsize = struct.unpack_from(f"{order}H", data, 0x2E)[0]
+            shnum = struct.unpack_from(f"{order}H", data, 0x30)[0]
+            shstrndx = struct.unpack_from(f"{order}H", data, 0x32)[0]
+    except struct.error:
+        return None
+    if shoff == 0 or shentsize < section_size:
+        return None
+    if shoff > len(data) or shnum > MAX_SECTION_COUNT:
+        return None
+    if shnum == 0:
+        if shoff + section_size > len(data):
+            return None
+        try:
+            shnum = _read_section_header(data, shoff, is_64, order, 0)[5]
+        except ValueError:
+            return None
+        if shnum <= 0 or shnum > MAX_SECTION_COUNT:
+            return None
+    if shnum > (len(data) - shoff) // shentsize:
+        return None
+    if shstrndx == 0xFFFF:
+        if shoff + section_size > len(data):
+            return None
+        try:
+            shstrndx = _read_section_header(data, shoff, is_64, order, 0)[6]
+        except ValueError:
+            return None
+    if shstrndx == 0 or shstrndx >= shnum:
+        return None
+    headers: list[ElfSectionHeader] = []
+    try:
+        headers.extend(
+            ElfSectionHeader(
+                *_read_section_header(
+                    data, shoff, is_64, order, index, stride=shentsize
+                )
+            )
+            for index in range(shnum)
+        )
+    except (ValueError, struct.error):
+        return None
+    names_header = headers[shstrndx]
+    if (
+        names_header.offset > len(data)
+        or names_header.size > len(data) - names_header.offset
+    ):
+        return None
+    try:
+        flags = struct.unpack_from(f"{order}I", data, 48 if is_64 else 36)[0]
+    except struct.error:
+        return None
+    return ElfSectionTable(
+        is_64=is_64,
+        endian=endian,
+        machine=machine,
+        flags=flags,
+        shentsize=shentsize,
+        names=data[names_header.offset : names_header.offset + names_header.size],
+        headers=tuple(headers),
+    )
 
 
 # ---------------------------------------------------------------------------
