@@ -36,6 +36,9 @@ All notable changes to GDR are documented in this file.
   storage.
 - Backtrace JSON uses canonical `architecture` and `abi`, replacing `port`
   and duplicate `isa` fields; the envelope schema is 3.
+- RT-Thread save-profile selection proves decoded register bitmaps, SP switch
+  and LWP header instead of fixed instruction-stream fingerprints; additional
+  Armv7-A LWP releases are accepted and pre-4.0 layouts remain refused.
 
 ### Fixed
 

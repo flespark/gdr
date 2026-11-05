@@ -362,6 +362,23 @@ def test_runtime_dependencies_stay_empty():
     assert any(item.startswith("capstone") for item in dev)
 
 
+def test_production_never_hardcodes_compiled_stream_fingerprints():
+    """A fixed hash of a whole instruction stream rejects every other build."""
+    pattern = re.compile(r'"[0-9a-f]{64}"')
+    roots = (_ROOT / "core", _ROOT / "freertos", _ROOT / "rtthread")
+    sources = [
+        _ROOT / "gdr.py",
+        *(path for root in roots for path in root.glob("*.py")),
+    ]
+    violations = [
+        f"{source.relative_to(_ROOT)}:{lineno}"
+        for source in sources
+        for lineno, line in enumerate(source.read_text().splitlines(), 1)
+        if pattern.search(line)
+    ]
+    assert not violations, "hardcoded stream fingerprint: " + ", ".join(violations)
+
+
 def test_production_never_imports_oracle_packages():
     roots = (_ROOT / "core", _ROOT / "freertos", _ROOT / "rtthread")
     sources = [

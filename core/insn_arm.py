@@ -289,64 +289,6 @@ def expect_arm(
     )
 
 
-def semantic_arm_token(instruction: ArmInstruction) -> str:
-    """Return a stable mnemonic/operand token for compiled-code evidence."""
-    operands = ",".join(
-        f"{name}={value}" for name, value in sorted(instruction.operands.items())
-    )
-    return f"{instruction.mnemonic}:{operands}"
-
-
-def expect_arm_stream(
-    instructions: tuple[ArmInstruction, ...],
-    expected: tuple[tuple[str, Mapping[str, int | bool | str]], ...],
-    *,
-    elf: ElfImage | None = None,
-) -> bool:
-    """Match a complete decoded stream against mnemonic/operand evidence."""
-    if len(instructions) != len(expected):
-        return False
-    for instruction, (mnemonic, operands) in zip(instructions, expected, strict=True):
-        direct_operands = {
-            name: value for name, value in operands.items() if name != "target_symbol"
-        }
-        if not expect_arm(instruction, mnemonic, direct_operands):
-            return False
-        target = operands.get("target_symbol")
-        if target is not None and (
-            elf is None
-            or instruction.operands.get("target") != elf.symbol_address(str(target))
-        ):
-            return False
-    return True
-
-
-def semantic_arm_stream_token(
-    elf: ElfImage, instructions: tuple[ArmInstruction, ...], start: int, end: int
-) -> str:
-    """Normalize branch addresses before fingerprinting decoded semantics."""
-    tokens: list[str] = []
-    anchors: dict[int, set[str]] = {}
-    for name, address in elf.anchors:
-        if not name.startswith("$"):
-            anchors.setdefault(address, set()).add(name)
-    for instruction in instructions:
-        operands = dict(instruction.operands)
-        target = operands.pop("target", None)
-        if target is not None:
-            if start <= int(target) < end:
-                operands["target_offset"] = int(target) - start
-            elif anchors.get(int(target)):
-                operands["target_symbol"] = "/".join(sorted(anchors[int(target)]))
-            else:
-                operands["target"] = int(target)
-        normalized = ArmInstruction(
-            instruction.address, instruction.size, instruction.mnemonic, operands
-        )
-        tokens.append(semantic_arm_token(normalized))
-    return "\n".join(tokens)
-
-
 def _instruction(
     address: int, mnemonic: str, operands: Mapping[str, int | bool | str]
 ) -> ArmInstruction:

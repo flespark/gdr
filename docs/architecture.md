@@ -63,7 +63,7 @@ duplicating what GDB already displays well. Design rationale lives in
 | `navigation.py` | Registry/current-thread/tick symbols, type codes, timer traversal, halted system-heap snapshot. Returns raw `gdb.Value`. |
 | `stackpc.py` | Last PC from the version-specific frame, retaining the Cortex-A9 path. Verified RV64 uses the selected saved-context profile. |
 | `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing orchestration for verified Armv6-M, Armv7-M, Armv7-A integer kernel contexts and RV64. Basic Arm handler contexts use shared segment/exception validation; pending switches refuse task ownership. |
-| `stack_frame_profile.py` | ISA selection and compiled Arm/RISC-V save/restore/initial-context evidence; unverified profiles remain gated. |
+| `stack_frame_profile.py` | ISA selection and decoded Arm/RISC-V save/restore/initial-context evidence (register bitmaps, SP switch, LWP header) without fixed instruction-stream fingerprints; unverified profiles remain gated. |
 | `adapter.py` | Intermediate models, value conversion, task/object tables, detail dispatch, system summaries. |
 | `views.py` | Column contracts, typed detail-table navigation cells, heap views and verdicts. |
 | `diagnostics.py` | Bounded raw-memory walks (IPC, heap), consistency diagnostics, and `rtt check`. |

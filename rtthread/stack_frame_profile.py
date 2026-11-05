@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
+from collections.abc import Callable
 
 from core.cpus import Cpu, cpu_of
-from core.insn_arm import (
-    decode_arm_prefix,
-    decode_arm_stream,
-    expect_arm_stream,
-    semantic_arm_stream_token,
-)
+from core.insn_arm import ArmInstruction, decode_arm
 from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
@@ -19,7 +14,7 @@ from core.insn_riscv import (
     riscv_slot_map,
     riscv_stack_frame_size,
 )
-from core.insn_thumb import decode_thumb, decode_thumb_stream, semantic_token
+from core.insn_thumb import ThumbInstruction, decode_thumb
 from core.stack_frame_parser import (
     SavedStackContext,
     StackContextSelection,
@@ -208,232 +203,179 @@ def _code_span(
     return start, end
 
 
-def _thumb_signature(
-    elf: ElfImage, name: str, end_name: str | None = None
-) -> str | None:
-    """Fingerprint bounded Thumb operands and resolved literals, not link addresses."""
+_MAX_PORT_INSTRUCTIONS = 256
+_M_PROFILE_CORE = 0xFF0
+_M_PROFILE_LOW = 0xF0
+_PSP_SYSM = 9
+
+_PortInstruction = ThumbInstruction | ArmInstruction
+_PortDecoder = Callable[[ElfImage, int, int], _PortInstruction | str]
+
+
+def _is_return(instruction: _PortInstruction) -> bool:
+    if instruction.mnemonic == "bx":
+        return instruction.operands.get("rm") == 14
+    if instruction.mnemonic == "pop":
+        return bool(int(instruction.operands.get("reglist", 0)) & 0x100)
+    return False
+
+
+def _port_instructions(
+    elf: ElfImage,
+    name: str,
+    end_name: str | None,
+    decoder: _PortDecoder,
+    *,
+    stop_at_return: bool = False,
+) -> tuple[_PortInstruction, ...] | None:
+    """Decode one bounded port function, refusing unknown or unreadable bytes."""
     span = _code_span(elf, name, end_name)
     if span is None or elf.endian != "little":
         return None
-    if name == "rt_hw_stack_init":
-        tokens = []
-        address = span[0]
-        for _ in range(256):
-            instruction = decode_thumb(elf, address, span[1])
-            if isinstance(instruction, str) or instruction.mnemonic == "other":
-                return None
-            tokens.append(semantic_token(elf, instruction))
-            address += instruction.size
-            if instruction.mnemonic == "bx" and instruction.operands.get("rm") == 14:
-                break
-            if (
-                instruction.mnemonic == "pop"
-                and int(instruction.operands.get("reglist", 0)) & 0x100
-            ):
-                break
-        else:
+    instructions: list[_PortInstruction] = []
+    address = span[0]
+    while address < span[1]:
+        if len(instructions) >= _MAX_PORT_INSTRUCTIONS:
             return None
+        decoded = decoder(elf, address, span[1])
+        if isinstance(decoded, str) or decoded.mnemonic == "other":
+            return None
+        instructions.append(decoded)
+        if stop_at_return and _is_return(decoded):
+            return tuple(instructions)
+        address += decoded.size
+    if stop_at_return or address != span[1] or not instructions:
+        return None
+    return tuple(instructions)
+
+
+def _reglists(
+    instructions: tuple[_PortInstruction, ...], mnemonics: tuple[str, ...]
+) -> list[int]:
+    return [
+        int(instruction.operands["reglist"])
+        for instruction in instructions
+        if instruction.mnemonic in mnemonics
+        and isinstance(instruction.operands.get("reglist"), int)
+    ]
+
+
+def _operand(instruction: _PortInstruction, name: str) -> int | None:
+    value = instruction.operands.get(name)
+    return int(value) if isinstance(value, int) else None
+
+
+def _m_profile_verify_context(elf: ElfImage, isa: str) -> bool:
+    """Prove the compiled PendSV save/restore, PSP switch and initial frame."""
+    request = _port_instructions(
+        elf, "rt_hw_context_switch", "PendSV_Handler", decode_thumb
+    )
+    pend = _port_instructions(
+        elf, "PendSV_Handler", "rt_hw_context_switch_to", decode_thumb
+    )
+    init = _port_instructions(
+        elf, "rt_hw_stack_init", None, decode_thumb, stop_at_return=True
+    )
+    if request is None or pend is None or init is None:
+        return False
+    psp_registers = {
+        _operand(instruction, "rd")
+        for instruction in pend
+        if instruction.mnemonic == "mrs"
+        and instruction.operands.get("sysm") == _PSP_SYSM
+    }
+    psp_registers.discard(None)
+    if not psp_registers or not any(
+        instruction.mnemonic == "msr" and instruction.operands.get("sysm") == _PSP_SYSM
+        for instruction in pend
+    ):
+        return False
+    saves = _reglists(pend, ("stmdb", "stmia", "stm"))
+    restores = _reglists(pend, ("ldmia", "ldmdb", "ldm"))
+    if isa == "armv7-m":
+        if _M_PROFILE_CORE not in saves or _M_PROFILE_CORE not in restores:
+            return False
     else:
-        tokens, _reason = decode_thumb_stream(
-            elf, name, *span, 256, reject_unknown=True
+        if saves.count(_M_PROFILE_LOW) < 2 or restores.count(_M_PROFILE_LOW) < 2:
+            return False
+        high_moves = sum(
+            1
+            for instruction in pend
+            if instruction.mnemonic == "mov"
+            and _operand(instruction, "rd") in (4, 5, 6, 7)
+            and _operand(instruction, "rm") in (8, 9, 10, 11)
         )
-        if tokens is None:
-            return None
-    return hashlib.sha256("\n".join(tokens).encode()).hexdigest()
+        if high_moves < 4:
+            return False
+    # rt_thread::sp is written once through a PSP-derived register.
+    if not any(
+        instruction.mnemonic == "str_imm"
+        and instruction.operands.get("rt") in psp_registers
+        and instruction.operands.get("imm") == 0
+        for instruction in pend
+    ):
+        return False
+    return any(instruction.mnemonic == "str_imm" for instruction in request) and any(
+        instruction.mnemonic == "str_imm" for instruction in init
+    )
 
 
 def _armv7m_verify_context(elf: ElfImage) -> bool:
-    """Match the compiled integer PendSV, switch request and initializer paths."""
-    signatures = (
-        (
-            "rt_hw_context_switch",
-            "PendSV_Handler",
-            "0fb31e58d24712ec03e0ef2ab25044f14925b2d6f82e03a5b0d0e1c1038999af",
-        ),
-        (
-            "PendSV_Handler",
-            "rt_hw_context_switch_to",
-            "346c3e28784a01c733fcfd138d50ff1ec2f986f49019ee30993f0b48b1105929",
-        ),
-        (
-            "rt_hw_context_switch_to",
-            "rt_hw_interrupt_thread_switch",
-            "a96bcbe0d18d1975ddbac7110ded93eff89ec171287baac86f8a427b798701fa",
-        ),
-        (
-            "rt_hw_stack_init",
-            None,
-            "ed6e5dbbb9f844cacc4493d2fbad3c097da62733dee7e355dcb90183ebfb9425",
-        ),
-    )
-    return all(
-        _thumb_signature(elf, name, end) == expected
-        for name, end, expected in signatures
-    )
+    """Prove the Armv7-M integer PendSV, switch request and initializer paths."""
+    return _m_profile_verify_context(elf, "armv7-m")
 
 
 def _armv6m_verify_context(elf: ElfImage) -> bool:
-    """Match Thumb-1 low/high-register saves and a basic Thread/PSP return."""
-    signatures = (
-        (
-            "rt_hw_context_switch",
-            "PendSV_Handler",
-            "87db45fbb0e7551a9788ebf6abf2ee923827614e9dce8fdba8835d11a2374360",
-        ),
-        (
-            "PendSV_Handler",
-            "rt_hw_context_switch_to",
-            "83f8cbb34a7c61a1b39cd0fe9aab2922fe32aa3091fd184fbc1f8eb304d389f5",
-        ),
-        (
-            "rt_hw_context_switch_to",
-            "rt_hw_interrupt_thread_switch",
-            "419e16e8cda9fdccb4ae3091adf6ec90d1ddbee5fd6a39c21033e35948617736",
-        ),
-        (
-            "rt_hw_stack_init",
-            None,
-            "d41d8887bba3e752e52a4f8cca03ef8e3d38edf3ced29d6dbf4a670027ee5b44",
-        ),
-    )
-    return all(
-        _thumb_signature(elf, name, end) == signature
-        for name, end, signature in signatures
-    )
+    """Prove Thumb-1 low/high-register saves and a basic Thread/PSP return."""
+    return _m_profile_verify_context(elf, "armv6-m")
 
 
-def _arm_instructions_match(
-    elf: ElfImage,
-    name: str,
-    expected: tuple[tuple[str, dict[str, int | bool | str]], ...],
-    end_name: str | None = None,
-) -> bool:
-    """Match a bounded A32 function using decoded mnemonics and operands."""
-    span = _code_span(elf, name, end_name)
-    if span is None:
-        return False
-    instructions = decode_arm_prefix(elf, *span, len(expected))
-    return instructions is not None and expect_arm_stream(
-        instructions, expected, elf=elf
-    )
+_A32_LWP_HEADER = 8
+_A32_LR_BITMAP = 0x4000
+_A32_CORE_BITMAP = 0x5FFF
 
 
 def _armv7a_verify_context(elf: ElfImage) -> bool:
-    """Prove the integer LWP-header/SMP port without accepting FPU or user seeds."""
-    switch = (
-        (
-            "stmdb",
-            {
-                "cond": "al",
-                "rn": 13,
-                "wback": True,
-                "user_bank": False,
-                "reglist": 0x4000,
-            },
-        ),
-        (
-            "stmdb",
-            {
-                "cond": "al",
-                "rn": 13,
-                "wback": True,
-                "user_bank": False,
-                "reglist": 0x5FFF,
-            },
-        ),
-        ("mrs", {"cond": "al", "rd": 4, "psr": "cpsr"}),
-        ("tst", {"cond": "al", "rn": 14, "immediate": 1}),
-        ("orr", {"cond": "ne", "rd": 4, "rn": 4, "immediate": 32}),
-        ("stmdb", {"cond": "al", "rn": 13, "wback": True, "reglist": 0x10}),
-        (
-            "stmdb",
-            {
-                "cond": "al",
-                "rn": 13,
-                "wback": False,
-                "user_bank": True,
-                "reglist": 0x6000,
-            },
-        ),
-        ("sub", {"cond": "al", "rd": 13, "rn": 13, "immediate": 8}),
-        (
-            "str",
-            {
-                "cond": "al",
-                "rd": 13,
-                "rn": 0,
-                "offset": 0,
-                "pre": True,
-                "up": True,
-                "byte": False,
-                "wback": False,
-            },
-        ),
-        (
-            "ldr",
-            {
-                "cond": "al",
-                "rd": 13,
-                "rn": 1,
-                "offset": 0,
-                "pre": True,
-                "up": True,
-                "byte": False,
-                "wback": False,
-            },
-        ),
-        ("mov", {"cond": "al", "rd": 0, "rm": 2, "set_flags": False}),
-        ("bl", {"cond": "al", "target_symbol": "rt_cpus_lock_status_restore"}),
-        ("b", {"cond": "al", "target_symbol": "rt_hw_context_switch_exit"}),
+    """Prove the integer LWP-header port from decoded save/restore effects."""
+    switch = _port_instructions(
+        elf, "rt_hw_context_switch", "rt_hw_context_switch_interrupt", decode_arm
     )
-    first = (
-        (
-            "ldr",
-            {
-                "cond": "al",
-                "rd": 13,
-                "rn": 0,
-                "offset": 0,
-                "pre": True,
-                "up": True,
-                "byte": False,
-                "wback": False,
-            },
-        ),
-        ("mov", {"cond": "al", "rd": 0, "rm": 1, "set_flags": False}),
-        ("bl", {"cond": "al", "target_symbol": "rt_cpus_lock_status_restore"}),
-        ("b", {"cond": "al", "target_symbol": "rt_hw_context_switch_exit"}),
-    )
-    restore = (
-        ("mov", {"cond": "al", "rd": 0, "rm": 13, "set_flags": False}),
-        ("cps", {"mode": 18, "flags": 0, "cond": "unconditional"}),
-        ("bl", {"cond": "al", "target_symbol": "rt_signal_check"}),
-        ("cps", {"mode": 19, "flags": 0, "cond": "unconditional"}),
-        ("mov", {"cond": "al", "rd": 13, "rm": 0, "set_flags": False}),
-        ("ldmia", {"rn": 13, "user_bank": True, "reglist": 0x6000}),
-        ("add", {"cond": "al", "rd": 13, "rn": 13, "immediate": 8, "set_flags": False}),
-        (
-            "ldmia",
-            {"cond": "al", "rn": 13, "wback": True, "user_bank": False, "reglist": 0x2},
-        ),
-        ("msr", {"cond": "al", "psr": "spsr", "fields": 0xF, "rm": 1}),
-        ("ldmia", {"rn": 13, "wback": True, "user_bank": True, "reglist": 0xDFFF}),
-    )
-    if not all(
-        _arm_instructions_match(elf, name, instructions, end_name)
-        for name, end_name, instructions in (
-            ("rt_hw_context_switch", "rt_hw_context_switch_interrupt", switch),
-            ("rt_hw_context_switch_to", "rt_hw_spin_lock_init", first),
-            ("rt_hw_context_switch_exit", "vector_fiq", restore),
-        )
+    init = _port_instructions(elf, "rt_hw_stack_init", None, decode_arm)
+    if switch is None or init is None:
+        return False
+    # An 8-byte LWP header (CPSR/SPSR) separates the saved integer frame from
+    # the exception frame; without it the LWP slot table does not apply.
+    if not any(
+        instruction.mnemonic == "sub"
+        and instruction.operands.get("rd") == 13
+        and instruction.operands.get("immediate") == _A32_LWP_HEADER
+        for instruction in switch
     ):
         return False
-    span = _code_span(elf, "rt_hw_stack_init")
-    instructions = decode_arm_stream(elf, *span, 256) if span is not None else None
-    return (
-        instructions is not None
-        and hashlib.sha256(
-            semantic_arm_stream_token(elf, instructions, *span).encode()
-        ).hexdigest()
-        == "66097d62f8807885e2d069dbfc09ffcd3ea79284a2e01c565f71c29b517f60f5"
+    # rt_hw_context_switch(from=r0, to=r1) stores the old SP through r0 and
+    # loads the new SP through r1 at offset zero of the thread control block.
+    if not any(
+        instruction.mnemonic == "str"
+        and instruction.operands.get("rd") == 13
+        and instruction.operands.get("rn") == 0
+        and instruction.operands.get("offset") == 0
+        for instruction in switch
+    ) or not any(
+        instruction.mnemonic == "ldr"
+        and instruction.operands.get("rd") == 13
+        and instruction.operands.get("rn") == 1
+        and instruction.operands.get("offset") == 0
+        for instruction in switch
+    ):
+        return False
+    saves = _reglists(switch, ("stmdb", "stm"))
+    if _A32_LR_BITMAP not in saves or _A32_CORE_BITMAP not in saves:
+        return False
+    if not any(
+        instruction.mnemonic == "mrs" and instruction.operands.get("psr") == "cpsr"
+        for instruction in switch
+    ):
+        return False
+    return any(
+        instruction.mnemonic in ("str", "stmdb", "stmia") for instruction in init
     )
