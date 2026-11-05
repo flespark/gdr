@@ -26,6 +26,9 @@ from core.insn_thumb import (
     expect_thumb as _expect,
 )
 from core.insn_thumb import (
+    literal_pool_start as _literal_pool_start,
+)
+from core.insn_thumb import (
     resolved_literal as _resolved_literal,
 )
 from core.insn_thumb import (
@@ -49,102 +52,24 @@ _CORE_REGLIST = 0xFF0
 _R3_LR_PUSH = 0x108
 _R3_LR_LDM = 0x4008
 _MAX_PROFILE_INSTRUCTIONS = 96
+_MAX_SWITCH_INSTRUCTIONS = 512
+_AAPCS_CALLER_SAVED = frozenset({0, 1, 2, 3, 12, 14})
 
-_EXPECTED_SWITCH_SEMANTIC_TOKENS = (
-    "ldr_literal:r3:sym:uxSchedulerSuspended",
-    "ldr_imm:imm=0,rn=3,rt=3",
-    "cbz:fn:vTaskSwitchContext+0xe:rn=3",
-    "ldr_literal:r3:sym:xYieldPending",
-    "mov_imm:imm=1,rd=2",
-    "str_imm:imm=0,rn=3,rt=2",
-    "bx:rm=14",
-    "push:reglist=272",
-    "ldr_literal:r3:sym:xYieldPending",
-    "mov_imm:imm=0,rd=2",
-    "str_imm:imm=0,rn=3,rt=2",
-    "bl:fn:gdr_runtime_timer_value",
-    "ldr_literal:r3:sym:ulTotalRunTime",
-    "str_imm:imm=0,rn=3,rt=0",
-    "ldr_literal:r3:sym:ulTaskSwitchedInTime",
-    "ldr_imm:imm=0,rn=3,rt=3",
-    "cmp:rm=3,rn=0,set_flags=True",
-    "b_cond:fn:vTaskSwitchContext+0x32:cond=ls",
-    "ldr_literal:r2:sym:pxCurrentTCB",
-    "ldr_imm:imm=0,rn=2,rt=1",
-    "ldr_imm:imm=96,rn=1,rt=2",
-    "subs:rd=3,rm=0,rn=3,set_flags=True",
-    "add:rd=2,rm=3,rn=2,set_flags=False",
-    "str_imm:imm=96,rn=1,rt=2",
-    "ldr_literal:r3:sym:ulTaskSwitchedInTime",
-    "str_imm:imm=0,rn=3,rt=0",
-    "ldr_literal:r3:sym:pxCurrentTCB",
-    "ldr_imm:imm=0,rn=3,rt=3",
-    "ldr_imm:imm=48,rn=3,rt=3",
-    "ldr_imm:imm=0,rn=3,rt=2",
-    "cmp:immediate=2779096485,rn=2,set_flags=True",
-    "b_cond:fn:vTaskSwitchContext+0x4c:cond=ne",
-    "ldr_imm:imm=4,rn=3,rt=2",
-    "cmp:immediate=2779096485,rn=2,set_flags=True",
-    "b_cond:fn:vTaskSwitchContext+0xa4:cond=eq",
-    "ldr_literal:r3:sym:pxCurrentTCB",
-    "ldr_imm:imm=0,rn=3,rt=0",
-    "ldr_imm:imm=0,rn=3,rt=1",
-    "adds:imm=52,rd=1,rn=1,set_flags=True",
-    "bl:fn:vApplicationStackOverflowHook",
-    "ldr_literal:r3:sym:uxTopReadyPriority",
-    "ldr_imm:imm=0,rn=3,rt=4",
-    "clz:rd=4,rm=4",
-    "uxtb:rd=4,rm=4",
-    "rsb:immediate=31,rd=4,rn=4,set_flags=False",
-    "add:rd=3,rm=4,rn=4,set_flags=False,shift=0,shift_amount=2",
-    "lsls:rd=3,rm=3,set_flags=True,shift_amount=2",
-    "ldr_literal:r2:sym:pxReadyTasksLists",
-    "ldr_reg:rm=3,rn=2,rt=3",
-    "cbz:fn:vTaskSwitchContext+0xb6:rn=3",
-    "ldr_literal:r1:sym:pxReadyTasksLists",
-    "add:rd=3,rm=4,rn=4,set_flags=False,shift=0,shift_amount=2",
-    "add:rd=3,rm=3,rn=1,set_flags=False,shift=0,shift_amount=2",
-    "ldr_imm:imm=4,rn=3,rt=2",
-    "ldr_imm:imm=4,rn=2,rt=2",
-    "str_imm:imm=4,rn=3,rt=2",
-    "add:rd=3,rm=4,rn=4,set_flags=False,shift=0,shift_amount=2",
-    "lsls:rd=3,rm=3,set_flags=True,shift_amount=2",
-    "adds:imm=8,rd=3,rn=3,set_flags=True",
-    "add:rd=3,rm=1,rn=3,set_flags=False",
-    "cmp:rm=3,rn=2,set_flags=True",
-    "b_cond:fn:vTaskSwitchContext+0xc0:cond=eq",
-    "add:rd=4,rm=4,rn=4,set_flags=False,shift=0,shift_amount=2",
-    "ldr_literal:r3:sym:pxReadyTasksLists",
-    "add:rd=3,rm=4,rn=3,set_flags=False,shift=0,shift_amount=2",
-    "ldr_imm:imm=4,rn=3,rt=3",
-    "ldr_imm:imm=12,rn=3,rt=2",
-    "ldr_literal:r3:sym:pxCurrentTCB",
-    "str_imm:imm=0,rn=3,rt=2",
-    "pop:reglist=272",
-    "ldr_imm:imm=8,rn=3,rt=2",
-    "cmp:immediate=2779096485,rn=2,set_flags=True",
-    "b_cond:fn:vTaskSwitchContext+0x4c:cond=ne",
-    "ldr_imm:imm=12,rn=3,rt=3",
-    "cmp:immediate=2779096485,rn=3,set_flags=True",
-    "b_cond:fn:vTaskSwitchContext+0x4c:cond=ne",
-    "b:fn:vTaskSwitchContext+0x58:",
-    "movw:imm=3041,rd=0",
-    "bl:fn:gdr_fixture_assert_failed",
-    "b:fn:vTaskSwitchContext+0x72:",
-    "ldr_imm:imm=4,rn=2,rt=1",
-    "add:rd=2,rm=4,rn=4,set_flags=False,shift=0,shift_amount=2",
-    "ldr_literal:r3:sym:pxReadyTasksLists",
-    "add:rd=3,rm=2,rn=3,set_flags=False,shift=0,shift_amount=2",
-    "str_imm:imm=4,rn=3,rt=1",
-    "b:fn:vTaskSwitchContext+0x90:",
-    "pool:sym:uxSchedulerSuspended",
-    "pool:sym:xYieldPending",
-    "pool:sym:ulTotalRunTime",
-    "pool:sym:ulTaskSwitchedInTime",
-    "pool:sym:pxCurrentTCB",
-    "pool:sym:uxTopReadyPriority",
-    "pool:sym:pxReadyTasksLists",
-)
+# Decoder mnemonics grouped by the register-write behaviour they imply.  The
+# provenance proof trusts only deterministic, single-register dataflow inside
+# one basic block; every other write drops the tracked state.
+_LOAD_RT = frozenset({"ldr_imm", "ldr_literal", "ldr_reg"})
+_MULTI_LOAD = frozenset({"pop", "ldm", "ldmia", "ldmdb"})
+_MULTI_STORE = frozenset({"push", "stm", "stmia", "stmdb"})
+_SINGLE_STORE = frozenset({"str_imm", "str_reg"})
+_STORES = _SINGLE_STORE | _MULTI_STORE
+_CALL_MNEMONICS = frozenset({"bl", "blx", "blx_reg", "bx"})
+_BRANCH_MNEMONICS = frozenset({"b", "b_cond", "cbz", "cbnz"})
+_MASK_PRIORITY_TOKEN = "mov_basepri_mask:r0"
+
+# The BASEPRI slot is checked by a predicate rather than an exact operand:
+# any legal non-zero 8-bit interrupt-priority mask is a compiled port choice.
+_BASEPRI_MASK_INDEX = 7
 
 
 @dataclass(frozen=True)
@@ -214,10 +139,20 @@ class SchedulerSeed:
 def _decode_stream(
     elf: ElfImage, symbol: str, start: int, end: int, limit: int
 ) -> tuple[tuple[str, ...] | None, str]:
-    """Decode every instruction and literal-pool word in one function span."""
+    """Decode every instruction in one pure-code span."""
     return decode_thumb_stream(
         elf, symbol, start, end, limit, prefix="scheduler-profile"
     )
+
+
+def _basepri_mask_ok(instruction: ThumbInstruction) -> bool:
+    """Accept any legal non-zero 8-bit BASEPRI mask loaded into r0."""
+    if instruction.mnemonic not in {"mov_imm", "movw"}:
+        return False
+    if instruction.operands.get("rd") != 0:
+        return False
+    imm = instruction.operands.get("imm")
+    return isinstance(imm, int) and 0 < imm <= 0xFF
 
 
 def _decode_expected(
@@ -226,16 +161,38 @@ def _decode_expected(
     start: int,
     end: int,
     expected: tuple[tuple[str, Mapping[str, int | bool | str]], ...],
+    *,
+    mask_index: int | None = None,
 ) -> tuple[tuple[ThumbInstruction, ...] | None, str]:
-    return decode_expected_thumb(
-        elf,
-        symbol,
-        start,
-        end,
-        expected,
-        max_instructions=_MAX_PROFILE_INSTRUCTIONS,
-        prefix="scheduler-profile",
-    )
+    """Decode a fixed naked-assembly sequence; one slot uses a mask predicate."""
+    if mask_index is None:
+        return decode_expected_thumb(
+            elf,
+            symbol,
+            start,
+            end,
+            expected,
+            max_instructions=_MAX_PROFILE_INSTRUCTIONS,
+            prefix="scheduler-profile",
+        )
+    instructions: list[ThumbInstruction] = []
+    address = start
+    for index, (mnemonic, operands) in enumerate(expected):
+        if address < start or address >= end or index >= _MAX_PROFILE_INSTRUCTIONS:
+            return None, f"scheduler-profile-mismatch:{symbol}:{index}:truncated"
+        decoded = _decode_thumb(elf, address, end)
+        if isinstance(decoded, str):
+            return None, f"scheduler-profile-mismatch:{symbol}:{index}:{decoded}"
+        if decoded.address + decoded.size > end:
+            return None, f"scheduler-profile-mismatch:{symbol}:{index}:truncated"
+        if index == mask_index:
+            if not _basepri_mask_ok(decoded):
+                return None, f"scheduler-profile-mismatch:{symbol}:{index}:basepri-mask"
+        elif not _expect(decoded, mnemonic, operands):
+            return None, f"scheduler-profile-mismatch:{symbol}:{index}"
+        instructions.append(decoded)
+        address += decoded.size
+    return tuple(instructions), "ok"
 
 
 def _symbol_span(elf: ElfImage, name: str) -> tuple[int, int] | str:
@@ -252,44 +209,278 @@ def _symbol_span(elf: ElfImage, name: str) -> tuple[int, int] | str:
     return next(iter(candidates))
 
 
+def _mapping_code_spans(
+    elf: ElfImage, start: int, end: int
+) -> tuple[tuple[int, int], ...]:
+    """Split one symbol span into pure-code intervals at mapping anchors.
+
+    ``$d`` starts a data region and ``$t``/``$a``/``$x`` resumes code, so a
+    compiler-emitted inline literal pool does not get decoded as instructions.
+    """
+    anchors = sorted(
+        (address, name)
+        for name, address in elf.anchors
+        if start < address < end and name.startswith(("$d", "$t", "$a", "$x"))
+    )
+    spans: list[tuple[int, int]] = []
+    cursor = start
+    in_code = True
+    for address, name in anchors:
+        if name.startswith("$d"):
+            if in_code:
+                if address > cursor:
+                    spans.append((cursor, address))
+                in_code = False
+        elif not in_code:
+            cursor = address
+            in_code = True
+    if in_code and end > cursor:
+        spans.append((cursor, end))
+    return tuple(spans)
+
+
+def _code_stream_end(elf: ElfImage, start: int, end: int) -> int:
+    """Return the exclusive end of a function's trailing pure-code region."""
+    spans = _mapping_code_spans(elf, start, end)
+    if not spans:
+        return start
+    last_start = spans[-1][0]
+    code_end = spans[-1][1]
+    pool = _literal_pool_start(elf, start, end)
+    if last_start <= pool < code_end:
+        code_end = pool
+    # Only the trailing literal pool shrinks the code bound: an inline pool
+    # targeted from an earlier code span belongs to that span's data gap.
+    address = last_start
+    while address < code_end:
+        decoded = _decode_thumb(elf, address, code_end)
+        if isinstance(decoded, str):
+            break
+        if decoded.mnemonic == "ldr_literal":
+            target = decoded.operands.get("literal")
+            if isinstance(target, int) and last_start < target < code_end:
+                code_end = min(code_end, target)
+        address += decoded.size
+    return code_end
+
+
+def _code_spans(elf: ElfImage, start: int, end: int) -> tuple[tuple[int, int], ...]:
+    """Pure-code intervals with the trailing literal pool removed."""
+    spans = list(_mapping_code_spans(elf, start, end))
+    if not spans:
+        return ()
+    code_end = _code_stream_end(elf, start, end)
+    last_start, last_end = spans[-1]
+    if code_end <= last_start:
+        spans.pop()
+    elif code_end < last_end:
+        spans[-1] = (last_start, code_end)
+    return tuple((low, high) for low, high in spans if high > low)
+
+
+def _decode_switch_instructions(
+    elf: ElfImage, start: int, end: int
+) -> tuple[tuple[ThumbInstruction, ...] | None, str]:
+    """Decode every instruction in the switch function's pure-code spans."""
+    spans = _code_spans(elf, start, end)
+    if not spans:
+        return None, "scheduler-profile-mismatch:vTaskSwitchContext:no-code"
+    instructions: list[ThumbInstruction] = []
+    for span_start, span_end in spans:
+        address = span_start
+        while address < span_end:
+            if len(instructions) >= _MAX_SWITCH_INSTRUCTIONS:
+                return None, "scheduler-profile-mismatch:vTaskSwitchContext:budget"
+            decoded = _decode_thumb(elf, address, span_end)
+            if isinstance(decoded, str):
+                return None, "scheduler-profile-mismatch:vTaskSwitchContext:unreadable"
+            if decoded.address + decoded.size > span_end:
+                return None, "scheduler-profile-mismatch:vTaskSwitchContext:unreadable"
+            instructions.append(decoded)
+            address += decoded.size
+        if address != span_end:
+            return None, "scheduler-profile-mismatch:vTaskSwitchContext:unreadable"
+    return tuple(instructions), "ok"
+
+
+def _written_registers(instruction: ThumbInstruction) -> set[int] | None:
+    """Registers an instruction certainly writes; ``None`` means unknown."""
+    operands = instruction.operands
+    mnemonic = instruction.mnemonic
+    if mnemonic == "other":
+        return None
+    written: set[int] = set()
+    if mnemonic in _MULTI_LOAD:
+        reglist = operands.get("reglist")
+        if isinstance(reglist, int):
+            written.update(
+                register for register in range(16) if reglist >> register & 1
+            )
+        written.add(13)
+        if operands.get("wback") and isinstance(operands.get("rn"), int):
+            written.add(int(operands["rn"]))
+    elif mnemonic == "push":
+        written.add(13)
+    elif mnemonic in _MULTI_STORE:
+        if operands.get("wback") and isinstance(operands.get("rn"), int):
+            written.add(int(operands["rn"]))
+    elif mnemonic in _LOAD_RT:
+        rt = operands.get("rt")
+        if isinstance(rt, int):
+            written.add(int(rt))
+    elif mnemonic not in _STORES:
+        rd = operands.get("rd")
+        if isinstance(rd, int):
+            written.add(int(rd))
+    return written
+
+
 def _find_switch_update(
     elf: ElfImage, start: int, end: int, tcb_pointer: int
-) -> tuple[ThumbInstruction, ThumbInstruction] | str:
-    """Prove the one local list-owner -> pxCurrentTCB store dataflow block."""
-    decoded: list[ThumbInstruction] = []
-    address = start
-    while address < end:
-        instruction = _decode_thumb(elf, address, end)
-        if isinstance(instruction, str):
-            return "scheduler-profile-mismatch:vTaskSwitchContext:unreadable"
-        decoded.append(instruction)
-        address += instruction.size
-    candidates: list[tuple[ThumbInstruction, ThumbInstruction]] = []
-    for index, instruction in enumerate(decoded):
-        if not _expect(instruction, "str_imm", {"rt": 2, "rn": 3, "imm": 0}):
-            continue
-        if index < 3 or index + 1 >= len(decoded):
-            continue
-        owner = decoded[index - 3]
-        load_owner = decoded[index - 2]
-        literal = decoded[index - 1]
-        following = decoded[index + 1]
-        if not _expect(owner, "ldr_imm", {"rt": 3, "rn": 3, "imm": 4}):
-            continue
-        if not _expect(load_owner, "ldr_imm", {"rt": 2, "rn": 3, "imm": 12}):
-            continue
-        if (
-            literal.mnemonic != "ldr_literal"
-            or _resolved_literal(elf, literal) != tcb_pointer
-            or literal.operands.get("rt") != 3
+) -> tuple[ThumbInstruction, str] | str:
+    """Prove one globally unique pxCurrentTCB store fed by a ready-list owner.
+
+    Forward basic-block provenance tracks registers that certainly hold
+    ``&pxCurrentTCB``, a ready-list item pointer or that item's owner.  A store
+    through a proven ``&pxCurrentTCB`` base is accepted only when it is the
+    single ``str rt, [rn, #0]`` whose source is a proven owner.  Control-flow
+    joins, calls and opaque instructions invalidate the tracked state.
+    """
+    instructions, reason = _decode_switch_instructions(elf, start, end)
+    if instructions is None:
+        return reason
+    first = instructions[0]
+    if (
+        first.address != start
+        or first.mnemonic == "nop"
+        or first.mnemonic in _SINGLE_STORE
+    ):
+        return "scheduler-profile-mismatch:vTaskSwitchContext:entry"
+    branch_targets = {
+        int(instruction.operands["target"])
+        for instruction in instructions
+        if instruction.mnemonic in _BRANCH_MNEMONICS
+        and isinstance(instruction.operands.get("target"), int)
+    }
+    const_low16: dict[int, int] = {}
+    tcb_addr_regs: set[int] = set()
+    tcb_addr_origin: dict[int, str] = {}
+    list_item_regs: set[int] = set()
+    owner_regs: set[int] = set()
+
+    def clear(register: int) -> None:
+        const_low16.pop(register, None)
+        tcb_addr_regs.discard(register)
+        tcb_addr_origin.pop(register, None)
+        list_item_regs.discard(register)
+        owner_regs.discard(register)
+
+    def clear_all() -> None:
+        const_low16.clear()
+        tcb_addr_regs.clear()
+        tcb_addr_origin.clear()
+        list_item_regs.clear()
+        owner_regs.clear()
+
+    candidates: list[tuple[ThumbInstruction, int, int, bool, str]] = []
+    for instruction in instructions:
+        if instruction.address in branch_targets:
+            clear_all()
+        operands = instruction.operands
+        mnemonic = instruction.mnemonic
+        rt = operands.get("rt") if isinstance(operands.get("rt"), int) else None
+        rn = operands.get("rn") if isinstance(operands.get("rn"), int) else None
+        imm = operands.get("imm") if isinstance(operands.get("imm"), int) else None
+        base = 13 if mnemonic == "push" else rn
+        base_is_list = rn is not None and rn in list_item_regs
+        base_is_tcb = rn is not None and rn in tcb_addr_regs
+        if mnemonic in _STORES and base in tcb_addr_regs:
+            if mnemonic != "str_imm" or imm != 0 or rt is None:
+                return "scheduler-profile-mismatch:vTaskSwitchContext:ambiguous-store"
+            candidates.append(
+                (
+                    instruction,
+                    int(rt),
+                    int(base),
+                    int(rt) in owner_regs,
+                    tcb_addr_origin.get(int(base), "unknown"),
+                )
+            )
+        written = _written_registers(instruction)
+        if written is None:
+            clear_all()
+        else:
+            for register in written:
+                clear(register)
+        if mnemonic in _CALL_MNEMONICS:
+            if mnemonic == "bx" and operands.get("rm") == 14:
+                clear_all()
+            else:
+                for register in _AAPCS_CALLER_SAVED:
+                    clear(register)
+        if mnemonic == "ldr_literal":
+            if rt is not None and _resolved_literal(elf, instruction) == tcb_pointer:
+                tcb_addr_regs.add(int(rt))
+                tcb_addr_origin[int(rt)] = "literal"
+        elif mnemonic in {"movw", "movt"}:
+            rd = operands.get("rd")
+            if isinstance(rd, int) and imm is not None:
+                if mnemonic == "movw":
+                    const_low16[int(rd)] = int(imm) & 0xFFFF
+                elif (
+                    int(rd) in const_low16
+                    and ((int(imm) << 16) | const_low16[int(rd)]) == tcb_pointer
+                ):
+                    tcb_addr_regs.add(int(rd))
+                    tcb_addr_origin[int(rd)] = "movw-movt"
+        elif mnemonic == "mov" and isinstance(operands.get("rm"), int):
+            source = int(operands["rm"])
+            target = operands.get("rd")
+            if isinstance(target, int):
+                if source in tcb_addr_regs:
+                    tcb_addr_regs.add(int(target))
+                    tcb_addr_origin[int(target)] = tcb_addr_origin.get(
+                        source, "unknown"
+                    )
+                if source in list_item_regs:
+                    list_item_regs.add(int(target))
+                if source in owner_regs:
+                    owner_regs.add(int(target))
+        elif (
+            mnemonic == "ldr_imm"
+            and rt is not None
+            and imm is not None
+            and int(imm) > 0
         ):
-            continue
-        if following.mnemonic != "pop" or following.operands.get("reglist") != 0x0110:
-            continue
-        candidates.append((literal, instruction))
+            if base_is_list:
+                owner_regs.add(int(rt))
+            elif not base_is_tcb and rn != 13:
+                list_item_regs.add(int(rt))
     if len(candidates) != 1:
         return "scheduler-profile-mismatch:vTaskSwitchContext:update-count"
-    return candidates[0]
+    store, source, base, owner_proven, origin = candidates[0]
+    if not owner_proven or source == base:
+        return "scheduler-profile-mismatch:vTaskSwitchContext:update-source"
+    if store.address <= start:
+        return "scheduler-profile-mismatch:vTaskSwitchContext:entry-store"
+    following = store.address + store.size
+    following_mnemonic = next(
+        (
+            instruction.mnemonic
+            for instruction in instructions
+            if instruction.address == following
+        ),
+        None,
+    )
+    if following_mnemonic is None:
+        return "scheduler-profile-mismatch:vTaskSwitchContext:update-boundary"
+    signature = (
+        f"vTaskSwitchContext:count={len(instructions)}"
+        f":store={_semantic_token(elf, store)}"
+        f":base={origin}:source=list-item-owner"
+        f":after={following_mnemonic}"
+    )
+    return store, signature
 
 
 def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
@@ -330,6 +521,9 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
     tcb_pointer = elf.symbol_address("pxCurrentTCB")
     if tcb_pointer is None:
         return None, "scheduler-profile-symbol-missing:pxCurrentTCB"
+    code_ends = {
+        name: _code_stream_end(elf, span[0], span[1]) for name, span in spans.items()
+    }
 
     pendsv_expected = (
         ("mrs", {"rd": 0, "sysm": 0x09}),
@@ -342,7 +536,7 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
         ),
         ("str_imm", {"rt": 0, "rn": 2, "imm": 0}),
         ("push", {"reglist": _R3_LR_PUSH}),
-        ("mov_imm", {"rd": 0, "imm": 4}),
+        ("mov_basepri_mask", {"rd": 0}),
         ("msr", {"rn": 0, "sysm": 0x11}),
         ("bl", {"target": switch_start}),
         ("mov_imm", {"rd": 0, "imm": 0}),
@@ -390,54 +584,81 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
     )
 
     pendsv, reason = _decode_expected(
-        elf, "PendSV_Handler", pendsv_start, pendsv_end, pendsv_expected
+        elf,
+        "PendSV_Handler",
+        pendsv_start,
+        code_ends["PendSV_Handler"],
+        pendsv_expected,
+        mask_index=_BASEPRI_MASK_INDEX,
     )
     if pendsv is None:
         return None, reason
     if _resolved_literal(elf, pendsv[2]) != tcb_pointer:
         return None, "scheduler-profile-mismatch:PendSV_Handler:tcb-literal"
-    svc, reason = _decode_expected(elf, "SVC_Handler", svc_start, svc_end, svc_expected)
+    svc, reason = _decode_expected(
+        elf, "SVC_Handler", svc_start, code_ends["SVC_Handler"], svc_expected
+    )
     if svc is None:
         return None, reason
     if _resolved_literal(elf, svc[0]) != tcb_pointer:
         return None, "scheduler-profile-mismatch:SVC_Handler:tcb-literal"
     start_first, reason = _decode_expected(
-        elf, "prvPortStartFirstTask", start_start, start_end, start_expected
+        elf,
+        "prvPortStartFirstTask",
+        start_start,
+        code_ends["prvPortStartFirstTask"],
+        start_expected,
     )
     if start_first is None:
         return None, reason
     if _resolved_literal(elf, start_first[0]) != 0xE000ED08:
         return None, "scheduler-profile-mismatch:prvPortStartFirstTask:vtor"
     streams: dict[str, tuple[str, ...]] = {}
-    for symbol, start, end, instructions in (
-        ("PendSV_Handler", pendsv_start, pendsv_end, pendsv),
-        ("SVC_Handler", svc_start, svc_end, svc),
-        ("prvPortStartFirstTask", start_start, start_end, start_first),
-        ("vTaskSwitchContext", switch_start, switch_end, None),
+    for symbol, start, end, instructions, mask_index in (
+        ("PendSV_Handler", pendsv_start, code_ends["PendSV_Handler"], pendsv, 7),
+        ("SVC_Handler", svc_start, code_ends["SVC_Handler"], svc, None),
+        (
+            "prvPortStartFirstTask",
+            start_start,
+            code_ends["prvPortStartFirstTask"],
+            start_first,
+            None,
+        ),
     ):
         stream, reason = _decode_stream(
             elf, symbol, start, end, _MAX_PROFILE_INSTRUCTIONS
         )
         if stream is None:
             return None, reason
-        streams[symbol] = stream
-        if instructions is not None:
-            expected_tokens = tuple(
-                _semantic_token(elf, instruction) for instruction in instructions
-            )
-            if stream[: len(expected_tokens)] != expected_tokens:
-                return None, f"scheduler-profile-mismatch:{symbol}:stream"
-    if streams["vTaskSwitchContext"] != _EXPECTED_SWITCH_SEMANTIC_TOKENS:
-        return None, "scheduler-profile-mismatch:vTaskSwitchContext:stream"
+        expected_tokens = tuple(
+            _semantic_token(elf, instruction) for instruction in instructions
+        )
+        if len(stream) < len(expected_tokens) or (
+            stream[: len(expected_tokens)] != expected_tokens
+        ):
+            return None, f"scheduler-profile-mismatch:{symbol}:stream"
+        tokens = list(stream)
+        if mask_index is not None and mask_index < len(tokens):
+            tokens[mask_index] = _MASK_PRIORITY_TOKEN
+        streams[symbol] = tuple(tokens)
     update = _find_switch_update(elf, switch_start, switch_end, tcb_pointer)
     if isinstance(update, str):
         return None, update
-    _literal, store = update
+    store, switch_signature = update
 
     fingerprint = hashlib.sha256(
-        "\n".join(token for symbol in names for token in streams[symbol]).encode(
-            "utf-8"
-        )
+        "\n".join(
+            [
+                token
+                for symbol in (
+                    "PendSV_Handler",
+                    "SVC_Handler",
+                    "prvPortStartFirstTask",
+                )
+                for token in streams[symbol]
+            ]
+            + [switch_signature]
+        ).encode("utf-8")
     ).hexdigest()[:16]
     return (
         SchedulerProfile(

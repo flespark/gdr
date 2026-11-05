@@ -186,9 +186,17 @@ exception-mode limits live in [errata](errata.md#task-backtraces).
 
 Scheduler seeds require a matching compiled ARM_CM3 profile. The pure decoder
 retains instruction direction, load/store, writeback, register operands and
-branch targets, and verifies the complete `vTaskSwitchContext` instruction
-stream and its current-TCB update. Exact instruction addresses denote stops
-before execution; unknown PCs inside a transition function are refused.
+branch targets. The three naked port assembly functions are verified
+instruction-by-instruction, with any legal non-zero PendSV BASEPRI mask
+accepted and trailing `$d` literal pools excluded. `vTaskSwitchContext` is
+proven by bounded forward register provenance over its pure-code spans: exactly
+one `str rt, [rn, #0]` must store the owner of a ready-list item through a
+register that certainly holds `&pxCurrentTCB`. Multiple stores, unknown
+sources, an entry store, inline data gaps or an unreadable stream fail closed.
+The fingerprint carries normalized semantic tokens and the store's structural
+signature, never link addresses or line-number immediates. Exact instruction
+addresses denote stops before execution; unknown PCs inside a transition
+function are refused.
 Stage-specific TCB, register, saved-buffer and PSP checks choose the old or
 new task context without joining registers from different tasks. Hardware
 seed paths share frame-base, stacked ALIGN, CCR.STKALIGN and restored-SP

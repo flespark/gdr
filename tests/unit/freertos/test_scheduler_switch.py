@@ -7,7 +7,9 @@ the cache and lets every malformed variant be constructed.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -680,7 +682,7 @@ def test_profile_rejects_store_source_nop_entry_and_missing_literal():
     assert profile is None and "vTaskSwitchContext" in reason
 
     broken = bytearray(SWITCH)
-    broken[0x20:0x24] = (0).to_bytes(4, "little")
+    broken[0x9C:0x9E] = (0x2201).to_bytes(2, "little")
     profile, reason = build_profile(_image(switch=bytes(broken)))
     assert profile is None and "vTaskSwitchContext" in reason
 
@@ -1036,3 +1038,271 @@ def test_first_start_software_frame_refuses_a_stacked_padding_flag(stage_name):
         task_top=top,
     )
     assert outcome == "exception-frame-alignment-invalid", outcome
+
+
+# ---------------------------------------------------------------------------
+# Compile-shape-independent vTaskSwitchContext evidence: synthetic streams
+# prove one globally unique pxCurrentTCB owner store rather than matching a
+# fixed version's C instruction list.
+# ---------------------------------------------------------------------------
+
+
+def _switch_stream(
+    *,
+    list_offset: int = 4,
+    owner_offset: int = 12,
+    with_hook: bool = False,
+    double_store: bool = False,
+    owner_from_constant: bool = False,
+    owner_from_stack: bool = False,
+    entry_store: bool = False,
+    opaque_before_store: bool = False,
+) -> bytes:
+    """Assemble one minimal switch function with a proven list-owner store."""
+    pool = SWITCH_START + 0x10
+    tcb_literal = SWITCH_START + 0x14
+    body = bytearray()
+
+    def emit(halfword: int) -> None:
+        body.extend(halfword.to_bytes(2, "little"))
+
+    def emit_word(word: int) -> None:
+        body.extend(word.to_bytes(4, "little"))
+
+    def emit_ldr_literal(rt: int, target: int) -> None:
+        address = SWITCH_START + len(body)
+        base = (address + 4) & ~3
+        imm8 = (target - base) // 4
+        assert (target - base) % 4 == 0 and 0 <= imm8 < 256
+        emit(0x4800 | (rt << 8) | imm8)
+
+    def emit_ldr_imm(rt: int, rn: int, imm: int) -> None:
+        assert imm % 4 == 0 and 0 <= imm // 4 < 32
+        emit(0x6800 | ((imm // 4) << 6) | (rn << 3) | rt)
+
+    if entry_store:
+        emit(0x601A)
+    emit_ldr_literal(3, pool)
+    emit_ldr_imm(3, 3, list_offset)
+    if owner_from_constant:
+        emit(0x2201)
+    elif owner_from_stack:
+        emit_word(0x2000F8DD)
+    else:
+        emit_ldr_imm(2, 3, owner_offset)
+    emit_ldr_literal(3, tcb_literal)
+    if opaque_before_store:
+        emit(0xBE00)
+    emit(0x601A)
+    if double_store:
+        emit(0x601A)
+    if with_hook:
+        emit(0x681B)
+    emit(0xBD10)
+    while len(body) < 0x10:
+        emit(0xBF00)
+    body.extend((0x200000A4).to_bytes(4, "little"))
+    body.extend(TCB_POINTER.to_bytes(4, "little"))
+    return bytes(body)
+
+
+def _switch_image(stream: bytes, *, offset: int = 0, data_offset: int = 0) -> ElfImage:
+    if data_offset:
+        pendsv = _relocate_data(PENDSV, data_offset)
+        svc = _relocate_data(SVC, data_offset)
+        body = _relocate_data(stream, data_offset)
+    else:
+        pendsv, svc, body = PENDSV, SVC, stream
+    return _image(
+        pendsv=pendsv,
+        svc=svc,
+        switch=body,
+        offset=offset,
+        data_offset=data_offset,
+        symbols=(
+            ("PendSV_Handler", PENDSV_START + offset, len(PENDSV)),
+            ("SVC_Handler", SVC_START + offset, len(SVC)),
+            ("prvPortStartFirstTask", START_START + offset, len(START_FIRST)),
+            ("vTaskSwitchContext", SWITCH_START + offset, len(body)),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        pytest.param({}, id="no-runtime-stats-no-stack-overflow-check"),
+        pytest.param({"with_hook": True}, id="11-1-0-volatile-owner-hook"),
+        pytest.param(
+            {"list_offset": 8, "owner_offset": 16},
+            id="list-integrity-check-bytes",
+        ),
+    ],
+)
+def test_synthetic_switch_streams_prove_one_owner_store(options):
+    profile, reason = build_profile(_switch_image(_switch_stream(**options)))
+    assert reason == "ok" and profile is not None, reason
+    assert profile.switch_update == SWITCH_START + 0x08
+    assert profile.switch_after_update == SWITCH_START + 0x0A
+    assert isinstance(classify_stage(profile, profile.switch_update), SchedulerStage)
+    assert isinstance(
+        classify_stage(profile, profile.switch_after_update), SchedulerStage
+    )
+
+
+def test_synthetic_switch_fingerprint_ignores_link_and_data_addresses():
+    stream = _switch_stream()
+    base, reason = build_profile(_switch_image(stream))
+    assert reason == "ok" and base is not None
+    moved, reason = build_profile(_switch_image(stream, offset=0x1000))
+    assert reason == "ok" and moved is not None
+    assert moved.fingerprint == base.fingerprint
+    assert moved.switch_update == base.switch_update + 0x1000
+    relocated_data, reason = build_profile(_switch_image(stream, data_offset=0x1000))
+    assert reason == "ok" and relocated_data is not None
+    assert relocated_data.fingerprint == base.fingerprint
+
+
+@pytest.mark.parametrize(
+    "options,fragment",
+    [
+        pytest.param({"double_store": True}, "update-count", id="double-store"),
+        pytest.param(
+            {"owner_from_constant": True}, "update-source", id="constant-source"
+        ),
+        pytest.param({"owner_from_stack": True}, "update-source", id="stack-source"),
+        pytest.param({"entry_store": True}, "entry", id="entry-store"),
+        pytest.param(
+            {"opaque_before_store": True},
+            "vTaskSwitchContext",
+            id="opaque-write",
+        ),
+    ],
+)
+def test_synthetic_switch_streams_refuse_unproven_stores(options, fragment):
+    profile, reason = build_profile(_switch_image(_switch_stream(**options)))
+    assert profile is None
+    assert "vTaskSwitchContext" in reason and fragment in reason, reason
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        pytest.param({0x16: b"\x20\x00"}, id="mov-imm-0x20"),
+        pytest.param({0x16: b"\xff\x00"}, id="mov-imm-0xff"),
+        pytest.param({0x14: bytes.fromhex("40f22000")}, id="movw-0x20"),
+    ],
+)
+def test_pendsv_accepts_any_nonzero_basepri_mask(patch):
+    pendsv = bytearray(PENDSV)
+    for offset, value in patch.items():
+        pendsv[offset : offset + len(value)] = value
+    profile, reason = build_profile(_image(pendsv=bytes(pendsv)))
+    assert reason == "ok" and profile is not None, reason
+    assert isinstance(classify_stage(profile, profile.pendsv_entry), SchedulerStage)
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        pytest.param({0x16: b"\x00\x00"}, id="zero-mask"),
+        pytest.param({0x14: bytes.fromhex("40f20000")}, id="zero-movw"),
+        pytest.param({0x14: bytes.fromhex("40f20010")}, id="mask-above-0xff"),
+    ],
+)
+def test_pendsv_refuses_an_illegal_basepri_mask(patch):
+    pendsv = bytearray(PENDSV)
+    for offset, value in patch.items():
+        pendsv[offset : offset + len(value)] = value
+    profile, reason = build_profile(_image(pendsv=bytes(pendsv)))
+    assert profile is None and "PendSV_Handler" in reason, reason
+
+
+def test_start_first_task_trailing_ltorg_pool_is_excluded():
+    symbols = (
+        ("PendSV_Handler", PENDSV_START, len(PENDSV)),
+        ("SVC_Handler", SVC_START, len(SVC)),
+        ("prvPortStartFirstTask", START_START, 0x20),
+        ("vTaskSwitchContext", SWITCH_START, len(SWITCH)),
+    )
+    image = _image(symbols=symbols)
+    image = replace(
+        image,
+        anchors=image.anchors
+        + (("$d", START_START + 0x1A), ("$d", START_START + 0x1C)),
+    )
+    profile, reason = build_profile(image)
+    assert reason == "ok" and profile is not None, reason
+    base, reason = build_profile(_image())
+    assert reason == "ok" and base is not None
+    assert profile.fingerprint == base.fingerprint
+
+
+def _segmented_switch_stream() -> bytes:
+    """A switch with a compiler-emitted inline literal pool between code spans."""
+    body = bytearray()
+
+    def emit(halfword: int) -> None:
+        body.extend(halfword.to_bytes(2, "little"))
+
+    emit(0x4B01)
+    emit(0x685B)
+    emit(0x68DA)
+    emit(0xBF00)
+    body.extend((0x200000A4).to_bytes(4, "little"))
+    emit(0x4B02)
+    emit(0x601A)
+    emit(0xBD10)
+    emit(0xBF00)
+    emit(0xBF00)
+    emit(0xBF00)
+    body.extend(TCB_POINTER.to_bytes(4, "little"))
+    return bytes(body)
+
+
+def test_inline_data_gap_is_skipped_and_code_resumes():
+    stream = _segmented_switch_stream()
+    image = _switch_image(stream)
+    image = replace(
+        image,
+        anchors=image.anchors
+        + (("$d", SWITCH_START + 0x08), ("$t", SWITCH_START + 0x0C)),
+    )
+    profile, reason = build_profile(image)
+    assert reason == "ok" and profile is not None, reason
+    assert profile.switch_update == SWITCH_START + 0x0E
+    assert profile.switch_after_update == SWITCH_START + 0x10
+
+
+_CACHE_ROOT = Path(__file__).resolve().parents[3] / (
+    "ci/.cache/fixtures/freertos/mps2-an385"
+)
+_CACHED_ELFS = tuple(sorted(_CACHE_ROOT.glob("**/freertos.elf")))
+
+
+@pytest.mark.skipif(not _CACHED_ELFS, reason="no cached ARM_CM3 fixtures")
+@pytest.mark.parametrize(
+    "path", _CACHED_ELFS, ids=lambda p: f"{p.parent.parent.name}/{p.parent.name}"
+)
+def test_cached_arm_cm3_fixtures_prove_one_switch_store(path):
+    image = ElfImage.from_path(path)
+    assert image is not None
+    profile, reason = build_profile(image)
+    assert reason == "ok" and profile is not None, reason
+    assert profile.switch_start <= profile.switch_update < profile.switch_end
+    assert profile.switch_after_update <= profile.switch_end
+    again, reason = build_profile(ElfImage.from_path(path))
+    assert reason == "ok" and again is not None
+    assert again.fingerprint == profile.fingerprint
+
+
+@pytest.mark.skipif(not _CACHED_ELFS, reason="no cached ARM_CM3 fixtures")
+def test_cached_fixture_fingerprints_ignore_link_addresses():
+    by_fingerprint: dict[str, set[int]] = defaultdict(set)
+    for path in _CACHED_ELFS:
+        image = ElfImage.from_path(path)
+        assert image is not None
+        profile, reason = build_profile(image)
+        assert reason == "ok" and profile is not None, reason
+        by_fingerprint[profile.fingerprint].add(profile.switch_start)
+    assert any(len(starts) > 1 for starts in by_fingerprint.values())
