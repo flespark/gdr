@@ -22,7 +22,7 @@ the [Asterinas GDB helper](#acknowledgements):
 
 | RTOS | Versions | Status |
 |------|----------|--------|
-| RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Armv7-A (`cortex-a9`) verified across both ranges, RV64 from 4.0.4 |
+| RT-Thread | 3.1.x,4.0.x,4.1.x | implemented; Arm M/A-profile and RV32/RV64; [verified versions, ports and limits](docs/errata.md#task-backtraces) |
 | FreeRTOS | V10.3.0–V11.3.x | implemented; verified on Armv7-M (`mps2-an385`), Armv8-M Mainline SMP/MPU (`mps2-an521`), Armv6-M (`microbit`), and RISC-V (`virt` RV32/RV64) |
 
 ## Quick start

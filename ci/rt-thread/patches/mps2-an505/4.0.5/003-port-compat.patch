@@ -1,0 +1,23 @@
+diff --git a/libcpu/arm/cortex-m33/context_gcc.S b/libcpu/arm/cortex-m33/context_gcc.S
+--- a/libcpu/arm/cortex-m33/context_gcc.S
++++ b/libcpu/arm/cortex-m33/context_gcc.S
+@@ -20,3 +20,3 @@
+-.cpu cortex-m4
++.cpu cortex-m33
+ .syntax unified
+ .thumb
+diff --git a/libcpu/arm/cortex-m33/cpuport.c b/libcpu/arm/cortex-m33/cpuport.c
+--- a/libcpu/arm/cortex-m33/cpuport.c
++++ b/libcpu/arm/cortex-m33/cpuport.c
+@@ -167,4 +167,4 @@
+     stack_frame->exception_stack_frame.r12 = 0;                        /* r12 */
+     stack_frame->exception_stack_frame.lr  = (unsigned long)texit;     /* lr */
+-    stack_frame->exception_stack_frame.pc  = (unsigned long)tentry;    /* entry point, pc */
++    stack_frame->exception_stack_frame.pc  = (unsigned long)tentry & ~1UL; /* entry point, pc */
+     stack_frame->exception_stack_frame.psr = 0x01000000L;              /* PSR */
+@@ -172,4 +172,4 @@
+     stack_frame->tz = 0x00;
+-    stack_frame->lr = 0xFFFFFFBC;
++    stack_frame->lr = 0xFFFFFFFD;
+     stack_frame->psplim = 0x00;
+     stack_frame->control = 0x00;

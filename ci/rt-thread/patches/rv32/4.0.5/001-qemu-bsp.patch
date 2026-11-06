@@ -1,0 +1,267 @@
+diff --git a/bsp/gdr-rv32/SConstruct b/bsp/gdr-rv32/SConstruct
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-rv32/SConstruct
+@@ -0,0 +1,29 @@
++import os
++import sys
++import rtconfig
++
++RTT_ROOT = os.path.abspath(os.path.join(os.getcwd(), "../.."))
++sys.path.append(os.path.join(RTT_ROOT, "tools"))
++from building import *
++
++DefaultEnvironment(tools=[])
++env = Environment(
++    tools=["mingw"],
++    AS=rtconfig.AS, ASFLAGS=rtconfig.AFLAGS,
++    CC=rtconfig.CC, CCFLAGS=rtconfig.CFLAGS,
++    CXX=rtconfig.CXX, CXXFLAGS=rtconfig.CXXFLAGS,
++    AR=rtconfig.AR, ARFLAGS="-rc",
++    LINK=rtconfig.LINK, LINKFLAGS=rtconfig.LFLAGS,
++    LIBS=["gcc"],
++)
++env.PrependENVPath("PATH", rtconfig.EXEC_PATH)
++env["ASCOM"] = env["ASPPCOM"]
++Export("RTT_ROOT", "rtconfig")
++objects = PrepareBuilding(env, RTT_ROOT, has_libcpu=True)
++port = os.path.join(RTT_ROOT, "libcpu/risc-v/common")
++objects += DefineGroup("CPU", [os.path.join(port, name) for name in
++                              ("cpuport.c", "context_gcc.S")],
++                       depend=[""], CPPPATH=[port])
++objects += DefineGroup("Trap", [os.path.join(RTT_ROOT, "libcpu/risc-v/e310/interrupt_gcc.S")],
++                       depend=[""], CPPPATH=[port])
++DoBuilding("rtthread." + rtconfig.TARGET_EXT, objects)
+diff --git a/bsp/gdr-rv32/SConscript b/bsp/gdr-rv32/SConscript
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-rv32/SConscript
+@@ -0,0 +1,5 @@
++from building import *
++
++sources = Glob("*.c") + Glob("*.S")
++group = DefineGroup("BSP", sources, depend=[""], CPPPATH=[GetCurrentDir()])
++Return("group")
+diff --git a/bsp/gdr-rv32/rtconfig.py b/bsp/gdr-rv32/rtconfig.py
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-rv32/rtconfig.py
+@@ -0,0 +1,28 @@
++import os
++
++ARCH = "risc-v"
++CPU = "e310"
++CROSS_TOOL = "gcc"
++PLATFORM = "gcc"
++EXEC_PATH = os.environ.get("RTT_EXEC_PATH", "")
++PREFIX = "riscv-none-elf-"
++CC = PREFIX + "gcc"
++CXX = PREFIX + "g++"
++AS = PREFIX + "gcc"
++AR = PREFIX + "ar"
++LINK = PREFIX + "gcc"
++SIZE = PREFIX + "size"
++OBJDUMP = PREFIX + "objdump"
++OBJCPY = PREFIX + "objcopy"
++TARGET_EXT = "elf"
++DEVICE = " -march=rv32imac_zicsr -mabi=ilp32 -mcmodel=medany"
++CFLAGS = DEVICE + " -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer"
++CFLAGS += " -ffunction-sections -fdata-sections -fno-common -fno-builtin -Wall"
++CFLAGS += " -msmall-data-limit=0"
++CXXFLAGS = CFLAGS
++AFLAGS = DEVICE + " -c -x assembler-with-cpp -g3 -gdwarf-4"
++LFLAGS = DEVICE + " -nostartfiles --specs=nosys.specs -Wl,--gc-sections,-Map=rtthread.map,-cref"
++LFLAGS += " -T linker.ld"
++CPATH = ""
++LPATH = ""
++POST_ACTION = OBJCPY + " -O binary $TARGET rtthread.bin\n" + SIZE + " $TARGET\n"
+diff --git a/bsp/gdr-rv32/rtconfig.h b/bsp/gdr-rv32/rtconfig.h
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-rv32/rtconfig.h
+@@ -0,0 +1,33 @@
++#ifndef RT_CONFIG_H__
++#define RT_CONFIG_H__
++
++#define RT_NAME_MAX 20
++#define RT_ALIGN_SIZE 16
++#define RT_THREAD_PRIORITY_32
++#define RT_THREAD_PRIORITY_MAX 32
++#define RT_TICK_PER_SECOND 100
++#define RT_USING_HOOK
++#define RT_USING_IDLE_HOOK
++#define RT_IDLE_HOOK_LIST_SIZE 4
++#define IDLE_THREAD_STACK_SIZE 2048
++#define RT_USING_TIMER_SOFT
++#define RT_TIMER_THREAD_PRIO 4
++#define RT_TIMER_THREAD_STACK_SIZE 2048
++#define RT_DEBUG
++#define RT_USING_SEMAPHORE
++#define RT_USING_MUTEX
++#define RT_USING_EVENT
++#define RT_USING_MAILBOX
++#define RT_USING_MESSAGEQUEUE
++#define RT_USING_MEMPOOL
++#define RT_USING_SMALL_MEM
++#define RT_USING_MEMTRACE
++#define RT_USING_HEAP
++#define RT_USING_CONSOLE
++#define RT_CONSOLEBUF_SIZE 256
++#define RT_USING_USER_MAIN
++#define RT_MAIN_THREAD_STACK_SIZE 2048
++#define RT_MAIN_THREAD_PRIORITY 10
++#define ARCH_RISCV
++
++#endif
+diff --git a/bsp/gdr-rv32/board.c b/bsp/gdr-rv32/board.c
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-rv32/board.c
+@@ -0,0 +1,60 @@
++#include <rthw.h>
++#include <rtthread.h>
++
++#define REG32(address) (*(volatile rt_uint32_t *)(address))
++#define UART8(offset) (*(volatile rt_uint8_t *)(0x10000000u + (offset)))
++#define MTIME 0x0200bff8u
++#define MTIMECMP 0x02004000u
++
++extern rt_uint8_t __heap_start[], __heap_end[];
++volatile rt_uint32_t gdr_tick_interrupts;
++
++static void timer_arm(void)
++{
++    rt_uint32_t high, low, check;
++    rt_uint64_t next;
++    do
++    {
++        high = REG32(MTIME + 4);
++        low = REG32(MTIME);
++        check = REG32(MTIME + 4);
++    } while (high != check);
++    next = ((rt_uint64_t)high << 32 | low) + 10000000u / RT_TICK_PER_SECOND;
++    REG32(MTIMECMP) = 0xffffffffu;
++    REG32(MTIMECMP + 4) = next >> 32;
++    REG32(MTIMECMP) = (rt_uint32_t)next;
++}
++
++void rt_hw_console_output(const char *text)
++{
++    while (*text)
++    {
++        if (*text == '\n')
++        {
++            while (!(UART8(5) & 0x20)) {}
++            UART8(0) = '\r';
++        }
++        while (!(UART8(5) & 0x20)) {}
++        UART8(0) = *text++;
++    }
++}
++
++void rt_hw_board_init(void)
++{
++    rt_system_heap_init(__heap_start, __heap_end);
++    timer_arm();
++    __asm volatile("csrs mie, %0" :: "r"(0x80));
++}
++
++void handle_trap(rt_ubase_t cause, rt_ubase_t pc, void *stack)
++{
++    (void)stack;
++    if (cause != 0x80000007u)
++    {
++        rt_kprintf("unexpected trap: cause=%x pc=%x\n", cause, pc);
++        while (1) {}
++    }
++    timer_arm();
++    gdr_tick_interrupts++;
++    rt_tick_increase();
++}
+diff --git a/bsp/gdr-rv32/startup.S b/bsp/gdr-rv32/startup.S
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-rv32/startup.S
+@@ -0,0 +1,34 @@
++    .section .text.startup, "ax", %progbits
++    .globl _start
++    .type _start, %function
++_start:
++    csrw mstatus, zero
++    csrw mie, zero
++    csrr a0, mhartid
++    bnez a0, 3f
++    .option push
++    .option norelax
++    la gp, __global_pointer$
++    .option pop
++    la sp, _sp
++    la t0, trap_entry
++    csrw mtvec, t0
++    la t0, _sbss
++    la t1, _ebss
++1:
++    bgeu t0, t1, 2f
++    sw zero, 0(t0)
++    addi t0, t0, 4
++    j 1b
++2:
++    call rtthread_startup
++3:
++    wfi
++    j 3b
++    .size _start, .-_start
++
++    .globl rt_hw_cpu_reset
++    .type rt_hw_cpu_reset, %function
++rt_hw_cpu_reset:
++    j rt_hw_cpu_reset
++    .size rt_hw_cpu_reset, .-rt_hw_cpu_reset
+diff --git a/bsp/gdr-rv32/linker.ld b/bsp/gdr-rv32/linker.ld
+new file mode 100644
+--- /dev/null
++++ b/bsp/gdr-rv32/linker.ld
+@@ -0,0 +1,43 @@
++OUTPUT_ARCH(riscv)
++ENTRY(_start)
++
++MEMORY
++{
++    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 16M
++}
++
++SECTIONS
++{
++    .text :
++    {
++        KEEP(*(.text.startup))
++        *(.text*)
++        *(.rodata*)
++    } > RAM
++    .eh_frame : { KEEP(*(.eh_frame)) } > RAM
++    .data : ALIGN(16)
++    {
++        *(.data*)
++        PROVIDE(__global_pointer$ = . + 0x800);
++        *(.sdata*)
++    } > RAM
++    .bss (NOLOAD) : ALIGN(16)
++    {
++        _sbss = .;
++        *(.bss*) *(.sbss*) *(COMMON)
++        . = ALIGN(16);
++        _ebss = .;
++    } > RAM
++    .heap (NOLOAD) : ALIGN(16)
++    {
++        __heap_start = .;
++        . += 64K;
++        __heap_end = .;
++    } > RAM
++    .irq_stack (NOLOAD) : ALIGN(16)
++    {
++        __StackLimit = .;
++        . += 16K;
++        _sp = .;
++    } > RAM
++}

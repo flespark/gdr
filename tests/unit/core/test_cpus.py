@@ -282,7 +282,7 @@ def test_freertos_and_rtthread_arm_and_riscv_profile_selection():
     rv_image = _image(243, False, rv_blob)
     assert frt_select(rv_image, smp=True).reason == "unsupported-extension-context"
     assert frt_select(rv_image).reason == "unrecognizable-stack-frame-layout"
-    assert rtt_select(rv_image).reason == "unverified-port"
+    assert rtt_select(rv_image).reason == "unrecognizable-stack-frame-layout"
     _ = ElfSection
 
 

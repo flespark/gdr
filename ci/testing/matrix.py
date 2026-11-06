@@ -59,7 +59,7 @@ class Lane:
             return ("freertos.elf", "snapshot_heap.elf")
         if self.rtos == "freertos":
             return ("freertos.elf", "freertos.bin")
-        if self.target == "rv64":
+        if self.target in {"rv32", "rv64"}:
             return ("rtthread.elf", "rtthread.bin", ".debug-macros")
         return ("rtthread.elf", ".debug-macros")
 
@@ -101,6 +101,8 @@ RTTHREAD_RV64 = tuple(
 RTTHREAD_PORTS = (
     Lane("rtthread", "mps2-an385", "4.0.5"),
     Lane("rtthread", "microbit", "4.0.5"),
+    Lane("rtthread", "mps2-an505", "4.0.5"),
+    Lane("rtthread", "rv32", "4.0.5"),
 )
 FREERTOS_CONFIG = tuple(
     Lane("freertos", "mps2-an385", "10.3.1", v) for v in CONFIG_VARIANTS

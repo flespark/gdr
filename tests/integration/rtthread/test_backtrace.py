@@ -12,7 +12,8 @@ SPEC = load_integration_spec()
 
 pytestmark = pytest.mark.skipif(
     SPEC.rtos != "rtthread"
-    or SPEC.target not in {"rv64", "mps2-an385", "cortex-a9", "microbit"}
+    or SPEC.target
+    not in {"rv32", "rv64", "mps2-an385", "mps2-an505", "cortex-a9", "microbit"}
     or (SPEC.target == "cortex-a9" and SPEC.version != "4.0.5"),
     reason="requires an RT-Thread lane with a verified saved-context layout",
 )
@@ -36,7 +37,9 @@ def test_blocked_thread_backtrace_reaches_the_entry(gdb_session):
         data["architecture"]
         == {
             "rv64": "riscv64",
+            "rv32": "riscv32",
             "mps2-an385": "armv7-m",
+            "mps2-an505": "armv8-m.mainline",
             "cortex-a9": "armv7-a",
             "microbit": "armv6-m",
         }[SPEC.target]
@@ -47,7 +50,9 @@ def test_blocked_thread_backtrace_reaches_the_entry(gdb_session):
         data["method"]
         == {
             "rv64": "cfi",
+            "rv32": "cfi",
             "mps2-an385": "leaf",
+            "mps2-an505": "leaf",
             "cortex-a9": "ehabi",
             "microbit": "leaf",
         }[SPEC.target]
@@ -67,10 +72,11 @@ def test_blocked_thread_backtrace_reaches_the_entry(gdb_session):
     assert data["frames"][-1]["pc"] == root["pc"], data
     assert [frame["index"] for frame in data["frames"]] == list(range(len(functions)))
     assert all(
-        frame["method"] in ({"cfi"} if SPEC.target == "rv64" else {"ehabi", "leaf"})
+        frame["method"]
+        in ({"cfi"} if SPEC.target in {"rv32", "rv64"} else {"ehabi", "leaf"})
         for frame in data["frames"][1:]
     ), data
-    if SPEC.target in {"mps2-an385", "microbit"}:
+    if SPEC.target in {"mps2-an385", "mps2-an505", "microbit"}:
         assert any("instruction leaf" in message for message in data["messages"]), data
     assert data["stop_reason"] == "task-exit"
     assert data["complete"] is True
@@ -105,7 +111,7 @@ def test_missing_thread_name_is_structured(gdb_session):
 
 
 @pytest.mark.skipif(
-    SPEC.target == "rv64", reason="requires the Arm initial-context fixture"
+    SPEC.target == "rv64", reason="requires the initial-context fixture"
 )
 def test_initial_thread_has_an_independent_entry_root(gdb_session):
     data = _envelope(gdb_session.run("gdr api backtrace gdr_unstarted --json"))["data"]
@@ -114,21 +120,23 @@ def test_initial_thread_has_an_independent_entry_root(gdb_session):
     assert "gdr_unstarted_entry" in data["frames"][0]["symbol"], data
 
 
-@pytest.mark.skipif(SPEC.target == "rv64", reason="requires the Arm live-chain fixture")
+@pytest.mark.skipif(SPEC.target == "rv64", reason="requires the live-chain fixture")
 def test_current_thread_backtrace_preserves_the_halted_state(gdb_session):
     gdb_session.run("tbreak gdr_bt_live_stop")
     stopped = gdb_session.run("continue", timeout=30)
     assert "Temporary breakpoint" in stopped, stopped
-    state_code = """
+    state_code = f"""
 import hashlib, json
 thread = gdb.lookup_static_symbol('worker3_thread').value()
 frame = gdb.newest_frame()
-registers = {name: int(frame.read_register(name)) for name in ('sp', 'lr')}
+names = ('sp', 'ra', *[f'x{{index}}' for index in range(3, 32)]) if {SPEC.target == "rv32"!r} else ('sp', 'lr', *[f'r{{index}}' for index in range(13)], *(('cpsr',) if {SPEC.target == "cortex-a9"!r} else ('xpsr', 'msp', 'psp')))
+registers = {{name: int(frame.read_register(name)) for name in names}}
 low = int(thread['stack_addr'])
 high = low + int(thread['stack_size'])
-print(json.dumps({'pc': int(frame.pc()), 'function': frame.name(), 'registers': registers,
+print(json.dumps({{'pc': int(frame.pc()), 'function': frame.name(), 'registers': registers,
                   'bounds': [low, high], 'thread': int(thread.address),
-                  'hash': hashlib.sha256(bytes(gdb.selected_inferior().read_memory(low, high-low))).hexdigest()}))
+                  'tcb': bytes(gdb.selected_inferior().read_memory(int(thread.address), thread.type.sizeof)).hex(),
+                  'hash': hashlib.sha256(bytes(gdb.selected_inferior().read_memory(low, high-low))).hexdigest()}}))
 """
     before = _envelope(gdb_session.run_python(state_code))
     data = _envelope(gdb_session.run("gdr api backtrace worker3 --json"))["data"]

@@ -16,7 +16,7 @@ from core.stack_frame_parser import (
     ValidationLevel,
     decode_profile_slots,
 )
-from core.unwind import Endian, Reader, SeedFrame
+from core.unwind import Endian, Reader, SeedFrame, read_slot
 
 
 def _arm_integer(
@@ -37,7 +37,7 @@ def _arm_integer(
     )
 
 
-def _armv8m_mainline() -> SavedStackContext:
+def _armv8m_mainline(*, validation: ValidationLevel = "synthetic") -> SavedStackContext:
     return SavedStackContext(
         profile_id="rtthread/armv8-m.mainline/integer",
         pointer_size=4,
@@ -51,6 +51,7 @@ def _armv8m_mainline() -> SavedStackContext:
         sp_offset=80,
         context_span=(0, 80),
         fill_word=0xDEADBEEF,
+        validation=validation,
     )
 
 
@@ -92,10 +93,10 @@ def _riscv(isa: Isa, word: int, *, validation: ValidationLevel) -> SavedStackCon
 
 ARMV6M_INTEGER = _arm_integer("armv6-m", validation="live")
 ARMV7M_INTEGER = _arm_integer("armv7-m", validation="live")
-ARMV8M_MAINLINE_INTEGER = _armv8m_mainline()
+ARMV8M_MAINLINE_INTEGER = _armv8m_mainline(validation="live")
 ARMV7A_INTEGER = _armv7a(lwp=False)
 ARMV7A_LWP_INTEGER = _armv7a(lwp=True)
-RISCV32_INTEGER = _riscv("riscv32", 4, validation="synthetic")
+RISCV32_INTEGER = _riscv("riscv32", 4, validation="live")
 RISCV64_INTEGER = _riscv("riscv64", 8, validation="live")
 
 
@@ -115,6 +116,19 @@ def decode_saved_context(
     with the port's initial fill pattern proves an unstarted thread; a running
     frame with the same entry remains ``saved`` unless the fill is present.
     """
+    if context.profile_id == ARMV8M_MAINLINE_INTEGER.profile_id:
+        header = tuple(
+            read_slot(
+                read, sp + offset, 4, endian, stack_low=stack_low, stack_high=stack_high
+            )
+            for offset in range(0, 16, 4)
+        )
+        if None in header:
+            return None, "saved-context-unreadable"
+        if header[0] != 0 or header[1] != 0xFFFFFFFD or header[2] != 0:
+            return None, "unsupported-extension-context"
+        if header[3] not in (0, 2):
+            return None, "unsupported-extension-context"
     decoded, reason = decode_profile_slots(
         context,
         sp,

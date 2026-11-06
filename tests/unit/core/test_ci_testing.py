@@ -101,15 +101,20 @@ def test_lane_catalog_preserves_compile_only_policy():
     assert not matrix.matrix_build_only(matrix.select("rtthread", "rv64", "4.0.5"))
 
 
-def test_rtthread_armv7m_fixture_uses_the_shared_lane_contract():
-    lane = matrix.select("rtthread", "mps2-an385", "v4.0.5")
+@pytest.mark.parametrize("target", ["mps2-an385", "mps2-an505", "rv32"])
+def test_rtthread_port_fixture_uses_the_shared_lane_contract(target):
+    lane = matrix.select("rtthread", target, "v4.0.5")
     assert lane.variant == "" and lane.tag == "v4.0.5"
-    assert lane.architecture == "arm" and lane.qemu == "qemu-system-arm"
-    assert lane.artifacts == ("rtthread.elf", ".debug-macros")
+    if target == "rv32":
+        assert lane.architecture == "riscv:rv32" and lane.qemu == "qemu-system-riscv32"
+        assert lane.artifacts == ("rtthread.elf", "rtthread.bin", ".debug-macros")
+    else:
+        assert lane.architecture == "arm" and lane.qemu == "qemu-system-arm"
+        assert lane.artifacts == ("rtthread.elf", ".debug-macros")
     for group in ("rtthread-ports", "rtthread", "smoke", "all"):
         assert lane in matrix.GROUPS[group]
     with pytest.raises(ValueError, match="unsupported lane"):
-        matrix.select("rtthread", "mps2-an385", "4.1.1")
+        matrix.select("rtthread", target, "4.1.1")
 
 
 def test_rtthread_armv7m_patches_preserve_upstream_context_code():
@@ -159,6 +164,46 @@ def test_microbit_fixture_compatibility_changes_are_explicit_and_do_not_use_syst
     assert not any(
         address in bsp for address in ("0xE000E010", "0xE000E014", "0xE000E018")
     )
+
+
+@pytest.mark.parametrize("target", ["mps2-an505", "rv32"])
+def test_new_port_bsp_and_application_patches_only_add_fixture_files(target):
+    root = Path(__file__).resolve().parents[3]
+    patches = root / f"ci/rt-thread/patches/{target}/4.0.5"
+    changed = set()
+    for name in ("001-qemu-bsp.patch", "002-test-fixture.patch"):
+        output = subprocess.check_output(
+            ["git", "apply", "--numstat", str(patches / name)], text=True
+        )
+        for line in output.splitlines():
+            added, removed, path = line.split("\t", 2)
+            assert int(added) > 0 and removed == "0"
+            assert path.startswith(f"bsp/gdr-{target}/")
+            changed.add(Path(path).name)
+    assert changed == {
+        "SConstruct",
+        "SConscript",
+        "rtconfig.py",
+        "rtconfig.h",
+        "board.c",
+        "startup.S",
+        "linker.ld",
+        "main.c",
+    }
+    if target == "mps2-an505":
+        compat = (patches / "003-port-compat.patch").read_text()
+        subprocess.check_output(
+            ["git", "apply", "--numstat", str(patches / "003-port-compat.patch")]
+        )
+        assert "+.cpu cortex-m33" in compat
+        assert "+    stack_frame->lr = 0xFFFFFFFD;" in compat
+    else:
+        assert len(list(patches.glob("*.patch"))) == 2
+        bsp = (patches / "001-qemu-bsp.patch").read_text()
+        assert (
+            "libcpu/risc-v/common" in bsp
+            and "libcpu/risc-v/e310/interrupt_gcc.S" in bsp
+        )
 
 
 def test_cli_list_and_invalid_coordinates_have_no_cache_side_effects(
@@ -283,6 +328,8 @@ def test_fresh_rejects_incomplete_or_invalid_manifests(manifest):
         ("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame"),
         ("rtthread", "rv64", "4.0.5", ""),
         ("rtthread", "mps2-an385", "4.0.5", ""),
+        ("rtthread", "mps2-an505", "4.0.5", ""),
+        ("rtthread", "rv32", "4.0.5", ""),
     ],
 )
 def test_build_publishes_complete_artifacts_and_reuses_manifest(

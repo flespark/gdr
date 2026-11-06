@@ -23,6 +23,8 @@ All notable changes to GDR are documented in this file.
   firmware CFI; clobbered registers remain unavailable to later frames.
 - RT-Thread integer backtraces support verified Armv6-M, Armv7-M and Armv7-A
   kernel contexts, with bounded saved/live chains and independent entry roots.
+- RT-Thread integer backtraces support RV32 and single-Secure-state Armv8-M
+  Mainline saved/current contexts; extended and cross-security contexts remain refused.
 
 ### Changed
 

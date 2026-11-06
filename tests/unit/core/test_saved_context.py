@@ -100,8 +100,8 @@ def test_only_live_validation_passes_the_runtime_gate(validation, verified):
         (rtt.ARMV7M_INTEGER, "live"),
         (rtt.ARMV7A_INTEGER, "synthetic"),
         (rtt.ARMV7A_LWP_INTEGER, "live"),
-        (rtt.ARMV8M_MAINLINE_INTEGER, "synthetic"),
-        (rtt.RISCV32_INTEGER, "synthetic"),
+        (rtt.ARMV8M_MAINLINE_INTEGER, "live"),
+        (rtt.RISCV32_INTEGER, "live"),
         (rtt.RISCV64_INTEGER, "live"),
     ],
 )

@@ -151,6 +151,18 @@ def _live_seed_detail(
             return None, "unsupported-exception-model"
     elif m_profile and not seed.exception_number and seed.sp != seed.process_sp:
         return None, "live-stack-selection-invalid"
+    if isa == "armv8-m.mainline" and not seed.exception_number:
+        try:
+            frame = gdb.newest_frame()
+            control = int(frame.read_register("control"))
+            psplim = int(frame.read_register("psplim"))
+        except (gdb.error, AttributeError, RuntimeError, TypeError):
+            return None, "live-registers-unavailable"
+        tz = read_int(eval_identifier("rt_trustzone_current_context"))
+        if tz is None:
+            return None, "port-configuration-unavailable"
+        if tz != 0 or control != 2 or psplim != 0:
+            return None, "unsupported-extension-context"
     return seed, reason
 
 

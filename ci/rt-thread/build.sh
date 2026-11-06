@@ -2,7 +2,7 @@
 # Build an RT-Thread QEMU test fixture for GDR CI.
 #
 # Usage:
-#   build.sh --target <cortex-a9|rv64|mps2-an385> --ref <version-ref> [options]
+#   build.sh --target <cortex-a9|rv32|rv64|mps2-an385|mps2-an505|microbit> --ref <version-ref> [options]
 #
 # --ref is the RT-Thread release tag or branch to check out (for example
 # v4.0.5 or lts-v4.1.x). Patch sets and BSP paths are selected from that
@@ -15,7 +15,7 @@
 #   --patch-dir DIR         directory of *.patch files (replaces auto selection)
 #   --build-dir DIR         working clone directory
 #   --out-elf PATH          destination for rtthread.elf
-#   --out-bin PATH          destination for rtthread.bin (RV64)
+#   --out-bin PATH          destination for rtthread.bin (RISC-V)
 #   --toolchain-path DIR    directory containing the compiler binaries
 #   --toolchain-prefix STR  cross-compiler prefix
 #   --g3                    build with -g3 and DWARF 4 so the kernel version
@@ -73,10 +73,16 @@ resolve_target_defaults() {
         *) die "RV64 QEMU BSP is available only for v4.0.4-v4.1.1" ;;
         esac
         ;;
-    mps2-an385)
-        [[ "$REF" == "v4.0.5" ]] || die "AN385 fixture requires v4.0.5"
-        BSP_DIR="${BSP_DIR:-bsp/gdr-mps2-an385}"
+    mps2-an385 | mps2-an505)
+        [[ "$REF" == "v4.0.5" ]] || die "$TARGET fixture requires v4.0.5"
+        BSP_DIR="${BSP_DIR:-bsp/gdr-$TARGET}"
         TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-arm-none-eabi-}"
+        PATCH_SET="4.0.5"
+        ;;
+    rv32)
+        [[ "$REF" == "v4.0.5" ]] || die "RV32 fixture requires v4.0.5"
+        BSP_DIR="${BSP_DIR:-bsp/gdr-rv32}"
+        TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-riscv-none-elf-}"
         PATCH_SET="4.0.5"
         ;;
     microbit)
@@ -255,8 +261,8 @@ build_bsp() {
             scons -j"$jobs"
         fi
         [[ -f rtthread.elf ]] || die "rtthread.elf not produced"
-        if [[ "$TARGET" == "rv64" && ! -f rtthread.bin ]]; then
-            die "rtthread.bin not produced for RV64"
+        if [[ "$TARGET" == rv* && ! -f rtthread.bin ]]; then
+            die "rtthread.bin not produced for $TARGET"
         fi
     )
     echo "[gdr-ci] build OK: rtthread.elf ($(du -h "$elf_abs" | cut -f1))"
@@ -266,7 +272,7 @@ build_bsp() {
         cp "$elf_abs" "$OUT_ELF"
         echo "[gdr-ci] copied to $OUT_ELF"
     fi
-    if [[ "$TARGET" == "rv64" ]]; then
+    if [[ "$TARGET" == rv* ]]; then
         echo "[gdr-ci] OUT_BIN=$bin_abs"
         if [[ "$OUT_BIN" != "$bin_abs" ]]; then
             mkdir -p "$(dirname "$OUT_BIN")"

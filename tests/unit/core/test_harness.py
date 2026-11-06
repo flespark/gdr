@@ -27,9 +27,10 @@ def test_rtthread_defaults():
     assert spec.firmware_path() == spec.elf_path()
 
 
-def test_rtthread_rv64_firmware_is_the_bin():
+@pytest.mark.parametrize("target,version", [("rv32", "4.0.5"), ("rv64", "4.1.1")])
+def test_rtthread_riscv_firmware_is_the_bin(target, version):
     spec = load_integration_spec(
-        {"GDR_RTOS": "rtthread", "GDR_QEMU_TARGET": "rv64", "GDR_VERSION": "4.1.1"}
+        {"GDR_RTOS": "rtthread", "GDR_QEMU_TARGET": target, "GDR_VERSION": version}
     )
     assert spec.firmware_path() == spec.fixture_dir() / "rtthread.bin"
     assert spec.elf_path().name == "rtthread.elf"
@@ -129,27 +130,45 @@ def test_rtthread_profile_uses_loader_paths():
     assert profile.firmware_path == profile.elf_path.with_suffix(".bin")
 
 
-def test_rtthread_armv7m_profile_uses_the_same_session_lifecycle():
+@pytest.mark.parametrize("target", ["mps2-an385", "mps2-an505"])
+def test_rtthread_arm_profile_uses_the_same_session_lifecycle(target):
     from tests.support.rtthread_fixture_profiles import get_rtthread_test_profile
     from tests.support.rtthread_qemu_profiles import get_rtthread_qemu_profile
 
     spec = load_integration_spec(
         {
             "GDR_RTOS": "rtthread",
-            "GDR_QEMU_TARGET": "mps2-an385",
+            "GDR_QEMU_TARGET": target,
             "GDR_VERSION": "4.0.5",
         }
     )
     profile = get_rtthread_qemu_profile(Path("/unused"), spec)
-    assert profile.machine == "mps2-an385"
+    assert profile.machine == target
     assert profile.qemu_binary == "qemu-system-arm"
     assert profile.gdb_architecture == "arm" and profile.pointer_width == 4
     assert profile.firmware_option == "-kernel" and profile.qemu_args == ()
-    assert profile.elf_path == CACHE / "fixtures/rtthread/mps2-an385/4.0.5/rtthread.elf"
+    assert profile.elf_path == CACHE / f"fixtures/rtthread/{target}/4.0.5/rtthread.elf"
     assert profile.firmware_path == profile.elf_path
     assert profile.init_command == "gdr init rtthread 4.0.5"
-    expected = get_rtthread_test_profile("4.0.5", "mps2-an385")
+    expected = get_rtthread_test_profile("4.0.5", target)
     assert expected.current_thread_expression == "rt_current_thread"
+
+
+def test_rtthread_rv32_profile_keeps_the_raw_boot_and_debug_images_separate():
+    from tests.support.rtthread_qemu_profiles import get_rtthread_qemu_profile
+
+    spec = load_integration_spec({"GDR_RTOS": "rtthread", "GDR_QEMU_TARGET": "rv32"})
+    profile = get_rtthread_qemu_profile(Path("/unused"), spec)
+    assert profile.qemu_binary == "qemu-system-riscv32"
+    assert profile.gdb_architecture == "riscv:rv32" and profile.pointer_width == 4
+    assert profile.machine == "virt" and profile.qemu_args == (
+        "-cpu",
+        "rv32",
+        "-m",
+        "256M",
+    )
+    assert profile.firmware_option == "-bios"
+    assert profile.firmware_path == profile.elf_path.with_suffix(".bin")
 
 
 def test_freertos_profile_derives_machine_from_target():

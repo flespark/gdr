@@ -1,5 +1,6 @@
 """RT-Thread orchestration rejects unverified ports and missing bounds."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -37,7 +38,7 @@ def test_unverified_context_never_reads_target_stack(monkeypatch, isa, context):
         lambda: StackContextSelection(
             isa,
             "riscv" if isa.startswith("riscv") else "arm",
-            context,
+            replace(context, validation="file-only"),
             "unverified-port",
         ),
     )
@@ -361,3 +362,53 @@ def test_arm_irq_supplies_shared_segments_hooks_and_vector_entry_proof(monkeypat
     assert seen["exception_detector"](0xFFFFFFFD)
     assert callable(seen["exception_hook"]) and callable(seen["exception_guard"])
     assert seen["stkalign"] is True
+
+
+@pytest.mark.parametrize(
+    "control,psplim,tz,reason",
+    [
+        (2, 0, 0, "ok"),
+        (6, 0, 0, "unsupported-extension-context"),
+        (3, 0, 0, "unsupported-extension-context"),
+        (2, 0x2000, 0, "unsupported-extension-context"),
+        (2, 0, 1, "unsupported-extension-context"),
+        (2, 0, None, "port-configuration-unavailable"),
+    ],
+)
+def test_armv8m_current_seed_requires_integer_single_security_context(
+    monkeypatch, control, psplim, tz, reason
+):
+    seed = SeedFrame(0x1000, 0x2080, {13: 0x2080}, source="current", process_sp=0x2080)
+    monkeypatch.setattr(
+        bridge, "_core_live_seed_detail", lambda *_args, **_kwargs: (seed, "ok")
+    )
+    frame = SimpleNamespace(
+        read_register=lambda name: {"control": control, "psplim": psplim}[name]
+    )
+    monkeypatch.setattr(
+        bridge, "gdb", SimpleNamespace(newest_frame=lambda: frame, error=RuntimeError)
+    )
+    monkeypatch.setattr(bridge, "eval_identifier", lambda name: name)
+    monkeypatch.setattr(bridge, "read_int", lambda _value: tz)
+    result, actual = bridge._live_seed_detail("arm", "armv8-m.mainline", None)
+    assert actual == reason
+    assert (result is not None) == (reason == "ok")
+
+
+def test_armv8m_missing_extension_registers_refuse_the_live_seed(monkeypatch):
+    seed = SeedFrame(0x1000, 0x2080, {13: 0x2080}, source="current", process_sp=0x2080)
+    monkeypatch.setattr(
+        bridge, "_core_live_seed_detail", lambda *_args, **_kwargs: (seed, "ok")
+    )
+
+    def read(_name):
+        raise RuntimeError("unavailable")
+
+    frame = SimpleNamespace(read_register=read)
+    monkeypatch.setattr(
+        bridge, "gdb", SimpleNamespace(newest_frame=lambda: frame, error=RuntimeError)
+    )
+    assert bridge._live_seed_detail("arm", "armv8-m.mainline", None) == (
+        None,
+        "live-registers-unavailable",
+    )

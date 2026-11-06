@@ -127,12 +127,17 @@ Backtrace JSON reports canonical ISA in `architecture` and ELF ABI in `abi`;
 profile identity remains internal. RISC-V profiles require a bounded match of
 the compiled integer save/restore and initial-stack code; this does not prove
 vendor-private traps.
-RT-Thread integer backtraces are verified on RV64, Armv6-M
+RT-Thread integer backtraces are verified on RV32 (`rv32/4.0.5`), RV64, Armv6-M
 (`microbit/4.0.5`), Armv7-M (`mps2-an385/4.0.5`) and Armv7-A
 (`cortex-a9/4.0.5`). The Armv7-A profile covers the compiled SMP/signal/LWP-header
 kernel context; user-mode seeds and FPU contexts are refused, and frame-pointer
-fallback has no Armv7-A acceptance. Armv8-M Mainline and RV32 layouts remain
-unverified and report `unverified-port`.
+fallback has no Armv7-A acceptance. Armv8-M Mainline (`mps2-an505/4.0.5`) covers
+the 80-byte single-Secure-state integer frame: saved `tz=0`, `EXC_RETURN=0xFFFFFFFD`,
+`PSPLIM=0` and privileged CONTROL (0 before first return, 2 while using PSP).
+The current seed requires readable CONTROL/PSPLIM and a zero TrustZone context.
+Non-secure/cross-security returns, nonzero stack limits, FPU and unprivileged
+contexts remain refused; this lane does not establish Armv8-M handler unwinding.
+RV32 covers the upstream common integer port, not vendor traps or ISR cross-stack unwinding.
 
 **EHABI entries require a matching ELF function symbol.** Without
 `-funwind-tables` the ARM fixtures expose only `EXIDX_CANTUNWIND`. With the

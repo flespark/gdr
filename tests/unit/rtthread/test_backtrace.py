@@ -10,6 +10,7 @@ from rtthread.backtrace import (
     ARMV7A_LWP_INTEGER,
     ARMV7M_INTEGER,
     ARMV8M_MAINLINE_INTEGER,
+    RISCV32_INTEGER,
     RISCV64_INTEGER,
     decode_saved_context,
 )
@@ -79,7 +80,7 @@ def _armv8m_context(
     """Write the port's 20-word integer frame independently of the profile."""
     words = (
         0,
-        0xFFFFFFBC,
+        0xFFFFFFFD,
         0,
         0,
         *(8 * [0xDEADBEEF] if fill else range(4, 12)),
@@ -100,7 +101,7 @@ def _armv8m_context(
 @pytest.mark.parametrize("endian", ["little", "big"])
 def test_armv8m_context_recovers_task_lr_separately_from_exception_return(fill, endian):
     context = ARMV8M_MAINLINE_INTEGER
-    assert context.validation == "synthetic" and not context.verified
+    assert context.validation == "live" and context.verified
     assert context.lr_offset == 68
     memory = _Memory()
     top = 0x3000
@@ -170,6 +171,77 @@ def test_armv8m_cfi_uses_only_the_stacked_task_lr(lr_readable):
         assert result.stop_reason == "cfi-return-address-missing"
         assert not result.truncated
     assert not result.complete
+
+
+@pytest.mark.parametrize(
+    "offset,value",
+    [(0, 1), (4, 0xFFFFFFBC), (4, 0xFFFFFFED), (8, 0x2000), (12, 1), (12, 6)],
+)
+def test_armv8m_extended_or_cross_security_headers_are_refused_before_frame_reads(
+    offset, value
+):
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_context(memory, top)
+    memory.word(top + offset, value)
+    reads = []
+
+    def read(address, size):
+        reads.append((address, size))
+        return memory(address, size)
+
+    assert decode_saved_context(
+        ARMV8M_MAINLINE_INTEGER,
+        top,
+        read,
+        endian="little",
+        stack_low=top,
+        stack_high=top + 80,
+    ) == (None, "unsupported-extension-context")
+    assert all(address + size <= top + 16 for address, size in reads)
+
+
+def test_armv8m_header_requires_readable_bounded_slots():
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_context(memory, top)
+
+    def read(address, size):
+        assert top + 4 <= address < top + 80
+        return memory(address, size)
+
+    assert decode_saved_context(
+        ARMV8M_MAINLINE_INTEGER,
+        top,
+        read,
+        endian="little",
+        stack_low=top + 4,
+        stack_high=top + 80,
+    ) == (None, "saved-context-unreadable")
+
+
+@pytest.mark.parametrize("fill", [False, True])
+def test_rv32_four_byte_slots_preserve_integer_registers_and_exit(fill):
+    memory = _Memory()
+    top = 0x5000
+    for index in range(32):
+        memory.word(top + index * 4, 0xDEADBEEF if fill else 0x100 + index)
+    memory.word(top, 0x80001000)
+    memory.word(top + 4, 0x80002000)
+    seed, reason = decode_saved_context(
+        RISCV32_INTEGER,
+        top,
+        memory,
+        endian="little",
+        entry=0x80001000,
+        stack_low=top,
+        stack_high=top + 0x200,
+    )
+    assert reason == "ok" and seed is not None
+    assert seed.sp == top + 128 and seed.regs[2] == seed.sp
+    assert seed.pc == 0x80001000 and seed.regs[1] == 0x80002000
+    assert seed.source == ("unstarted" if fill else "saved")
+    assert seed.regs[8] == (0xDEADBEEF if fill else 0x108)
 
 
 def test_rv64_context_is_closed_loop_verified_and_sp_is_above_it():

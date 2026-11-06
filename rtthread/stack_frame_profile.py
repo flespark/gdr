@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from core.cpus import Cpu, cpu_of
 from core.insn_arm import ArmInstruction, decode_arm
 from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
-    riscv_all_store_offsets,
     riscv_frame_accesses,
     riscv_slot_map,
     riscv_stack_frame_size,
 )
-from core.insn_thumb import ThumbInstruction, decode_thumb
+from core.insn_thumb import ThumbInstruction, decode_thumb, resolved_literal
 from core.stack_frame_parser import (
     SavedStackContext,
     StackContextSelection,
@@ -25,6 +24,7 @@ from .backtrace import (
     ARMV6M_INTEGER,
     ARMV7A_LWP_INTEGER,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_INTEGER,
     RISCV32_INTEGER,
     RISCV64_INTEGER,
 )
@@ -81,7 +81,7 @@ def _riscv_profile(isa: str | None) -> SavedStackContext | None:
 
 def _riscv_verify_context_switch(elf: ElfImage) -> bool:
     """Compare RT-Thread context-switch frame effects and restore control flow."""
-    if elf.pointer_size != 8:
+    if elf.pointer_size not in (4, 8):
         return False
     word = elf.pointer_size
     try:
@@ -101,15 +101,16 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
             for register, offsets in expected_saves.items()
         ):
             return False
-        old_sp = riscv_all_store_offsets(switch, 10)
+        store, load = ("sd", "ld") if word == 8 else ("sw", "lw")
+        old_sp = any(op == (store, 2, 10, 0) for op in switch.values())
         new_sp = {
             op[3]
             for op in switch.values()
-            if op[0] in ("ld", "lw") and op[1] == 2 and op[2] == 11
+            if op[0] == load and op[1] == 2 and op[2] == 11
         }
         # rt_hw_context_switch(from, to): the old SP is stored through a0 and
         # the next SP is loaded through a1; no current-thread symbol is read.
-        if 0 not in old_sp or 0 not in new_sp:
+        if not old_sp or 0 not in new_sp:
             return False
         exit_address = elf.symbol_address("rt_hw_context_switch_exit")
         if exit_address is None or not any(
@@ -138,7 +139,7 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
             (
                 op[1]
                 for op in restore.values()
-                if op[0] in ("ld", "lw") and op[2] == 2 and op[3] == 0
+                if op[0] == load and op[2] == 2 and op[3] == 0
             ),
             None,
         )
@@ -149,6 +150,7 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
                 for op in restore.values()
             )
             and any(op[0] == "mret" for op in restore.values())
+            and any(op == ("addi", 2, 2, 32 * word) for op in restore.values())
         )
     except (EvidenceError, StopIteration, ValueError, TypeError):
         return False
@@ -162,6 +164,7 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
     context = {
         "armv6-m": ARMV6M_INTEGER,
         "armv7-m": ARMV7M_INTEGER,
+        "armv8-m.mainline": ARMV8M_MAINLINE_INTEGER,
         "armv7-a": ARMV7A_LWP_INTEGER,
     }.get(cpu.isa)
     if context is None or not context.verified:
@@ -169,6 +172,7 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
     matcher = {
         "armv6-m": _armv6m_verify_context,
         "armv7-m": _armv7m_verify_context,
+        "armv8-m.mainline": _armv8m_mainline_verify_context,
         "armv7-a": _armv7a_verify_context,
     }[cpu.isa]
     proven = matcher(elf)
@@ -323,6 +327,98 @@ def _m_profile_verify_context(elf: ElfImage, isa: str) -> bool:
 def _armv7m_verify_context(elf: ElfImage) -> bool:
     """Prove the Armv7-M integer PendSV, switch request and initializer paths."""
     return _m_profile_verify_context(elf, "armv7-m")
+
+
+def _armv8m_mainline_verify_context(elf: ElfImage) -> bool:
+    """Prove the integer CM33 frame, PSP switch and initial-context stores."""
+    request = _port_instructions(
+        elf, "rt_hw_context_switch", "PendSV_Handler", decode_thumb
+    )
+    pend = _port_instructions(
+        elf, "PendSV_Handler", "rt_hw_context_switch_to", decode_thumb
+    )
+    init = _port_instructions(
+        elf, "rt_hw_stack_init", None, decode_thumb, stop_at_return=True
+    )
+    if request is None or pend is None or init is None:
+        return False
+    save = (
+        ("mrs", {"rd": 1, "sysm": 9}),
+        ("stmdb", {"rn": 1, "wback": True, "reglist": 0xFF0}),
+        ("ldr_literal", {"rt": 2}),
+        ("ldr_imm", {"rt": 2, "rn": 2, "imm": 0}),
+        ("mov", {"rd": 3, "rm": 14}),
+        ("mrs", {"rd": 4, "sysm": 11}),
+        ("mrs", {"rd": 5, "sysm": 20}),
+        ("stmdb", {"rn": 1, "wback": True, "reglist": 0x3C}),
+        ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+        ("str_imm", {"rt": 1, "rn": 0, "imm": 0}),
+    )
+    restore = (
+        ("ldmia", {"rn": 1, "wback": True, "reglist": 0x3C}),
+        ("msr", {"rn": 4, "sysm": 11}),
+        ("msr", {"rn": 5, "sysm": 20}),
+        ("mov", {"rd": 14, "rm": 3}),
+        ("ldr_literal", {"rt": 6}),
+        ("str_imm", {"rt": 2, "rn": 6, "imm": 0}),
+    )
+    tail = (
+        ("ldmia", {"rn": 1, "wback": True, "reglist": 0xFF0}),
+        ("msr", {"rn": 1, "sysm": 9}),
+    )
+    saved = _instruction_sequence(pend, save)
+    restored = _instruction_sequence(pend, restore)
+    if saved is None or restored is None or _instruction_sequence(pend, tail) is None:
+        return False
+    tz = elf.symbol_address("rt_trustzone_current_context")
+    if tz is None or any(
+        resolved_literal(elf, instruction) != tz
+        for instruction in (saved[2], restored[4])
+    ):
+        return False
+    offsets = {0, 4, 8, 12, 48, 52, 56, 60, 64, 68, 72, 76}
+    init_stores = {
+        _operand(instruction, "imm")
+        for instruction in init
+        if instruction.mnemonic == "str_imm" and _operand(instruction, "rn") == 3
+    }
+    return (
+        offsets.issubset(init_stores)
+        and _instruction_sequence(
+            init,
+            (
+                ("orn", {"rd": 2, "rn": 15, "immediate": 2}),
+                ("str_imm", {"rt": 2, "rn": 3, "imm": 4}),
+            ),
+        )
+        is not None
+        and any(
+            instruction.mnemonic == "subs" and instruction.operands.get("imm") == 80
+            for instruction in init
+        )
+        and any(instruction.mnemonic == "str_imm" for instruction in request)
+    )
+
+
+def _instruction_sequence(
+    instructions: tuple[_PortInstruction, ...],
+    expected: tuple[tuple[str, Mapping[str, int | bool]], ...],
+) -> tuple[_PortInstruction, ...] | None:
+    """Find a contiguous decoded layout effect, without link-address matching."""
+    for offset in range(len(instructions) - len(expected) + 1):
+        candidate = instructions[offset : offset + len(expected)]
+        if all(
+            instruction.mnemonic == mnemonic
+            and all(
+                instruction.operands.get(key) == value
+                for key, value in operands.items()
+            )
+            for instruction, (mnemonic, operands) in zip(
+                candidate, expected, strict=True
+            )
+        ):
+            return candidate
+    return None
 
 
 def _armv6m_verify_context(elf: ElfImage) -> bool:

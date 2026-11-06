@@ -95,13 +95,15 @@ answers.
 | `rv64` | RT-Thread | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios rtthread.bin` | `rtthread.elf` | 64-bit RISC-V (`riscv:rv64`) |
 | `mps2-an385` | RT-Thread | `qemu-system-arm -M mps2-an385 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv7-M (Cortex-M3) |
 | `microbit` | RT-Thread | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv6-M (Cortex-M0) |
+| `mps2-an505` | RT-Thread | `qemu-system-arm -M mps2-an505 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv8-M Mainline (single Cortex-M33) |
+| `rv32` | RT-Thread | `qemu-system-riscv32 -M virt -cpu rv32 -m 256M -bios rtthread.bin` | `rtthread.elf` | 32-bit RISC-V (`riscv:rv32`) |
 | `mps2-an385` | FreeRTOS | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv7-M (Cortex-M3) |
 | `mps2-an521` | FreeRTOS | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv8-M Mainline (dual Cortex-M33, SSE-200) |
 | `microbit` | FreeRTOS | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv6-M (Cortex-M0, Thumb-1) |
 | `qemu-virt-rv32` | FreeRTOS | `qemu-system-riscv32 -M virt -cpu rv32 -m 256M -bios freertos.bin -semihosting-config enable=on` | `freertos.elf` | 32-bit RISC-V (`riscv:rv32`) |
 | `qemu-virt-rv64` | FreeRTOS | `qemu-system-riscv64 -M virt -cpu rv64 -m 256M -bios freertos.bin -semihosting-config enable=on` | `freertos.elf` | 64-bit RISC-V (`riscv:rv64`) |
 
-On 64-bit RISC-V lanes (`rv64` and `qemu-virt-rv64`), QEMU boots the raw
+On RISC-V lanes, QEMU boots the raw
 `.bin` image via `-bios` while GDB loads the companion DWARF `.elf`.
 
 ---
@@ -113,7 +115,7 @@ On 64-bit RISC-V lanes (`rv64` and `qemu-virt-rv64`), QEMU boots the raw
 RT-Thread fixtures are built by applying platform- and version-scoped patch
 series (`ci/rt-thread/patches/<target>/<version>/`) to upstream RT-Thread BSPs
 and caching `ci/.cache/fixtures/rtthread/<target>/<version>/rtthread.elf` (plus
-`rtthread.bin` on RV64):
+`rtthread.bin` on RISC-V):
 
 - **`cortex-a9` (`3.1.0–3.1.5`, `4.0.0–4.1.1`)**: Runs the full integration
   suite across representative releases, including `3.1.0`, `3.1.3`, and `3.1.5`
@@ -134,6 +136,10 @@ and caching `ci/.cache/fixtures/rtthread/<target>/<version>/rtthread.elf` (plus
 - **`microbit` (`4.0.5`)**: Runs the shared suite and raw port-compatibility
   checks on an RT-Thread-owned BSP. Build inputs and the Nordic tick source
   live in the [microbit fixture guide](../ci/rt-thread/README.md#microbit-armv6-m-port-fixture).
+- **`mps2-an505` and `rv32` (`4.0.5`)**: Run the shared suite and independent
+  80/128-byte port-frame checks, initial entry/exit checks and read-only current
+  chains. Build inputs live in the [AN505](../ci/rt-thread/README.md#an505-armv8-m-mainline-port-fixture)
+  and [RV32](../ci/rt-thread/README.md#rv32-common-integer-port-fixture) fixture guides.
 
 Each fixture spawns a deterministic set of healthy and blocked worker threads
 (`worker1`..`worker11`, `locker`) contended on canonical IPC objects
@@ -153,6 +159,8 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 | `test_startup.py` | Separate paused-at-reset QEMU session verifying that snapshots taken before kernel initialization safely stop on `NULL` timer-list heads instead of fabricating wrapped object addresses, and recover once the scheduler starts. |
 | `test_backtrace.py` | Verified saved and current chains, independent unstarted roots, exit completeness, bounded output, structured missing-thread failures and unchanged halted state on the enabled lanes. |
 | `test_saved_context_fixture.py` | Basic Armv6-M/Armv7-M compiled save/restore instructions, independent port DWARF offsets, raw blocked/unstarted register frames and exit sentinel, and bounded MSP/heap/vector evidence. |
+| `test_armv8m_mainline_fixture.py` | Armv8-M Mainline compiled port evidence, independent 80-byte DWARF layout, raw saved/unstarted registers and Secure context header, real tick progress and raw-seed exit completeness. |
+| `test_rv32_fixture.py` | RV32 compiled port evidence, independent 128-byte DWARF layout, raw saved/unstarted registers, real tick progress and raw-seed exit completeness. |
 | `test_irq_backtrace.py` | Exact basic IRQ24/25 hardware frames, nested handler/task transitions, hardware alignment padding, read-only queries and refusal of pending-switch ownership or incomplete MSP bounds. |
 | `test_microbit_fixture.py` | Architecture-valid first PendSV return and initial PC/LR state; real TIMER2 tick progress, hardware prescaler/compare/shortcut configuration, IRQ10 vector and unused SysTick vector. |
 

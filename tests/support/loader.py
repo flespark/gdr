@@ -29,6 +29,7 @@ _RAW_BIN_BOOT_TARGETS = frozenset(
     {
         ("freertos", "qemu-virt-rv32"),
         ("freertos", "qemu-virt-rv64"),
+        ("rtthread", "rv32"),
         ("rtthread", "rv64"),
     }
 )
