@@ -11,11 +11,16 @@ from tests.support.loader import load_integration_spec
 SPEC = load_integration_spec()
 pytestmark = pytest.mark.skipif(
     SPEC.rtos != "rtthread"
-    or SPEC.target not in {"mps2-an385", "microbit"}
-    or SPEC.version != "4.0.5",
-    reason="requires an RT-Thread basic Arm M-profile IRQ fixture",
+    or SPEC.target not in {"mps2-an385", "mps2-an386", "microbit"}
+    or SPEC.version != "4.0.5"
+    or (SPEC.target == "mps2-an386" and SPEC.variant != "fpu"),
+    reason="requires an RT-Thread Arm M-profile IRQ fixture",
 )
-ISA = "armv6-m" if SPEC.target == "microbit" else "armv7-m"
+ISA = (
+    "armv6-m"
+    if SPEC.target == "microbit"
+    else ("armv7e-m" if SPEC.target == "mps2-an386" else "armv7-m")
+)
 
 
 def _json(output):
@@ -70,6 +75,39 @@ def test_single_irq_returns_to_the_exact_task_pc(gdb_session):
     assert len(transitions) == 1 and transitions[0]["pc"] == raw["pc"], data
     assert "gdr_irq_wait" in transitions[0]["symbol"], data
     assert any("EXC_RETURN=0xfffffffd" in message for message in data["messages"]), data
+
+
+@pytest.mark.skipif(
+    SPEC.target != "mps2-an386",
+    reason="requires the AN386 FPU IRQ fixture (FP ISR over an FP-active thread: lazy-stacked extended frame)",
+)
+def test_fp_isr_grows_the_msp_frame_with_lazy_stacking(gdb_session):
+    _stop(gdb_session, "gdr_irq_fp_stop")
+    raw = _frame(gdb_session, "psp")
+    assert raw["status"] & 0x1FF == 0 and raw["status"] & (1 << 24)
+    assert raw["bounds"][0] <= raw["base"] < raw["sp"] <= raw["bounds"][1]
+    fpccr = int(
+        gdb_session.run("p/x *(unsigned int *)0xE000EF34").split("=")[1].strip(), 16
+    )
+    assert fpccr & 0xC0000000 == 0xC0000000, f"FPCCR={fpccr:#x}"
+    data = _trace(gdb_session)
+    assert data["complete"] and data["stop_reason"] == "task-exit", data
+    transitions = _transitions(data)
+    assert len(transitions) == 1 and transitions[0]["pc"] == raw["pc"], data
+    assert "gdr_irq" in transitions[0]["symbol"], data
+    assert any("EXC_RETURN=0xffffffed" in message for message in data["messages"]), data
+    assert any("extended" in message for message in data["messages"]), data
+
+
+def test_switch_request_window_refuses_task_ownership_live(gdb_session):
+    gdb_session.run("tbreak PendSV_Handler")
+    gdb_session.run("continue", timeout=60)
+    data = _json(gdb_session.run("gdr api backtrace gdr_irq --json", timeout=30))[
+        "data"
+    ]
+    assert not data["complete"], data
+    assert data["stop_reason"] == "scheduler-transition-unproven", data
+    assert data["frames"] == [], data
 
 
 def test_nested_handler_entry_recovers_both_hardware_frames(gdb_session):

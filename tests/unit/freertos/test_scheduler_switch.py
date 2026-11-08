@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
@@ -20,14 +19,15 @@ from core.insn_thumb import (
     semantic_token as _semantic_token,
 )
 from core.stack_frame_parser import SavedStackContext
-from core.unwind_meta import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
+from core.unwind_meta import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection, Endian
 from freertos.backtrace import ARMV7M_INTEGER
+from freertos.scheduler_seed import build_stage_seed
 from freertos.scheduler_switch import (
     SchedulerStage,
     build_profile,
-    build_stage_seed,
     classify_stage,
 )
+from tests.support.loader import cached_elfs, fixture_cache_root
 
 PENDSV = bytes.fromhex(
     "eff30980bff36f8f0d4b1a6820e9f00f106008b54ff0040080f31188fef7ccfb4ff000"
@@ -91,7 +91,7 @@ def _image(
     symbols: tuple | None = None,
     offset: int = 0,
     data_offset: int = 0,
-    endian: str = "little",
+    endian: Endian = "little",
 ) -> ElfImage:
     data = bytearray(0x5000)
     for start, body in (
@@ -277,10 +277,12 @@ def test_mismatched_truncated_or_unsupported_profiles_are_refused():
 
 def test_ambiguous_instruction_inside_a_verified_range_is_refused():
     profile = _profile()
-    assert classify_stage(profile, profile.pendsv_start + 2).startswith(
+    pendsv_hit = classify_stage(profile, profile.pendsv_start + 2)
+    assert isinstance(pendsv_hit, str) and pendsv_hit.startswith(
         "scheduler-stage-ambiguous"
     )
-    assert classify_stage(profile, profile.switch_start + 2).startswith(
+    switch_hit = classify_stage(profile, profile.switch_start + 2)
+    assert isinstance(switch_hit, str) and switch_hit.startswith(
         "scheduler-stage-ambiguous"
     )
     assert classify_stage(profile, 0xDEAD) is None
@@ -608,7 +610,7 @@ def test_pendsv_never_claims_an_unstarted_selection(stage_name):
     [
         (0x0000000E, 0xFFFFFFFD, True, "scheduler-frame-not-thumb"),
         (0x0100000E, 0xFFFFFFF9, True, "scheduler-stack-selection-unproven"),
-        (0x0100000E, 0xFFFFFFED, True, "unsupported-extension-context"),
+        (0x0100000E, 0xFFFFFFED, True, "scheduler-fpu-context-unproven"),
         (0x0100020E, 0xFFFFFFFD, False, "exception-frame-alignment-invalid"),
     ],
 )
@@ -1274,10 +1276,12 @@ def test_inline_data_gap_is_skipped_and_code_resumes():
     assert profile.switch_after_update == SWITCH_START + 0x10
 
 
-_CACHE_ROOT = Path(__file__).resolve().parents[3] / (
-    "ci/.cache/fixtures/freertos/mps2-an385"
+_CACHED_ELFS = tuple(
+    path
+    for path in cached_elfs()
+    if path.name == "freertos.elf"
+    and path.relative_to(fixture_cache_root()).parts[:2] == ("freertos", "mps2-an385")
 )
-_CACHED_ELFS = tuple(sorted(_CACHE_ROOT.glob("**/freertos.elf")))
 
 
 @pytest.mark.skipif(not _CACHED_ELFS, reason="no cached ARM_CM3 fixtures")
@@ -1291,7 +1295,9 @@ def test_cached_arm_cm3_fixtures_prove_one_switch_store(path):
     assert reason == "ok" and profile is not None, reason
     assert profile.switch_start <= profile.switch_update < profile.switch_end
     assert profile.switch_after_update <= profile.switch_end
-    again, reason = build_profile(ElfImage.from_path(path))
+    again_image = ElfImage.from_path(path)
+    assert again_image is not None
+    again, reason = build_profile(again_image)
     assert reason == "ok" and again is not None
     assert again.fingerprint == profile.fingerprint
 

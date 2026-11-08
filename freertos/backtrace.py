@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from core.cpus import Isa
 from core.stack_frame_parser import SavedStackContext, decode_profile_slots
-from core.unwind import Endian, Reader, SeedFrame, read_block
+from core.unwind import Endian, Reader, SeedFrame, read_block, read_slot
+from core.unwind_arm import BASIC_EXC_RETURNS, EXTENDED_EXC_RETURNS
 
 _ARM_FILL = 0xA5A5A5A5
 
@@ -111,6 +112,90 @@ ARMV8M_MAINLINE_MPU_INTEGER = SavedStackContext(
     ),
     context_in_tcb=True,
 )
+
+
+# Armv7-M FPU port (ARM_CM4F): pxTopOfStack points at r4, followed by the
+# saved EXC_RETURN, then S16-S31 for FPU-using tasks and the hardware frame.
+# A task that never used the FPU keeps the basic 68-byte integer layout;
+# an FPU-using task carries the 64-byte S16-S31 block plus the 0x68-byte
+# extended hardware frame. Both layouts keep the EXC_RETURN at the same
+# slot, so one bounded read selects the profile without guessing offsets.
+ARMV7M_CM4F_BASIC = SavedStackContext(
+    profile_id="freertos/armv7-m-cm4f/basic",
+    pointer_size=4,
+    registers=tuple((register, (register - 4) * 4) for register in range(4, 12))
+    + ((0, 36), (1, 40), (2, 44), (3, 48), (12, 52)),
+    pc_offset=60,
+    lr_offset=56,
+    status_offset=64,
+    sp_offset=68,
+    context_span=(0, 68),
+    fill_word=_ARM_FILL,
+    validation="live",
+)
+
+ARMV7M_CM4F_FPU = SavedStackContext(
+    profile_id="freertos/armv7-m-cm4f/fpu",
+    pointer_size=4,
+    registers=tuple((register, (register - 4) * 4) for register in range(4, 12))
+    + ((0, 100), (1, 104), (2, 108), (3, 112), (12, 116)),
+    pc_offset=124,
+    lr_offset=120,
+    status_offset=128,
+    sp_offset=204,
+    context_span=(0, 204),
+    fill_word=_ARM_FILL,
+    fpu=True,
+    validation="live",
+)
+
+CM4F_EXC_RETURN_SLOT = 32
+
+
+def decode_cm4f_saved_context(
+    top: int,
+    read: Reader,
+    *,
+    basic: SavedStackContext,
+    fpu: SavedStackContext,
+    endian: Endian,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+    exit_pc: int | None = None,
+    entry_pc: int | None = None,
+) -> tuple[SeedFrame | None, str]:
+    """Decode one ARM_CM4F task, selecting basic or FPU layout by EXC_RETURN.
+
+    The saved EXC_RETURN sits at the same slot in both layouts, so the
+    selection is an exact set match, never an offset guess.  A word that
+    matches neither set refuses without reading further slots.
+    """
+    saved_lr = read_slot(
+        read,
+        top + CM4F_EXC_RETURN_SLOT,
+        4,
+        endian,
+        stack_low=stack_low,
+        stack_high=stack_high,
+    )
+    if saved_lr is None:
+        return None, "saved-context-unreadable"
+    if saved_lr in EXTENDED_EXC_RETURNS:
+        context = fpu
+    elif saved_lr in BASIC_EXC_RETURNS:
+        context = basic
+    else:
+        return None, "saved-context-exc-return-unproven"
+    return decode_saved_context(
+        context,
+        top,
+        read,
+        endian=endian,
+        stack_low=stack_low,
+        stack_high=stack_high,
+        exit_pc=exit_pc,
+        entry_pc=entry_pc,
+    )
 
 
 def _riscv_context(isa: Isa, word: int) -> SavedStackContext:

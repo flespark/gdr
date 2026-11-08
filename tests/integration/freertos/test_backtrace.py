@@ -56,6 +56,7 @@ def test_saved_task_backtrace_has_a_known_chain(gdb_session):
         == {
             "microbit": "armv6-m",
             "mps2-an385": "armv7-m",
+            "mps2-an386": "armv7e-m",
             "mps2-an521": "armv8-m.mainline",
             "qemu-virt-rv32": "riscv32",
             "qemu-virt-rv64": "riscv64",

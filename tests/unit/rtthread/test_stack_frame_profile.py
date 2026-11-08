@@ -13,16 +13,26 @@ from dataclasses import replace
 
 import pytest
 
+from core.cpus import cpu_of
 from core.unwind_meta import ElfImage
-from rtthread.stack_frame_profile import select_context
+from rtthread.stack_frame_profile import (
+    _armv7em_fpu_verify_context,
+    _armv8m_mainline_fpu_verify_context,
+    select_context,
+)
+from tests.support.loader import cached_elfs, fixture_cache_root
 from tests.unit.core.oracle_support import (
-    FIXTURE_ROOT,
     SectionSpec,
     SymbolSpec,
     attributes_blob,
     build_elf,
-    cached_elfs,
 )
+
+_FPU_VERIFIERS = {
+    "armv7e-m": _armv7em_fpu_verify_context,
+    "armv8-m.mainline": _armv8m_mainline_fpu_verify_context,
+}
+
 
 _SHF_CODE = 0x6
 _SHT_PROGBITS = 1
@@ -199,13 +209,15 @@ def test_missing_port_symbols_are_refused():
 _CACHE_ELFS = tuple(
     path
     for path in cached_elfs()
-    if path.relative_to(FIXTURE_ROOT).parts[0] == "rtthread"
+    if path.relative_to(fixture_cache_root()).parts[0] == "rtthread"
 )
 
 
 @pytest.mark.skipif(not _CACHE_ELFS, reason="no cached RT-Thread firmware ELFs")
 @pytest.mark.parametrize(
-    "path", _CACHE_ELFS, ids=[str(p.relative_to(FIXTURE_ROOT)) for p in _CACHE_ELFS]
+    "path",
+    _CACHE_ELFS,
+    ids=[str(p.relative_to(fixture_cache_root())) for p in _CACHE_ELFS],
 )
 def test_cached_firmware_selects_a_layout_only_with_lwp_evidence(path):
     image = ElfImage.from_path(path)
@@ -218,3 +230,113 @@ def test_cached_firmware_selects_a_layout_only_with_lwp_evidence(path):
         assert result.reason == "unrecognizable-stack-frame-layout"
     else:
         assert result.reason == "ok" and result.context is not None
+
+
+def _vfp_image(cpu_arch: int) -> ElfImage:
+    """Minimal integer-ABI-violating VFP ELF; the gate fires before code checks."""
+    names = {10: "7-M", 13: "7E-M", 17: "8-M"}
+    attributes = attributes_blob(
+        b"aeabi",
+        ((5, names[cpu_arch]), (6, cpu_arch), (7, "M"), (28, 1)),
+    )
+    data = build_elf(
+        is_64=False,
+        endian="little",
+        machine=40,
+        sections=(SectionSpec(".ARM.attributes", 0, attributes, _SHT_ATTRIBUTES, 0),),
+    )
+    image = ElfImage.from_bytes(data)
+    assert image is not None
+    return image
+
+
+@pytest.mark.parametrize("cpu_arch", [10])
+def test_vfp_port_without_lane_is_refused(cpu_arch):
+    selected = select_context(_vfp_image(cpu_arch))
+    assert selected.context is None
+    assert selected.reason == "unsupported-extension-context"
+
+
+def _baseline_image() -> ElfImage:
+    """Minimal soft-ABI Armv8-M Baseline ELF; no lane claims the port."""
+    attributes = attributes_blob(
+        b"aeabi",
+        ((5, "8-M.BASE"), (6, 16), (7, "M")),
+    )
+    data = build_elf(
+        is_64=False,
+        endian="little",
+        machine=40,
+        sections=(SectionSpec(".ARM.attributes", 0, attributes, _SHT_ATTRIBUTES, 0),),
+    )
+    image = ElfImage.from_bytes(data)
+    assert image is not None
+    return image
+
+
+def test_baseline_without_lane_is_refused():
+    selected = select_context(_baseline_image())
+    assert selected.context is None
+    assert selected.reason == "unverified-port"
+
+
+def test_vfp_mainline_selects_the_live_fpu_pair(monkeypatch):
+    monkeypatch.setattr(
+        "rtthread.stack_frame_profile._armv8m_mainline_fpu_verify_context",
+        lambda _elf: True,
+    )
+    selected = select_context(_vfp_image(17))
+    assert selected.reason == "ok"
+    assert selected.context is not None
+    assert selected.context.profile_id == "rtthread/armv8-m.mainline/integer"
+    assert selected.alt_context is not None
+    assert selected.alt_context.profile_id == "rtthread/armv8-m.mainline/fpu"
+    assert selected.alt_context.fpu
+
+
+def test_vfp_armv7em_selects_the_live_fpu_pair(monkeypatch):
+    monkeypatch.setattr(
+        "rtthread.stack_frame_profile._armv7em_fpu_verify_context",
+        lambda _elf: True,
+    )
+    selected = select_context(_vfp_image(13))
+    assert selected.reason == "ok"
+    assert selected.context is not None
+    assert selected.context.profile_id == "rtthread/armv7e-m/integer"
+    assert selected.alt_context is not None
+    assert selected.alt_context.profile_id == "rtthread/armv7e-m/fpu"
+    assert selected.alt_context.fpu
+
+
+def test_vfp_armv7em_without_code_proof_is_refused(monkeypatch):
+    monkeypatch.setattr(
+        "rtthread.stack_frame_profile._armv7em_fpu_verify_context",
+        lambda _elf: False,
+    )
+    selected = select_context(_vfp_image(13))
+    assert selected.context is None
+    assert selected.reason == "unrecognizable-stack-frame-layout"
+
+
+@pytest.mark.skipif(not _CACHE_ELFS, reason="no cached RT-Thread firmware ELFs")
+@pytest.mark.parametrize(
+    "path",
+    _CACHE_ELFS,
+    ids=[str(p.relative_to(fixture_cache_root())) for p in _CACHE_ELFS],
+)
+def test_cached_firmware_fpu_verifier_matches_only_fpu_lanes(path):
+    image = ElfImage.from_path(path)
+    assert image is not None
+    if "fpu" in path.parts:
+        isa = cpu_of(image).isa
+        verifier = _FPU_VERIFIERS.get(isa or "")
+        assert verifier is not None, isa
+        assert verifier(image), isa
+        selected = select_context(image)
+        assert selected.reason == "ok"
+        assert selected.context is not None
+        assert selected.alt_context is not None
+        assert selected.alt_context.fpu
+    else:
+        assert not _armv8m_mainline_fpu_verify_context(image)
+        assert not _armv7em_fpu_verify_context(image)

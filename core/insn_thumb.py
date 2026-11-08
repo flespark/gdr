@@ -88,6 +88,13 @@ def decode_thumb16(address: int, hw: int) -> ThumbInstruction:
         return ThumbInstruction(address, 2, "bx", {"rm": (hw >> 3) & 0xF})
     if hw == 0xBF00:
         return ThumbInstruction(address, 2, "nop", {})
+    if hw & 0xFF00 == 0xBF00 and hw & 0xF != 0 and (hw >> 4) & 0xF != 0xF:
+        return ThumbInstruction(
+            address,
+            2,
+            "it",
+            {"firstcond": (hw >> 4) & 0xF, "mask": hw & 0xF},
+        )
     if hw in (0xB661, 0xB662):
         return ThumbInstruction(
             address, 2, "cpsie", {"flag": "f" if hw == 0xB661 else "i"}
@@ -366,6 +373,16 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
                 "imm": _thumb_expand_imm(immediate),
             },
         )
+    if first & 0xFBF0 == 0xF010 and second & 0x8F00 == 0x0F00:
+        immediate = (
+            (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
+        )
+        return ThumbInstruction(
+            address,
+            4,
+            "tst_imm",
+            {"rn": first & 0xF, "imm": _thumb_expand_imm(immediate)},
+        )
     if first == 0xF04E and second & 0x8000 == 0:
         imm12 = (
             (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
@@ -401,9 +418,31 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
                 "imm": second & 0xFFF,
             },
         )
+    if first & 0xFFF0 == 0xF840 and second & 0x0F00 == 0x0D00:
+        return ThumbInstruction(
+            address,
+            4,
+            "str_pre",
+            {
+                "rn": first & 0xF,
+                "rt": (second >> 12) & 0xF,
+                "imm": -(second & 0xFF),
+            },
+        )
     block = decode_block_transfer(address, first, second)
     if block is not None:
         return block
+    if first & 0xFFB0 in (0xED20, 0xECB0) and second & 0x0F00 == 0x0B00:
+        return ThumbInstruction(
+            address,
+            4,
+            "vstmdb" if first & 0xFFB0 == 0xED20 else "vldmia",
+            {
+                "rn": first & 0xF,
+                "first": (((first >> 6) & 0x1) << 4) | ((second >> 12) & 0xF),
+                "count": (second & 0xFF) // 2,
+            },
+        )
     if first == 0xF3BF and second in (0x8F4F, 0x8F6F):
         return ThumbInstruction(address, 4, "dsb" if second == 0x8F4F else "isb", {})
     mov_encoding = first & 0xFBF0

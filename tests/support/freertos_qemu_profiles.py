@@ -17,6 +17,7 @@ _KNOWN_TARGETS = (
     "mps2-an385",
     "microbit",
     "mps2-an521",
+    "mps2-an386",
     "qemu-virt-rv32",
     "qemu-virt-rv64",
 )
@@ -24,6 +25,7 @@ _MACHINES = {
     "mps2-an385": "mps2-an385",
     "microbit": "microbit",
     "mps2-an521": "mps2-an521",
+    "mps2-an386": "mps2-an386",
     "qemu-virt-rv32": "virt",
     "qemu-virt-rv64": "virt",
 }

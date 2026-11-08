@@ -19,6 +19,10 @@ SECTIONS
         _etext = .;
     } > RAM
 
+    /* Retained with KEEP so --gc-sections does not discard the toolchain's
+     * unwind tables as orphans (see build.sh -funwind-tables). */
+    .eh_frame : { KEEP(*(.eh_frame)) } > RAM
+
     .data : ALIGN(16)
     {
         _sdata = .;

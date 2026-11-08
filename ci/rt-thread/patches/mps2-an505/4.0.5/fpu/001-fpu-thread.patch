@@ -1,0 +1,95 @@
+diff --git a/bsp/gdr-mps2-an505/rtconfig.py b/bsp/gdr-mps2-an505/rtconfig.py
+--- a/bsp/gdr-mps2-an505/rtconfig.py
++++ b/bsp/gdr-mps2-an505/rtconfig.py
+@@ -15,7 +15,7 @@
+ OBJDUMP = PREFIX + "objdump"
+ OBJCPY = PREFIX + "objcopy"
+ TARGET_EXT = "elf"
+-DEVICE = " -mcpu=cortex-m33 -mthumb -mfloat-abi=soft"
++DEVICE = " -mcpu=cortex-m33 -mthumb -mfloat-abi=hard -mfpu=fpv5-sp-d16"
+ CFLAGS = DEVICE + " -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer"
+ CFLAGS += " -ffunction-sections -fdata-sections -fno-common -fno-builtin -Wall"
+ CXXFLAGS = CFLAGS
+diff --git a/bsp/gdr-mps2-an505/main.c b/bsp/gdr-mps2-an505/main.c
+--- a/bsp/gdr-mps2-an505/main.c
++++ b/bsp/gdr-mps2-an505/main.c
+@@ -42,6 +42,7 @@
+ DECLARE_THREAD(worker9);
+ DECLARE_THREAD(worker10);
+ DECLARE_THREAD(worker11);
++DECLARE_THREAD(worker_fpu);
+ DECLARE_THREAD(gdr_unstarted);
+ 
+ static void test_timer_timeout(void *parameter)
+@@ -153,6 +154,21 @@
+     while (1) rt_thread_mdelay(100);
+ }
+ 
++static void worker_fpu_entry(void *parameter)
++{
++    volatile float accumulator = 0.0f;
++    rt_uint32_t iteration;
++    (void)parameter;
++    for (;;)
++    {
++        for (iteration = 1; iteration < 100; iteration++)
++        {
++            accumulator += (float)iteration * 1.5f;
++        }
++        rt_thread_mdelay(100);
++    }
++}
++
+ static void gdr_unstarted_entry(void *parameter)
+ {
+     (void)parameter;
+@@ -210,6 +226,7 @@
+     INIT_THREAD(worker9, 28);
+     INIT_THREAD(worker10, 29);
+     INIT_THREAD(worker11, 30);
++    INIT_THREAD(worker_fpu, 21);
+     INIT_THREAD(gdr_unstarted, 30);
+     START_THREAD(locker);
+     START_THREAD(worker1);
+@@ -223,6 +240,7 @@
+     START_THREAD(worker9);
+     START_THREAD(worker10);
+     START_THREAD(worker11);
++    START_THREAD(worker_fpu);
+     rt_thread_mdelay(20);
+     rt_kprintf("GDR test fixture ready.\n");
+     return 0;
+diff --git a/bsp/gdr-mps2-an505/board.c b/bsp/gdr-mps2-an505/board.c
+--- a/bsp/gdr-mps2-an505/board.c
++++ b/bsp/gdr-mps2-an505/board.c
+@@ -25,6 +25,11 @@
+ 
+ void rt_hw_board_init(void)
+ {
++    /* Enable full access to CP10/CP11 so FP-using threads can execute VFP
++     * instructions and the PendSV path can stack S16-S31; without this the
++     * first VFP instruction UsageFaults. Only the FPU fixture builds with
++     * hardware FP, so the integer lane never touches this register. */
++    REG32(0xE000ED88u) |= 0x00F00000u;
+     REG32(0xE000ED08u) = (rt_uint32_t)g_pfnVectors;
+     REG32(UART_BASE + 0x10) = SYSTEM_CLOCK_HZ / 115200u;
+     REG32(UART_BASE + 8) = 1u;
+diff --git a/libcpu/arm/cortex-m33/context_gcc.S b/libcpu/arm/cortex-m33/context_gcc.S
+--- a/libcpu/arm/cortex-m33/context_gcc.S
++++ b/libcpu/arm/cortex-m33/context_gcc.S
+@@ -143,6 +143,7 @@
+ 
+ #if defined (__VFP_FP__) && !defined(__SOFTFP__)
+     TST     lr, #0x10                               /* if(!EXC_RETURN[4]) */
++    IT      eq                                      /* FPU frame present, save it */
+     VSTMDBEQ  r1!, {d8 - d15}                       /* push FPU register s16~s31 */
+ #endif
+ 
+@@ -187,6 +188,7 @@
+ 
+ #if defined (__VFP_FP__) && !defined(__SOFTFP__)
+     TST     lr, #0x10                               /* if(!EXC_RETURN[4]) */
++    IT      eq                                      /* FPU frame present, restore it */
+     VLDMIAEQ  r1!, {d8 - d15}                       /* pop FPU register s16~s31 */
+ #endif
+ 

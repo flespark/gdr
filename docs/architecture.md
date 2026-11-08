@@ -77,7 +77,8 @@ duplicating what GDB already displays well. Design rationale lives in
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
 | `stackpc.py` | Last PC projection from the selected saved-context profile. |
 | `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic handler-frame transitions use ISA-specific validation and verified port evidence. |
-| `scheduler_switch.py` | Pure compiled Armv7-M (`ARM_CM3`) transition profiles, instruction-relative stage classification and owner-consistent scheduler seeds; GDB-facing collection remains in `backtrace_gdb.py`. |
+| `scheduler_switch.py` | Pure compiled Armv7-M (`ARM_CM3`) transition profiles and instruction-relative stage classification; GDB-facing collection remains in `backtrace_gdb.py`. |
+| `scheduler_seed.py` | Owner-consistent seeds from classified stages under basic/FPU software-block and hardware-frame geometry. |
 | `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled RISC-V save-layout evidence for verified profile selection. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |

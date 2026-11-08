@@ -44,6 +44,10 @@ from core.unwind_arm import (
 )
 from core.unwind_segments import StackSegment
 from rtthread.adapter import value_to_thread
+from rtthread.backtrace import (
+    decode_armv7em_saved_context,
+    decode_armv8m_mainline_saved_context,
+)
 from rtthread.backtrace import decode_saved_context as decode_backtrace_context
 from rtthread.layout import RT_THREAD_STACK_FILL
 from rtthread.navigation import find_thread, get_current_thread
@@ -132,7 +136,7 @@ def _live_seed(arch: str, root_pc: int | None) -> SeedFrame | None:
 def _live_seed_detail(
     arch: str, isa: str, root_pc: int | None
 ) -> tuple[SeedFrame | None, str]:
-    m_profile = isa in ("armv6-m", "armv7-m", "armv8-m.mainline")
+    m_profile = isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
     seed, reason = _core_live_seed_detail(
         arch,
         isa,
@@ -294,7 +298,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             abi=selection.abi,
         )
     current = get_current_thread()
-    if architecture in ("armv6-m", "armv7-m", "armv8-m.mainline"):
+    if architecture in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline"):
         pending = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
         if pending is None or pending != 0:
             return _stop_report(
@@ -375,15 +379,35 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         exit_value = eval_identifier("rt_thread_exit")
         if exit_value is not None:
             exit_pc = value_address(exit_value)
-        seed, reason = decode_backtrace_context(
-            context,
-            thread.sp,
-            read_bytes,
-            endian=arch_or_default()[1],
-            entry=thread.entry or None,
-            stack_low=low,
-            stack_high=high,
-        )
+        if selection.alt_context is not None and architecture in (
+            "armv7e-m",
+            "armv8-m.mainline",
+        ):
+            decode_pair = (
+                decode_armv7em_saved_context
+                if architecture == "armv7e-m"
+                else decode_armv8m_mainline_saved_context
+            )
+            seed, reason = decode_pair(
+                thread.sp,
+                read_bytes,
+                basic=context,
+                fpu=selection.alt_context,
+                endian=arch_or_default()[1],
+                entry=thread.entry or None,
+                stack_low=low,
+                stack_high=high,
+            )
+        else:
+            seed, reason = decode_backtrace_context(
+                context,
+                thread.sp,
+                read_bytes,
+                endian=arch_or_default()[1],
+                entry=thread.entry or None,
+                stack_low=low,
+                stack_high=high,
+            )
         if seed is None:
             return BacktraceReport(
                 task=thread.name or target,

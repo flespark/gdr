@@ -1,16 +1,16 @@
 # Isolated RV64 `.eh_frame` fixture
 
 This fixture isolates `.eh_frame` from RTOS saved-context decoding. Coverage
-and CI placement live in [testing](../../../../docs/testing.md#isolated-eh_frame-variant);
-runtime rules and limitations live in [architecture](../../../../docs/architecture.md)
-and [errata](../../../../docs/errata.md#task-backtraces).
+and CI placement live in [testing](../../../docs/testing.md#isolated-eh_frame-variant);
+runtime rules and limitations live in [architecture](../../../docs/architecture.md)
+and [errata](../../../docs/errata.md#task-backtraces).
 
 ## Tools and build
 
 This is the `freertos/qemu-virt-rv64/11.1.0/eh-frame` cell in the
-[shared integration CLI](../../../README.md). It requires the RISC-V
+[shared integration CLI](../../README.md). It requires the RISC-V
 compiler, `qemu-system-riscv64`, and Python-enabled RV64-capable GDB.
-The shared [container](../../../containers/Dockerfile) pins the compiler.
+The shared [container](../containers/Dockerfile) pins the compiler.
 
 ```bash
 python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 eh-frame

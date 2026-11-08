@@ -5,13 +5,19 @@ from __future__ import annotations
 import pytest
 
 from core.unwind import unwind_chain
+from core.unwind_meta import Endian
 from rtthread.backtrace import (
     ARMV7A_INTEGER,
     ARMV7A_LWP_INTEGER,
+    ARMV7EM_FPU,
+    ARMV7EM_INTEGER,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
     RISCV32_INTEGER,
     RISCV64_INTEGER,
+    decode_armv7em_saved_context,
+    decode_armv8m_mainline_saved_context,
     decode_saved_context,
 )
 from tests.unit.core.test_unwind import _cfi_bytes, _cfi_metadata
@@ -75,7 +81,7 @@ def test_m3_context_has_the_verified_rtthread_layout():
 
 
 def _armv8m_context(
-    memory: _Memory, top: int, *, fill: bool = False, endian: str = "little"
+    memory: _Memory, top: int, *, fill: bool = False, endian: Endian = "little"
 ) -> None:
     """Write the port's 20-word integer frame independently of the profile."""
     words = (
@@ -175,7 +181,7 @@ def test_armv8m_cfi_uses_only_the_stacked_task_lr(lr_readable):
 
 @pytest.mark.parametrize(
     "offset,value",
-    [(0, 1), (4, 0xFFFFFFBC), (4, 0xFFFFFFED), (8, 0x2000), (12, 1), (12, 6)],
+    [(0, 1), (4, 0xFFFFFFBC), (4, 0xFFFFFFED), (8, 0x2000), (12, 1)],
 )
 def test_armv8m_extended_or_cross_security_headers_are_refused_before_frame_reads(
     offset, value
@@ -199,6 +205,23 @@ def test_armv8m_extended_or_cross_security_headers_are_refused_before_frame_read
         stack_high=top + 80,
     ) == (None, "unsupported-extension-context")
     assert all(address + size <= top + 16 for address, size in reads)
+
+
+def test_armv8m_privileged_control_with_fp_active_still_decodes():
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_context(memory, top)
+    memory.word(top + 12, 0xC)
+    seed, reason = decode_saved_context(
+        ARMV8M_MAINLINE_INTEGER,
+        top,
+        memory,
+        endian="little",
+        stack_low=top,
+        stack_high=top + 80,
+    )
+    assert reason == "ok" and seed is not None
+    assert seed.sp == top + 80
 
 
 def test_armv8m_header_requires_readable_bounded_slots():
@@ -342,3 +365,143 @@ def test_armv7m_saved_context_honors_alignment_and_refuses_handler_ipsr():
         None,
         "saved-frame-ipsr-invalid",
     )
+
+
+def _armv8m_mainline_fpu_context(memory: _Memory, top: int) -> None:
+    memory.word(top, 0)
+    memory.word(top + 4, 0xFFFFFFED)
+    memory.word(top + 8, 0)
+    memory.word(top + 12, 0)
+    for index in range(8):
+        memory.word(top + 16 + index * 4, 0x40 + index)
+    for index in range(16):
+        memory.word(top + 48 + index * 4, 0xFFFFFFFF)
+    memory.word(top + 112, 0x123)
+    memory.word(top + 116, 0)
+    memory.word(top + 120, 0)
+    memory.word(top + 124, 0)
+    memory.word(top + 128, 0)
+    memory.word(top + 132, 0x1331)
+    memory.word(top + 136, 0x1235)
+    memory.word(top + 140, 0x01000000)
+
+
+def _armv7em_fpu_context(memory: _Memory, top: int) -> None:
+    memory.word(top, 1)
+    for index in range(8):
+        memory.word(top + 4 + index * 4, 0x40 + index)
+    for index in range(16):
+        memory.word(top + 36 + index * 4, 0x55000000 + index)
+    memory.word(top + 100, 0x123)
+    memory.word(top + 104, 0)
+    memory.word(top + 108, 0)
+    memory.word(top + 112, 0)
+    memory.word(top + 116, 0)
+    memory.word(top + 120, 0x1331)
+    memory.word(top + 124, 0x1235)
+    memory.word(top + 128, 0x01000000)
+
+
+def test_armv7em_fpu_saved_context_decodes_extended_layout():
+    memory = _Memory()
+    top = 0x3000
+    _armv7em_fpu_context(memory, top)
+    seed, reason = decode_armv7em_saved_context(
+        top,
+        memory,
+        basic=ARMV7EM_INTEGER,
+        fpu=ARMV7EM_FPU,
+        endian="little",
+        entry=0x1234,
+        stack_low=0x2000,
+        stack_high=0x4000,
+    )
+    assert reason == "ok" and seed is not None
+    assert seed.pc == 0x1234
+    assert seed.sp == top + 204
+    assert seed.source == "saved"
+    assert seed.regs[14] == 0x1331
+    assert seed.regs[0] == 0x123
+
+
+def test_armv7em_basic_flag_selects_the_68_byte_layout():
+    memory = _Memory()
+    top = 0x3000
+    memory.word(top, 0)
+    for index in range(8):
+        memory.word(top + 4 + index * 4, 0x40 + index)
+    memory.word(top + 36, 0x123)
+    memory.word(top + 40, 0)
+    memory.word(top + 44, 0)
+    memory.word(top + 48, 0)
+    memory.word(top + 52, 0)
+    memory.word(top + 56, 0x1331)
+    memory.word(top + 60, 0x1234)
+    memory.word(top + 64, 0x01000000)
+    seed, reason = decode_armv7em_saved_context(
+        top,
+        memory,
+        basic=ARMV7EM_INTEGER,
+        fpu=ARMV7EM_FPU,
+        endian="little",
+        entry=0x1234,
+        stack_low=0x2000,
+        stack_high=0x4000,
+    )
+    assert reason == "ok" and seed is not None
+    assert seed.sp == top + 68
+    assert seed.source == "saved"
+
+
+def test_armv7em_foreign_flag_is_refused():
+    memory = _Memory()
+    top = 0x3000
+    _armv7em_fpu_context(memory, top)
+    memory.word(top, 2)
+    assert decode_armv7em_saved_context(
+        top,
+        memory,
+        basic=ARMV7EM_INTEGER,
+        fpu=ARMV7EM_FPU,
+        endian="little",
+        stack_low=0x2000,
+        stack_high=0x4000,
+    ) == (None, "unsupported-extension-context")
+
+
+def test_armv8m_mainline_fpu_saved_context_decodes_extended_layout():
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_mainline_fpu_context(memory, top)
+    seed, reason = decode_armv8m_mainline_saved_context(
+        top,
+        memory,
+        basic=ARMV8M_MAINLINE_INTEGER,
+        fpu=ARMV8M_MAINLINE_FPU,
+        endian="little",
+        entry=0x1234,
+        stack_low=0x2000,
+        stack_high=0x4000,
+    )
+    assert reason == "ok" and seed is not None
+    assert seed.pc == 0x1234
+    assert seed.sp == top + 216
+    assert seed.source == "saved"
+    assert seed.regs[14] == 0x1331
+    assert seed.regs[0] == 0x123
+
+
+def test_armv8m_mainline_secure_or_foreign_header_is_refused():
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_mainline_fpu_context(memory, top)
+    memory.word(top + 4, 0xFFFFFFBC)
+    assert decode_armv8m_mainline_saved_context(
+        top,
+        memory,
+        basic=ARMV8M_MAINLINE_INTEGER,
+        fpu=ARMV8M_MAINLINE_FPU,
+        endian="little",
+        stack_low=0x2000,
+        stack_high=0x4000,
+    ) == (None, "unsupported-extension-context")

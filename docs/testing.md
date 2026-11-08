@@ -96,6 +96,7 @@ answers.
 | `mps2-an385` | RT-Thread | `qemu-system-arm -M mps2-an385 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv7-M (Cortex-M3) |
 | `microbit` | RT-Thread | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv6-M (Cortex-M0) |
 | `mps2-an505` | RT-Thread | `qemu-system-arm -M mps2-an505 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv8-M Mainline (single Cortex-M33) |
+| `mps2-an386` | RT-Thread | `qemu-system-arm -M mps2-an386 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv7E-M (single Cortex-M4 with FPU) |
 | `rv32` | RT-Thread | `qemu-system-riscv32 -M virt -cpu rv32 -m 256M -bios rtthread.bin` | `rtthread.elf` | 32-bit RISC-V (`riscv:rv32`) |
 | `mps2-an385` | FreeRTOS | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv7-M (Cortex-M3) |
 | `mps2-an521` | FreeRTOS | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv8-M Mainline (dual Cortex-M33, SSE-200) |
@@ -295,7 +296,14 @@ Undefined return columns remain partial endpoints. Explicit non-PC-relative
 pointer bases and indirect reads have synthetic unit coverage only.
 Signal-CIE coverage does not verify hardware exception decoding or
 cross-stack unwinding. Build details live in
-[the fixture README](../ci/freertos/fixture/eh-frame/README.md).
+[the fixture README](../ci/bare/eh-frame/README.md).
+
+The fixture is RTOS-independent on purpose: it tests the shared `core`
+CFI decoder, so one lane covers both adapters. The regular RV lanes
+(`qemu-virt-rv32/base`, `qemu-virt-rv64/rv64`) carry toolchain-generated
+`.eh_frame` themselves (`-funwind-tables` plus a linker `KEEP` so
+`--gc-sections` does not discard it); the isolated fixture exists for the
+adversarial encodings normal compiler output never emits.
 
 The cell belongs to `freertos-ports` in the shared matrix, including CNB and
 GitHub RTOS verification. Additional exception modes and scheduler

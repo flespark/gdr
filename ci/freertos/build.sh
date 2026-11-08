@@ -172,12 +172,12 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
-    if [[ "$TARGET" != "qemu-virt-rv64" && "$TARGET" != "qemu-virt-rv32" ]]; then
-        # The M3/M33/M0 lanes carry real EHABI tables so the fallback and
-        # compact personalities are exercised against compiler output, not
-        # only synthetic unit vectors.
-        cflags+=(-funwind-tables)
-    fi
+    # The M3/M33/M0 lanes carry real EHABI tables so the fallback and
+    # compact personalities are exercised against compiler output, not
+    # only synthetic unit vectors. RISC-V lanes keep theirs as well: their
+    # board linker scripts retain `.eh_frame` with KEEP so --gc-sections
+    # does not discard it as an orphan.
+    cflags+=(-funwind-tables)
     local -a link_flags=(-Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num)
     if [[ "$TARGET" == "mps2-an385" && "$VERSION" == "11.1.0" && "$VARIANT" == "full" ]]; then
         # NOTE: merged entries hide function-start evidence from the EHABI
@@ -229,7 +229,7 @@ compile_fixture() {
     if [[ -n "$heap" ]]; then
         sources+=("$heap")
     fi
-    if [[ ( "$TARGET" == "mps2-an385" || "$TARGET" == "microbit" ) && "$VARIANT" == "full" ]]; then
+    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit") && "$VARIANT" == "full" ]]; then
         sources+=("$board_dir/irq.c")
     fi
     if [[ "$TARGET" == "mps2-an385" && "$VARIANT" == "sched" ]]; then

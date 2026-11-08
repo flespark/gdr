@@ -124,7 +124,12 @@ evidence (plus the wrapper version for MPU); absent required macros stop at
 `port-configuration-unavailable`. Arm selection uses attributes, port symbols
 and configuration rather than compiled save/restore instruction matching.
 Backtrace JSON reports canonical ISA in `architecture` and ELF ABI in `abi`;
-profile identity remains internal. RISC-V profiles require a bounded match of
+profile identity remains internal. FreeRTOS ARM_CM4F basic and FPU saved-context
+layouts are selected per task by the exact saved EXC_RETURN; the `backtrace`
+orchestration dispatches through the same slot proof, and the AN386/11.3.1/fpu
+lane verifies the pair live (204-byte FPU image, `0x68`-byte hardware frame).
+Live VFP-ABI images without the CM4F port evidence stop at
+`unsupported-extension-context` during selection. RISC-V profiles require a bounded match of
 the compiled integer save/restore and initial-stack code; this does not prove
 vendor-private traps.
 RT-Thread integer backtraces are verified on RV32 (`rv32/4.0.5`), RV64, Armv6-M
@@ -137,6 +142,17 @@ the 80-byte single-Secure-state integer frame: saved `tz=0`, `EXC_RETURN=0xFFFFF
 The current seed requires readable CONTROL/PSPLIM and a zero TrustZone context.
 Non-secure/cross-security returns, nonzero stack limits, FPU and unprivileged
 contexts remain refused; this lane does not establish Armv8-M handler unwinding.
+The `mps2-an505/4.0.5/fpu` lane adds compiled FPU save/restore evidence
+(`tst`/`it`/`vstmdb`/`vldmia` around the core block) and verifies the live
+216-byte FPU image alongside the basic pair; other VFP-ABI images stop at
+`unrecognizable-stack-frame-layout` during selection. The `mps2-an386/4.0.5/fpu`
+lane adds compiled M4F save/restore evidence (`tst`/`it`/`vstmdb` around the
+core block, per-thread flag slot, FPCA fixup) and verifies the live 204-byte
+FPU image alongside the 68-byte basic pair; other VFP-ABI images stop at
+`unrecognizable-stack-frame-layout` during selection. Armv8-M Baseline images
+are identified by `Tag_CPU_arch` but select no profile (`unverified-port`):
+no QEMU machine or CPU model covers Cortex-M23, so no live lane can exist
+and handler/task support stays refused by construction.
 RV32 covers the upstream common integer port, not vendor traps or ISR cross-stack unwinding.
 
 **EHABI entries require a matching ELF function symbol.** Without
@@ -203,8 +219,12 @@ conflicting evidence fails closed. Cortex-M0+ CPUs, relocated vector tables and
 unproven Armv6-M vector configurations have no live acceptance. Capacity upper bound 47 does not
 establish a live handler for every IRQ; only exception numbers 24/25 have
 fixture coverage. NMI and SysTick (plus Armv7-M DebugMonitor) stop as
-`exception-number-unverified`; synchronous faults, Armv8-M Mainline, FPU/lazy frames,
-TrustZone and SMP handler contexts remain gated. Other saved-context lanes
+`exception-number-unverified`; synchronous faults, Armv8-M Mainline,
+TrustZone and SMP handler contexts remain gated. Armv7-M non-secure FPU
+extended frames (`0xFFFFFFE1/E9/ED`) decode the `0x68`-byte frame when FPCCR
+is readable, including lazy `LSPACT=1` (only integer registers are consumed),
+and stop at `exception-fp-state-unavailable` otherwise; Armv6-M has no FPU
+and still refuses extended encodings. Other saved-context lanes
 do not establish handler-mode support. Armv6-M SVC/PendSV remain
 `scheduler-transition-unproven`; Armv7-M (`ARM_CM3`) uses the separate scheduler rules below.
 
@@ -225,9 +245,12 @@ registers, exit sentinel and exact sized ELF function-entry evidence. Its
 software-prebuilt frame requires ALIGN=0, no padding and a 4-byte-aligned
 base; CCR.STKALIGN does not describe its construction, though the live path
 still requires readable CCR. Before SVC executes there is no running-task
-seed. PendSV selection of a never-started task remains refused. Other
-versions/ports, unmatched profiles, extended contexts, SMP and unproven
-scheduling windows are not established by this support.
+seed. PendSV selection of a never-started task remains refused. Scheduler FPU
+geometry (S16–S31 software block, `0x68`-byte hardware frame, per-seed
+FPU-context consistency) is verified on the live FPU lanes: a basic profile
+never decodes an extended frame and vice versa, and inconsistent or unproven
+windows still stop at `scheduler-fpu-context-unproven`. Other
+versions/ports, unmatched profiles, and SMP remain unestablished.
 
 **SMP tasks on another core have no saved context.** A task currently running
 on a core other than the selected one reports `smp-no-context`; GDR never

@@ -37,6 +37,39 @@ def _arm_integer(
     )
 
 
+def _armv7em(*, validation: ValidationLevel = "synthetic") -> SavedStackContext:
+    return SavedStackContext(
+        profile_id="rtthread/armv7e-m/integer",
+        pointer_size=4,
+        registers=tuple((register, 4 + (register - 4) * 4) for register in range(4, 12))
+        + ((0, 36), (1, 40), (2, 44), (3, 48), (12, 52)),
+        pc_offset=60,
+        lr_offset=56,
+        status_offset=64,
+        sp_offset=68,
+        context_span=(0, 68),
+        fill_word=0xDEADBEEF,
+        validation=validation,
+    )
+
+
+def _armv7em_fpu(*, validation: ValidationLevel = "synthetic") -> SavedStackContext:
+    return SavedStackContext(
+        profile_id="rtthread/armv7e-m/fpu",
+        pointer_size=4,
+        registers=tuple((register, 4 + (register - 4) * 4) for register in range(4, 12))
+        + ((0, 100), (1, 104), (2, 108), (3, 112), (12, 116)),
+        pc_offset=124,
+        lr_offset=120,
+        status_offset=128,
+        sp_offset=204,
+        context_span=(0, 204),
+        fill_word=0xDEADBEEF,
+        validation=validation,
+        fpu=True,
+    )
+
+
 def _armv8m_mainline(*, validation: ValidationLevel = "synthetic") -> SavedStackContext:
     return SavedStackContext(
         profile_id="rtthread/armv8-m.mainline/integer",
@@ -52,6 +85,25 @@ def _armv8m_mainline(*, validation: ValidationLevel = "synthetic") -> SavedStack
         context_span=(0, 80),
         fill_word=0xDEADBEEF,
         validation=validation,
+    )
+
+
+def _armv8m_mainline_fpu(*, validation: ValidationLevel = "live") -> SavedStackContext:
+    return SavedStackContext(
+        profile_id="rtthread/armv8-m.mainline/fpu",
+        pointer_size=4,
+        registers=tuple(
+            (register, 16 + (register - 4) * 4) for register in range(4, 12)
+        )
+        + ((0, 112), (1, 116), (2, 120), (3, 124), (12, 128)),
+        pc_offset=136,
+        lr_offset=132,
+        status_offset=140,
+        sp_offset=216,
+        context_span=(0, 216),
+        fill_word=0xDEADBEEF,
+        validation=validation,
+        fpu=True,
     )
 
 
@@ -93,11 +145,110 @@ def _riscv(isa: Isa, word: int, *, validation: ValidationLevel) -> SavedStackCon
 
 ARMV6M_INTEGER = _arm_integer("armv6-m", validation="live")
 ARMV7M_INTEGER = _arm_integer("armv7-m", validation="live")
+ARMV7EM_INTEGER = _armv7em(validation="live")
+ARMV7EM_FPU = _armv7em_fpu(validation="live")
 ARMV8M_MAINLINE_INTEGER = _armv8m_mainline(validation="live")
+ARMV8M_MAINLINE_FPU = _armv8m_mainline_fpu()
 ARMV7A_INTEGER = _armv7a(lwp=False)
 ARMV7A_LWP_INTEGER = _armv7a(lwp=True)
 RISCV32_INTEGER = _riscv("riscv32", 4, validation="live")
 RISCV64_INTEGER = _riscv("riscv64", 8, validation="live")
+
+
+ARMV7EM_EXC_RETURN_SLOT = 0
+
+ARMV8M_MAINLINE_EXC_RETURN_SLOT = 4
+
+ARMV8M_MAINLINE_BASIC_EXC_RETURN = 0xFFFFFFFD
+
+ARMV8M_MAINLINE_EXTENDED_EXC_RETURN = 0xFFFFFFED
+
+
+def decode_armv7em_saved_context(
+    top: int,
+    read: Reader,
+    *,
+    basic: SavedStackContext,
+    fpu: SavedStackContext,
+    endian: Endian,
+    entry: int | None = None,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+) -> tuple[SeedFrame | None, str]:
+    """Decode one Armv7E-M task by its saved flag.
+
+    The flag carries whether the port stacked S16-S31: only the exact flag
+    values select a profile.  Anything else refuses before further reads.
+    """
+    flag = read_slot(
+        read,
+        top + ARMV7EM_EXC_RETURN_SLOT,
+        4,
+        endian,
+        stack_low=stack_low,
+        stack_high=stack_high,
+    )
+    if flag is None:
+        return None, "saved-context-unreadable"
+    if flag == 1:
+        context = fpu
+    elif flag == 0:
+        context = basic
+    else:
+        return None, "unsupported-extension-context"
+    return decode_saved_context(
+        context,
+        top,
+        read,
+        endian=endian,
+        entry=entry,
+        stack_low=stack_low,
+        stack_high=stack_high,
+    )
+
+
+def decode_armv8m_mainline_saved_context(
+    top: int,
+    read: Reader,
+    *,
+    basic: SavedStackContext,
+    fpu: SavedStackContext,
+    endian: Endian,
+    entry: int | None = None,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+) -> tuple[SeedFrame | None, str]:
+    """Decode one non-secure Armv8-M Mainline task by its saved EXC_RETURN.
+
+    The header carries tz, EXC_RETURN, PSPLIM and CONTROL at fixed slots in
+    both layouts; only the exact non-secure basic or extended return selects
+    a profile.  Anything else refuses before further reads.
+    """
+    header = tuple(
+        read_slot(
+            read, top + offset, 4, endian, stack_low=stack_low, stack_high=stack_high
+        )
+        for offset in range(0, 16, 4)
+    )
+    if None in header:
+        return None, "saved-context-unreadable"
+    if header[0] != 0 or header[2] != 0 or header[3] is None or header[3] & 1:
+        return None, "unsupported-extension-context"
+    if header[1] == ARMV8M_MAINLINE_EXTENDED_EXC_RETURN:
+        context = fpu
+    elif header[1] == ARMV8M_MAINLINE_BASIC_EXC_RETURN:
+        context = basic
+    else:
+        return None, "unsupported-extension-context"
+    return decode_saved_context(
+        context,
+        top,
+        read,
+        endian=endian,
+        entry=entry,
+        stack_low=stack_low,
+        stack_high=stack_high,
+    )
 
 
 def decode_saved_context(
@@ -116,7 +267,22 @@ def decode_saved_context(
     with the port's initial fill pattern proves an unstarted thread; a running
     frame with the same entry remains ``saved`` unless the fill is present.
     """
-    if context.profile_id == ARMV8M_MAINLINE_INTEGER.profile_id:
+    if context.profile_id in (
+        ARMV7EM_INTEGER.profile_id,
+        ARMV7EM_FPU.profile_id,
+    ):
+        flag = read_slot(
+            read, sp, 4, endian, stack_low=stack_low, stack_high=stack_high
+        )
+        if flag is None:
+            return None, "saved-context-unreadable"
+        want = 1 if context.profile_id == ARMV7EM_FPU.profile_id else 0
+        if flag != want:
+            return None, "unsupported-extension-context"
+    if context.profile_id in (
+        ARMV8M_MAINLINE_INTEGER.profile_id,
+        ARMV8M_MAINLINE_FPU.profile_id,
+    ):
         header = tuple(
             read_slot(
                 read, sp + offset, 4, endian, stack_low=stack_low, stack_high=stack_high
@@ -125,9 +291,14 @@ def decode_saved_context(
         )
         if None in header:
             return None, "saved-context-unreadable"
-        if header[0] != 0 or header[1] != 0xFFFFFFFD or header[2] != 0:
+        if header[0] != 0 or header[2] != 0 or header[3] is None or header[3] & 1:
             return None, "unsupported-extension-context"
-        if header[3] not in (0, 2):
+        want = (
+            ARMV8M_MAINLINE_EXTENDED_EXC_RETURN
+            if context.profile_id == ARMV8M_MAINLINE_FPU.profile_id
+            else ARMV8M_MAINLINE_BASIC_EXC_RETURN
+        )
+        if header[1] != want:
             return None, "unsupported-extension-context"
     decoded, reason = decode_profile_slots(
         context,
@@ -139,7 +310,10 @@ def decode_saved_context(
     )
     if decoded is None:
         return None, reason
-    if context.status_kind == "cpsr" and decoded.status & 0x1F not in (0x13, 0x1F):
+    status = decoded.status
+    if context.status_kind == "cpsr" and (
+        status is None or status & 0x1F not in (0x13, 0x1F)
+    ):
         return None, "unsupported-privilege-context"
     registers = decoded.registers
     code_pc = decoded.code_pc

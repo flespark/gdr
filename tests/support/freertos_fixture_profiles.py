@@ -28,6 +28,7 @@ _SUPPORTED_VARIANTS = (
     "pend-callback",
     "streams",
     "mpu",
+    "fpu",
     "rv64",
     "smp",
     "snapshot",
@@ -38,6 +39,7 @@ _SUPPORTED_BOARDS = (
     "mps2-an385",
     "microbit",
     "mps2-an521",
+    "mps2-an386",
     "qemu-virt-rv32",
     "qemu-virt-rv64",
 )
@@ -142,7 +144,7 @@ def get_freertos_test_profile(
         mini_list_item=True if v10_5 or (major, minor, patch) >= (10, 3, 0) else None,
         high_water_source=(
             "pxEndOfStack"
-            if variant in {"full", "sched", "smp", "mpu", "rv64"}
+            if variant in {"full", "sched", "smp", "mpu", "fpu", "rv64"}
             or target == "qemu-virt-rv32"
             else "scan"
         ),

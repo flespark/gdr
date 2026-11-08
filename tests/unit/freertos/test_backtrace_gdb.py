@@ -3,6 +3,7 @@
 import struct
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -19,11 +20,18 @@ from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask
 from freertos.backtrace import (
     ARMV6M_INTEGER,
+    ARMV7M_CM4F_BASIC,
+    ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
 )
 from freertos.layout import FreeRtosConfig, build_layout
+
+
+def _elf(symbols=lambda _name: 0x1000):
+    """Untyped ELF double; selection tests stub ``cpu_of`` above it."""
+    return cast(Any, SimpleNamespace(symbol_address=symbols))
 
 
 def _session(monkeypatch, *, isa="armv7-m", smp=False, mpu=False):
@@ -415,7 +423,7 @@ def test_m33_profile_requires_explicit_smp_or_mpu_configuration(monkeypatch):
         "cpu_of",
         lambda _elf: Cpu("armv8-m.mainline", "arm", "ok"),
     )
-    elf = SimpleNamespace(symbol_address=lambda _name: 0x1000)
+    elf = _elf()
 
     single_core = ports.select_context(elf)
     macros = {"configENABLE_FPU": "0", "configENABLE_TRUSTZONE": "0"}
@@ -459,7 +467,7 @@ def test_m33_missing_required_configuration_never_selects_a_profile(
     }
     del macros[missing]
     selected = ports.select_context(
-        SimpleNamespace(symbol_address=lambda _name: 0x1000),
+        _elf(),
         smp=not mpu,
         mpu=mpu,
         macros=macros,
@@ -473,7 +481,6 @@ def test_m33_missing_required_configuration_never_selects_a_profile(
 @pytest.mark.parametrize(
     "name,value,reason",
     [
-        ("configENABLE_FPU", "1", "unsupported-extension-context"),
         ("configENABLE_MVE", "1", "unsupported-extension-context"),
         ("configENABLE_TRUSTZONE", "1", "port-configuration-unavailable"),
         ("configENABLE_MPU", "1", "port-configuration-conflict"),
@@ -491,9 +498,7 @@ def test_m33_conflicting_configuration_remains_rejected(
         "configENABLE_MPU": "0",
         name: value,
     }
-    selected = ports.select_context(
-        SimpleNamespace(symbol_address=lambda _name: 0x1000), smp=True, macros=macros
-    )
+    selected = ports.select_context(_elf(), smp=True, macros=macros)
     assert selected.context is None and selected.reason == reason
 
 
@@ -503,7 +508,7 @@ def test_nonlive_profiles_are_rejected_before_port_evidence(monkeypatch, validat
     monkeypatch.setattr(
         ports, "ARMV7M_INTEGER", replace(ARMV7M_INTEGER, validation=validation)
     )
-    elf = SimpleNamespace(symbol_address=lambda _name: pytest.fail("nonlive port read"))
+    elf = _elf(lambda _name: pytest.fail("nonlive port read"))
     result = ports.select_context(elf)
     assert result.context is None and result.reason == "unverified-port"
 
@@ -514,7 +519,7 @@ def test_arm_profile_requires_each_port_symbol(monkeypatch, missing):
         ports, "cpu_of", lambda _elf: Cpu("armv7-m", "arm", "ok", "aapcs32")
     )
     selected = ports.select_context(
-        SimpleNamespace(symbol_address=lambda name: None if name == missing else 0x1000)
+        _elf(lambda name: None if name == missing else 0x1000)
     )
     assert (
         selected.context is None
@@ -523,12 +528,147 @@ def test_arm_profile_requires_each_port_symbol(monkeypatch, missing):
     assert selected.isa == "armv7-m" and selected.abi == "aapcs32"
 
 
+def test_baseline_without_lane_is_refused(monkeypatch):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu("armv8-m.baseline", "arm", "ok")
+    )
+    selected = ports.select_context(_elf(), macros={})
+    assert selected.context is None
+    assert selected.reason == "unverified-port"
+
+
 def test_arm_evidence_does_not_claim_compiled_riscv_proof(monkeypatch):
     monkeypatch.setattr(ports, "cpu_of", lambda _elf: Cpu("armv7-m", "arm", "ok"))
-    selected = ports.select_context(
-        SimpleNamespace(symbol_address=lambda _name: 0x1000)
-    )
+    selected = ports.select_context(_elf())
     assert selected.evidence == (".ARM.attributes Tag_CPU_arch/profile", "port symbols")
+
+
+@pytest.mark.parametrize("isa", ["armv7-m", "armv7e-m"])
+def test_cm4f_fpu_port_selects_the_live_pair(monkeypatch, isa):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu(isa, "arm", "ok", abi="aapcs32-vfp")
+    )
+    selected = ports.select_context(
+        _elf(lambda name: 0x1000 if name == "vPortEnableVFP" else None),
+        macros={},
+    )
+    assert selected.reason == "ok"
+    assert selected.context is not None and selected.context.profile_id.endswith(
+        "/basic"
+    )
+    assert selected.alt_context is not None and selected.alt_context.fpu
+    assert selected.evidence == ("aapcs32-vfp ABI", "port symbols")
+
+
+@pytest.mark.parametrize("isa", ["armv7-m", "armv7e-m"])
+def test_soft_abi_with_fpu_macro_does_not_select_cm4f(monkeypatch, isa):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu(isa, "arm", "ok", abi="aapcs32")
+    )
+    selected = ports.select_context(_elf(), macros={"configENABLE_FPU": "1"})
+    assert selected.alt_context is None
+    assert selected.context is None or "cm4f" not in selected.context.profile_id
+
+
+def test_cm4f_on_mainline_selects_the_live_pair(monkeypatch):
+    monkeypatch.setattr(
+        ports,
+        "cpu_of",
+        lambda _elf: Cpu("armv8-m.mainline", "arm", "ok", abi="aapcs32-vfp"),
+    )
+    selected = ports.select_context(
+        _elf(lambda name: 0x1000 if name == "xPortSysTickHandler" else None),
+        macros={},
+    )
+    assert selected.reason == "ok"
+    assert selected.context is not None and selected.alt_context is not None
+
+
+def test_mainline_vfp_without_cm4f_port_symbol_is_refused(monkeypatch):
+    monkeypatch.setattr(
+        ports,
+        "cpu_of",
+        lambda _elf: Cpu("armv8-m.mainline", "arm", "ok", abi="aapcs32-vfp"),
+    )
+    selected = ports.select_context(_elf(lambda _name: None), macros={})
+    assert selected.context is None
+    assert selected.reason == "unsupported-extension-context"
+
+
+def _cm4f_live_selection():
+    basic = replace(ARMV7M_CM4F_BASIC, validation="live")
+    fpu = replace(ARMV7M_CM4F_FPU, validation="live")
+    return StackContextSelection(
+        "armv7-m", "arm", basic, "ok", ("test",), "aapcs32", fpu
+    )
+
+
+def _cm4f_saved_report(monkeypatch, *, fpu_frame: bool):
+    adapter, task = _session(monkeypatch)
+    adapter._context_selection = lambda: _cm4f_live_selection()
+    top = task.top_of_stack
+    memory = _WordMemory()
+    for index in range(8):
+        memory[top + index * 4] = 0x40 + index
+    memory[top + 32] = 0xFFFFFFED if fpu_frame else 0xFFFFFFFD
+    base = top + (100 if fpu_frame else 36)
+    if fpu_frame:
+        for index in range(16):
+            memory[top + 36 + index * 4] = 0x55000000 + index
+    memory[base] = 0
+    memory[base + 4] = 0x2000
+    memory[base + 8] = 0x100
+    memory[base + 12] = 0x200
+    memory[base + 16] = 0x300
+    memory[base + 20] = 0x1200
+    memory[base + 24] = 0x1000
+    memory[base + 28] = 0x01000000
+    monkeypatch.setattr(bridge, "read_bytes", memory.read)
+    monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [])
+    seeds = []
+
+    def unwind(seed, _metadata, **_kwargs):
+        seeds.append(seed)
+        return UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "max-depth",
+            False,
+            False,
+            seed.source,
+            "seed",
+        )
+
+    monkeypatch.setattr(bridge, "unwind_chain", unwind)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    return bridge.backtrace(adapter, "worker"), seeds
+
+
+@pytest.mark.parametrize("fpu_frame,sp_offset", [(False, 68), (True, 204)])
+def test_cm4f_wiring_dispatches_saved_tasks_by_exc_return_slot(
+    monkeypatch, fpu_frame, sp_offset
+):
+    report, seeds = _cm4f_saved_report(monkeypatch, fpu_frame=fpu_frame)
+    assert len(seeds) == 1
+    assert seeds[0].sp == 0x2080 + sp_offset
+    assert seeds[0].source == "saved"
+    assert [frame.pc for frame in report.frames] == [0x1000]
+    assert report.stop_reason == "max-depth" and not report.complete
+
+
+def test_cm4f_wiring_refuses_foreign_exc_return_slot(monkeypatch):
+    adapter, task = _session(monkeypatch)
+    adapter._context_selection = lambda: _cm4f_live_selection()
+    memory = _WordMemory()
+    memory[task.top_of_stack + 32] = 0x12345678
+    monkeypatch.setattr(bridge, "read_bytes", memory.read)
+    monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [])
+    monkeypatch.setattr(
+        bridge, "unwind_chain", lambda *_args, **_kwargs: pytest.fail("unsafe unwind")
+    )
+    report = bridge.backtrace(adapter, "worker")
+    assert report.stop_reason == "saved-context-exc-return-unproven"
+    assert report.frames == [] and not report.complete
 
 
 def test_mpu_wrapper_conflict_is_not_a_valid_context(monkeypatch):
@@ -541,9 +681,7 @@ def test_mpu_wrapper_conflict_is_not_a_valid_context(monkeypatch):
         "configENABLE_MPU": "1",
         "configUSE_MPU_WRAPPERS_V1": "1",
     }
-    selected = ports.select_context(
-        SimpleNamespace(symbol_address=lambda _name: 0x1000), mpu=True, macros=macros
-    )
+    selected = ports.select_context(_elf(), mpu=True, macros=macros)
     assert selected.context is None and selected.reason == "port-configuration-conflict"
 
 
@@ -672,11 +810,10 @@ def test_irq_bounds_agnostic_tiers_resolve_cmsis_sections_and_vector_msp(monkeyp
 
     # Tier 3: Dedicated ELF stack section (.stack) when only _estack is exported.
     symbols = {"_estack": 0x20020000}
-    elf = SimpleNamespace(
-        symbol_address=lambda _name: None,
-        section_bounds=lambda name: (
-            (0x2001E000, 0x20020000) if name == ".stack" else None
-        ),
+    elf = _elf(None)
+    elf.symbol_address = lambda _name: None
+    elf.section_bounds = lambda name: (
+        (0x2001E000, 0x20020000) if name == ".stack" else None
     )
     assert bridge._irq_stack_bounds(elf=elf) == (0x2001E000, 0x20020000)
 

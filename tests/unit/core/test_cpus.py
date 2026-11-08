@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from core.cpus import cpu_of, file_attributes
@@ -11,7 +13,7 @@ from tests.unit.core.test_unwind import _elf
 
 
 def test_saved_context_validates_width_registers_and_tcb_sp_proof():
-    base = dict(
+    base: dict[str, Any] = dict(
         profile_id="test/armv7-m",
         pointer_size=4,
         registers=((4, 0),),
@@ -24,13 +26,13 @@ def test_saved_context_validates_width_registers_and_tcb_sp_proof():
     )
     assert SavedStackContext(**base).profile_id == "test/armv7-m"
     with pytest.raises(ValueError, match="invalid saved-context profile"):
-        SavedStackContext(**(base | {"pointer_size": 3}))
+        SavedStackContext(**cast(Any, base | {"pointer_size": 3}))
     with pytest.raises(ValueError, match="duplicate"):
-        SavedStackContext(**(base | {"registers": ((4, 0), (4, 4))}))
+        SavedStackContext(**cast(Any, base | {"registers": ((4, 0), (4, 4))}))
     with pytest.raises(ValueError, match="TCB context"):
-        SavedStackContext(**(base | {"context_in_tcb": True}))
+        SavedStackContext(**cast(Any, base | {"context_in_tcb": True}))
     with pytest.raises(ValueError, match="unaligned"):
-        SavedStackContext(**(base | {"pc_offset": 2}))
+        SavedStackContext(**cast(Any, base | {"pc_offset": 2}))
 
 
 def _attributes(vendor: bytes, attrs: list[tuple[int, int | str]]) -> bytes:
@@ -166,6 +168,24 @@ def test_arm_attributes_missing_arch_profile_or_extensions_do_not_guess(tag, val
         "unsupported-cpu",
         "unsupported-extension-context",
     }
+
+
+@pytest.mark.parametrize("fp_arch", [1, 5, 8])
+def test_arm_vfp_arch_variants_keep_the_vfp_abi(fp_arch):
+    blob = _attributes(
+        b"aeabi", [(5, "cortex-m33"), (6, 17), (7, "M"), (10, fp_arch), (28, 1)]
+    )
+    result = cpu_of(_image(40, False, blob))
+    assert result.reason == "ok" and result.isa == "armv8-m.mainline"
+    assert result.abi == "aapcs32-vfp"
+
+
+def test_arm_unknown_fp_arch_stays_unsupported():
+    blob = _attributes(
+        b"aeabi", [(5, "cortex-m33"), (6, 17), (7, "M"), (10, 9), (28, 1)]
+    )
+    result = cpu_of(_image(40, False, blob))
+    assert result.reason == "unsupported-extension-context"
 
 
 def test_attribute_parser_rejects_unknown_tags_when_they_conflict():

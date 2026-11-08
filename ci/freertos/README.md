@@ -9,7 +9,7 @@ are described in [testing](../../docs/testing.md).
 | --- | --- | --- |
 | Live kernel-direct | `build.sh` | Clean `FreeRTOS-Kernel` tag, shared application, board and config headers. |
 | File-only `snapshot` | `build.sh` | Kernel headers and `fixture/config/snapshot/` data-only sources. |
-| Isolated `eh-frame` | `fixture/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
+| Isolated `eh-frame` | `../bare/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
 | M0/M3 IRQ full fixtures | `build.sh` | Board-specific `irq.c` under `microbit/` or `mps2-an385/`, full config and linker-reserved MSP stack; other boards/variants omit the IRQ task. |
 | AN385 scheduler fixture | `build.sh` | `fixture/board/mps2-an385/sched.c`, `config/sched/` and the linker-reserved MSP stack; excludes the full fixture's IRQ task. |
 
@@ -111,6 +111,22 @@ PC is read.
 fixture returns a fixed non-zero canary (0xBEEF) so tests can XOR heap link
 fields back and prove the obfuscation is really active - a zero canary would
 silently degrade to the unprotected layout.
+
+### CM4F FPU (`mps2-an386`, variant `fpu`)
+
+```bash
+python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
+```
+
+`build.sh --target mps2-an386 --variant fpu` links the 11.3.1 kernel with
+`portable/GCC/ARM_CM4F` plus `fixture/board/mps2-an386/` on QEMU machine
+`mps2-an386` (single Cortex-M4 with FPU: `MVFR0` nonzero, `CPACR` writable).
+The variant sets `configENABLE_FPU 1`, compiles soft-float-incompatible VFP
+code (`-mfloat-abi=hard -mfpu=fpv5-sp-d16`), and adds a `gdr_fpu_task` that
+exercises VFP instructions before blocking. AN521/AN505 boards are not used:
+their M33 models lack the FPU, so the FPU probe fails there. Acceptance and
+runtime limits live in [testing](../../docs/testing.md#freertos-suite-organization-and-capability-coverage)
+and [errata](../../docs/errata.md#task-backtraces).
 
 ### AN385 basic IRQ fixture (`full`)
 

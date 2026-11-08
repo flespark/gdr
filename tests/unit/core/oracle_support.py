@@ -2,18 +2,15 @@
 
 Layer 1 builds deterministic ELF and build-attribute corpora in memory so the
 suites run in CI without a fixture cache.  Layer 2 discovers real firmware ELFs
-under ``ci/.cache/fixtures`` when they are present locally.  Nothing here is
-imported by production code: ``pyelftools`` and ``capstone`` stay dev-only.
+through :mod:`tests.support.loader` when they are present locally.  Nothing
+here is imported by production code: ``pyelftools`` and ``capstone`` stay
+dev-only.
 """
 
 from __future__ import annotations
 
 import struct
-from pathlib import Path
 from typing import NamedTuple
-
-ROOT = Path(__file__).resolve().parents[3]
-FIXTURE_ROOT = ROOT / "ci/.cache/fixtures"
 
 SHT_PROGBITS = 1
 SHT_SYMTAB = 2
@@ -27,11 +24,6 @@ SHF_EXECINSTR = 0x4
 SHF_ARM_EXIDX = 0x80
 STT_FUNC = 2
 STT_OBJECT = 1
-
-
-def cached_elfs() -> tuple[Path, ...]:
-    """Every firmware ELF in the local cache (empty in CI unit containers)."""
-    return tuple(sorted(FIXTURE_ROOT.glob("**/*.elf")))
 
 
 class SectionSpec(NamedTuple):

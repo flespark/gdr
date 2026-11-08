@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from .unwind_meta import EM_ARM, EM_RISCV, Arch, ElfImage, _read_uleb
+from .unwind_meta import EM_ARM, EM_RISCV, Arch, ElfImage, Endian, _read_uleb
 
 MAX_ATTRIBUTE_BYTES = 64 * 1024
 
@@ -91,7 +91,7 @@ def convention_for_arch(arch: str) -> RegisterConvention:
 
 
 def file_attributes(
-    blob: bytes, vendor: bytes, endian: str = "little"
+    blob: bytes, vendor: bytes, endian: Endian = "little"
 ) -> dict[int, int | str] | None:
     """Read file-scoped attributes; reject truncation and conflicting values."""
     if not blob or len(blob) > MAX_ATTRIBUTE_BYTES or blob[:1] != b"A":
@@ -141,7 +141,7 @@ def _parse_file_attribute_values(
     cursor: int,
     end: int,
     vendor: bytes,
-    endian: str,
+    endian: Endian,
     result: dict[int, int | str],
 ) -> bool:
     """Parse one file-scope attribute list, including nested Tag_File lists."""
@@ -243,10 +243,13 @@ def cpu_of(elf: ElfImage) -> Cpu:
         )
         if attrs is None or 6 not in attrs or 7 not in attrs:
             return Cpu(None, "arm", "cpu-evidence-unavailable")
+        arch_number = attrs[6]
         if elf.pointer_size != 4 or not isinstance(attrs[7], int):
             return Cpu(None, "arm", "unsupported-cpu")
+        if not isinstance(arch_number, int):
+            return Cpu(None, "arm", "unsupported-cpu")
         if attrs[7] == ord("M"):
-            isa = {
+            isa_table: dict[int, Isa] = {
                 10: "armv7-m",
                 11: "armv6-m",
                 12: "armv6-m",
@@ -254,8 +257,9 @@ def cpu_of(elf: ElfImage) -> Cpu:
                 16: "armv8-m.baseline",
                 17: "armv8-m.mainline",
                 21: "armv8.1-m.mainline",
-            }.get(attrs[6])
-        elif attrs[7] == ord("A") and attrs[6] == 10:
+            }
+            isa = isa_table.get(arch_number)
+        elif attrs[7] == ord("A") and arch_number == 10:
             isa = "armv7-a"
         else:
             isa = None
@@ -263,7 +267,9 @@ def cpu_of(elf: ElfImage) -> Cpu:
             return Cpu(None, "arm", "unsupported-cpu")
         if isa == "armv7-a":
             return Cpu(isa, "arm", "ok", "aapcs32")
-        if any(attrs.get(tag, 0) != 0 for tag in (10, 12, 48, 50, 52, 74, 76)):
+        if any(attrs.get(tag, 0) != 0 for tag in (12, 48, 50, 52, 74, 76)):
+            return Cpu(isa, "arm", "unsupported-extension-context")
+        if attrs.get(10, 0) not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
             return Cpu(isa, "arm", "unsupported-extension-context")
         vfp_args = attrs.get(28, 0)
         if vfp_args not in (0, 1):
@@ -275,16 +281,19 @@ def cpu_of(elf: ElfImage) -> Cpu:
     attrs = file_attributes(
         elf.section_data(".riscv.attributes") or b"", b"riscv", elf.endian
     )
-    if attrs is None or not isinstance(attrs.get(5), str):
+    if attrs is None:
+        return Cpu(None, "riscv", "cpu-evidence-unavailable")
+    arch_string = attrs.get(5)
+    if not isinstance(arch_string, str):
         return Cpu(None, "riscv", "cpu-evidence-unavailable")
     match = re.fullmatch(
         r"rv(32|64)(i|e)([a-z]*)(?:[0-9]+p[0-9]+)?((?:_[a-z][a-z0-9]*)*)",
-        attrs[5],
+        arch_string,
     )
     if match is None:
         return Cpu(None, "riscv", "unsupported-cpu")
     xlen = int(match[1])
-    isa = f"riscv{xlen}"
+    isa = "riscv32" if xlen == 32 else "riscv64"
     extensions = frozenset(
         re.sub(r"[0-9]+p[0-9]+$", "", token)
         for token in (match[2], *match[3], *match[4].lstrip("_").split("_"))

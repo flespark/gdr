@@ -1,9 +1,9 @@
 {
   "$schema": "https://pi-lens.dev/schema.json",
   "ignore": [
-    "ci/rtthread/patch/**",
+    "ci/rtthread/patches/**",
     "ci/freertos/fixture/**",
-    "ci/freertos/snapshot/**"
+    "ci/bare/**"
   ],
-  "comment": "RTOS fixture C sources are ignored because linting may make them hard to diff or unusable."
+  "comment": "RT-Thread patch files, cross-compiled FreeRTOS fixtures and bare-metal fixtures are ignored: host-side analyzers lack the target include paths, and fixture sources must stay diffable."
 }

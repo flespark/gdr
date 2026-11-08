@@ -28,6 +28,12 @@ except ImportError:
 
 EXCEPTION_FRAME_SIZE = 0x20
 
+EXTENDED_FRAME_SIZE = 0x68
+
+FPCCR_ADDRESS = 0xE000EF34
+
+FPCCR_LSPACT_BIT = 0x1
+
 XPSR_T_BIT = 1 << 24
 
 XPSR_ALIGN_BIT = 1 << 9
@@ -52,6 +58,7 @@ class ExceptionReturn:
     value: int
     mode: str
     stack: str
+    extended: bool = False
 
 
 ExceptionNumberKind = Literal[
@@ -71,21 +78,28 @@ def _basic_exception_transition(
     ipsr_mask: int,
     source: str,
 ) -> ExceptionTransitionResult | str:
-    """Restore the shared eight-word frame under a selected ISA policy."""
+    """Restore the shared basic or FPU-extended frame under a selected ISA policy."""
     value = decoded.value
+    frame_size = EXTENDED_FRAME_SIZE if decoded.extended else EXCEPTION_FRAME_SIZE
     if context.current_segment.kind != "exception":
         return "exception-context-unproven"
     if context.current_segment.stack != "main":
         return "exception-context-unproven"
     if context.current_segment.low is None or context.current_segment.high is None:
         return "exception-frame-bounds-unavailable"
-    main_size = EXCEPTION_FRAME_SIZE if decoded.stack == "main" else 0
+    main_size = frame_size if decoded.stack == "main" else 0
     if not context.current_segment.contains(context.frame_sp, main_size) or not (
         context.current_segment.low < context.frame_sp <= context.current_segment.high
     ):
         return "exception-frame-outside-main-stack"
-    if context.remaining_exception_bytes < EXCEPTION_FRAME_SIZE:
+    if context.remaining_exception_bytes < frame_size:
         return "exception-read-budget-exceeded"
+    lspact = False
+    if decoded.extended:
+        fpccr_raw = context.read(FPCCR_ADDRESS, 4)
+        if fpccr_raw is None or len(fpccr_raw) != 4:
+            return "exception-fp-state-unavailable"
+        lspact = bool(int.from_bytes(fpccr_raw, "little") & FPCCR_LSPACT_BIT)
 
     target: StackSegment | None = None
     if decoded.stack == "process":
@@ -96,7 +110,7 @@ def _basic_exception_transition(
         frame_base = context.frame_sp
     if frame_base <= 0:
         return "exception-frame-invalid"
-    if context.stkalign:
+    if decoded.extended or context.stkalign:
         if frame_base & 7:
             return "exception-frame-misaligned"
     elif frame_base & 3:
@@ -108,21 +122,21 @@ def _basic_exception_transition(
                 for candidate in context.segments.values()
                 if candidate.stack == "main"
                 and candidate.kind != "exception"
-                and candidate.contains(frame_base, EXCEPTION_FRAME_SIZE)
+                and candidate.contains(frame_base, frame_size)
             ]
             target = matches[0] if len(matches) == 1 else None
         else:
             target = segment_for_address(
                 context.segments,
                 frame_base,
-                size=EXCEPTION_FRAME_SIZE,
+                size=frame_size,
                 stack=decoded.stack,
             )
         if target is None:
             return "exception-context-unproven"
 
-    raw = context.read(frame_base, EXCEPTION_FRAME_SIZE)
-    if raw is None or len(raw) != EXCEPTION_FRAME_SIZE:
+    raw = context.read(frame_base, frame_size)
+    if raw is None or len(raw) != frame_size:
         return "exception-frame-unreadable"
     word0 = _read_word(raw, 0x00)
     word1 = _read_word(raw, 0x04)
@@ -151,8 +165,8 @@ def _basic_exception_transition(
     elif exception_number_kind(ipsr) == "invalid":
         return "exception-number-invalid"
 
-    restored_sp = frame_base + EXCEPTION_FRAME_SIZE + (4 if alignment else 0)
-    if context.stkalign:
+    restored_sp = frame_base + frame_size + (4 if alignment else 0)
+    if decoded.extended or context.stkalign:
         expected_rest = 4 if alignment else 0
         if restored_sp & 7 != expected_rest:
             return "exception-frame-alignment-invalid"
@@ -190,7 +204,7 @@ def _basic_exception_transition(
         )
     elif target is None:
         return "exception-context-unproven"
-    if not target.contains(frame_base, EXCEPTION_FRAME_SIZE):
+    if not target.contains(frame_base, frame_size):
         return "exception-frame-outside-bounds"
     if not target.contains(restored_sp, 0) or restored_sp > (target.high or 0):
         return "exception-context-outside-bounds"
@@ -198,7 +212,7 @@ def _basic_exception_transition(
     evidence = (
         f"EXC_RETURN={value:#010x} {decoded.mode}/{decoded.stack} "
         f"frame={frame_base:#x} pc={word_pc:#x} xpsr={xpsr:#010x} "
-        f"ipsr={ipsr}"
+        f"ipsr={ipsr}" + (f" extended lspact={int(lspact)}" if decoded.extended else "")
     )
     return ExceptionTransitionResult(
         segment=target,
@@ -208,7 +222,7 @@ def _basic_exception_transition(
         method="exception",
         source=source,
         value=value,
-        bytes_read=EXCEPTION_FRAME_SIZE,
+        bytes_read=frame_size,
         evidence=evidence,
     )
 
@@ -276,6 +290,12 @@ def armv6m_exception_transition(
 
 EXTENDED_EXC_RETURNS = frozenset((0xFFFFFFE1, 0xFFFFFFE9, 0xFFFFFFED))
 
+EXC_RETURN_EXTENDED_HANDLER_MAIN = 0xFFFFFFE1
+
+EXC_RETURN_EXTENDED_THREAD_MAIN = 0xFFFFFFE9
+
+EXC_RETURN_EXTENDED_THREAD_PROCESS = 0xFFFFFFED
+
 ARMV7M_MAX_EXCEPTION_NUMBER = 511
 
 ARMV7M_IPSR_MASK = 0x1FF
@@ -332,9 +352,14 @@ def armv7m_exception_return_candidate(value: int) -> bool:
 
 
 def decode_armv7m_exception_return(value: int) -> ExceptionReturn | str:
-    """Decode an Armv7-M basic return, refusing FP and other extended frames."""
+    """Decode an Armv7-M basic or non-secure FPU-extended return value."""
     if value in EXTENDED_EXC_RETURNS:
-        return "unsupported-extension-context"
+        return ExceptionReturn(
+            value,
+            "handler" if value == EXC_RETURN_EXTENDED_HANDLER_MAIN else "thread",
+            "process" if value == EXC_RETURN_EXTENDED_THREAD_PROCESS else "main",
+            extended=True,
+        )
     if value not in BASIC_EXC_RETURNS:
         return "exception-return-illegal"
     return ExceptionReturn(
@@ -347,19 +372,24 @@ def decode_armv7m_exception_return(value: int) -> ExceptionReturn | str:
 def armv7m_exception_transition(
     context: ExceptionTransitionContext,
 ) -> ExceptionTransitionResult | str | None:
-    """Decode an Armv7-M basic frame using the supplied CCR.STKALIGN value."""
+    """Decode an Armv7-M basic or FPU-extended frame using CCR.STKALIGN."""
     value = context.value & 0xFFFFFFFF
     if not armv7m_exception_return_candidate(value):
         return None
     decoded = decode_armv7m_exception_return(value)
     if isinstance(decoded, str):
         return decoded
+    source = (
+        "armv7m-extended-exception-frame"
+        if decoded.extended
+        else "armv7m-basic-exception-frame"
+    )
     return _basic_exception_transition(
         context,
         decoded,
         exception_number_kind=armv7m_exception_number_kind,
         ipsr_mask=ARMV7M_IPSR_MASK,
-        source="armv7m-basic-exception-frame",
+        source=source,
     )
 
 
@@ -530,7 +560,7 @@ def arm_live_seed_detail(
                 else armv7m_exception_number_kind
             )
             if (
-                isa in ("armv6-m", "armv7-m")
+                isa in ("armv6-m", "armv7-m", "armv7e-m")
                 and classifier(exception_number) == "invalid"
             ):
                 return None, "exception-number-invalid"
@@ -640,7 +670,7 @@ def arm_vector_initial_msp(
     """Read word 0 (initial MSP) from the active Arm M-profile vector table."""
     if isa == "armv6-m":
         vtor = 0
-    elif isa in ("armv7-m", "armv8-m.mainline"):
+    elif isa in ("armv7-m", "armv7e-m", "armv8-m.mainline"):
         raw_vtor = read(SCB_VTOR_ADDRESS, 4)
         if raw_vtor is None or len(raw_vtor) != 4:
             return None
@@ -920,10 +950,10 @@ def prepare_arm_handler_unwind(
     Returns :class:`ArmHandlerSetup` when all architectural and port invariants
     hold, or ``(stop_reason, message)`` when the stop must be refused.
     """
-    if isa not in ("armv6-m", "armv7-m") or seed.exception_number is None:
+    if isa not in ("armv6-m", "armv7-m", "armv7e-m") or seed.exception_number is None:
         return (
             "unsupported-exception-model",
-            "handler-mode seeds require a verified Armv6-M/Armv7-M model",
+            "handler-mode seeds require a verified Armv6-M/Armv7-M/Armv7E-M model",
         )
     guard_reason = guard_fn(seed.exception_number, seed.pc, isa)
     if guard_reason == "scheduler-transition-unproven":

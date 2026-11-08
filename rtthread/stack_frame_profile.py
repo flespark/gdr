@@ -23,7 +23,10 @@ from core.unwind_meta import ElfImage
 from .backtrace import (
     ARMV6M_INTEGER,
     ARMV7A_LWP_INTEGER,
+    ARMV7EM_FPU,
+    ARMV7EM_INTEGER,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
     RISCV32_INTEGER,
     RISCV64_INTEGER,
@@ -47,9 +50,10 @@ def _selection_result(
     context: SavedStackContext | None,
     reason: str,
     evidence: tuple[str, ...] = (),
+    alt_context: SavedStackContext | None = None,
 ) -> StackContextSelection:
     return StackContextSelection(
-        cpu.isa, cpu.family, context, reason, evidence, cpu.abi
+        cpu.isa, cpu.family, context, reason, evidence, cpu.abi, alt_context
     )
 
 
@@ -161,12 +165,43 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
 
 def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
     """Select an integer Arm profile only with matching compiled port evidence."""
+    isa = cpu.isa
+    if isa is None:
+        return _selection_result(cpu, None, "unverified-port")
+    if isa == "armv7e-m" and cpu.abi == "aapcs32-vfp":
+        if _armv7em_fpu_verify_context(elf):
+            return _selection_result(
+                cpu,
+                ARMV7EM_INTEGER,
+                "ok",
+                (".ARM.attributes", "compiled libcpu FPU save/restore"),
+                alt_context=ARMV7EM_FPU,
+            )
+        return _selection_result(
+            cpu, None, "unrecognizable-stack-frame-layout", ("aapcs32-vfp ABI",)
+        )
+    if isa in ("armv7-m", "armv7e-m") and cpu.abi == "aapcs32-vfp":
+        return _selection_result(
+            cpu, None, "unsupported-extension-context", ("aapcs32-vfp ABI",)
+        )
+    if isa == "armv8-m.mainline" and cpu.abi == "aapcs32-vfp":
+        if _armv8m_mainline_fpu_verify_context(elf):
+            return _selection_result(
+                cpu,
+                ARMV8M_MAINLINE_INTEGER,
+                "ok",
+                (".ARM.attributes", "compiled libcpu FPU save/restore"),
+                alt_context=ARMV8M_MAINLINE_FPU,
+            )
+        return _selection_result(
+            cpu, None, "unrecognizable-stack-frame-layout", ("aapcs32-vfp ABI",)
+        )
     context = {
         "armv6-m": ARMV6M_INTEGER,
         "armv7-m": ARMV7M_INTEGER,
         "armv8-m.mainline": ARMV8M_MAINLINE_INTEGER,
         "armv7-a": ARMV7A_LWP_INTEGER,
-    }.get(cpu.isa)
+    }.get(isa)
     if context is None or not context.verified:
         return _selection_result(cpu, None, "unverified-port")
     matcher = {
@@ -174,7 +209,7 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
         "armv7-m": _armv7m_verify_context,
         "armv8-m.mainline": _armv8m_mainline_verify_context,
         "armv7-a": _armv7a_verify_context,
-    }[cpu.isa]
+    }[isa]
     proven = matcher(elf)
     if not proven:
         return _selection_result(cpu, None, "unrecognizable-stack-frame-layout")
@@ -183,6 +218,76 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
         context,
         "ok",
         (".ARM.attributes", "compiled libcpu save/restore/initial context"),
+    )
+
+
+def _armv8m_mainline_fpu_verify_context(elf: ElfImage) -> bool:
+    """Prove the FPU Armv8-M Mainline frame, PSP switch and initial-context stores."""
+    request = _port_instructions(
+        elf, "rt_hw_context_switch", "PendSV_Handler", decode_thumb
+    )
+    pend = _port_instructions(
+        elf, "PendSV_Handler", "rt_hw_context_switch_to", decode_thumb
+    )
+    init = _port_instructions(
+        elf, "rt_hw_stack_init", None, decode_thumb, stop_at_return=True
+    )
+    if request is None or pend is None or init is None:
+        return False
+    save = (
+        ("mrs", {"rd": 1, "sysm": 9}),
+        ("tst_imm", {"rn": 14, "imm": 16}),
+        ("it", {"firstcond": 0, "mask": 8}),
+        ("vstmdb", {"rn": 1, "first": 8, "count": 8}),
+        ("stmdb", {"rn": 1, "wback": True, "reglist": 0xFF0}),
+        ("ldr_literal", {"rt": 2}),
+        ("ldr_imm", {"rt": 2, "rn": 2, "imm": 0}),
+        ("mov", {"rd": 3, "rm": 14}),
+        ("mrs", {"rd": 4, "sysm": 11}),
+        ("mrs", {"rd": 5, "sysm": 20}),
+        ("stmdb", {"rn": 1, "wback": True, "reglist": 0x3C}),
+        ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+        ("str_imm", {"rt": 1, "rn": 0, "imm": 0}),
+    )
+    restore = (
+        ("ldmia", {"rn": 1, "wback": True, "reglist": 0xFF0}),
+        ("tst_imm", {"rn": 14, "imm": 16}),
+        ("it", {"firstcond": 0, "mask": 8}),
+        ("vldmia", {"rn": 1, "first": 8, "count": 8}),
+        ("msr", {"rn": 1, "sysm": 9}),
+    )
+    saved = _instruction_sequence(pend, save)
+    restored = _instruction_sequence(pend, restore)
+    if saved is None or restored is None:
+        return False
+    tz = elf.symbol_address("rt_trustzone_current_context")
+    if tz is None or any(
+        not isinstance(instruction, ThumbInstruction)
+        or resolved_literal(elf, instruction) != tz
+        for instruction in (saved[5],)
+    ):
+        return False
+    offsets = {0, 4, 8, 12, 48, 52, 56, 60, 64, 68, 72, 76}
+    init_stores = {
+        _operand(instruction, "imm")
+        for instruction in init
+        if instruction.mnemonic == "str_imm" and _operand(instruction, "rn") == 3
+    }
+    return (
+        offsets.issubset(init_stores)
+        and _instruction_sequence(
+            init,
+            (
+                ("orn", {"rd": 2, "rn": 15, "immediate": 2}),
+                ("str_imm", {"rt": 2, "rn": 3, "imm": 4}),
+            ),
+        )
+        is not None
+        and any(
+            instruction.mnemonic == "subs" and instruction.operands.get("imm") == 80
+            for instruction in init
+        )
+        and any(instruction.mnemonic == "str_imm" for instruction in request)
     )
 
 
@@ -329,8 +434,76 @@ def _armv7m_verify_context(elf: ElfImage) -> bool:
     return _m_profile_verify_context(elf, "armv7-m")
 
 
+def _armv7em_fpu_verify_context(elf: ElfImage) -> bool:
+    """Prove the FPU Armv7E-M frame, PSP switch and initial-context stores."""
+    request = _port_instructions(
+        elf, "rt_hw_context_switch", "PendSV_Handler", decode_thumb
+    )
+    pend = _port_instructions(
+        elf, "PendSV_Handler", "rt_hw_context_switch_to", decode_thumb
+    )
+    init = _port_instructions(
+        elf, "rt_hw_stack_init", None, decode_thumb, stop_at_return=True
+    )
+    if request is None or pend is None or init is None:
+        return False
+    save = (
+        ("mrs", {"rd": 1, "sysm": 9}),
+        ("tst_imm", {"rn": 14, "imm": 16}),
+        ("it", {"firstcond": 0, "mask": 8}),
+        ("vstmdb", {"rn": 1, "first": 8, "count": 8}),
+        ("stmdb", {"rn": 1, "wback": True, "reglist": 0xFF0}),
+        ("mov_imm", {"rd": 4, "imm": 0}),
+        ("tst_imm", {"rn": 14, "imm": 16}),
+        ("it", {"firstcond": 0, "mask": 8}),
+        ("mov_imm", {"rd": 4, "imm": 1}),
+        ("str_pre", {"rn": 1, "rt": 4, "imm": -4}),
+        ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+        ("str_imm", {"rt": 1, "rn": 0, "imm": 0}),
+    )
+    restore = (
+        ("ldmia", {"rn": 1, "wback": True, "reglist": 0x8}),
+        ("ldmia", {"rn": 1, "wback": True, "reglist": 0xFF0}),
+        ("cmp", {"rn": 3, "imm": 0}),
+        ("it", {"firstcond": 1, "mask": 8}),
+        ("vldmia", {"rn": 1, "first": 8, "count": 8}),
+        ("msr", {"rn": 1, "sysm": 9}),
+    )
+    fixup = (
+        ("orr_imm", {"rd": 14, "rn": 14, "imm": 16}),
+        ("cmp", {"rn": 3, "imm": 0}),
+        ("it", {"firstcond": 1, "mask": 8}),
+    )
+    if (
+        _instruction_sequence(pend, save) is None
+        or _instruction_sequence(pend, restore) is None
+        or _instruction_sequence(pend, fixup) is None
+    ):
+        return False
+    return (
+        any(
+            instruction.mnemonic == "subs" and instruction.operands.get("imm") == 68
+            for instruction in init
+        )
+        and any(
+            instruction.mnemonic == "mov_imm"
+            and instruction.operands.get("imm") == 0x01000000
+            for instruction in init
+        )
+        and any(
+            instruction.mnemonic == "str_imm" and instruction.operands.get("imm") == 64
+            for instruction in init
+        )
+        and any(
+            instruction.mnemonic == "str_imm" and instruction.operands.get("imm") == 0
+            for instruction in init
+        )
+        and any(instruction.mnemonic == "str_imm" for instruction in request)
+    )
+
+
 def _armv8m_mainline_verify_context(elf: ElfImage) -> bool:
-    """Prove the integer CM33 frame, PSP switch and initial-context stores."""
+    """Prove the integer Armv8-M Mainline frame, PSP switch and initial-context stores."""
     request = _port_instructions(
         elf, "rt_hw_context_switch", "PendSV_Handler", decode_thumb
     )
@@ -372,7 +545,8 @@ def _armv8m_mainline_verify_context(elf: ElfImage) -> bool:
         return False
     tz = elf.symbol_address("rt_trustzone_current_context")
     if tz is None or any(
-        resolved_literal(elf, instruction) != tz
+        not isinstance(instruction, ThumbInstruction)
+        or resolved_literal(elf, instruction) != tz
         for instruction in (saved[2], restored[4])
     ):
         return False

@@ -67,6 +67,9 @@ class SavedStackContext:
         slot_aliases: Explicit pairs of slot names (``rN``, ``pc``, ``lr``,
             ``status``, ``sp``) that describe the same saved value.
         validation: Evidence tier; only ``live`` profiles pass runtime gates.
+        fpu: Whether this profile covers an FPU-using task layout: the
+            software block carries S16-S31 and the hardware frame is the
+            0x68-byte extended frame. Basic profiles leave it clear.
     """
 
     profile_id: str
@@ -85,6 +88,7 @@ class SavedStackContext:
     slot_aliases: tuple[tuple[str, str], ...] = ()
     validation: ValidationLevel = "synthetic"
     status_kind: StatusKind = "xpsr"
+    fpu: bool = False
 
     @property
     def verified(self) -> bool:
@@ -173,6 +177,9 @@ class StackContextSelection:
         family: Coarse architecture family, ``arm``, ``riscv`` or ``unknown``.
         context: Selected saved-frame profile, or ``None`` when the image is
             rejected.
+        alt_context: Second profile when the layout varies per task and the
+            adapter selects by evidence (for example FPU use); both profiles
+            share the selection's validation tier.
         reason: ``ok`` or the machine-readable rejection reason retained for
             the user and the API envelope.
         evidence: Human-readable evidence sources that supported the choice.
@@ -185,6 +192,7 @@ class StackContextSelection:
     reason: str
     evidence: tuple[str, ...] = ()
     abi: str | None = None
+    alt_context: SavedStackContext | None = None
 
     @property
     def convention(self) -> RegisterConvention | None:

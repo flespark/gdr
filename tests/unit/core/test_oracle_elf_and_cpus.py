@@ -16,15 +16,14 @@ from elftools.elf.elffile import ELFFile
 
 from core.cpus import cpu_of, file_attributes
 from core.unwind_meta import ElfImage
+from tests.support.loader import cached_elfs, fixture_cache_root
 
 from .oracle_support import (
-    FIXTURE_ROOT,
     SHF_ALLOC,
     SHF_EXECINSTR,
     SHT_ARM_EXIDX,
     SHT_ATTRIBUTES,
     SHT_PROGBITS,
-    cached_elfs,
     synthetic_corpus,
 )
 
@@ -40,7 +39,7 @@ _TYPE_NUMBERS = {
 def _sources() -> list[tuple[str, str | None, bytes | None]]:
     builtin = [(f"builtin/{label}", None, data) for label, data in synthetic_corpus()]
     cached = [
-        (f"cache/{path.relative_to(FIXTURE_ROOT)}", str(path), None)
+        (f"cache/{path.relative_to(fixture_cache_root())}", str(path), None)
         for path in cached_elfs()
     ]
     return [*builtin, *cached]

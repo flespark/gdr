@@ -30,24 +30,32 @@ import json
 from core.cpus import cpu_of
 from core.unwind import UnwindMetadata
 from core.unwind_meta import ElfImage
-from rtthread.stack_frame_profile import _armv8m_mainline_verify_context
+from rtthread.stack_frame_profile import (
+    _armv8m_mainline_fpu_verify_context,
+    _armv8m_mainline_verify_context,
+)
 elf = ElfImage.from_path(gdb.current_progspace().filename)
 assert elf is not None
 cpu = cpu_of(elf)
+verify = (
+    _armv8m_mainline_fpu_verify_context
+    if cpu.abi == "aapcs32-vfp"
+    else _armv8m_mainline_verify_context
+)
 frame = gdb.lookup_type('struct stack_frame')
 offsets = {field.name: field.bitpos // 8 for field in frame.fields()}
 base = offsets.pop('exception_stack_frame')
 hardware = gdb.lookup_type('struct exception_stack_frame')
 offsets.update({'hw_' + field.name: base + field.bitpos // 8 for field in hardware.fields()})
 print(json.dumps({'isa': cpu.isa, 'abi': cpu.abi, 'word': elf.pointer_size,
-                  'size': frame.sizeof, 'offsets': offsets, 'matched': _armv8m_mainline_verify_context(elf),
+                  'size': frame.sizeof, 'offsets': offsets, 'matched': verify(elf),
                   'metadata': UnwindMetadata.from_elf(elf).available(),
                   'ticks': int(gdb.lookup_global_symbol('gdr_tick_interrupts').value())}))
 """
         )
     )
     assert evidence["isa"] == "armv8-m.mainline"
-    assert evidence["abi"] == "aapcs32"
+    assert evidence["abi"] == ("aapcs32-vfp" if SPEC.variant == "fpu" else "aapcs32")
     assert evidence["word"] == 4 and evidence["matched"]
     assert evidence["metadata"] and evidence["ticks"] >= 20
     assert evidence["size"] == 80

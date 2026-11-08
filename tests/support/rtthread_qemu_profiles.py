@@ -19,7 +19,13 @@ def get_rtthread_qemu_profile(
     """Return the selected RT-Thread QEMU profile."""
     del gdr_root  # paths come from the shared cache layout, not the repo tree
     spec = spec if spec is not None else load_integration_spec()
-    if spec.target in {"cortex-a9", "mps2-an385", "mps2-an505", "microbit"}:
+    if spec.target in {
+        "cortex-a9",
+        "mps2-an385",
+        "mps2-an386",
+        "mps2-an505",
+        "microbit",
+    }:
         return QemuProfile(
             rtos="rtthread",
             version=spec.version,

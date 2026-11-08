@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from .unwind_meta import Reader
+from .unwind_meta import Method, Reader
 
 MAX_EXCEPTION_DEPTH = 8
 MAX_EXCEPTION_READ_BYTES = 256
@@ -50,7 +50,7 @@ class SegmentTransition:
 
     from_segment: str
     to_segment: str
-    method: str
+    method: Method
     source: str
     pc: int
     sp: int
@@ -90,7 +90,7 @@ class ExceptionTransitionResult:
     pc: int
     sp: int
     registers: Mapping[int, int]
-    method: str
+    method: Method
     source: str
     value: int
     bytes_read: int

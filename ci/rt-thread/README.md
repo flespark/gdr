@@ -94,11 +94,17 @@ Raw compatibility checks live in
 
 ```bash
 python3 ci/test.py run rtthread mps2-an505 4.0.5
+python3 ci/test.py run rtthread mps2-an505 4.0.5 fpu
 ```
 
 `patches/mps2-an505/4.0.5/` compiles upstream `libcpu/arm/cortex-m33/` with
 `-mcpu=cortex-m33 -mthumb -mfloat-abi=soft`, `-O0 -g3 -gdwarf-4 -funwind-tables`
-and frame pointers. The compatibility patch sets the assembly CPU to Cortex-M33,
+and frame pointers. The `fpu/` overlay switches the DEVICE to `fpv5-sp-d16`
+and `-mfloat-abi=hard`, enables CP10/CP11 in the BSP board init, and adds a
+`worker_fpu` thread that exercises VFP instructions before blocking. The
+overlay's `context_gcc.S` wraps the `VSTMDBEQ`/`VLDMIAEQ` pair in `IT eq`
+(Thumb-2 conditional VFP requires the IT block); no saved slots or CFI
+directives are added to the port. The compatibility patch sets the assembly CPU to Cortex-M33,
 clears the initial hardware PC's Thumb bit and uses `0xFFFFFFFD` for the first
 Thread/PSP return in the fixture's single Secure state. No saved slots or CFI
 directives are added to the port. `ARM_CM33_ENABLE_TRUSTZONE` is absent, so the
@@ -110,6 +116,25 @@ section. The CMSDK UART0 Secure alias at `0x50200000` supplies readiness output;
 SysTick uses a 20 MHz clock at 100 ticks/second. The canonical workers include
 an initialized, unstarted thread and a three-function live chain. Acceptance
 and runtime limits live in [testing](../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage)
+and [errata](../../docs/errata.md#task-backtraces).
+
+## AN386 Armv7E-M FPU port fixture
+
+```bash
+python3 ci/test.py run rtthread mps2-an386 4.0.5 fpu
+```
+
+`patches/mps2-an386/4.0.5/` adds a minimal `bsp/gdr-mps2-an386/` (no upstream
+MPS2 BSP exists) and compiles upstream `libcpu/arm/cortex-m4/` with
+`-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16`, `-O0 -g3
+-gdwarf-4 -funwind-tables` and frame pointers. The BSP enables CP10/CP11 in
+`board.c` (the M4 port leaves `CPACR` alone) and adds a `worker_fpu` thread
+that exercises VFP instructions before blocking; the patch wraps the
+upstream conditional `VSTMDBEQ`/`VLDMIANE`/`MOVEQ`/`BICNE` tails in `IT`
+blocks (Thumb-2 conditional 32-bit instructions require them). QEMU boots
+`rtthread.elf` on `mps2-an386` (Cortex-M4 with FPU); the CMSDK UART0 alias
+and 25 MHz SysTick setup match the AN385 lane. Acceptance and runtime
+limits live in [testing](../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage)
 and [errata](../../docs/errata.md#task-backtraces).
 
 ## RV32 common integer port fixture

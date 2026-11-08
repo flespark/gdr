@@ -21,8 +21,9 @@ from core.insn_riscv import EvidenceError, riscv_code_decoder
 from core.insn_thumb import decode_thumb
 from core.unwind_leaf import prove_leaf_return
 from core.unwind_meta import EM_ARM, ElfImage, ElfSection
+from tests.support.loader import cached_elfs, fixture_cache_root
 
-from .oracle_support import FIXTURE_ROOT, SHF_EXECINSTR, SHT_PROGBITS, cached_elfs
+from .oracle_support import SHF_EXECINSTR, SHT_PROGBITS
 
 
 def _image(code: bytes, *, machine: int = 40, address: int = 0x1000) -> ElfImage:
@@ -114,6 +115,13 @@ _THUMB_HALFWORDS = (
     0x4770,
     0xBF00,
     0x0000,
+    0xBF08,
+    0xED21,
+    0x8B10,
+    0xECB1,
+    0x8B10,
+    0xF841,
+    0x4D04,
 )
 _A32_WORDS = (
     0xE92D4010,
@@ -348,6 +356,40 @@ def _assert_thumb_semantics(blob: bytes, label: str) -> int:
         elif mnemonic in {"add_sp", "sub_sp"}:
             assert immediate == operands["imm"], (label, hex(instruction.address))
             checked += 1
+        elif mnemonic == "str_pre":
+            assert instruction.mnemonic == "str", (label, hex(instruction.address))
+            assert register == operands["rt"], (label, hex(instruction.address))
+            assert memory is not None, (label, hex(instruction.address))
+            assert _cap_reg(memory.base) == operands["rn"], (
+                label,
+                hex(instruction.address),
+            )
+            assert memory.disp == int(operands["imm"]), (
+                label,
+                hex(instruction.address),
+            )
+            assert instruction.writeback, (label, hex(instruction.address))
+            checked += 1
+        elif mnemonic in {"vstmdb", "vldmia"}:
+            cap_regs = [
+                operand.reg
+                for operand in cap_operands
+                if operand.type == arm.ARM_OP_REG
+            ]
+            assert _cap_reg(cap_regs[0]) == operands["rn"], (
+                label,
+                hex(instruction.address),
+            )
+            assert [reg - 22 + 8 for reg in cap_regs[1:]] == list(
+                range(
+                    int(operands["first"]),
+                    int(operands["first"]) + int(operands["count"]),
+                )
+            ), (label, hex(instruction.address))
+            checked += 1
+        elif mnemonic == "it":
+            assert instruction.mnemonic == "it", (label, hex(instruction.address))
+            checked += 1
         elif mnemonic == "other":
             assert instruction.mnemonic not in _BASIC_CAPSTONE, (
                 label,
@@ -359,6 +401,51 @@ def _assert_thumb_semantics(blob: bytes, label: str) -> int:
 
 def test_thumb_semantics_match_capstone():
     assert _assert_thumb_semantics(_thumb_stream(), "builtin") > 0
+
+
+def test_thumb_fpu_prologue_decodes_with_proven_operands():
+    blob = bytes.fromhex("1ef0100f08bf21ed108bb1ec108b")
+    elf = _image(blob)
+    end = 0x1000 + len(blob)
+    decoded = decode_thumb(elf, 0x1000, end)
+    assert not isinstance(decoded, str) and decoded.mnemonic == "tst_imm"
+    assert decoded.operands == {"rn": 14, "imm": 16}
+    decoded = decode_thumb(elf, 0x1004, end)
+    assert not isinstance(decoded, str) and decoded.mnemonic == "it"
+    assert decoded.operands == {"firstcond": 0, "mask": 8}
+    decoded = decode_thumb(elf, 0x1006, end)
+    assert not isinstance(decoded, str) and decoded.mnemonic == "vstmdb"
+    assert decoded.operands == {"rn": 1, "first": 8, "count": 8}
+    decoded = decode_thumb(elf, 0x100A, end)
+    assert not isinstance(decoded, str) and decoded.mnemonic == "vldmia"
+    assert decoded.operands == {"rn": 1, "first": 8, "count": 8}
+
+
+def test_thumb_preindexed_writeback_store_decodes_with_signed_offset():
+    blob = bytes.fromhex("41f8044d")
+    decoded = decode_thumb(_image(blob), 0x1000, 0x1000 + len(blob))
+    assert not isinstance(decoded, str) and decoded.mnemonic == "str_pre"
+    assert decoded.operands == {"rn": 1, "rt": 4, "imm": -4}
+
+
+@pytest.mark.parametrize(
+    "halfwords",
+    [(0xF841, 0x4704), (0xF841, 0x4404), (0xF841, 0x4104)],
+)
+def test_thumb_non_writeback_store_forms_stay_undecoded(halfwords):
+    blob = b"".join(struct.pack("<H", word) for word in halfwords)
+    decoded = decode_thumb(_image(blob), 0x1000, 0x1000 + len(blob))
+    assert not isinstance(decoded, str) and decoded.mnemonic != "str_pre"
+
+
+@pytest.mark.parametrize(
+    "halfwords",
+    [(0xBF00,), (0xBF40,), (0xBFF0,)],
+)
+def test_thumb_bare_or_reserved_it_encodings_stay_undecoded(halfwords):
+    blob = b"".join(struct.pack("<H", word) for word in halfwords)
+    decoded = decode_thumb(_image(blob), 0x1000, 0x1000 + len(blob))
+    assert not isinstance(decoded, str) and decoded.mnemonic != "it"
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +540,8 @@ def _code_intervals(image: ElfImage, limit: int = 48):
 
 
 _CACHE_SOURCES = [
-    (f"cache/{path.relative_to(FIXTURE_ROOT)}", str(path)) for path in cached_elfs()
+    (f"cache/{path.relative_to(fixture_cache_root())}", str(path))
+    for path in cached_elfs()
 ]
 
 
@@ -519,7 +607,8 @@ def test_cached_code_widths_match_capstone(label, path):
 
 
 _LEAF_SOURCES = [
-    (f"cache/{path.relative_to(FIXTURE_ROOT)}", str(path)) for path in cached_elfs()
+    (f"cache/{path.relative_to(fixture_cache_root())}", str(path))
+    for path in cached_elfs()
 ]
 
 

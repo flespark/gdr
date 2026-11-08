@@ -18,6 +18,20 @@ from ci.testing.cache import CACHE
 _DEFAULT_FREERTOS_CACHE = CACHE / "fixtures" / "freertos"
 _DEFAULT_RTTHREAD_CACHE = CACHE / "fixtures" / "rtthread"
 
+
+def fixture_cache_root() -> Path:
+    """Repository-owned built-firmware cache root (both RTOS lanes)."""
+    return CACHE / "fixtures"
+
+
+def cached_elfs() -> tuple[Path, ...]:
+    """Every built fixture ELF in the repository cache, sorted.
+
+    Empty when fixtures were never built; Layer-2 tests skip on empty.
+    """
+    return tuple(sorted(fixture_cache_root().glob("**/*.elf")))
+
+
 _FREERTOS_DEFAULT_VERSION = "10.3.1"
 _FREERTOS_DEFAULT_TARGET = "mps2-an385"
 _FREERTOS_DEFAULT_VARIANT = "base"
@@ -51,8 +65,8 @@ class IntegrationSpec:
         version: Kernel version string passed to ``gdr init``.
         target: QEMU board / ISA selector.
         variant: FreeRTOS fixture variant; ``snapshot`` selects the file-only
-            lane. Always empty for RT-Thread (no variant axis), so
-            ``variant == "snapshot"`` alone identifies the snapshot lane.
+            lane. Empty for all RT-Thread lanes except FPU-capable ports,
+            where ``fpu`` selects the hardware-float fixture.
         gdb: GDB binary with an embedded Python interpreter.
         boot_wait: Seconds to wait for the QEMU ready marker.
         fixture_cache: Root of the built-firmware cache: the compiled fixture
@@ -77,9 +91,12 @@ class IntegrationSpec:
         Layout: ``<root>/<target>/<version>/<variant>/freertos.elf`` for any
         FreeRTOS variant (the file-only ``snapshot`` cell included, which
         also holds ``snapshot_heap.elf``) and
-        ``<root>/<target>/<version>/rtthread.elf`` for RT-Thread.
+        ``<root>/<target>/<version>/[variant/]rtthread.elf`` for RT-Thread
+        (the FPU lanes carry the variant level).
         """
         if self.rtos == "freertos":
+            return self.fixture_cache / self.target / self.version / self.variant
+        if self.variant:
             return self.fixture_cache / self.target / self.version / self.variant
         return self.fixture_cache / self.target / self.version
 
@@ -125,7 +142,7 @@ def load_integration_spec(
         target = _env_str(env, "GDR_QEMU_TARGET", _FREERTOS_DEFAULT_TARGET)
         cache = _DEFAULT_FREERTOS_CACHE
     elif rtos == "rtthread":
-        variant = ""
+        variant = _env_str(env, "GDR_FIXTURE_VARIANT", "")
         version = _env_str(env, "GDR_VERSION", _RTTHREAD_DEFAULT_VERSION)
         target = _env_str(env, "GDR_QEMU_TARGET", _RTTHREAD_DEFAULT_TARGET)
         cache = _DEFAULT_RTTHREAD_CACHE

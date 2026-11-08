@@ -53,7 +53,8 @@ freertos/              FreeRTOS adapter
   stackpc.py           last PC from the saved frame (pure; port evidence + proofs)
   backtrace.py         saved-context layouts and seed decoding (pure)
   backtrace_gdb.py     GDB-facing task backtrace orchestration
-  scheduler_switch.py compiled Armv7-M (ARM_CM3) transition profiles, stages and owner-consistent seeds
+  scheduler_switch.py compiled Armv7-M (ARM_CM3) transition profiles and stage classification
+  scheduler_seed.py owner-consistent seeds from classified stages (basic/FPU geometry)
   stack_frame_profile.py compiled save-layout evidence and profile selection
   objects.py           per-kind decode: timers, event groups, stream buffers
   heap.py              heap_1..5 snapshot, canary, walks and cross-check verdicts

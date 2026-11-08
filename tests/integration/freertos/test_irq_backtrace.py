@@ -17,12 +17,26 @@ from tests.support.loader import load_integration_spec
 SPEC = load_integration_spec()
 pytestmark = pytest.mark.skipif(
     SPEC.rtos != "freertos"
-    or SPEC.variant != "full"
-    or (SPEC.target, SPEC.version)
-    not in (("mps2-an385", "10.3.1"), ("microbit", "11.1.0")),
-    reason="requires FreeRTOS AN385/10.3.1/full or microbit/11.1.0/full",
+    or (
+        SPEC.variant,
+        SPEC.target,
+        SPEC.version,
+    )
+    not in (
+        ("full", "mps2-an385", "10.3.1"),
+        ("full", "microbit", "11.1.0"),
+        ("fpu", "mps2-an386", "11.3.1"),
+    ),
+    reason="requires a FreeRTOS M-profile IRQ fixture lane",
 )
-_ISA = "armv6-m" if SPEC.target == "microbit" else "armv7-m"
+_ISA = (
+    "armv6-m"
+    if SPEC.target == "microbit"
+    else "armv7e-m"
+    if SPEC.target == "mps2-an386"
+    else "armv7-m"
+)
+_ABI = "aapcs32-vfp" if SPEC.variant == "fpu" else "aapcs32"
 
 _EXCEPTION = 0x01000000
 _T_BIT = 1 << 24
@@ -105,7 +119,7 @@ print(json.dumps({{
 def _backtrace(session) -> dict:
     data = _envelope(session.run("gdr api backtrace gdr_irq --json", timeout=30))
     assert data["task"] == "gdr_irq"
-    assert data["architecture"] == _ISA and data["abi"] == "aapcs32"
+    assert data["architecture"] == _ISA and data["abi"] == _ABI
     assert data["source"] == "current" and data["bounds"] == "recorded"
     return data
 
@@ -191,6 +205,47 @@ def test_handler_c_call_chain_is_ordinary_cfi_before_the_exception_boundary(
     assert methods[handler] in ("cfi", "ehabi"), data
     assert methods[handler + 1] == "exception", data
     assert len(_exception_frames(data)) == 2, data
+
+
+def test_switch_window_without_scheduler_profile_refuses_task_ownership(gdb_session):
+    if SPEC.target != "mps2-an386":
+        pytest.skip("requires the AN386 lane without compiled scheduler evidence")
+    _stop_at(gdb_session, "PendSV_Handler")
+    output = gdb_session.run_python(
+        "import gdb, json\n"
+        "tcb = gdb.parse_and_eval('pxCurrentTCB')\n"
+        "print(json.dumps(tcb['pcTaskName'].string()))"
+    )
+    name = json.loads(output.strip().splitlines()[-1]).rstrip("\x00")
+    data = _json_line(gdb_session.run(f"gdr api backtrace {name} --json", timeout=30))
+    assert data["ok"] is True, data
+    data = data["data"]
+    assert not data["complete"], data
+    assert data["stop_reason"] == "scheduler-transition-unproven", data
+    assert data["frames"] == [], data
+
+
+def test_fp_isr_grows_the_msp_frame_with_lazy_stacking(gdb_session):
+    if SPEC.target != "mps2-an386":
+        pytest.skip(
+            "requires the AN386 FPU IRQ fixture "
+            "(FP ISR over an FP-active thread: lazy-stacked extended frame)"
+        )
+    _stop_at(gdb_session, "gdr_irq_fp_leaf")
+    raw = _raw_state(gdb_session, "psp")
+    _assert_task_frame(raw, expected_symbol="gdr_irq_wait")
+    fpccr = int(
+        gdb_session.run("p/x *(unsigned int *)0xE000EF34").split("=")[1].strip(),
+        16,
+    )
+    assert fpccr & 0xC0000000 == 0xC0000000, f"FPCCR={fpccr:#x}"
+    data = _backtrace(gdb_session)
+    assert data["complete"] and data["stop_reason"] == "task-exit", data
+    transitions = _exception_frames(data)
+    assert len(transitions) == 1 and transitions[0]["pc"] == raw["frame_pc"], data
+    assert "gdr_irq_wait" in (transitions[0]["symbol"] or ""), data
+    assert any("EXC_RETURN=0xffffffed" in message for message in data["messages"]), data
+    assert any("extended" in message for message in data["messages"]), data
 
 
 def test_stkalign_frame_retains_the_four_byte_padding(gdb_session):

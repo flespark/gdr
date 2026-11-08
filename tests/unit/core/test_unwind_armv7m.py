@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -12,6 +14,7 @@ from core.unwind_arm import (
     armv7m_exception_return_candidate,
     armv7m_exception_transition,
     armv7m_max_external_exception,
+    prepare_arm_handler_unwind,
 )
 from core.unwind_arm import (
     decode_armv7m_exception_return as decode_exception_return,
@@ -61,7 +64,13 @@ def _frame(
     return struct.pack("<8I", r0, r1, r2, r3, r12, lr, pc, xpsr)
 
 
-def _context(*, value=FD, frame_sp=0x3010, process_sp=0x2100, **kwargs):
+def _context(
+    *,
+    value: int = FD,
+    frame_sp: int = 0x3010,
+    process_sp: int | None = 0x2100,
+    **kwargs: Any,
+):
     return ExceptionTransitionContext(
         value=value,
         registers=kwargs.pop("registers", {13: frame_sp, 14: value}),
@@ -158,9 +167,6 @@ def test_segment_contains_requires_both_bounds():
 @pytest.mark.parametrize(
     "value,reason",
     [
-        (0xFFFFFFE1, "unsupported-extension-context"),
-        (0xFFFFFFE9, "unsupported-extension-context"),
-        (0xFFFFFFED, "unsupported-extension-context"),
         (0xFFFFFFC1, "exception-return-illegal"),
         (0xFFFFFFD9, "exception-return-illegal"),
         (0xFFFFFFF5, "exception-return-illegal"),
@@ -197,6 +203,21 @@ def test_stkalign_frame_restores_the_four_byte_padding():
     assert not isinstance(result, str) and result is not None
     assert result.sp == 0x2124
     assert "xpsr=0x01000200" in result.evidence
+
+
+def test_handler_setup_refuses_unverified_baseline_model():
+    seed = SeedFrame(pc=0x1008, sp=0x2000, regs={}, source="current")
+    seed = replace(seed, exception_number=24)
+    result = prepare_arm_handler_unwind(
+        seed,
+        "armv8-m.baseline",
+        scheduler_running=lambda: False,
+        irq_stack_bounds=lambda: (0x2000, 0x3000),
+        capacity_reader=lambda: 32,
+        stkalign_reader=lambda: True,
+        vector_entry_reader=lambda _number: None,
+    )
+    assert isinstance(result, tuple) and result[0] == "unsupported-exception-model"
 
 
 def test_handler_frame_creates_a_nested_exception_segment():

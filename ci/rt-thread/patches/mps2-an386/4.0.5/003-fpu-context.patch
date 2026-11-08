@@ -1,0 +1,35 @@
+diff --git a/libcpu/arm/cortex-m4/context_gcc.S b/libcpu/arm/cortex-m4/context_gcc.S
+--- a/libcpu/arm/cortex-m4/context_gcc.S
++++ b/libcpu/arm/cortex-m4/context_gcc.S
+@@ -107,6 +107,7 @@
+     
+ #if defined (__VFP_FP__) && !defined(__SOFTFP__)
+     TST     lr, #0x10           /* if(!EXC_RETURN[4]) */
++    IT      eq                   /* Thumb-2 conditional VFP needs the IT block */
+     VSTMDBEQ r1!, {d8 - d15}    /* push FPU register s16~s31 */
+ #endif
+     
+@@ -116,6 +117,7 @@
+     MOV     r4, #0x00           /* flag = 0 */
+ 
+     TST     lr, #0x10           /* if(!EXC_RETURN[4]) */
++    IT      eq                   /* Thumb-2 conditional data processing needs the IT block */
+     MOVEQ   r4, #0x01           /* flag = 1 */
+ 
+     STMFD   r1!, {r4}           /* push flag */
+@@ -137,6 +139,7 @@
+ 
+ #if defined (__VFP_FP__) && !defined(__SOFTFP__)
+     CMP     r3,  #0             /* if(flag_r3 != 0) */
++    IT      ne                   /* Thumb-2 conditional VFP needs the IT block */
+     VLDMIANE  r1!, {d8 - d15}   /* pop FPU register s16~s31 */
+ #endif
+ 
+@@ -145,6 +148,7 @@
+ #if defined (__VFP_FP__) && !defined(__SOFTFP__)
+     ORR     lr, lr, #0x10       /* lr |=  (1 << 4), clean FPCA. */
+     CMP     r3,  #0             /* if(flag_r3 != 0) */
++    IT      ne                   /* Thumb-2 conditional data processing needs the IT block */
+     BICNE   lr, lr, #0x10       /* lr &= ~(1 << 4), set FPCA. */
+ #endif
+ 

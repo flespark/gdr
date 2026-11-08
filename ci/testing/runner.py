@@ -388,7 +388,7 @@ def _build(lane: Lane, *, rebuild: bool = False) -> None:
     if lane.variant == "eh-frame":
         args = [
             "bash",
-            str(ROOT / "ci/freertos/fixture/eh-frame/build.sh"),
+            str(ROOT / "ci/bare/eh-frame/build.sh"),
             str(work),
             str(tool_dir),
         ]
@@ -423,6 +423,8 @@ def _build(lane: Lane, *, rebuild: bool = False) -> None:
             lane.tag,
             "--target",
             lane.target,
+            "--variant",
+            lane.variant,
             "--build-dir",
             str(work / "source"),
             "--out-elf",

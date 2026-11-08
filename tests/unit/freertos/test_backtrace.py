@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from freertos.backtrace import (
+    ARMV7M_CM4F_BASIC,
+    ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
     RISCV32_INTEGER,
     RISCV64_INTEGER,
+    decode_cm4f_saved_context,
     decode_saved_context,
     initial_context,
 )
@@ -325,3 +328,136 @@ def test_hardware_alignment_padding_is_part_of_restored_sp():
     )
     assert reason == "ok" and seed.sp == top + 68
     assert seed.regs[13] == top + 68
+
+
+def _cm4f_basic_context(memory, top, *, fill=False, pc=0x1001, lr=0x400):
+    for index in range(8):
+        memory.word(top + index * 4, 0xA5A5A5A5 if fill else 0x11111111 + index)
+    memory.word(top + 32, 0xFFFFFFFD)
+    memory.word(top + 36, 0)
+    memory.word(top + 40, 0x2000)
+    memory.word(top + 44, 0x100)
+    memory.word(top + 48, 0x200)
+    memory.word(top + 52, 0x300)
+    memory.word(top + 56, lr)
+    memory.word(top + 60, pc)
+    memory.word(top + 64, 0x01000000 if fill else 0x61000000)
+
+
+def _cm4f_fpu_context(memory, top, *, pc=0x1001, lr=0x400):
+    for index in range(8):
+        memory.word(top + index * 4, 0x40 + index)
+    memory.word(top + 32, 0xFFFFFFED)
+    for index in range(16):
+        memory.word(top + 36 + index * 4, 0xFFFFFFFF)
+    memory.word(top + 100, 1)
+    memory.word(top + 104, 2)
+    memory.word(top + 108, 3)
+    memory.word(top + 112, 4)
+    memory.word(top + 116, 12)
+    memory.word(top + 120, lr)
+    memory.word(top + 124, pc)
+    memory.word(top + 128, 0x61000000)
+
+
+def test_cm4f_basic_saved_context_decodes_pc_sp_and_registers():
+    memory = _Memory()
+    top = 0x2000
+    _cm4f_basic_context(memory, top)
+    seed, reason = decode_cm4f_saved_context(
+        top,
+        memory,
+        basic=ARMV7M_CM4F_BASIC,
+        fpu=ARMV7M_CM4F_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+        exit_pc=0x400,
+    )
+    assert reason == "ok"
+    assert seed is not None
+    assert seed.pc == 0x1000
+    assert seed.sp == top + 68
+    assert seed.source == "saved"
+    assert seed.regs[14] == 0x400
+    assert seed.regs[0] == 0
+    assert seed.regs[4] == 0x11111111
+
+
+def test_cm4f_fpu_saved_context_decodes_extended_layout():
+    memory = _Memory()
+    top = 0x2000
+    _cm4f_fpu_context(memory, top)
+    seed, reason = decode_cm4f_saved_context(
+        top,
+        memory,
+        basic=ARMV7M_CM4F_BASIC,
+        fpu=ARMV7M_CM4F_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+        exit_pc=0x400,
+    )
+    assert reason == "ok"
+    assert seed is not None
+    assert seed.pc == 0x1000
+    assert seed.sp == top + 204
+    assert seed.source == "saved"
+    assert seed.regs[14] == 0x400
+    assert seed.regs[0] == 1
+    assert seed.regs[4] == 0x40
+
+
+def test_cm4f_unstarted_initial_image_selects_the_basic_layout():
+    memory = _Memory()
+    top = 0x2000
+    _cm4f_basic_context(memory, top, fill=True, pc=0x3000, lr=0x400)
+    seed, reason = decode_cm4f_saved_context(
+        top,
+        memory,
+        basic=ARMV7M_CM4F_BASIC,
+        fpu=ARMV7M_CM4F_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+        exit_pc=0x400,
+        entry_pc=0x3000,
+    )
+    assert reason == "ok"
+    assert seed is not None
+    assert seed.source == "unstarted"
+    assert seed.root_pc == 0x3000
+
+
+def test_cm4f_unknown_exc_return_is_refused_without_further_reads():
+    memory = _Memory()
+    top = 0x2000
+    _cm4f_basic_context(memory, top)
+    memory.word(top + 32, 0x12345678)
+    assert decode_cm4f_saved_context(
+        top,
+        memory,
+        basic=ARMV7M_CM4F_BASIC,
+        fpu=ARMV7M_CM4F_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+    ) == (None, "saved-context-exc-return-unproven")
+
+
+def test_cm4f_unreadable_exc_return_slot_is_refused():
+    memory = _Memory()
+    assert decode_cm4f_saved_context(
+        0x2000,
+        memory,
+        basic=ARMV7M_CM4F_BASIC,
+        fpu=ARMV7M_CM4F_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+    ) == (None, "saved-context-unreadable")
+
+
+def test_cm4f_basic_and_fpu_profiles_have_distinct_ids():
+    assert ARMV7M_CM4F_BASIC.profile_id != ARMV7M_CM4F_FPU.profile_id
+    assert ARMV7M_CM4F_FPU.fpu and not ARMV7M_CM4F_BASIC.fpu

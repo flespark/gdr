@@ -73,7 +73,7 @@ resolve_target_defaults() {
         *) die "RV64 QEMU BSP is available only for v4.0.4-v4.1.1" ;;
         esac
         ;;
-    mps2-an385 | mps2-an505)
+    mps2-an385 | mps2-an505 | mps2-an386)
         [[ "$REF" == "v4.0.5" ]] || die "$TARGET fixture requires v4.0.5"
         BSP_DIR="${BSP_DIR:-bsp/gdr-$TARGET}"
         TOOLCHAIN_PREFIX="${TOOLCHAIN_PREFIX:-arm-none-eabi-}"
@@ -124,6 +124,11 @@ collect_patch_dirs() {
         return
     fi
     PATCH_DIRS+=("$PATCH_ROOT/$TARGET/$PATCH_SET")
+    if [[ -n "$VARIANT" && -d "$PATCH_ROOT/$TARGET/$PATCH_SET/$VARIANT" ]]; then
+        # NOTE: per-variant overlays (currently only the AN505 FPU fixture)
+        # apply after the base series so the base lane stays byte-identical.
+        PATCH_DIRS+=("$PATCH_ROOT/$TARGET/$PATCH_SET/$VARIANT")
+    fi
     if [[ "$TARGET" == "cortex-a9" ]]; then
         case "$REF" in
         v3.1.0 | v3.1.1 | v3.1.2)
@@ -307,6 +312,10 @@ parse_args() {
             PATCH_DIR="$2"
             shift 2
             ;;
+        --variant)
+            VARIANT="$2"
+            shift 2
+            ;;
         --build-dir)
             BUILD_DIR="$2"
             shift 2
@@ -349,6 +358,7 @@ parse_args() {
 main() {
     TARGET="cortex-a9"
     REF="v4.0.5"
+    VARIANT=""
     REPO="$DEFAULT_REPO"
     BSP_DIR=""
     PATCH_DIR=""

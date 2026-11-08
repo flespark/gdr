@@ -65,10 +65,12 @@ from core.unwind_arm import (
 )
 from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
+from freertos.backtrace import decode_cm4f_saved_context
 from freertos.backtrace import decode_saved_context as decode_backtrace_context
 from freertos.navigation import current_tasks, saved_context_bounds, task_state
+from freertos.scheduler_seed import build_stage_seed
 from freertos.scheduler_switch import build_profile as build_scheduler_profile
-from freertos.scheduler_switch import build_stage_seed, classify_stage
+from freertos.scheduler_switch import classify_stage
 
 try:
     import gdb
@@ -212,6 +214,7 @@ def _scheduler_live_decision(
     task: FreeRtosTask,
     low: int,
     high: int,
+    fpu_context=None,
 ) -> _SchedulerDecision | None:
     """Classify a live Arm stop without assuming every stop is an IRQ.
 
@@ -328,6 +331,7 @@ def _scheduler_live_decision(
         current_tcb=current,
         exit_pc=_exit_pc(),
         is_entry=_is_entry,
+        fpu_context=fpu_context,
     )
     if isinstance(outcome, str):
         return _SchedulerDecision(
@@ -455,7 +459,14 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         seed = None
         live_reason = "live-registers-unavailable"
         if arch == "arm" and selection.isa == "armv7-m" and metadata is not None:
-            decision = _scheduler_live_decision(metadata.elf, context, task, low, high)
+            decision = _scheduler_live_decision(
+                metadata.elf,
+                context,
+                task,
+                low,
+                high,
+                fpu_context=selection.alt_context,
+            )
             if decision is not None:
                 if decision.seed is None:
                     return _stop(
@@ -492,17 +503,29 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             if context.context_in_tcb
             else (None, None)
         )
-        seed, reason = decode_backtrace_context(
-            context,
-            task.top_of_stack,
-            read_bytes,
-            endian=arch_or_default()[1],
-            stack_low=low,
-            stack_high=high,
-            context_low=context_low,
-            context_high=context_high,
-            exit_pc=_exit_pc(),
-        )
+        if selection.alt_context is not None:
+            seed, reason = decode_cm4f_saved_context(
+                task.top_of_stack,
+                read_bytes,
+                basic=context,
+                fpu=selection.alt_context,
+                endian=arch_or_default()[1],
+                stack_low=low,
+                stack_high=high,
+                exit_pc=_exit_pc(),
+            )
+        else:
+            seed, reason = decode_backtrace_context(
+                context,
+                task.top_of_stack,
+                read_bytes,
+                endian=arch_or_default()[1],
+                stack_low=low,
+                stack_high=high,
+                context_low=context_low,
+                context_high=context_high,
+                exit_pc=_exit_pc(),
+            )
         if seed is None:
             return BacktraceReport(
                 task=task.name or target,

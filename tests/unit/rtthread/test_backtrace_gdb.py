@@ -10,7 +10,10 @@ from core.stack_frame_parser import StackContextSelection
 from core.unwind import SeedFrame, UnwindFrame, UnwindResult
 from rtthread.adapter import Thread
 from rtthread.backtrace import (
+    ARMV7EM_FPU,
+    ARMV7EM_INTEGER,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
     RISCV32_INTEGER,
     RISCV64_INTEGER,
@@ -412,3 +415,159 @@ def test_armv8m_missing_extension_registers_refuse_the_live_seed(monkeypatch):
         None,
         "live-registers-unavailable",
     )
+
+
+class _Words(dict):
+    def read(self, address: int, size: int) -> bytes | None:
+        values = []
+        for offset in range(0, size, 4):
+            value = self.get(address + offset)
+            if value is None:
+                return None
+            values.append(value.to_bytes(4, "little"))
+        return b"".join(values)
+
+
+def _armv7em_pair_selection():
+    basic = replace(ARMV7EM_INTEGER, validation="live")
+    fpu = replace(ARMV7EM_FPU, validation="live")
+    return StackContextSelection(
+        "armv7e-m", "arm", basic, "ok", ("test",), "aapcs32", fpu
+    )
+
+
+def _armv8m_mainline_pair_selection():
+    basic = replace(ARMV8M_MAINLINE_INTEGER, validation="live")
+    fpu = replace(ARMV8M_MAINLINE_FPU, validation="live")
+    return StackContextSelection(
+        "armv8-m.mainline", "arm", basic, "ok", ("test",), "aapcs32", fpu
+    )
+
+
+def _saved_report(monkeypatch, thread, selection, memory):
+    monkeypatch.setattr(bridge, "find_thread", lambda *_args: object())
+    monkeypatch.setattr(bridge, "value_to_thread", lambda *_args, **_kwargs: thread)
+    monkeypatch.setattr(bridge, "_backtrace_context", lambda: selection)
+    monkeypatch.setattr(bridge, "get_current_thread", lambda: None)
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: 0 if name == "rt_thread_switch_interrupt_flag" else None,
+    )
+    monkeypatch.setattr(bridge, "read_int", lambda value: value)
+    monkeypatch.setattr(bridge, "read_bytes", memory.read)
+    monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(bridge, "_unwind_metadata", lambda _adapter: None)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    seeds = []
+
+    def unwind(seed, _metadata, **_kwargs):
+        seeds.append(seed)
+        return UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "max-depth",
+            False,
+            False,
+            seed.source,
+            "seed",
+        )
+
+    monkeypatch.setattr(bridge, "unwind_chain", unwind)
+    return bridge.backtrace(SimpleNamespace(layout=object()), "worker"), seeds
+
+
+def _thread_at(top):
+    return Thread(
+        name="worker",
+        address=0x4000,
+        entry=0x1000,
+        stack_addr=0x2000,
+        stack_size=0x2000,
+        stack_grows_up=False,
+        sp=top,
+    )
+
+
+def test_armv7em_wiring_dispatches_fpu_by_flag(monkeypatch):
+    top = 0x3000
+    memory = _Words()
+    memory[top] = 1
+    for index in range(8):
+        memory[top + 4 + index * 4] = 0x40 + index
+    for index in range(16):
+        memory[top + 36 + index * 4] = 0x55000000 + index
+    memory[top + 100] = 0x123
+    memory[top + 104] = 0
+    memory[top + 108] = 0
+    memory[top + 112] = 0
+    memory[top + 116] = 0
+    memory[top + 120] = 0x1331
+    memory[top + 124] = 0x1235
+    memory[top + 128] = 0x01000000
+    thread = _thread_at(top)
+    report, seeds = _saved_report(
+        monkeypatch, thread, _armv7em_pair_selection(), memory
+    )
+    assert len(seeds) == 1
+    assert seeds[0].sp == top + 204
+    assert seeds[0].source == "saved"
+    assert [frame.pc for frame in report.frames] == [0x1234]
+
+
+def test_armv7em_wiring_refuses_foreign_flag(monkeypatch):
+    top = 0x3000
+    memory = _Words()
+    memory[top] = 2
+    thread = _thread_at(top)
+    report, seeds = _saved_report(
+        monkeypatch, thread, _armv7em_pair_selection(), memory
+    )
+    assert seeds == []
+    assert report.stop_reason == "unsupported-extension-context"
+    assert report.frames == []
+
+
+def test_armv8m_mainline_wiring_dispatches_fpu_by_exc_return(monkeypatch):
+    top = 0x3000
+    memory = _Words()
+    memory[top] = 0
+    memory[top + 4] = 0xFFFFFFED
+    memory[top + 8] = 0
+    memory[top + 12] = 0
+    for index in range(8):
+        memory[top + 16 + index * 4] = 0x40 + index
+    for index in range(16):
+        memory[top + 48 + index * 4] = 0x55000000 + index
+    memory[top + 112] = 0x123
+    memory[top + 116] = 0
+    memory[top + 120] = 0
+    memory[top + 124] = 0
+    memory[top + 128] = 0
+    memory[top + 132] = 0x1331
+    memory[top + 136] = 0x1235
+    memory[top + 140] = 0x01000000
+    thread = _thread_at(top)
+    report, seeds = _saved_report(
+        monkeypatch, thread, _armv8m_mainline_pair_selection(), memory
+    )
+    assert len(seeds) == 1
+    assert seeds[0].sp == top + 216
+    assert seeds[0].source == "saved"
+    assert [frame.pc for frame in report.frames] == [0x1234]
+
+
+def test_armv8m_mainline_wiring_refuses_secure_header(monkeypatch):
+    top = 0x3000
+    memory = _Words()
+    memory[top] = 0
+    memory[top + 4] = 0xFFFFFFBC
+    memory[top + 8] = 0
+    memory[top + 12] = 0
+    thread = _thread_at(top)
+    report, seeds = _saved_report(
+        monkeypatch, thread, _armv8m_mainline_pair_selection(), memory
+    )
+    assert seeds == []
+    assert report.stop_reason == "unsupported-extension-context"
+    assert report.frames == []

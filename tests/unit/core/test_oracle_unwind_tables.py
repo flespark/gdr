@@ -21,13 +21,12 @@ from core.unwind_cfi import parse_cfi_section
 from core.unwind_ehabi import _eh_insn_words, parse_ehabi
 from core.unwind_expr import _expression_boundaries, evaluate_cfi_expression
 from core.unwind_meta import ElfImage
+from tests.support.loader import cached_elfs, fixture_cache_root
 
 from .oracle_support import (
-    FIXTURE_ROOT,
     SHT_PROGBITS,
     SectionSpec,
     build_elf,
-    cached_elfs,
 )
 
 
@@ -260,7 +259,8 @@ def test_synthetic_cfi_rows_match_pyelftools(eh):
 
 
 _CFI_SOURCES = [
-    (f"cache/{path.relative_to(FIXTURE_ROOT)}", str(path)) for path in cached_elfs()
+    (f"cache/{path.relative_to(fixture_cache_root())}", str(path))
+    for path in cached_elfs()
 ]
 
 
@@ -527,7 +527,7 @@ def test_synthetic_exidx_matches_pyelftools():
 
 
 _EXIDX_SOURCES = [
-    (f"cache/{path.relative_to(FIXTURE_ROOT)}", str(path))
+    (f"cache/{path.relative_to(fixture_cache_root())}", str(path))
     for path in cached_elfs()
     if (image := ElfImage.from_path(path)) is not None
     and image.section(".ARM.exidx") is not None

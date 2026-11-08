@@ -76,6 +76,9 @@ static StackType_t gdr_timer_stack[configTIMER_TASK_STACK_DEPTH];
 GDR_USED static TaskHandle_t gdr_high_task;
 GDR_USED static TaskHandle_t gdr_normal_task;
 GDR_USED static TaskHandle_t gdr_low_task;
+#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
+GDR_USED static TaskHandle_t gdr_fpu_task_handle;
+#endif
 GDR_USED static TaskHandle_t gdr_queue_recv_task;
 GDR_USED static TaskHandle_t gdr_queue_send_task;
 GDR_USED static TaskHandle_t gdr_sem_take_task;
@@ -327,6 +330,27 @@ static void gdr_delay_task(void *argument)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
+
+#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
+/* Reason: the FPU backtrace lane needs a task whose saved frame is
+ * FPU-shaped whenever halted.  Float work sets CONTROL.FPCA, and the
+ * following delay blocks inside PendSV with the extended frame stacked;
+ * the loop is microseconds per 1000 ms delay, so a halted snapshot
+ * deterministically catches the blocked extended frame (the same
+ * duty-cycle reasoning as the delay-loop tasks). */
+static void gdr_fpu_task(void *argument)
+{
+    volatile float accumulator = 0.0f;
+    uint32_t iteration;
+    (void)argument;
+    for (;;) {
+        for (iteration = 1; iteration < 100; iteration++) {
+            accumulator += (float)iteration * 1.5f;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+#endif
 
 /* Lowest-priority spinner so the State column has a genuine Ready row
  * besides IDLE (which is Running). Yields so IDLE can still run. */
@@ -912,6 +936,10 @@ int main(void)
 #endif
     gdr_create_task(gdr_delay_task, "gdr_normal", configMINIMAL_STACK_SIZE, 2,
                     &gdr_normal_task);
+#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
+    gdr_create_task(gdr_fpu_task, "gdr_fpu", configMINIMAL_STACK_SIZE, 2,
+                    &gdr_fpu_task_handle);
+#endif
     gdr_create_task(gdr_delay_task, "gdr_low", configMINIMAL_STACK_SIZE, 1,
                     &gdr_low_task);
     gdr_create_task(gdr_queue_recv, "gdr_qrecv", configMINIMAL_STACK_SIZE, 2,

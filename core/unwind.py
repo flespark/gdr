@@ -343,9 +343,12 @@ def _unwind_cfi(
             return cfa_result
         cfa = cfa_result
     else:
-        cfa_base = regs.get(row.cfa.register)
+        cfa_register = row.cfa.register
+        if cfa_register is None:
+            return "cfi-no-cfa"
+        cfa_base = regs.get(cfa_register)
         if cfa_base is None:
-            return _register_failure(regs, row.cfa.register, "cfi-cfa-register-missing")
+            return _register_failure(regs, cfa_register, "cfi-cfa-register-missing")
         cfa = cfa_base + row.cfa.offset
     if cfa < sp:
         return "cfi-no-progress"
@@ -761,6 +764,10 @@ def unwind_chain(
         has_metadata = False
         exact_caller_pc = False
         frame_evidence: tuple[str, ...] = ()
+        new_regs: Any = regs
+        new_sp = sp
+        new_pc = pc
+        step_method: Method = "cfi"
         if metadata is not None and metadata.ehabi is not None:
             symbol = metadata.elf.function_containing(lookup_pc)
             entry = metadata.ehabi.entry_for(lookup_pc)
