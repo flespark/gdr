@@ -700,13 +700,16 @@ def unwind_chain(
     next_index = 1
     if seed.at_exception_entry and current is not None and max_depth > 1:
         raw_entry = regs.get(return_register)
-        if (
-            raw_entry is None
-            or exception_detector is None
-            or exception_hook is None
-            or not exception_detector(raw_entry)
-        ):
+        if exception_detector is None or exception_hook is None:
             return _result(frames, "exception-return-unproven", False, False, method)
+        if raw_entry is None or not exception_detector(raw_entry):
+            if exception_detector(pc):
+                raw_entry = pc
+            else:
+                return _result(
+                    frames, "exception-return-unproven", False, False, method
+                )
+        assert raw_entry is not None
         transition = _apply_transition(raw_entry, regs, sp, current)
         if isinstance(transition, str):
             return _result(frames, transition, False, False, method)
@@ -743,11 +746,11 @@ def unwind_chain(
                     if register not in recovered_entry:
                         recovered_entry.unavailable[register] = reason
             regs = recovered_entry
+            regs[sp_register] = transition.sp
+            regs.unavailable.pop(sp_register, None)
             if convention.pc_register is not None:
                 regs[convention.pc_register] = transition.pc
-                regs[sp_register] = transition.sp
                 regs.unavailable.pop(convention.pc_register, None)
-                regs.unavailable.pop(sp_register, None)
             current = transition.segment
             pc = transition.pc
             lookup_pc = transition.pc
@@ -937,11 +940,11 @@ def unwind_chain(
                     if register not in recovered_transition:
                         recovered_transition.unavailable[register] = reason
             regs = recovered_transition
+            regs[sp_register] = transition.sp
+            regs.unavailable.pop(sp_register, None)
             if convention.pc_register is not None:
                 regs[convention.pc_register] = transition.pc
-                regs[sp_register] = transition.sp
                 regs.unavailable.pop(convention.pc_register, None)
-                regs.unavailable.pop(sp_register, None)
             current = transition.segment
             pc = transition.pc
             lookup_pc = transition.pc
@@ -1107,18 +1110,29 @@ def live_seed_detail(
         )
     if active_gdb is None:
         return None, "live-registers-unavailable"
+    mask = (
+        (1 << 32) - 1
+        if isa == "riscv32"
+        else (1 << 64) - 1
+        if isa == "riscv64"
+        else None
+    )
     try:
         frame = active_gdb.newest_frame()
         pc = int(frame.pc())
         sp = int(frame.read_register("sp"))
     except (active_gdb.error, AttributeError, RuntimeError, TypeError):
         return None, "live-registers-unavailable"
+    if mask is not None:
+        pc &= mask
+        sp &= mask
     registers: dict[int, int] = {}
     for register, name in RISCV_LIVE_REGISTERS.items():
         try:
-            registers[register] = int(frame.read_register(name))
-        except (active_gdb.error, AttributeError, RuntimeError, TypeError):  # noqa: PERF203
+            value = int(frame.read_register(name))
+        except (active_gdb.error, AttributeError, RuntimeError, TypeError):
             return None, "live-registers-unavailable"
+        registers[register] = value & mask if mask is not None else value
     registers[2] = sp
     return (
         SeedFrame(

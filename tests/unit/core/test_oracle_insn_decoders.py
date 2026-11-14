@@ -151,6 +151,10 @@ _RISCV_WORDS = (
     0x0000006F,
     0x000000EF,
     0xFE111623,
+    0x02730333,
+    0x00C73333,
+    0x30200073,
+    0x10200073,
 )
 _RISCV_HALFWORDS = (
     0x1141,
@@ -531,6 +535,9 @@ def test_riscv_stack_and_control_flow_match_capstone():
             assert any(token in instruction.mnemonic for token in ("j", "ret")), hex(
                 instruction.address
             )
+            checked += 1
+        elif mnemonic in {"mul", "sltu", "mret", "sret"}:
+            assert instruction.mnemonic == mnemonic, hex(instruction.address)
             checked += 1
     assert checked > 0
 

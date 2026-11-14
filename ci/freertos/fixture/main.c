@@ -356,10 +356,26 @@ static void gdr_fpu_task(void *argument)
 
 /* Lowest-priority spinner so the State column has a genuine Ready row
  * besides IDLE (which is Running). Yields so IDLE can still run. */
+GDR_USED static volatile uint32_t gdr_irq_hold;
+
+static __attribute__((noinline)) void gdr_rv_spin_leaf(void)
+{
+    while (gdr_irq_hold != 0U) {
+        __asm__ volatile("nop" ::: "memory");
+    }
+}
+
+static __attribute__((noinline)) void gdr_rv_spin_mid(void)
+{
+    gdr_rv_spin_leaf();
+    __asm__ volatile("" ::: "memory");
+}
+
 static void gdr_ready_spin(void *argument)
 {
     (void)argument;
     for (;;) {
+        gdr_rv_spin_mid();
         taskYIELD();
     }
 }

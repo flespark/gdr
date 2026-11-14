@@ -2,7 +2,7 @@ diff --git a/bsp/qemu-riscv-virt64/applications/main.c b/bsp/qemu-riscv-virt64/a
 index 50d2de7a..0c2b6a16 100644
 --- a/bsp/qemu-riscv-virt64/applications/main.c
 +++ b/bsp/qemu-riscv-virt64/applications/main.c
-@@ -1,21 +1,381 @@
+@@ -1,21 +1,399 @@
  /*
 - * Copyright (c) 2006-2021, RT-Thread Development Team
 + * GDR test fixture: creates known kernel objects for QEMU smoke tests.
@@ -136,12 +136,30 @@ index 50d2de7a..0c2b6a16 100644
 +    }
 +}
 +
++static volatile rt_uint32_t gdr_irq_hold;
++
++static __attribute__((noinline)) void gdr_bt_live_leaf(void)
++{
++    __asm volatile(".global gdr_bt_live_stop\ngdr_bt_live_stop:\nnop" ::: "memory");
++    while (gdr_irq_hold != 0U)
++    {
++        __asm volatile("nop" ::: "memory");
++    }
++}
++
++static __attribute__((noinline)) void gdr_bt_live_middle(void)
++{
++    gdr_bt_live_leaf();
++    __asm volatile("" ::: "memory");
++}
++
 +static void worker3_entry(void *parameter)
 +{
 +    (void)parameter;
 +
 +    while (1)
 +    {
++        gdr_bt_live_middle();
 +        rt_thread_mdelay(200);
 +    }
 +}

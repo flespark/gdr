@@ -21,6 +21,7 @@ from core.gdb_bridge import (
     read_bytes,
     read_int,
     source_location_at,
+    type_size,
     value_address,
 )
 from core.unwind import (
@@ -63,6 +64,16 @@ from core.unwind_arm import (
     resolve_arm_irq_stack_bounds_detail,
     resolve_armv6m_vector_limit,
 )
+from core.unwind_riscv import (
+    RiscvSnapshot as _RiscvSnapshot,
+)
+from core.unwind_riscv import (
+    prepare_riscv_handler_unwind,
+    resolve_riscv_irq_stack_bounds_detail,
+)
+from core.unwind_riscv import (
+    riscv_snapshot as _core_riscv_snapshot,
+)
 from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
 from freertos.backtrace import decode_cm4f_saved_context
@@ -71,6 +82,7 @@ from freertos.navigation import current_tasks, saved_context_bounds, task_state
 from freertos.scheduler_seed import build_stage_seed
 from freertos.scheduler_switch import build_profile as build_scheduler_profile
 from freertos.scheduler_switch import classify_stage
+from freertos.stack_frame_profile import analyze_riscv_trap_profile
 
 try:
     import gdb
@@ -93,6 +105,29 @@ def _exit_pc() -> int | None:
 
 def _arm_snapshot() -> tuple[_ArmSnapshot | None, str]:
     return _core_arm_snapshot(gdb_module=gdb)
+
+
+def _riscv_snapshot(*, xlen: int = 32) -> tuple[_RiscvSnapshot | None, str]:
+    return _core_riscv_snapshot(xlen=xlen, gdb_module=gdb)
+
+
+def _riscv_isr_stack_bounds(elf: ElfImage | None) -> tuple[int, int, str] | None:
+    def _isr_obj() -> tuple[int, int] | None:
+        val = eval_identifier("xISRStack")
+        if val is None:
+            return None
+        addr = value_address(val)
+        size = type_size(val.type)
+        if addr > 0 and size is not None and size > 0:
+            return addr, addr + size
+        return None
+
+    return resolve_riscv_irq_stack_bounds_detail(
+        symbol_lookup=linker_symbol_address,
+        elf=elf,
+        stack_object_bounds=_isr_obj,
+        section_names=(".irq_stack", ".isr_stack"),
+    )
 
 
 def _live_seed_detail(
@@ -614,6 +649,80 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             seed = setup.seed
             fault = setup.fault
             stkalign = setup.stkalign
+            segments.append(setup.exception_segment)
+            current_segment = setup.exception_segment.ident
+            exception_detector = setup.exception_detector
+            exception_hook = setup.exception_hook
+            exception_guard = setup.exception_guard
+    elif arch == "riscv" and current_core is not None:
+        task_segment = _task_segment(task, low, high)
+        segments = [task_segment]
+        current_segment = task_segment.ident
+        elf_image = metadata.elf if metadata is not None else None
+        span = analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
+        isr_bounds = _riscv_isr_stack_bounds(elf_image)
+        in_isr_stack = (
+            isr_bounds is not None and isr_bounds[0] <= seed.sp <= isr_bounds[1]
+        )
+        in_trap_span = span is not None and (
+            seed.pc == span.entry
+            or span.entry <= seed.pc < span.exit_end
+            or span.refused_reason(seed.pc) is not None
+        )
+        if in_isr_stack or in_trap_span:
+            if span is None:
+                return _stop(
+                    "exception-model-unverified",
+                    "the compiled RISC-V trap handler could not be verified from ELF",
+                )
+            xlen = 64 if selection.isa == "riscv64" else 32
+            snap, snap_reason = _riscv_snapshot(xlen=xlen)
+            if snap is None:
+                return _stop(
+                    snap_reason,
+                    "the live RISC-V exception CSRs are not readable",
+                )
+            running_flag = _scheduler_running()
+            if running_flag is False:
+                return _stop(
+                    "scheduler-not-running",
+                    "a RISC-V trap handler is active before the scheduler is started",
+                )
+            current_tcb = read_int(eval_identifier("pxCurrentTCB"))
+            if current_tcb is None:
+                return _stop(
+                    "scheduler-current-tcb-unavailable",
+                    "pxCurrentTCB is not readable while unwinding a RISC-V trap frame",
+                )
+            word = xlen // 8
+            endian = arch_or_default()[1]
+
+            def _resolve_frt_trap_frame(_ctx) -> int | str:
+                raw_top = read_bytes(current_tcb, word)
+                if raw_top is None or len(raw_top) != word:
+                    return "exception-frame-unreadable"
+                return int.from_bytes(
+                    raw_top, "little" if endian == "little" else "big"
+                )
+
+            setup = prepare_riscv_handler_unwind(
+                snap,
+                root_pc=_exit_pc(),
+                span=span,
+                task_segment=task_segment,
+                irq_stack_bounds=lambda: isr_bounds,
+                nest_count=None,
+                endian=endian,
+                task_frame_resolver=_resolve_frt_trap_frame,
+            )
+            if isinstance(setup, tuple):
+                return _stop(setup[0], setup[1])
+            if current_tcb != task.address:
+                return _stop(
+                    "exception-task-context-conflict",
+                    "pxCurrentTCB does not match the requested task",
+                )
+            seed = setup.seed
             segments.append(setup.exception_segment)
             current_segment = setup.exception_segment.ident
             exception_detector = setup.exception_detector

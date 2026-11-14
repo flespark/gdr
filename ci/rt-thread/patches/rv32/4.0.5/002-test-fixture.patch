@@ -2,7 +2,7 @@ diff --git a/bsp/gdr-rv32/main.c b/bsp/gdr-rv32/main.c
 new file mode 100644
 --- /dev/null
 +++ b/bsp/gdr-rv32/main.c
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,236 @@
 +#include <rtthread.h>
 +
 +#define THREAD_STACK_SIZE 2048
@@ -78,14 +78,21 @@ new file mode 100644
 +    }
 +}
 +
-+static void gdr_bt_live_leaf(void)
++static volatile rt_uint32_t gdr_irq_hold;
++
++static __attribute__((noinline)) void gdr_bt_live_leaf(void)
 +{
 +    __asm volatile(".global gdr_bt_live_stop\ngdr_bt_live_stop:\nnop" ::: "memory");
++    while (gdr_irq_hold != 0U)
++    {
++        __asm volatile("nop" ::: "memory");
++    }
 +}
 +
-+static void gdr_bt_live_middle(void)
++static __attribute__((noinline)) void gdr_bt_live_middle(void)
 +{
 +    gdr_bt_live_leaf();
++    __asm volatile("" ::: "memory");
 +}
 +
 +static void worker3_entry(void *parameter)

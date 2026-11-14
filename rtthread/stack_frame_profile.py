@@ -20,6 +20,7 @@ from core.stack_frame_parser import (
     StackContextSelection,
 )
 from core.unwind_meta import ElfImage
+from core.unwind_riscv import RiscvTrapFrameLayout, RiscvTrapSpan
 
 from .backtrace import (
     ARMV6M_INTEGER,
@@ -159,6 +160,137 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
         )
     except (EvidenceError, StopIteration, ValueError, TypeError):
         return False
+
+
+def analyze_riscv_trap_profile(elf: ElfImage) -> RiscvTrapSpan | None:
+    """Extract a verified M-mode ``trap_entry`` span and epc policy for RT-Thread."""
+    if elf.pointer_size not in (4, 8):
+        return None
+    if not _riscv_verify_context_switch(elf):
+        return None
+    word = elf.pointer_size
+    trap_start = elf.symbol_address("trap_entry")
+    if trap_start is None:
+        return None
+    try:
+        insns = RiscvCodeParser(elf, "trap_entry").instructions(terminal=("mret",))
+    except (EvidenceError, ValueError, TypeError):
+        return None
+    pcs = sorted(insns)
+    if len(pcs) < 4:
+        return None
+    mv_s0_pc = next(
+        (pc for pc, op in insns.items() if op in (("add", 8, 0, 2), ("addi", 8, 2, 0))),
+        None,
+    )
+    if mv_s0_pc is None:
+        return None
+    mv_sp_pc = next(
+        (
+            pc
+            for pc, op in insns.items()
+            if pc > mv_s0_pc and op in (("add", 2, 0, 8), ("addi", 2, 8, 0))
+        ),
+        None,
+    )
+    if mv_sp_pc is None:
+        return None
+    dispatch_jals = [
+        pc for pc, op in insns.items() if mv_s0_pc < pc < mv_sp_pc and op[0] == "jal"
+    ]
+    if not dispatch_jals:
+        return None
+
+    pre_s0 = {pc: op for pc, op in insns.items() if pc <= mv_s0_pc}
+    frame_size = riscv_stack_frame_size(pre_s0)
+    if frame_size is None or frame_size < 32 * word or frame_size % 16 != 0:
+        return None
+    saves = riscv_slot_map(riscv_frame_accesses(pre_s0, "store", 2))
+    expected_gprs: dict[int, int] = {
+        1: word,
+        **{reg: reg * word for reg in range(4, 32)},
+    }
+    if any(offset not in saves.get(reg, ()) for reg, offset in expected_gprs.items()):
+        return None
+    store_op = "sd" if word == 8 else "sw"
+    if not any(
+        op[0] == store_op and op[2] == 2 and op[3] == 2 * word for op in pre_s0.values()
+    ):
+        return None
+
+    call_start = dispatch_jals[0]
+    call_end = mv_sp_pc
+    spurious_pc = elf.symbol_address("spurious_interrupt")
+    exit_end = (
+        spurious_pc
+        if spurious_pc is not None and spurious_pc > pcs[-1]
+        else pcs[-1] + 4
+    )
+
+    def _stores_mepc_at_zero(window: dict[int, tuple[object, ...]]) -> bool:
+        mepc_regs = {
+            op[1] for op in window.values() if op[0] == "csrr" and op[2] == 0x341
+        }
+        return bool(
+            mepc_regs
+            and any(
+                op[0] == store_op and op[1] in mepc_regs and op[2] == 2 and op[3] == 0
+                for op in window.values()
+            )
+        )
+
+    pre_call = {pc: op for pc, op in insns.items() if pc < call_start}
+    post_call = {pc: op for pc, op in insns.items() if pc >= call_end}
+    if _stores_mepc_at_zero(pre_call):
+        epc_offset: int | None = 0
+    elif _stores_mepc_at_zero(post_call):
+        epc_offset = None
+    else:
+        return None
+
+    mstatus_regs = {
+        op[1] for op in pre_s0.values() if op[0] == "csrr" and op[2] == 0x300
+    }
+    mstatus_offset = (
+        2 * word
+        if mstatus_regs
+        and any(
+            op[0] == store_op
+            and op[1] in mstatus_regs
+            and op[2] == 2
+            and op[3] == 2 * word
+            for op in pre_s0.values()
+        )
+        else None
+    )
+
+    layout = RiscvTrapFrameLayout(
+        frame_bytes=32 * word,
+        total_frame_bytes=frame_size,
+        reg_offsets=expected_gprs,
+        epc_offset=epc_offset,
+        mstatus_offset=mstatus_offset,
+        epc_sync_addend=0,
+        frame_pointer_register=8,
+    )
+    epc_tag = "epc=stacked" if epc_offset is not None else "epc=deferred-mepc"
+    return RiscvTrapSpan(
+        entry=trap_start,
+        save_complete=call_start,
+        call_start=call_start,
+        call_end=call_end,
+        exit_end=exit_end,
+        layout=layout,
+        refused_spans=(
+            (pcs[1], call_start, "exception-frame-incomplete"),
+            (call_end, exit_end, "scheduler-transition-unproven"),
+        ),
+        evidence=(
+            f"trap=trap_entry@{trap_start:#x}",
+            f"dispatch={call_start:#x}..{call_end:#x}",
+            epc_tag,
+        ),
+    )
 
 
 # --- Arm --------------------------------------------------------------------

@@ -154,7 +154,9 @@ FPU image alongside the 68-byte basic pair; other VFP-ABI images stop at
 are identified by `Tag_CPU_arch` but select no profile (`unverified-port`):
 no QEMU machine or CPU model covers Cortex-M23, so no live lane can exist
 and handler/task support stays refused by construction.
-RV32 covers the upstream common integer port, not vendor traps or ISR cross-stack unwinding.
+RV32 and RV64 cover the upstream common integer ports and Machine-mode trap
+cross-stack unwinding; vendor-private traps remain refused
+(`unsupported-exception-model` / `exception-model-unverified`).
 
 **EHABI entries require a matching ELF function symbol.** Without
 `-funwind-tables` the ARM fixtures expose only `EXIDX_CANTUNWIND`. With the
@@ -254,6 +256,17 @@ including lazy `LSPACT=1` (only integer registers are consumed), and stop at
 `exception-fp-state-unavailable` otherwise; Armv6-M has no FPU and still
 refuses extended encodings. Other saved-context lanes do not establish
 handler-mode support; unproven ports and unmatched scheduler transitions stay refused.
+
+**RISC-V M-mode trap cross-stack unwinding requires compiled trap-entry proof.**
+FreeRTOS (`qemu-virt-rv32` and `qemu-virt-rv64`) and RT-Thread (`rv32` E310 and
+`rv64` virt64) recover the interrupted task chain across the ISR stack from
+verified direct-mode `mtvec` dispatch (`mstatus.MPP == M`, IRQ stack bounds from
+kernel symbols or ELF sections, and exact raw-entry `mepc` or stacked/deferred
+return address); nested deferred-`mepc` traps (`rt_interrupt_nest > 1` on E310)
+stop at `nested-trap-epc-unproven`, active switch windows (`vTaskSwitchContext`,
+`rt_thread_switch_interrupt_flag != 0`, and trap save/restore epilogues) fail
+closed (`scheduler-transition-unproven`), synchronous `ecall` stops at
+`exception-task-context-conflict`, and vendor-private traps remain unsupported.
 
 **Scheduler backtraces require verified compiled M-profile port profiles.**
 FreeRTOS verifies `ARM_CM0` (`freertos/armv6-m/arm-cm0-pendsv-v1`), `ARM_CM3`

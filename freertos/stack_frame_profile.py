@@ -20,6 +20,7 @@ from core.stack_frame_parser import (
     StackContextSelection,
 )
 from core.unwind_meta import ElfImage
+from core.unwind_riscv import RiscvTrapFrameLayout, RiscvTrapSpan
 
 from .backtrace import (
     ARMV6M_INTEGER,
@@ -102,15 +103,27 @@ def _riscv_profile(isa: str | None) -> SavedStackContext | None:
     }.get(isa or "")
 
 
-def _riscv_verify_context_switch(elf: ElfImage) -> bool:
-    """Compare FreeRTOS frame effects, trap routes, startup restore and initializer."""
+def analyze_riscv_trap_profile(elf: ElfImage) -> RiscvTrapSpan | None:
+    """Extract a verified M-mode trap handler span from FreeRTOS port code."""
+    if elf.pointer_size not in (4, 8):
+        return None
     word = elf.pointer_size
     trap_start = elf.symbol_address("freertos_risc_v_trap_handler")
     sync_pc = elf.symbol_address("synchronous_exception")
     async_pc = elf.symbol_address("asynchronous_interrupt")
     idle_pc = elf.symbol_address("handle_interrupt")
-    if None in (trap_start, sync_pc, async_pc, idle_pc):
-        return False
+    proc_pc = elf.symbol_address("processed_source")
+    if None in (trap_start, sync_pc, async_pc, idle_pc, proc_pc):
+        return None
+    assert (
+        trap_start is not None
+        and sync_pc is not None
+        and async_pc is not None
+        and idle_pc is not None
+        and proc_pc is not None
+    )
+    if not (trap_start < async_pc < sync_pc < idle_pc < proc_pc):
+        return None
     try:
         trap = RiscvCodeParser(
             elf, "freertos_risc_v_trap_handler", "asynchronous_interrupt"
@@ -122,10 +135,10 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
         }
         saved = riscv_slot_map(riscv_frame_accesses(trap, "store", 2))
         if frame_size != 31 * word or not _riscv_slots_include(saved, expected_saves):
-            return False
+            return None
         saved_offsets = riscv_all_store_offsets(trap, 2)
         if not {29 * word, 30 * word}.issubset(saved_offsets):
-            return False
+            return None
         loads = riscv_target_loads(elf, trap)
         tcb_register = next(
             (register for register, name in loads.items() if name == "pxCurrentTCB"),
@@ -138,7 +151,7 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
             and op[3] == 0
             for op in trap.values()
         ):
-            return False
+            return None
         mcause_register = next(
             (op[1] for op in trap.values() if op[0] == "csrr" and op[2] == 0x342),
             None,
@@ -152,12 +165,10 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
             None,
         )
         if mcause_register is None or branch is None or branch[3] != sync_pc:
-            return False
+            return None
         branch_pc = next(pc for pc, op in trap.items() if op is branch)
-        # The branch falls through to the asynchronous handler; the handler
-        # itself starts at the exclusive end of the trap-handler range.
         if branch_pc + 4 != async_pc:
-            return False
+            return None
         async_code = RiscvCodeParser(
             elf, "asynchronous_interrupt", "synchronous_exception"
         ).instructions()
@@ -171,25 +182,26 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
         if mepc_register is None or not _riscv_route_pc_store(
             async_code, mepc_register=mepc_register, addend=0
         ):
-            return False
+            return None
         if not _riscv_route_pc_store(sync_code, mepc_register=mepc_register, addend=4):
-            return False
-        # The interrupt path saves mepc then switches to xISRStackTop; the
-        # synchronous path saves mepc+4 before the same dispatch point.
+            return None
         if not any(
             op[0] in ("sd", "sw") and op[2] == 2 and op[3] == 0
             for op in async_code.values()
         ):
-            return False
+            return None
+        dispatch = RiscvCodeParser(
+            elf, "handle_interrupt", "processed_source"
+        ).instructions()
         restore = RiscvCodeParser(elf, "processed_source").instructions(
             terminal=("mret",)
         )
         restored_loads = riscv_frame_accesses(restore, "load", 2)
         restored = riscv_slot_map(restored_loads)
         if not _riscv_slots_include(restored, expected_saves):
-            return False
+            return None
         if not {29 * word, 30 * word}.issubset(set(restored_loads)):
-            return False
+            return None
         pc_restore = next(
             (
                 op[1]
@@ -206,7 +218,71 @@ def _riscv_verify_context_switch(elf: ElfImage) -> bool:
             )
             or not any(op[0] == "mret" for op in restore.values())
         ):
-            return False
+            return None
+    except (EvidenceError, StopIteration, ValueError, TypeError):
+        return None
+
+    trap_pcs = sorted(trap)
+    second_pc = trap_pcs[1] if len(trap_pcs) > 1 else trap_start + 4
+    mret_pc = max(restore)
+    exit_end = mret_pc + 4
+    refused: list[tuple[int, int, str]] = [
+        (second_pc, idle_pc, "exception-frame-incomplete"),
+        (proc_pc, exit_end, "scheduler-transition-unproven"),
+    ]
+    switch_sym = next(
+        (sym for sym in elf.symbols if sym.name == "vTaskSwitchContext"),
+        None,
+    )
+    if switch_sym is not None and switch_sym.size > 0:
+        refused.append(
+            (
+                switch_sym.start,
+                switch_sym.start + switch_sym.size,
+                "scheduler-transition-unproven",
+            )
+        )
+        all_dispatch = {**async_code, **sync_code, **dispatch}
+        dispatch_pcs = sorted(all_dispatch)
+        for index, pc in enumerate(dispatch_pcs):
+            op = all_dispatch[pc]
+            if op[0] == "jal" and op[2] == switch_sym.start:
+                ret_pc = (
+                    dispatch_pcs[index + 1] if index + 1 < len(dispatch_pcs) else pc + 4
+                )
+                refused.append((ret_pc, ret_pc + 4, "scheduler-transition-unproven"))
+
+    layout = RiscvTrapFrameLayout(
+        frame_bytes=31 * word,
+        total_frame_bytes=31 * word,
+        reg_offsets=expected_saves,
+        epc_offset=0,
+        mstatus_offset=30 * word,
+        epc_sync_addend=4,
+    )
+    return RiscvTrapSpan(
+        entry=trap_start,
+        save_complete=idle_pc,
+        call_start=idle_pc,
+        call_end=proc_pc,
+        exit_end=exit_end,
+        layout=layout,
+        refused_spans=tuple(refused),
+        evidence=(
+            f"trap=freertos_risc_v_trap_handler@{trap_start:#x}",
+            f"dispatch={idle_pc:#x}..{proc_pc:#x}",
+        ),
+    )
+
+
+def _riscv_verify_context_switch(elf: ElfImage) -> bool:
+    """Compare FreeRTOS frame effects, trap routes, startup restore and initializer."""
+    span = analyze_riscv_trap_profile(elf)
+    if span is None:
+        return False
+    word = elf.pointer_size
+    expected_saves = span.layout.reg_offsets
+    try:
         initial = _riscv_initial_stack(elf, word)
         if initial is None:
             return False

@@ -50,6 +50,15 @@ from core.unwind_arm import (
     arm_snapshot as _core_arm_snapshot,
 )
 from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.unwind_riscv import (
+    RiscvSnapshot,
+    prepare_riscv_handler_unwind,
+    resolve_riscv_irq_stack_bounds_detail,
+    u_xlen_mask,
+)
+from core.unwind_riscv import (
+    riscv_snapshot as _core_riscv_snapshot,
+)
 from core.unwind_segments import (
     ExceptionHook,
     ExceptionTransitionContext,
@@ -71,7 +80,11 @@ from rtthread.scheduler_switch import (
 from rtthread.scheduler_switch import (
     classify_stage as classify_scheduler_stage,
 )
-from rtthread.stack_frame_profile import analyze_hardfault_trampoline, select_context
+from rtthread.stack_frame_profile import (
+    analyze_hardfault_trampoline,
+    analyze_riscv_trap_profile,
+    select_context,
+)
 from rtthread.stackpc import SavedPcLayout, selected_saved_pc_layout
 
 try:
@@ -345,6 +358,20 @@ _SCHEDULER_SYMBOLS = frozenset(
 
 def _arm_snapshot() -> tuple[ArmSnapshot | None, str]:
     return _core_arm_snapshot(gdb_module=gdb)
+
+
+def _riscv_snapshot(*, xlen: int = 32) -> tuple[RiscvSnapshot | None, str]:
+    return _core_riscv_snapshot(xlen=xlen, gdb_module=gdb)
+
+
+def _riscv_irq_stack_bounds(
+    elf: ElfImage | None, *, hart_id: int = 0
+) -> tuple[int, int, str] | None:
+    return resolve_riscv_irq_stack_bounds_detail(
+        symbol_lookup=linker_symbol_address,
+        elf=elf,
+        hart_id=hart_id,
+    )
 
 
 def _read_armv8m_regs() -> tuple[int | None, int | None]:
@@ -821,6 +848,127 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             seed, metadata, setup.exception_segment.ident, hook
         )
         stkalign = setup.stkalign
+    elif arch == "riscv":
+        elf_image = metadata.elf if metadata is not None else None
+        switch_flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
+        if is_current:
+            span = (
+                analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
+            )
+            hart_id = max(0, thread.oncpu or 0)
+            irq_bounds = _riscv_irq_stack_bounds(elf_image, hart_id=hart_id)
+            nest_count = read_int(eval_identifier("rt_interrupt_nest"))
+            in_isr_stack = (
+                irq_bounds is not None and irq_bounds[0] <= seed.sp <= irq_bounds[1]
+            )
+            in_trap_span = span is not None and (
+                seed.pc == span.entry
+                or span.entry <= seed.pc < span.exit_end
+                or span.refused_reason(seed.pc) is not None
+            )
+            if in_isr_stack or in_trap_span or bool(nest_count):
+                if switch_flag:
+                    return _stop_report(
+                        thread,
+                        architecture,
+                        selection.abi,
+                        max_depth,
+                        "scheduler-transition-unproven",
+                        "rt_thread_switch_interrupt_flag is active during RISC-V trap",
+                    )
+                if span is None:
+                    return _stop_report(
+                        thread,
+                        architecture,
+                        selection.abi,
+                        max_depth,
+                        "exception-model-unverified",
+                        "the compiled RISC-V trap_entry could not be verified from ELF",
+                    )
+                xlen = 64 if architecture == "riscv64" else 32
+                snap, snap_reason = _riscv_snapshot(xlen=xlen)
+                if snap is None:
+                    return _stop_report(
+                        thread,
+                        architecture,
+                        selection.abi,
+                        max_depth,
+                        snap_reason,
+                        "live RISC-V exception CSRs are not readable",
+                    )
+                if span.layout.epc_offset is None and nest_count is None:
+                    return _stop_report(
+                        thread,
+                        architecture,
+                        selection.abi,
+                        max_depth,
+                        "exception-context-unproven",
+                        "rt_interrupt_nest is unreadable with deferred mepc storage",
+                    )
+                task_segment = StackSegment(
+                    ident=f"task:{thread.address:#x}",
+                    owner=thread.name,
+                    low=low,
+                    high=high,
+                    source="task-recorded",
+                    stack="process",
+                    kind="task",
+                )
+                mask = u_xlen_mask(xlen)
+                endian = arch_or_default()[1]
+
+                def _resolve_rtt_trap_frame(
+                    context: ExceptionTransitionContext,
+                ) -> int | str:
+                    s0 = context.registers.get(8)
+                    if s0 is None:
+                        return "exception-frame-missing"
+                    return s0 & mask
+
+                setup = prepare_riscv_handler_unwind(
+                    snap,
+                    root_pc=(
+                        value_address(exit_value)
+                        if exit_value is not None
+                        else (thread.entry or None)
+                    ),
+                    root_reason="task-exit" if exit_value is not None else "task-entry",
+                    span=span,
+                    task_segment=task_segment,
+                    irq_stack_bounds=lambda: irq_bounds,
+                    nest_count=nest_count,
+                    endian=endian,
+                    task_frame_resolver=_resolve_rtt_trap_frame,
+                )
+                if isinstance(setup, tuple):
+                    return _stop_report(
+                        thread,
+                        architecture,
+                        selection.abi,
+                        max_depth,
+                        setup[0],
+                        setup[1],
+                    )
+                seed = setup.seed
+                segments = (task_segment, setup.exception_segment)
+                current_segment = setup.exception_segment.ident
+                detector, hook, guard = (
+                    setup.exception_detector,
+                    setup.exception_hook,
+                    setup.exception_guard,
+                )
+        elif switch_flag:
+            sp_offset = member_offset("struct rt_thread", ("sp",))
+            from_thread = read_int(eval_identifier("rt_interrupt_from_thread"))
+            if sp_offset is not None and from_thread == thread.address + sp_offset:
+                return _stop_report(
+                    thread,
+                    architecture,
+                    selection.abi,
+                    max_depth,
+                    "scheduler-transition-unproven",
+                    "thread has a pending RISC-V interrupt context switch",
+                )
     metadata = _apply_switch_return_cfi(metadata, scheduler_decision)
     result = unwind_chain(
         seed,

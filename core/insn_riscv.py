@@ -36,12 +36,16 @@ def riscv_code_decoder(word: int, size: int, pc: int, xlen: int) -> tuple:
             return ("srli", rd, rs, rt)
         if op == 27 and fn == 0 and xlen == 64:
             return ("addiw", rd, rs, imm)
-        if op == 51 and fn in (0, 4, 6, 7) and word >> 25 == 0:
-            return ({0: "add", 4: "xor", 6: "or", 7: "and"}[fn], rd, rs, rt)
+        if op == 51 and fn in (0, 3, 4, 6, 7) and word >> 25 == 0:
+            return ({0: "add", 3: "sltu", 4: "xor", 6: "or", 7: "and"}[fn], rd, rs, rt)
+        if op == 51 and fn == 0 and word >> 25 == 1:
+            return ("mul", rd, rs, rt)
         if op in (23, 55):
             return ("auipc" if op == 23 else "lui", rd, _sign_extend(word & ~4095, 32))
         if word == 0x30200073:
             return ("mret",)
+        if word == 0x10200073:
+            return ("sret",)
         if op == 115 and fn == 2 and rs == 0:
             return ("csrr", rd, word >> 20)
         if op == 115 and rd == 0 and fn in (1, 2):
