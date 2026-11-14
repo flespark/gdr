@@ -137,6 +137,7 @@ class UnwindMetadata:
             section = elf.section(name)
             if section is None or not section.data:
                 continue
+            hdr_source, hdr_error = elf.eh_frame_hdr_source() if is_eh else (None, None)
             cfi_tables.append(
                 parse_cfi_section(
                     section.data,
@@ -145,6 +146,8 @@ class UnwindMetadata:
                     endian=elf.endian,
                     is_eh_frame=is_eh,
                     pointer_context=pointer_context,
+                    eh_frame_hdr=hdr_source,
+                    eh_frame_hdr_error=hdr_error,
                 )
             )
         ehabi = None

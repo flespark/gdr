@@ -26,6 +26,7 @@ SHT_NOBITS = 8
 SHT_ARM_EXIDX = 0x70000001
 SHT_ATTRIBUTES = 0x70000003
 SHF_EXECINSTR = 0x4
+PT_GNU_EH_FRAME = 0x6474E550
 
 DW_EH_PE_ABSPTR = 0x00
 DW_EH_PE_ULEB128 = 0x01
@@ -112,6 +113,29 @@ class ElfImage:
     anchors: tuple[tuple[str, int], ...] = ()
     nobits_sections: tuple[tuple[str, int, int], ...] = ()
     zero_size_functions: tuple[CodeSymbol, ...] = ()
+    gnu_eh_frame: tuple[int, bytes] | None = None
+    gnu_eh_frame_error: str | None = None
+
+    def eh_frame_hdr_source(self) -> tuple[tuple[int, bytes] | None, str | None]:
+        """Return validated ``.eh_frame_hdr`` ``(address, bytes)`` or an index error.
+
+        ``PT_GNU_EH_FRAME`` takes precedence over section names when present;
+        malformed or conflicting program headers inhibit trusting
+        ``.eh_frame_hdr`` silently so CFI parsing degrades safely.
+        """
+        if self.gnu_eh_frame_error is not None:
+            return None, self.gnu_eh_frame_error
+        section = self.section(".eh_frame_hdr")
+        if self.gnu_eh_frame is not None:
+            if (
+                section is not None
+                and (section.address, section.data) != self.gnu_eh_frame
+            ):
+                return None, "eh-hdr-program-section-mismatch"
+            return self.gnu_eh_frame, None
+        if section is not None and section.data:
+            return (section.address, section.data), None
+        return None, None
 
     def symbol_address(self, name: str) -> int | None:
         """Return a defined symbol's unique address, including zero-size labels."""
@@ -239,6 +263,11 @@ class ElfImage:
             machine=table.machine,
             section_count=len(table.headers),
         )
+        gnu_eh_frame, gnu_eh_frame_error = _parse_gnu_eh_frame(
+            data,
+            is_64=table.is_64,
+            endian=table.endian,
+        )
         return cls(
             pointer_size=8 if table.is_64 else 4,
             endian=table.endian,
@@ -249,6 +278,8 @@ class ElfImage:
             anchors=anchors,
             nobits_sections=tuple(nobits_sections),
             zero_size_functions=zero_size_functions,
+            gnu_eh_frame=gnu_eh_frame,
+            gnu_eh_frame_error=gnu_eh_frame_error,
         )
 
     @classmethod
@@ -497,6 +528,61 @@ def iter_elf_section_headers(data: bytes) -> ElfSectionTable | None:
         names=data[names_header.offset : names_header.offset + names_header.size],
         headers=tuple(headers),
     )
+
+
+def _parse_gnu_eh_frame(
+    data: bytes, *, is_64: bool, endian: Endian
+) -> tuple[tuple[int, bytes] | None, str | None]:
+    """Extract an optional ``PT_GNU_EH_FRAME`` segment without aborting ELF load."""
+    order = "<" if endian == "little" else ">"
+    min_phentsize = 56 if is_64 else 32
+    try:
+        if is_64:
+            phoff = struct.unpack_from(f"{order}Q", data, 0x20)[0]
+            phentsize = struct.unpack_from(f"{order}H", data, 0x36)[0]
+            phnum = struct.unpack_from(f"{order}H", data, 0x38)[0]
+        else:
+            phoff = struct.unpack_from(f"{order}I", data, 0x1C)[0]
+            phentsize = struct.unpack_from(f"{order}H", data, 0x2A)[0]
+            phnum = struct.unpack_from(f"{order}H", data, 0x2C)[0]
+    except struct.error:
+        return None, "eh-hdr-malformed-phdr"
+    if phoff == 0 or phnum == 0:
+        return None, None
+    if (
+        phentsize < min_phentsize
+        or phoff > len(data)
+        or phnum > MAX_SECTION_COUNT
+        or phnum > (len(data) - phoff) // phentsize
+    ):
+        return None, "eh-hdr-malformed-phdr"
+    found: tuple[int, bytes] | None = None
+    for index in range(phnum):
+        base = phoff + index * phentsize
+        p_type = struct.unpack_from(f"{order}I", data, base)[0]
+        if p_type != PT_GNU_EH_FRAME:
+            continue
+        if found is not None:
+            return None, "eh-hdr-duplicate-phdr"
+        if is_64:
+            p_offset = struct.unpack_from(f"{order}Q", data, base + 8)[0]
+            p_vaddr = struct.unpack_from(f"{order}Q", data, base + 16)[0]
+            p_filesz = struct.unpack_from(f"{order}Q", data, base + 32)[0]
+            p_memsz = struct.unpack_from(f"{order}Q", data, base + 40)[0]
+        else:
+            p_offset = struct.unpack_from(f"{order}I", data, base + 4)[0]
+            p_vaddr = struct.unpack_from(f"{order}I", data, base + 8)[0]
+            p_filesz = struct.unpack_from(f"{order}I", data, base + 16)[0]
+            p_memsz = struct.unpack_from(f"{order}I", data, base + 20)[0]
+        if (
+            p_filesz == 0
+            or p_offset > len(data)
+            or p_filesz > len(data) - p_offset
+            or (p_memsz and p_memsz < p_filesz)
+        ):
+            return None, "eh-hdr-truncated-phdr"
+        found = (p_vaddr, data[p_offset : p_offset + p_filesz])
+    return found, None
 
 
 # ---------------------------------------------------------------------------

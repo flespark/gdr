@@ -552,7 +552,7 @@ def _pytest(lane: Lane, pytest_args: list[str]) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=log_dir))
     suite = {
-        "eh-frame": "tests/integration/freertos/test_eh_frame.py",
+        "eh-frame": "tests/integration/bare/test_eh_frame.py",
         "snapshot": "tests/integration/freertos/test_snapshot.py",
     }.get(lane.variant, f"tests/integration/{lane.rtos}")
     has_node = any(

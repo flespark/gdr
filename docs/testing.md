@@ -297,15 +297,19 @@ the supported stages and exclusions live in [errata](errata.md#task-backtraces).
 
 ## Isolated `.eh_frame` variant
 
-`tests/integration/freertos/test_eh_frame.py` uses the
-`bare/qemu-virt-rv64/none/eh-frame` cell. Its GNU-assembled RV64 image
-has `.eh_frame`, no `.debug_frame` or EHABI, and frame-pointer fallback
-disabled. Seven tests verify an ordered four-frame chain with an extended
+`tests/integration/bare/test_eh_frame.py` uses the
+`bare/qemu-virt-rv64/none/eh-frame` cell. Its GNU-assembled RV64 images
+have `.eh_frame` (plus companion `PT_GNU_EH_FRAME`/`.eh_frame_hdr` and
+encoded-pointer fixtures), no `.debug_frame` or EHABI, and frame-pointer fallback
+disabled. Fourteen tests verify an ordered four-frame chain with an extended
 offset and virtual return column 128, a signal-CIE exact boundary PC, all
 three CFI expression rules, rejection of a forbidden expression without
-fallback, and missing/truncated metadata or an unavailable `textrel` base.
-Undefined return columns remain partial endpoints. Explicit non-PC-relative
-pointer bases and indirect reads have synthetic unit coverage only.
+fallback, missing/truncated metadata or unavailable pointer bases, on-demand
+`PT_GNU_EH_FRAME`/`.eh_frame_hdr` binary search (and safe fallback when the
+index is damaged while still rejecting truncated `.eh_frame`), and live
+resolution/rejection of `DW_EH_PE_textrel`, `DW_EH_PE_datarel`,
+`DW_EH_PE_funcrel` and `DW_EH_PE_indirect` against QEMU RAM.
+Undefined return columns remain partial endpoints.
 Signal-CIE coverage does not verify hardware exception decoding or
 cross-stack unwinding. Build details live in
 [the fixture README](../ci/bare/eh-frame/README.md).

@@ -19,8 +19,19 @@ python3 ci/test.py run bare qemu-virt-rv64 none eh-frame
 The runner checks tools and prepares artifacts before pytest, retaining
 build/test logs and a firmware manifest in the shared cache. No RTOS source
 checkout is needed. The internal
-`build.sh OUTPUT_DIRECTORY TOOLCHAIN_BIN_DIRECTORY` produces `unwind.elf`,
-`unwind.bin` and `frames.txt`. The assembly selects `.cfi_sections .eh_frame`; build flags are
+`build.sh OUTPUT_DIRECTORY TOOLCHAIN_BIN_DIRECTORY` produces three standalone
+RV64 image sets:
+
+- `unwind.elf`, `unwind.bin`, `frames.txt` from `fixture.S` (`linker.ld`),
+- `unwind_hdr.elf`, `unwind_hdr.bin`, `hdr_frames.txt` from `hdr.S`
+  (`linker_hdr.ld`, with `PT_GNU_EH_FRAME` and a 36-entry `.eh_frame_hdr`
+  binary search table),
+- `unwind_reloc.elf`, `unwind_reloc.sym.elf`, `unwind_reloc.bin`,
+  `reloc_frames.txt` from `reloc.S` (with `DW_EH_PE_textrel`,
+  `DW_EH_PE_datarel`, `DW_EH_PE_funcrel` and `DW_EH_PE_indirect` CIEs resolved
+  by `ld` under `.eh_frame_enc` and renamed via `objcopy` to `.eh_frame`; GDB
+  loads `.sym.elf` so host GDB's own DWARF reader does not abort before GDR
+  parses `.eh_frame`). The assembly selects `.cfi_sections .eh_frame`; build flags are
 `-march=rv64imac_zicsr -mabi=lp64 -mcmodel=medany -g -nostdlib -nostartfiles
 -Wl,--no-relax`. The linker places code at `0x80000000` and reserves a
 4 KiB stack. QEMU boots the binary with `-M virt -cpu rv64 -bios`; GDB loads

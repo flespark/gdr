@@ -170,12 +170,14 @@ CIE return columns and signal-CIE exact PCs are supported; an undefined
 return column stops at `cfi-return-address-undefined` with `complete=false`.
 The three expression rules use a bounded integer evaluator, not the full
 DWARF location language. Register-location descriptions (`DW_OP_reg*`),
-CFI-forbidden operations and unsupported typed/composite operations are
-rejected; `DW_OP_stack_value` is accepted only as a terminal direct-value
-operation. Pointer encodings require explicit text/data/function bases or an
-indirect reader when applicable; missing context is rejected. Those explicit
-non-PC-relative/indirect contexts have synthetic unit evidence only, not live
-verification. The standalone `.eh_frame` scope is recorded in
+CFI-forbidden operations and unsupported typed/composite operations are rejected;
+`DW_OP_stack_value` is accepted only as a terminal direct-value operation.
+Pointer encodings (`DW_EH_PE_textrel`, `DW_EH_PE_datarel`, `DW_EH_PE_funcrel`,
+`DW_EH_PE_indirect`) require explicit text/data/function bases or an indirect
+memory reader via `EncodedPointerContext` and are verified on isolated RV64 ELF
+images; `.eh_frame_hdr` index tables (`PT_GNU_EH_FRAME`) binary-search FDEs on
+demand and degrade to `.eh_frame` parsing on index errors without masking
+`.eh_frame` corruption. The standalone `.eh_frame` scope is recorded in
 [testing](testing.md#isolated-eh_frame-variant).
 
 **FreeRTOS does not record a stack end in every build.** Without

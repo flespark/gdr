@@ -56,7 +56,18 @@ class Lane:
     @property
     def artifacts(self) -> tuple[str, ...]:
         if self.variant == "eh-frame":
-            return ("unwind.elf", "unwind.bin", "frames.txt")
+            return (
+                "unwind.elf",
+                "unwind.bin",
+                "frames.txt",
+                "unwind_hdr.elf",
+                "unwind_hdr.bin",
+                "hdr_frames.txt",
+                "unwind_reloc.elf",
+                "unwind_reloc.sym.elf",
+                "unwind_reloc.bin",
+                "reloc_frames.txt",
+            )
         if self.variant == "snapshot":
             return ("freertos.elf", "snapshot_heap.elf")
         if self.rtos == "freertos":

@@ -44,14 +44,14 @@ duplicating what GDB already displays well. Design rationale lives in
 | `unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
 | `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
 | `unwind_riscv.py` | Shared RISC-V Machine-mode trap frame recovery, IRQ stack bounds resolution and handler-mode unwind setup. |
-| `unwind_meta.py` | Bounded ELF sections, code symbols, zero-size symbol anchors and shared binary encodings. |
+| `unwind_meta.py` | Bounded ELF sections, `PT_GNU_EH_FRAME` segment resolution, code symbols, zero-size symbol anchors and shared binary encodings. |
 | `unwind_leaf.py` | Architecture-neutral, bounded scalar instruction proofs for straight-line functions that preserve SP/LR and return through LR. ELF function types and instruction state define the scan; unknown code, calls, branches and stack-bank changes refuse the proof. |
 | `insn_arm.py` | Bounded ARM/A32 instruction decoder with normalized mnemonic/operand evidence for instruction-leaf proofs and compiled port checks. |
 | `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence and `RegisterConvention` contracts from ELF attributes; contains no RTOS policy. |
 | `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, typed xPSR/CPSR status decoding and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. |
 | `insn_riscv.py` | Bounded RISC-V instruction decoder and ELF code-range primitives for port evidence checks. |
 | `insn_thumb.py` | Bounded Arm Thumb/Thumb-2 instruction and stream decoder for port evidence checks. |
-| `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`) tables and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
+| `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`), `.eh_frame_hdr` binary search on demand with safe fallback to linear `.eh_frame` parsing, and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
 | `unwind_expr.py` | Pure integer CFI expression evaluation for CFA, register-save addresses and direct register values, with independent bytecode, step, stack and memory-read budgets. |
 | `unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
 | `help.py` | Structured help schema with terminal/Markdown renderers; command metadata stays structured so the same source feeds GDB now and docs later. |

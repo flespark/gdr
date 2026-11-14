@@ -775,6 +775,20 @@ def test_indirect_pointer_needs_an_explicit_reader():
         section_address=0,
         context=context,
     ) == (0x2000, 4)
+    zero = EncodedPointerContext(read=lambda _address, size: b"\x00" * size)
+    assert (
+        cfi._decode_encoded_pointer(
+            data,
+            0,
+            len(data),
+            encoding=0x83,
+            address_size=4,
+            endian="little",
+            section_address=0,
+            context=zero,
+        )
+        is None
+    )
     short = EncodedPointerContext(read=lambda _address, _size: b"x")
     assert (
         cfi._decode_encoded_pointer(

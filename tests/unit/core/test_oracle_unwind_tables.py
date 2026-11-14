@@ -261,6 +261,7 @@ def test_synthetic_cfi_rows_match_pyelftools(eh):
 _CFI_SOURCES = [
     (f"cache/{path.relative_to(fixture_cache_root())}", str(path))
     for path in cached_elfs()
+    if path.name != "unwind_reloc.elf"
 ]
 
 
@@ -279,6 +280,24 @@ def test_cached_cfi_rows_match_pyelftools(label, path):
         _assert_cfi_section_matches(
             blob, section.address, eh=eh, label=f"{label}:{name}"
         )
+        if eh:
+            hdr, hdr_error = image.eh_frame_hdr_source()
+            if hdr is not None:
+                assert hdr_error is None
+                elffile = ELFFile(io.BytesIO(blob))
+                indexed = parse_cfi_section(
+                    section.data,
+                    section_address=section.address,
+                    address_size=image.pointer_size,
+                    endian=image.endian,
+                    is_eh_frame=True,
+                    eh_frame_hdr=hdr,
+                )
+                assert indexed.indexed and indexed.error is None
+                for start, end, rows in _sample_fdes(_reference_fdes(elffile, eh=True)):
+                    for pc in _sample_pcs(start, end, rows):
+                        row = indexed.row_for(pc)
+                        assert row is not None and row.error is None
 
 
 # ---------------------------------------------------------------------------
