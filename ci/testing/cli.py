@@ -61,11 +61,16 @@ def parser() -> argparse.ArgumentParser:
     container = commands.add_parser(
         "container", help="manage cache-owned Podman environments"
     )
-    container.add_argument("action", choices=("init", "build", "run"))
+    container.add_argument("action", choices=("init", "build", "run", "stop"))
     container.add_argument("--profile", choices=("qemu", "gdb12"), default="qemu")
     container.add_argument("--platform", choices=("linux/amd64", "linux/arm64"))
     container.add_argument(
         "--no-build", action="store_true", help="require an existing image"
+    )
+    container.add_argument(
+        "--no-start",
+        action="store_true",
+        help="do not start or heal the CI Podman machine for build/run",
     )
     return root
 
@@ -104,9 +109,10 @@ def main(argv: list[str] | None = None) -> int:
                 options.platform,
                 options.no_build,
                 forwarded,
+                no_start=options.no_start,
             )
             return 0
-        from .runner import build, doctor, register_tools, run
+        from .runner import build, doctor, preflight, register_tools, run
 
         if options.command == "setup":
             register_tools()
@@ -120,6 +126,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         initialize(prompt=True)
         register_tools()
+        compatibility = options.gdb12 or getattr(options, "group", None) == "gdb12"
+        if options.command == "matrix":
+            preflight(
+                [lane for lane in lanes if forwarded or not matrix_build_only(lane)],
+                compatibility=compatibility,
+            )
         for lane in lanes:
             if options.command == "doctor":
                 doctor(lane, compatibility=options.gdb12)
@@ -134,8 +146,8 @@ def main(argv: list[str] | None = None) -> int:
                     lane,
                     forwarded,
                     rebuild=options.rebuild,
-                    compatibility=options.gdb12
-                    or getattr(options, "group", None) == "gdb12",
+                    compatibility=compatibility,
+                    check_tools=options.command != "matrix",
                 )
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:

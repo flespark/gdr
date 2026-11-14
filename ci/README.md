@@ -106,6 +106,7 @@ Install Podman, then initialize its dedicated environment on macOS:
 
 ```bash
 python3 ci/test.py container init
+python3 ci/test.py container stop
 python3 ci/test.py container build
 python3 ci/test.py container run -- run freertos mps2-an385 11.1.0 full -- -k backtrace
 python3 ci/test.py container run --no-build -- matrix smoke
@@ -118,6 +119,14 @@ requires an existing image. The default QEMU image follows the host CPU;
 baseline is amd64-only. Repository and external-cache mounts retain their
 absolute paths, including symlink targets. Container internals such as
 `/opt` belong to the cache-owned image rather than the host filesystem.
+
+On macOS, `container build` and `container run` start `gdr-ci` when it is
+stopped and restart it when its recorded state is stale; `--no-start` opts out.
+`container init` remains the only command that creates the machine. A machine
+whose VM process is wedged is not force-removed; restart it or the host, then
+retry. `container stop` stops a running `gdr-ci`; an absent or already stopped
+machine is a no-op. On Linux, CI uses native Podman and `container stop` is a
+no-op.
 
 ## Layering and new lanes
 

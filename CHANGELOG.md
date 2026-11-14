@@ -8,6 +8,8 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- `container stop` stops the CI Podman machine, leaving the image and fixture
+  caches intact.
 - `rtt backtrace`, `frt backtrace` and `gdr api backtrace` show bounded task
   stacks with symbols, source locations, per-frame evidence and explicit
   completeness/stop reasons; `--max-depth` limits the walk.
@@ -44,6 +46,10 @@ All notable changes to GDR are documented in this file.
 
 ### Changed
 
+- `matrix` preflights each distinct tool set once before any lane starts,
+  instead of repeating tool version probes for every lane.
+- `container build` and `container run` start the CI Podman machine when it is
+  stopped and restart it when its recorded state is stale; `--no-start` opts out.
 - improve heap dump CLI and bitmap render. CLI add `--cell-pixel`, `--width`,
   `--row-bytes option`. Bitmap add outline for allocate blocks, add start/end
   text label around bitmap, legend rows read `name: sizeB, start-end`, free
@@ -60,6 +66,8 @@ All notable changes to GDR are documented in this file.
 
 ### Fixed
 
+- FreeRTOS `static-only` fixtures compile without an unused FPU task; the task
+  and its handle exist only when dynamic allocation is enabled.
 - FreeRTOS heap_2 inspection accounts for the V10.3.x heap base alignment.
 - CFI unwinding honors extended offsets and CIE return-address columns
   independently of SP; an undefined return column ends a partial chain.

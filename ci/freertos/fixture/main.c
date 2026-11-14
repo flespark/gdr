@@ -76,7 +76,8 @@ static StackType_t gdr_timer_stack[configTIMER_TASK_STACK_DEPTH];
 GDR_USED static TaskHandle_t gdr_high_task;
 GDR_USED static TaskHandle_t gdr_normal_task;
 GDR_USED static TaskHandle_t gdr_low_task;
-#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
+#if (configSUPPORT_DYNAMIC_ALLOCATION == 1) && \
+    defined(configENABLE_FPU) && (configENABLE_FPU == 1)
 GDR_USED static TaskHandle_t gdr_fpu_task_handle;
 #endif
 GDR_USED static TaskHandle_t gdr_queue_recv_task;
@@ -331,7 +332,8 @@ static void gdr_delay_task(void *argument)
     }
 }
 
-#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
+#if (configSUPPORT_DYNAMIC_ALLOCATION == 1) && \
+    defined(configENABLE_FPU) && (configENABLE_FPU == 1)
 /* Reason: the FPU backtrace lane needs a task whose saved frame is
  * FPU-shaped whenever halted.  Float work sets CONTROL.FPCA, and the
  * following delay blocks inside PendSV with the extended frame stacked;

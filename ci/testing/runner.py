@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -23,6 +23,17 @@ REPOSITORIES = {
     "freertos": "https://github.com/FreeRTOS/FreeRTOS-Kernel.git",
     "rtthread": "https://github.com/RT-Thread/rt-thread.git",
 }
+
+_PROBED: set[tuple[str, ...]] = set()
+
+
+def _probe(args: list[str], *, env: dict[str, str]) -> None:
+    """Run a tool version probe once per process."""
+    key = tuple(args)
+    if key in _PROBED:
+        return
+    _PROBED.add(key)
+    command(args, env=env)
 
 
 def environment() -> dict[str, str]:
@@ -176,13 +187,13 @@ def gdb_for(lane: Lane) -> str:
 def doctor(lane: Lane, *, compatibility: bool = False) -> None:
     """Fail before fetching sources when the selected lane lacks tools."""
     env = environment()
-    command(["uv", "--version"], env=env)
+    _probe(["uv", "--version"], env=env)
     build_tools(lane)
     if lane.qemu:
         binary = CACHE / "tools" / host_id() / "bin" / lane.qemu
         if not binary.is_file():
             raise ValueError(f"missing {binary}; install QEMU and run setup")
-        command([str(binary), "--version"], env=env)
+        _probe([str(binary), "--version"], env=env)
     args = [
         "bash",
         str(ROOT / "ci/checks/gdb-python.sh"),
@@ -193,7 +204,7 @@ def doctor(lane: Lane, *, compatibility: bool = False) -> None:
     ]
     if compatibility:
         args += ["--major", "12", "--python", "3.10"]
-    command(args, env=env)
+    _probe(args, env=env)
 
 
 def build_tools(lane: Lane) -> None:
@@ -201,9 +212,9 @@ def build_tools(lane: Lane) -> None:
     env = environment()
     directory, prefix = compiler(lane)
     for tool in ("gcc", "objcopy", "readelf"):
-        command([str(directory / (prefix + tool)), "--version"], env=env)
+        _probe([str(directory / (prefix + tool)), "--version"], env=env)
     if lane.variant != "eh-frame":
-        command(["git", "--version"], env=env)
+        _probe(["git", "--version"], env=env)
     if lane.rtos == "rtthread":
         if lane.version.startswith("3.1."):
             legacy = CACHE / "tools" / host_id() / "python2"
@@ -215,7 +226,25 @@ def build_tools(lane: Lane) -> None:
                     "RT-Thread 3.1.x requires cached Python 2/SCons 3; use the qemu container"
                 )
         else:
-            command(["scons", "--version"], env=env)
+            _probe(["scons", "--version"], env=env)
+
+
+def preflight(lanes: Iterable[Lane], *, compatibility: bool = False) -> None:
+    """Verify each distinct tool requirement before a matrix starts building."""
+    seen: set[tuple[str, str | None, str, str, str, bool]] = set()
+    for lane in lanes:
+        key = (
+            lane.architecture,
+            lane.qemu,
+            lane.rtos,
+            lane.version,
+            lane.variant,
+            compatibility,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        doctor(lane, compatibility=compatibility)
 
 
 def sources(lane: Lane) -> Path:
@@ -474,10 +503,17 @@ def run(
     *,
     rebuild: bool = False,
     compatibility: bool = False,
+    check_tools: bool = True,
 ) -> None:
     """Run a selected lane while its firmware cache cell is locked."""
     with lane_lock(lane):
-        _run(lane, pytest_args, rebuild=rebuild, compatibility=compatibility)
+        _run(
+            lane,
+            pytest_args,
+            rebuild=rebuild,
+            compatibility=compatibility,
+            check_tools=check_tools,
+        )
 
 
 def _run(
@@ -486,9 +522,11 @@ def _run(
     *,
     rebuild: bool = False,
     compatibility: bool = False,
+    check_tools: bool = True,
 ) -> None:
     """Preflight, prepare firmware, and run pytest with isolated transport."""
-    doctor(lane, compatibility=compatibility)
+    if check_tools:
+        doctor(lane, compatibility=compatibility)
     _build(lane, rebuild=rebuild)
     with cache_lock(f"env/{host_id()}/{environment_id()}", wait=True):
         _pytest(lane, pytest_args)

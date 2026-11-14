@@ -22,6 +22,7 @@ def isolated_cache(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "CACHE", location)
     for module in (cache, containers, runner):
         monkeypatch.setattr(module, "ROOT", root)
+    monkeypatch.setattr(runner, "_PROBED", set())
     return location
 
 
@@ -244,14 +245,19 @@ def test_cli_matrix_build_only_does_not_change_explicit_run(monkeypatch):
     build.assert_called_once_with(lane, rebuild=False)
     run.assert_not_called()
     assert cli.main(["run", "rtthread", "cortex-a9", "3.1.2"]) == 0
-    run.assert_called_once_with(lane, [], rebuild=False, compatibility=False)
+    run.assert_called_once_with(
+        lane, [], rebuild=False, compatibility=False, check_tools=True
+    )
 
 
 def test_cli_gdb12_and_failure_status(monkeypatch):
     monkeypatch.setattr(runner, "register_tools", Mock())
+    preflight = Mock()
+    monkeypatch.setattr(runner, "preflight", preflight)
     run = Mock()
     monkeypatch.setattr(runner, "run", run)
     assert cli.main(["matrix", "gdb12"]) == 0
+    assert preflight.call_args.kwargs["compatibility"] is True
     assert run.call_args.kwargs["compatibility"] is True
     run.side_effect = subprocess.CalledProcessError(3, ["pytest"])
     assert cli.main(["matrix", "gdb12"]) == 1
@@ -297,6 +303,31 @@ def test_doctor_fails_without_compiler_before_source_fetch(isolated_cache, monke
     with pytest.raises(ValueError, match="missing.*gcc"):
         runner.doctor(lane)
     assert not (isolated_cache / "sources").exists()
+
+
+def test_probe_runs_each_command_once(monkeypatch):
+    command = Mock()
+    monkeypatch.setattr(runner, "command", command)
+
+    runner._probe(["uv", "--version"], env={})
+    runner._probe(["uv", "--version"], env={})
+
+    command.assert_called_once()
+
+
+def test_preflight_checks_each_distinct_tool_set_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        runner,
+        "doctor",
+        lambda lane, compatibility=False: calls.append((lane.key, compatibility)),
+    )
+    arm = matrix.select("freertos", "mps2-an385", "11.1.0", "base")
+    riscv = matrix.select("freertos", "qemu-virt-rv64", "11.1.0", "rv64")
+
+    runner.preflight([arm, arm, riscv])
+
+    assert [key for key, _ in calls] == [arm.key, riscv.key]
 
 
 def test_lane_lock_rejects_concurrent_access_and_releases_after_error():
@@ -529,6 +560,200 @@ def test_container_environment_removes_external_connection_overrides(
     )
 
 
+@pytest.mark.parametrize(
+    ("stdout", "expected"), [("gdr-ci*\n", True), ("other\n", False)]
+)
+def test_machine_exists_parses_default_marker(monkeypatch, stdout, expected):
+    monkeypatch.setattr(
+        containers,
+        "_run_quiet",
+        Mock(return_value=subprocess.CompletedProcess([], 0, stdout=stdout)),
+    )
+
+    assert containers._machine_exists({}) is expected
+
+
+def test_ensure_machine_starts_stopped_machine(monkeypatch):
+    events = []
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: True)
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "stopped")
+    monkeypatch.setattr(containers, "_podman_ready", lambda _: True)
+    monkeypatch.setattr(containers, "_start_machine", lambda _: events.append("start"))
+    monkeypatch.setattr(containers, "_stop_machine", lambda _: events.append("stop"))
+
+    containers._ensure_machine({}, create=False)
+
+    assert events == ["start"]
+
+
+def test_ensure_machine_restarts_stale_state(monkeypatch):
+    events = []
+    ready = iter((False, True))
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: True)
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "running")
+    monkeypatch.setattr(containers, "_podman_ready", lambda _: next(ready))
+    monkeypatch.setattr(containers, "_start_machine", lambda _: events.append("start"))
+
+    def stop(_):
+        events.append("stop")
+        return True
+
+    monkeypatch.setattr(containers, "_stop_machine", stop)
+
+    containers._ensure_machine({}, create=False)
+
+    assert events == ["stop", "start"]
+
+
+def test_ensure_machine_reports_unstoppable_stale_state(monkeypatch):
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: True)
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "running")
+    monkeypatch.setattr(containers, "_podman_ready", lambda _: False)
+    monkeypatch.setattr(containers, "_stop_machine", lambda _: False)
+
+    def start(_):
+        raise subprocess.CalledProcessError(125, ["podman", "machine", "start"])
+
+    monkeypatch.setattr(containers, "_start_machine", start)
+
+    with pytest.raises(ValueError, match="could not be restarted"):
+        containers._ensure_machine({}, create=False)
+
+
+def test_ensure_machine_starts_after_an_unsuccessful_stop(monkeypatch):
+    events = []
+    ready = iter((False, False, True))
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: True)
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "running")
+    monkeypatch.setattr(containers, "_podman_ready", lambda _: next(ready))
+    monkeypatch.setattr(containers, "_stop_machine", lambda _: False)
+    monkeypatch.setattr(containers, "_start_machine", lambda _: events.append("start"))
+
+    containers._ensure_machine({}, create=False)
+
+    assert events == ["start"]
+
+
+def test_ensure_machine_requires_init_when_absent(monkeypatch):
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: False)
+
+    with pytest.raises(ValueError, match="container init"):
+        containers._ensure_machine({}, create=False)
+
+
+def test_ensure_machine_initializes_and_starts(monkeypatch):
+    events = []
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: False)
+    monkeypatch.setattr(containers, "_init_machine", lambda _: events.append("init"))
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "stopped")
+    monkeypatch.setattr(containers, "_podman_ready", lambda _: True)
+    monkeypatch.setattr(containers, "_start_machine", lambda _: events.append("start"))
+
+    containers._ensure_machine({}, create=True)
+
+    assert events == ["init", "start"]
+
+
+def test_container_run_ensures_machine_by_default(monkeypatch):
+    ensure = Mock()
+    monkeypatch.setattr(containers, "_is_macos", lambda: True)
+    monkeypatch.setattr(containers, "_ensure_machine", ensure)
+    monkeypatch.setattr(containers, "command", Mock())
+    monkeypatch.setattr(
+        containers.subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess([], 0)),
+    )
+
+    containers.container_command("run", "qemu", "linux/arm64", True, [])
+
+    assert ensure.call_args.kwargs == {"create": False}
+
+
+def test_container_run_no_start_skips_machine(monkeypatch):
+    ensure = Mock()
+    monkeypatch.setattr(containers, "_is_macos", lambda: True)
+    monkeypatch.setattr(containers, "_ensure_machine", ensure)
+    monkeypatch.setattr(containers, "command", Mock())
+    monkeypatch.setattr(
+        containers.subprocess,
+        "run",
+        Mock(return_value=subprocess.CompletedProcess([], 0)),
+    )
+
+    containers.container_command("run", "qemu", "linux/arm64", True, [], no_start=True)
+
+    ensure.assert_not_called()
+
+
+def test_container_init_creates_machine(monkeypatch):
+    ensure = Mock()
+    monkeypatch.setattr(containers, "_is_macos", lambda: True)
+    monkeypatch.setattr(containers, "_ensure_machine", ensure)
+
+    containers.container_command("init", "qemu", "linux/arm64", True, [])
+
+    assert ensure.call_args.kwargs == {"create": True}
+
+
+def test_container_stop_stops_machine(monkeypatch):
+    stop = Mock(return_value=True)
+    monkeypatch.setattr(containers, "_is_macos", lambda: True)
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: True)
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "running")
+    monkeypatch.setattr(containers, "_stop_machine", stop)
+
+    containers.container_command("stop", "qemu", "linux/arm64", True, [])
+
+    stop.assert_called_once()
+
+
+def test_container_stop_skips_absent_machine(monkeypatch):
+    stop = Mock()
+    monkeypatch.setattr(containers, "_is_macos", lambda: True)
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: False)
+    monkeypatch.setattr(containers, "_stop_machine", stop)
+
+    containers.container_command("stop", "qemu", "linux/arm64", True, [])
+
+    stop.assert_not_called()
+
+
+def test_container_stop_is_idempotent(monkeypatch):
+    stop = Mock()
+    monkeypatch.setattr(containers, "_is_macos", lambda: True)
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: True)
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "stopped")
+    monkeypatch.setattr(containers, "_stop_machine", stop)
+
+    containers.container_command("stop", "qemu", "linux/arm64", True, [])
+
+    stop.assert_not_called()
+
+
+def test_container_stop_reports_wedged_machine(monkeypatch):
+    monkeypatch.setattr(containers, "_is_macos", lambda: True)
+    monkeypatch.setattr(containers, "_machine_exists", lambda _: True)
+    monkeypatch.setattr(containers, "_machine_state", lambda _: "running")
+    monkeypatch.setattr(containers, "_stop_machine", lambda _: False)
+
+    with pytest.raises(ValueError, match="did not stop"):
+        containers.container_command("stop", "qemu", "linux/arm64", True, [])
+
+
+def test_container_stop_linux_does_not_touch_cache(monkeypatch):
+    initialize = Mock()
+    environment = Mock()
+    monkeypatch.setattr(containers, "initialize", initialize)
+    monkeypatch.setattr(containers, "container_environment", environment)
+    monkeypatch.setattr(containers, "_is_macos", lambda: False)
+
+    containers.container_command("stop", "qemu", "linux/arm64", True, [])
+
+    initialize.assert_not_called()
+    environment.assert_not_called()
+
+
 def test_container_preserves_external_cache_symlink_paths(tmp_path, monkeypatch):
     destination = tmp_path / "external cache"
     cache.initialize(destination)
@@ -539,7 +764,9 @@ def test_container_preserves_external_cache_symlink_paths(tmp_path, monkeypatch)
         "run",
         Mock(return_value=subprocess.CompletedProcess([], 0)),
     )
-    containers.container_command("run", "qemu", "linux/arm64", True, ["list", "smoke"])
+    containers.container_command(
+        "run", "qemu", "linux/arm64", True, ["list", "smoke"], no_start=True
+    )
     args = command.call_args.args[0]
     assert f"{destination}:{destination}" in args
     assert f"{cache.ROOT}:{cache.ROOT}" in args
@@ -556,4 +783,6 @@ def test_container_gdb12_rejects_wrong_architecture_and_absent_images(monkeypatc
         Mock(return_value=subprocess.CompletedProcess([], 1)),
     )
     with pytest.raises(ValueError, match="image missing"):
-        containers.container_command("run", "qemu", "linux/amd64", True, [])
+        containers.container_command(
+            "run", "qemu", "linux/amd64", True, [], no_start=True
+        )
