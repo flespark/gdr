@@ -26,6 +26,7 @@ pytestmark = pytest.mark.skipif(
         ("full", "mps2-an385", "10.3.1"),
         ("full", "microbit", "11.1.0"),
         ("fpu", "mps2-an386", "11.3.1"),
+        ("full", "mps2-an505", "11.3.1"),
     ),
     reason="requires a FreeRTOS M-profile IRQ fixture lane",
 )
@@ -34,8 +35,12 @@ _ISA = (
     if SPEC.target == "microbit"
     else "armv7e-m"
     if SPEC.target == "mps2-an386"
+    else "armv8-m.mainline"
+    if SPEC.target == "mps2-an505"
     else "armv7-m"
 )
+_TIMER0_EXC = 19 if SPEC.target == "mps2-an505" else 24
+_TIMER1_EXC = 20 if SPEC.target == "mps2-an505" else 25
 _ABI = "aapcs32-vfp" if SPEC.variant == "fpu" else "aapcs32"
 
 _EXCEPTION = 0x01000000
@@ -166,7 +171,7 @@ def test_nested_irq_crosses_handler_then_task_with_two_exact_pcs(gdb_session):
     task = _raw_state(gdb_session, "psp")
     _assert_task_frame(task, expected_symbol="gdr_irq_wait")
     assert nested["frame_xpsr"] & _T_BIT
-    assert nested["frame_xpsr"] & 0x1FF == 0x18, nested
+    assert nested["frame_xpsr"] & 0x1FF == _TIMER0_EXC, nested
     assert "gdr_irq_nested_wait" in nested["frame_pc_symbol"], nested
     assert nested["frame_base"] == nested["msp"], nested
     assert nested["sp"] == nested["msp"], nested
@@ -184,8 +189,8 @@ def test_nested_irq_crosses_handler_then_task_with_two_exact_pcs(gdb_session):
     assert transitions[0]["pc"] == nested["frame_pc"], data
     assert transitions[1]["pc"] == task["frame_pc"], data
     evidence = " ".join(data["messages"])
-    assert "exception:25 -> exception:24" in evidence, data
-    assert "exception:24 -> task:" in evidence, data
+    assert f"exception:{_TIMER1_EXC} -> exception:{_TIMER0_EXC}" in evidence, data
+    assert f"exception:{_TIMER0_EXC} -> task:" in evidence, data
     assert "EXC_RETURN=0xfffffff1" in evidence, data
     assert "EXC_RETURN=0xfffffffd" in evidence, data
 
@@ -211,18 +216,22 @@ def test_switch_window_without_scheduler_profile_refuses_task_ownership(gdb_sess
     if SPEC.target != "mps2-an386":
         pytest.skip("requires the AN386 lane without compiled scheduler evidence")
     _stop_at(gdb_session, "PendSV_Handler")
-    output = gdb_session.run_python(
-        "import gdb, json\n"
-        "tcb = gdb.parse_and_eval('pxCurrentTCB')\n"
-        "print(json.dumps(tcb['pcTaskName'].string()))"
+    reason = _internal_reason(
+        gdb_session,
+        """
+import json, gdb
+original = bt.build_scheduler_profile
+bt.build_scheduler_profile = lambda _elf: (None, "scheduler-transition-unproven")
+try:
+    tcb = gdb.parse_and_eval("pxCurrentTCB")
+    name = tcb["pcTaskName"].string().rstrip("\\x00")
+    report = bt.backtrace(active(), name)
+finally:
+    bt.build_scheduler_profile = original
+print(f"REASON={report.stop_reason} frames={len(report.frames)} complete={report.complete}")
+""",
     )
-    name = json.loads(output.strip().splitlines()[-1]).rstrip("\x00")
-    data = _json_line(gdb_session.run(f"gdr api backtrace {name} --json", timeout=30))
-    assert data["ok"] is True, data
-    data = data["data"]
-    assert not data["complete"], data
-    assert data["stop_reason"] == "scheduler-transition-unproven", data
-    assert data["frames"] == [], data
+    assert reason == "scheduler-transition-unproven frames=0 complete=False", reason
 
 
 def test_fp_isr_grows_the_msp_frame_with_lazy_stacking(gdb_session):
@@ -416,3 +425,42 @@ print(json.dumps({"complete": report.complete, "limit": limit,
         "vector": True,
         "transitions": 1,
     }
+
+
+def test_systick_entry_and_xTaskIncrementTick_callee_unwind_across_msp_to_psp(
+    gdb_session,
+):
+    for stop_symbol, expect_callee in (
+        ("SysTick_Handler", False),
+        ("xTaskIncrementTick", True),
+    ):
+        _stop_at(gdb_session, stop_symbol)
+        probe = _json_line(
+            gdb_session.run_python(
+                """
+import gdb, json
+frame = gdb.newest_frame()
+tcb = gdb.parse_and_eval("pxCurrentTCB")
+if tcb.type.code == gdb.TYPE_CODE_PTR:
+    tcb = tcb.dereference()
+print(json.dumps({
+    "task": tcb["pcTaskName"].string().rstrip("\\x00"),
+    "ipsr": int(frame.read_register("xpsr")) & 0x1ff,
+}))
+"""
+            )
+        )
+        assert probe["ipsr"] == 15, probe
+        data = _envelope(
+            gdb_session.run(f"gdr api backtrace {probe['task']} --json", timeout=30)
+        )
+        assert data["complete"] and data["stop_reason"] == "task-exit", data
+        symbols = [frame["symbol"] or "" for frame in data["frames"]]
+        if expect_callee:
+            assert "xTaskIncrementTick" in symbols[0], symbols
+            assert any(
+                "SysTick_Handler" in sym or "xPortSysTickHandler" in sym
+                for sym in symbols
+            ), symbols
+        transitions = _exception_frames(data)
+        assert len(transitions) >= 1, data

@@ -21,6 +21,7 @@ from core.gdb_bridge import (
     source_location_at,
     value_address,
 )
+from core.layout import member_offset
 from core.stack_frame_parser import StackContextSelection
 from core.unwind import (
     ElfImage,
@@ -34,15 +35,27 @@ from core.unwind import (
 )
 from core.unwind import live_seed_detail as _core_live_seed_detail
 from core.unwind_arm import (
+    ArmSnapshot,
     arm_ccr_stkalign,
+    arm_exception_guard,
     arm_external_exception_limit,
     armv6m_vector_entry,
     armv7m_vector_entry,
     prepare_arm_handler_unwind,
+    resolve_arm_irq_stack_bounds,
     resolve_arm_irq_stack_bounds_detail,
     resolve_armv6m_vector_limit,
 )
-from core.unwind_segments import StackSegment
+from core.unwind_arm import (
+    arm_snapshot as _core_arm_snapshot,
+)
+from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.unwind_segments import (
+    ExceptionHook,
+    ExceptionTransitionContext,
+    ExceptionTransitionResult,
+    StackSegment,
+)
 from rtthread.adapter import value_to_thread
 from rtthread.backtrace import (
     decode_armv7em_saved_context,
@@ -51,13 +64,161 @@ from rtthread.backtrace import (
 from rtthread.backtrace import decode_saved_context as decode_backtrace_context
 from rtthread.layout import RT_THREAD_STACK_FILL
 from rtthread.navigation import find_thread, get_current_thread
-from rtthread.stack_frame_profile import select_context
+from rtthread.scheduler_seed import SchedulerSeed, build_stage_seed
+from rtthread.scheduler_switch import (
+    build_profile as build_scheduler_profile,
+)
+from rtthread.scheduler_switch import (
+    classify_stage as classify_scheduler_stage,
+)
+from rtthread.stack_frame_profile import analyze_hardfault_trampoline, select_context
 from rtthread.stackpc import SavedPcLayout, selected_saved_pc_layout
 
 try:
     import gdb
 except ImportError:
     gdb = None  # type: ignore[assignment]
+
+
+def _systick_aware_guard(
+    exception_number: int, pc: int, isa: str = "armv7-m"
+) -> str | None:
+    """Admit SysTick as a proven periodic interrupt; other numbers keep core policy.
+
+    SysTick shares the ordinary handler proof (scheduler ownership, IRQ stack
+    bounds, vector entry): its handler is a simple tick increment with no
+    scheduling entanglement at entry. FreeRTOS keeps the core refusal because
+    its SysTick belongs to the scheduler.
+    """
+    if exception_number == 15:
+        return None
+    return arm_exception_guard(exception_number, pc, isa)
+
+
+def _systick_capacity_guard(max_exception: int, isa: str = "armv7-m"):
+    """Capacity guard that admits SysTick alongside the core policy."""
+
+    def guard(exception_number: int, pc: int) -> str | None:
+        reason = _systick_aware_guard(exception_number, pc, isa)
+        if reason is not None:
+            return reason
+        if exception_number >= 16 and exception_number > max_exception:
+            return "exception-number-unimplemented"
+        return None
+
+    return guard
+
+
+def _apply_hardfault_trampoline(
+    seed: SeedFrame,
+    metadata: UnwindMetadata | None,
+    exception_ident: str,
+    base_hook: ExceptionHook,
+) -> tuple[UnwindMetadata | None, ExceptionHook]:
+    """Attach HardFault_Handler CFI rows and PSP software-frame compensation."""
+    if seed.exception_number != 3 or metadata is None:
+        return metadata, base_hook
+    trampoline = analyze_hardfault_trampoline(metadata.elf)
+    if trampoline is None:
+        return metadata, base_hook
+    unpushed = CfiRow(cfa=CfaRule(register=13, offset=0), return_register=14)
+    pushed = CfiRow(
+        cfa=CfaRule(register=13, offset=4),
+        registers={14: RegisterRule(kind="offset", value=-4)},
+        return_register=14,
+    )
+    trampoline_table = CfiTable.from_rows(
+        (
+            (trampoline.start, trampoline.push_lr_after_pc, unpushed),
+            (trampoline.push_lr_after_pc, trampoline.pop_lr_after_pc, pushed),
+            (trampoline.pop_lr_after_pc, trampoline.end, unpushed),
+        ),
+        address_size=metadata.elf.pointer_size,
+        endian=metadata.elf.endian,
+    )
+    updated_metadata = replace(
+        metadata,
+        cfi_tables=(trampoline_table, *metadata.cfi_tables),
+    )
+
+    def hook(
+        context: ExceptionTransitionContext,
+    ) -> ExceptionTransitionResult | str | None:
+        if (
+            context.current_segment.ident != exception_ident
+            or context.process_sp is None
+            or trampoline.start <= (seed.pc & ~1) < trampoline.msr_psp_after_pc
+        ):
+            return base_hook(context)
+        task_segments = [
+            segment
+            for segment in context.segments.values()
+            if segment.stack == "process" and segment.kind == "task"
+        ]
+        if len(task_segments) != 1:
+            return "exception-target-segment-missing"
+        if not task_segments[0].contains(context.process_sp, trampoline.software_bytes):
+            return "exception-frame-outside-bounds"
+        if trampoline.software_bytes > context.remaining_exception_bytes:
+            return "exception-read-budget-exceeded"
+        raw = context.read(context.process_sp, trampoline.software_bytes)
+        if raw is None or len(raw) != trampoline.software_bytes:
+            return "exception-frame-unreadable"
+        marker = int.from_bytes(raw[:4], "little")
+        if marker != (context.value & 0xFFFFFFFF):
+            return "exception-context-unproven"
+        saved_r4_r11 = {
+            4 + index: int.from_bytes(
+                raw[
+                    trampoline.r4_offset + 4 * index : trampoline.r4_offset
+                    + 4 * (index + 1)
+                ],
+                "little",
+            )
+            for index in range(8)
+        }
+        adjusted = replace(
+            context,
+            registers={**context.registers, **saved_r4_r11},
+            process_sp=context.process_sp + trampoline.software_bytes,
+            remaining_exception_bytes=(
+                context.remaining_exception_bytes - trampoline.software_bytes
+            ),
+        )
+        result = base_hook(adjusted)
+        if isinstance(result, ExceptionTransitionResult):
+            return replace(
+                result,
+                bytes_read=result.bytes_read + trampoline.software_bytes,
+                evidence=(
+                    *result.evidence,
+                    f"rtthread-hardfault-software-frame={trampoline.software_bytes}B",
+                ),
+            )
+        return result
+
+    return updated_metadata, hook
+
+
+def _apply_switch_return_cfi(
+    metadata: UnwindMetadata | None,
+    scheduler_decision: SchedulerSeed | None,
+) -> UnwindMetadata | None:
+    """Attach return-via-LR CFI for the proven ``rt_hw_context_switch`` exit."""
+    if (
+        metadata is None
+        or scheduler_decision is None
+        or scheduler_decision.stage != "switch-return"
+    ):
+        return metadata
+    pc = scheduler_decision.seed.pc & ~1
+    row = CfiRow(cfa=CfaRule(register=13, offset=0), return_register=14)
+    switch_table = CfiTable.from_rows(
+        ((pc, pc + 2, row),),
+        address_size=metadata.elf.pointer_size,
+        endian=metadata.elf.endian,
+    )
+    return replace(metadata, cfi_tables=(switch_table, *metadata.cfi_tables))
 
 
 def _unwind_metadata(adapter) -> UnwindMetadata | None:
@@ -155,7 +316,7 @@ def _live_seed_detail(
             return None, "unsupported-exception-model"
     elif m_profile and not seed.exception_number and seed.sp != seed.process_sp:
         return None, "live-stack-selection-invalid"
-    if isa == "armv8-m.mainline" and not seed.exception_number:
+    if isa == "armv8-m.mainline":
         try:
             frame = gdb.newest_frame()
             control = int(frame.read_register("control"))
@@ -165,9 +326,149 @@ def _live_seed_detail(
         tz = read_int(eval_identifier("rt_trustzone_current_context"))
         if tz is None:
             return None, "port-configuration-unavailable"
-        if tz != 0 or control != 2 or psplim != 0:
+        if tz != 0 or psplim != 0 or (not seed.exception_number and control != 2):
             return None, "unsupported-extension-context"
     return seed, reason
+
+
+_SCHEDULER_SYMBOLS = frozenset(
+    (
+        "rt_hw_context_switch",
+        "rt_hw_context_switch_interrupt",
+        "PendSV_Handler",
+        "rt_hw_context_switch_to",
+        "switch_to_thread",
+        "pendsv_exit",
+    )
+)
+
+
+def _arm_snapshot() -> tuple[ArmSnapshot | None, str]:
+    return _core_arm_snapshot(gdb_module=gdb)
+
+
+def _read_armv8m_regs() -> tuple[int | None, int | None]:
+    if gdb is None:
+        return None, None
+    try:
+        frame = gdb.newest_frame()
+        return int(frame.read_register("psplim")), int(frame.read_register("control"))
+    except (gdb.error, AttributeError, RuntimeError, TypeError):
+        return None, None
+
+
+def _scheduler_decision(
+    *,
+    architecture: str,
+    selection: StackContextSelection,
+    elf: ElfImage | None,
+    thread,
+    current,
+    low: int,
+    high: int,
+) -> SchedulerSeed | tuple[str, str] | None:
+    """Resolve active M-profile scheduler transition or fail closed."""
+    if architecture not in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline"):
+        return None
+    flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
+    if flag is None:
+        return (
+            "scheduler-state-unavailable",
+            "rt_thread_switch_interrupt_flag is not readable",
+        )
+    profile = build_scheduler_profile(elf)
+    if profile is None and flag != 0:
+        return (
+            "scheduler-profile-unverified",
+            "compiled M-profile switch handlers do not match a verified profile",
+        )
+    snapshot, snapshot_reason = _arm_snapshot()
+    if snapshot is None:
+        if flag != 0:
+            return (
+                snapshot_reason,
+                "live registers are unavailable while a context switch is pending",
+            )
+        return None
+    if profile is None:
+        pc = snapshot.pc & ~1
+        sym = elf.function_containing(pc) if elf is not None else None
+        if sym is not None and sym.name in _SCHEDULER_SYMBOLS:
+            return (
+                "scheduler-profile-unverified",
+                "compiled M-profile switch handlers do not match a verified profile",
+            )
+        return None
+    stage = classify_scheduler_stage(profile, snapshot.pc)
+    if flag == 0 and stage is None:
+        return None
+    if (
+        stage is not None
+        and stage.function == "PendSV_Handler"
+        and stage.name != "ambiguous"
+    ):
+        if snapshot.sp != snapshot.msp:
+            return (
+                "scheduler-handler-mode-unproven",
+                "the live SP is not the handler MSP inside PendSV_Handler",
+            )
+        irq_bounds = resolve_arm_irq_stack_bounds(
+            symbol_lookup=linker_symbol_address,
+            read=read_bytes,
+            isa=architecture,
+            elf=elf,
+            live_msp=snapshot.msp,
+            task_bounds=(low, high),
+        )
+        if irq_bounds is None:
+            return (
+                "exception-stack-bounds-unavailable",
+                "the interrupt stack span could not be resolved at PendSV_Handler",
+            )
+        if not irq_bounds[0] <= snapshot.msp <= irq_bounds[1]:
+            return (
+                "exception-stack-outside-bounds",
+                "the live MSP is outside the resolved interrupt stack span",
+            )
+    stkalign = True if architecture == "armv6-m" else arm_ccr_stkalign(read=read_bytes)
+    if stkalign is None:
+        return (
+            "exception-alignment-unavailable",
+            "CCR.STKALIGN is not readable at a scheduler transition",
+        )
+    from_ptr = read_int(eval_identifier("rt_interrupt_from_thread"))
+    to_ptr = read_int(eval_identifier("rt_interrupt_to_thread"))
+    sp_offset = member_offset("struct rt_thread", ("sp",))
+    psplim, control = (
+        _read_armv8m_regs() if architecture == "armv8-m.mainline" else (None, None)
+    )
+    outcome = build_stage_seed(
+        profile,
+        selection,
+        flag_value=flag,
+        from_ptr=from_ptr,
+        to_ptr=to_ptr,
+        sp_offset=sp_offset,
+        thread_addr=thread.address,
+        thread_sp=thread.sp,
+        thread_entry=thread.entry or None,
+        current_addr=value_address(current) if current is not None else None,
+        low=low,
+        high=high,
+        endian=arch_or_default()[1],
+        stkalign=stkalign,
+        read=read_bytes,
+        live_pc=snapshot.pc,
+        live_sp=snapshot.sp,
+        live_psp=snapshot.psp,
+        live_exc=snapshot.xpsr & 0x1FF,
+        live_regs=snapshot.registers,
+        live_psplim=psplim,
+        live_control=control,
+    )
+    if isinstance(outcome, str):
+        return outcome, f"the pending switch state refused unwind ({outcome})"
+    return outcome
 
 
 def _stop_report(
@@ -298,22 +599,35 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             abi=selection.abi,
         )
     current = get_current_thread()
-    if architecture in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline"):
-        pending = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
-        if pending is None or pending != 0:
-            return _stop_report(
-                thread,
-                architecture,
-                selection.abi,
-                max_depth,
-                "scheduler-state-unavailable"
-                if pending is None
-                else "scheduler-transition-unproven",
-                "the pending switch state cannot establish a stable task owner",
-                source="none",
-            )
+    metadata = _unwind_metadata(adapter)
+    scheduler_decision = _scheduler_decision(
+        architecture=architecture,
+        selection=selection,
+        elf=metadata.elf if metadata is not None else None,
+        thread=thread,
+        current=current,
+        low=low,
+        high=high,
+    )
+    if isinstance(scheduler_decision, tuple):
+        return _stop_report(
+            thread,
+            architecture,
+            selection.abi,
+            max_depth,
+            scheduler_decision[0],
+            scheduler_decision[1],
+            source="none",
+        )
+    scheduler_note: str | None = None
     is_current = current is not None and value_address(current) == thread.address
-    if is_current:
+    if scheduler_decision is not None:
+        seed = scheduler_decision.seed
+        scheduler_note = (
+            f"scheduler stage {scheduler_decision.stage} "
+            f"({scheduler_decision.owner}): {scheduler_decision.evidence}"
+        )
+    elif is_current:
         selected = 0
         if gdb is not None:
             try:
@@ -438,11 +752,11 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             root_pc=value_address(exit_value),
             root_reason="task-exit",
         )
-    metadata = _unwind_metadata(adapter)
     segments = None
     current_segment = None
     detector = hook = guard = None
     stkalign = True
+    fault = None
     if seed.exception_number:
         if seed.process_sp is None or not low <= seed.process_sp <= high:
             return _stop_report(
@@ -479,10 +793,14 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             )
             if architecture == "armv6-m"
             else (lambda number: armv7m_vector_entry(number, read=read_bytes)),
+            guard_fn=_systick_aware_guard,
+            capacity_guard_factory=_systick_capacity_guard,
+            read=read_bytes,
         )
         if isinstance(setup, tuple):
             return _stop_report(thread, architecture, selection.abi, max_depth, *setup)
         seed = setup.seed
+        fault = setup.fault
         task_segment = StackSegment(
             ident=f"task:{thread.address:#x}",
             owner=thread.name,
@@ -499,7 +817,11 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             setup.exception_hook,
             setup.exception_guard,
         )
+        metadata, hook = _apply_hardfault_trampoline(
+            seed, metadata, setup.exception_segment.ident, hook
+        )
         stkalign = setup.stkalign
+    metadata = _apply_switch_return_cfi(metadata, scheduler_decision)
     result = unwind_chain(
         seed,
         metadata,
@@ -529,7 +851,14 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
     method = next(
         (item.method for item in result.frames if item.method != "seed"), "seed"
     )
+    stop_reason = result.stop_reason
     messages = []
+    if scheduler_note is not None:
+        messages.append(scheduler_note)
+    if fault is not None and fault.precise:
+        messages.append(f"synchronous fault {fault.fault}: {fault.evidence}")
+        if result.complete:
+            stop_reason = "synchronous-fault"
     if metadata is None:
         messages.append("no ELF unwind metadata could be read")
     messages.extend(
@@ -548,11 +877,13 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         method=method,
         source=seed.source,
         complete=result.complete,
-        stop_reason=result.stop_reason,
+        stop_reason=stop_reason,
         truncated=result.truncated,
         max_depth=max_depth,
         bounds="recorded",
         frames=frames,
         messages=messages,
         abi=selection.abi,
+        segments=list(result.segments),
+        transitions=list(result.transitions),
     )

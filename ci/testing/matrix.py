@@ -47,6 +47,8 @@ class Lane:
 
     @property
     def tag(self) -> str:
+        if self.rtos == "bare":
+            return "bare"
         if self.rtos == "rtthread":
             return f"v{self.version}"
         return "V10.3.1-kernel-only" if self.version == "10.3.1" else f"V{self.version}"
@@ -64,7 +66,7 @@ class Lane:
         return ("rtthread.elf", ".debug-macros")
 
 
-CONFIG_VARIANTS = (
+FREERTOS_CONFIG_VARIANTS = (
     "base",
     "full",
     "sched",
@@ -100,14 +102,17 @@ RTTHREAD_RV64 = tuple(
 )
 RTTHREAD_PORTS = (
     Lane("rtthread", "mps2-an385", "4.0.5"),
+    Lane("rtthread", "mps2-an385", "4.0.5", "fault"),
     Lane("rtthread", "microbit", "4.0.5"),
     Lane("rtthread", "mps2-an505", "4.0.5"),
+    Lane("rtthread", "mps2-an505", "4.0.5", "fault"),
     Lane("rtthread", "mps2-an505", "4.0.5", "fpu"),
     Lane("rtthread", "mps2-an386", "4.0.5", "fpu"),
+    Lane("rtthread", "mps2-an386", "4.0.5", "fault"),
     Lane("rtthread", "rv32", "4.0.5"),
 )
 FREERTOS_CONFIG = tuple(
-    Lane("freertos", "mps2-an385", "10.3.1", v) for v in CONFIG_VARIANTS
+    Lane("freertos", "mps2-an385", "10.3.1", v) for v in FREERTOS_CONFIG_VARIANTS
 )
 FREERTOS_VERSION = (
     *(Lane("freertos", "mps2-an385", v, "base") for v in ("10.4.6", "10.5.1")),
@@ -129,13 +134,21 @@ FREERTOS_PORTS = (
     Lane("freertos", "mps2-an521", "11.3.1", "smp"),
     Lane("freertos", "mps2-an521", "11.3.1", "mpu"),
     Lane("freertos", "mps2-an386", "11.3.1", "fpu"),
+    Lane("freertos", "mps2-an386", "11.3.1", "fault"),
+    Lane("freertos", "mps2-an386", "11.3.1", "sched"),
+    Lane("freertos", "mps2-an505", "11.3.1", "full"),
+    Lane("freertos", "mps2-an505", "11.3.1", "fault"),
+    Lane("freertos", "mps2-an505", "11.3.1", "sched"),
     Lane("freertos", "qemu-virt-rv64", "11.1.0", "rv64"),
     Lane("freertos", "microbit", "11.1.0", "full"),
+    Lane("freertos", "microbit", "11.1.0", "sched"),
+    Lane("freertos", "mps2-an385", "10.3.1", "fault"),
+    Lane("freertos", "microbit", "11.1.0", "fault"),
     Lane("freertos", "qemu-virt-rv32", "11.1.0", "base"),
     Lane("freertos", "mps2-an521", "11.1.0", "snapshot"),
-    Lane("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame"),
 )
-FREERTOS_SCHED = (Lane("freertos", "mps2-an385", "10.3.1", "sched"),)
+BARE = (Lane("bare", "qemu-virt-rv64", "none", "eh-frame"),)
+
 GROUPS = {
     "rtthread-a9": RTTHREAD_A9,
     "rtthread-rv64": RTTHREAD_RV64,
@@ -143,18 +156,19 @@ GROUPS = {
     "freertos-config": FREERTOS_CONFIG,
     "freertos-version": FREERTOS_VERSION,
     "freertos-ports": FREERTOS_PORTS,
+    "bare": BARE,
     "gdb12": (Lane("rtthread", "cortex-a9", "4.0.5"),),
 }
 GROUPS["rtthread"] = RTTHREAD_A9 + RTTHREAD_RV64 + RTTHREAD_PORTS
 GROUPS["freertos"] = FREERTOS_CONFIG + FREERTOS_VERSION + FREERTOS_PORTS
-GROUPS["freertos-sched"] = FREERTOS_SCHED
-GROUPS["all"] = GROUPS["rtthread"] + GROUPS["freertos"]
+GROUPS["all"] = GROUPS["rtthread"] + GROUPS["freertos"] + BARE
 GROUPS["smoke"] = (
     Lane("rtthread", "cortex-a9", "4.0.5"),
     Lane("rtthread", "rv64", "4.0.5"),
     *RTTHREAD_PORTS,
     Lane("freertos", "mps2-an385", "11.1.0", "base"),
     *FREERTOS_PORTS,
+    *BARE,
 )
 SUPPORTED = tuple(
     dict.fromkeys(

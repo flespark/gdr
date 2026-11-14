@@ -56,6 +56,7 @@ diff --git a/bsp/gdr-mps2-an505/main.c b/bsp/gdr-mps2-an505/main.c
      START_THREAD(worker10);
      START_THREAD(worker11);
 +    START_THREAD(worker_fpu);
+     gdr_irq_fixture_start();
      rt_thread_mdelay(20);
      rt_kprintf("GDR test fixture ready.\n");
      return 0;

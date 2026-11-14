@@ -161,6 +161,28 @@ scenario in a reset session. Gate writes and target execution are fixture
 setup, not operations performed by GDR queries. Verification and oracle
 scope live in [testing](../../docs/testing.md#freertos-suite-organization-and-capability-coverage).
 
+### AN385/M4/M0 fault fixture (`fault`)
+
+`mps2-an385/10.3.1/fault`, `mps2-an386/11.3.1/fault` and
+`microbit/11.1.0/fault` link `fixture/config/fault/FreeRTOSConfig.h`
+(full DWARF knobs, no IRQ/scheduler tasks) with `board/<target>/fault.c`.
+The `gdr_fault` task cycles deterministic fault scenarios, each entered
+through a global `gdr_fault_*_stop` label so the test stops at the exact
+faulting instruction regardless of DWARF line mapping. UsageFault stays
+disabled so an undefined instruction escalates to HardFault
+(`FORCED` + `UFSR UNDEFINSTR`); a data load from `0x50000000` raises a
+precise BusFault (`PRECISERR` + `BFARVALID`); a no-access MPU region makes
+a data load raise a direct MemManage fault (`DACCVIOL` + `MMARVALID` +
+`MMFAR`). GDR reports each as `synchronous-fault` with the fault name and
+register evidence, while the M0 fault has no status registers and stops as
+`fault-frame-imprecise`. Each board's fault handler advances the stacked PC
+past the faulting word and returns (the direct MemManage handler resumes
+at the stacked link address for branches), so the halted session stays
+healthy for the tests that follow each stop. IACCVIOL has synthetic
+unit coverage only: branching into an execute-never region does not raise
+the specified direct fault on the QEMU MPS2 model, and a fixture must never
+contain a path that can wedge the shared halted session.
+
 ### Kernel-direct SMP (`mps2-an521`)
 
 `build.sh` with `--target mps2-an521` links the same shared

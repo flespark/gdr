@@ -67,11 +67,14 @@ board_flags() {
     mps2-an385)
         echo "-mcpu=cortex-m3 -mthumb"
         ;;
+    mps2-an386)
+        echo "-mcpu=cortex-m4 -mthumb"
+        ;;
     microbit)
         echo "-mcpu=cortex-m0 -mthumb"
         ;;
-    mps2-an521)
-        # NOTE: the AN521 runs two Cortex-M33s; pin the FPU off to match
+    mps2-an521 | mps2-an505)
+        # NOTE: the AN521/AN505 run Cortex-M33s; pin the FPU off to match
         # configENABLE_FPU 0 so the lazy-stacking path stays out of the build.
         echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=soft"
         ;;
@@ -110,8 +113,9 @@ compile_fixture() {
 
     case "$TARGET" in
     mps2-an385) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM3" ;;
+    mps2-an386) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM4F" ;;
     microbit) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM0" ;;
-    mps2-an521) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM33_NTZ/non_secure" ;;
+    mps2-an521 | mps2-an505) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM33_NTZ/non_secure" ;;
     qemu-virt-rv64 | qemu-virt-rv32) port_dir="$KERNEL_DIR/portable/GCC/RISC-V" ;;
     esac
 
@@ -119,6 +123,9 @@ compile_fixture() {
     local -a chip_include_paths=()
     case "$TARGET" in
     microbit)
+        port_sources+=("$port_dir/portasm.c")
+        ;;
+    mps2-an505)
         port_sources+=("$port_dir/portasm.c")
         ;;
     mps2-an521)
@@ -172,6 +179,12 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
+    # The AN386 CM4F port requires hard-float codegen (__ARM_FP__); FPU task
+    # context stays governed by configENABLE_FPU, so the integer fault lane
+    # builds hard-float without ever setting FPCA.
+    if [[ "$TARGET" == "mps2-an386" ]]; then
+        cflags+=(-mfloat-abi=hard -mfpu=fpv4-sp-d16)
+    fi
     # The M3/M33/M0 lanes carry real EHABI tables so the fallback and
     # compact personalities are exercised against compiler output, not
     # only synthetic unit vectors. RISC-V lanes keep theirs as well: their
@@ -229,10 +242,19 @@ compile_fixture() {
     if [[ -n "$heap" ]]; then
         sources+=("$heap")
     fi
-    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit") && "$VARIANT" == "full" ]]; then
+    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "full" ]]; then
         sources+=("$board_dir/irq.c")
     fi
-    if [[ "$TARGET" == "mps2-an385" && "$VARIANT" == "sched" ]]; then
+    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "fault" ]]; then
+        sources+=("$board_dir/fault.c")
+    fi
+    if [[ "$TARGET" == "mps2-an386" && "$VARIANT" =~ ^(fpu|fault)$ ]]; then
+        sources+=("$board_dir/irq.c")
+    fi
+    if [[ "$TARGET" == "mps2-an386" && "$VARIANT" == "fault" ]]; then
+        sources+=("$board_dir/fault.c")
+    fi
+    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "mps2-an386" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "sched" ]]; then
         sources+=("$board_dir/sched.c")
     fi
 

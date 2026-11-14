@@ -23,6 +23,7 @@ from freertos.backtrace import (
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
 )
@@ -39,6 +40,7 @@ def _session(monkeypatch, *, isa="armv7-m", smp=False, mpu=False):
     context = {
         ("armv6-m", False, False): ARMV6M_INTEGER,
         ("armv7-m", False, False): ARMV7M_INTEGER,
+        ("armv8-m.mainline", False, False): ARMV8M_MAINLINE_INTEGER,
         ("armv8-m.mainline", False, True): ARMV8M_MAINLINE_MPU_INTEGER,
         ("armv8-m.mainline", True, False): ARMV8M_MAINLINE_SMP_INTEGER,
     }.get((isa, smp, mpu))
@@ -180,7 +182,7 @@ def test_live_invalid_ipsr_reaches_the_report_gate(monkeypatch, ipsr):
     assert not report.complete and not report.truncated
 
 
-@pytest.mark.parametrize("ipsr", [2, 12, 15])
+@pytest.mark.parametrize("ipsr", [2, 12])
 def test_live_valid_but_unverified_exception_number_stops_before_unwind(
     monkeypatch, ipsr
 ):
@@ -394,12 +396,12 @@ def test_live_arm_handler_seed_rejects_an_empty_stack_pointer(monkeypatch, msp, 
         ("missing", "task-not-found"),
         ("port", "port-undetermined"),
         ("bounds", "stack-bounds-unavailable"),
-        ("m33", "unverified-port"),
+        ("m23", "unverified-port"),
     ],
 )
 def test_unavailable_inputs_never_reach_the_unwinder(monkeypatch, case, reason):
     adapter, task = _session(
-        monkeypatch, isa="armv8-m.mainline" if case == "m33" else "armv7-m"
+        monkeypatch, isa="armv8-m.baseline" if case == "m23" else "armv7-m"
     )
     if case == "missing":
         monkeypatch.setattr(bridge, "find_task", lambda *_args: None)
@@ -417,7 +419,7 @@ def test_unavailable_inputs_never_reach_the_unwinder(monkeypatch, case, reason):
     assert not report.complete and not report.truncated
 
 
-def test_m33_profile_requires_explicit_smp_or_mpu_configuration(monkeypatch):
+def test_m33_profile_requires_explicit_configuration(monkeypatch):
     monkeypatch.setattr(
         ports,
         "cpu_of",
@@ -425,8 +427,9 @@ def test_m33_profile_requires_explicit_smp_or_mpu_configuration(monkeypatch):
     )
     elf = _elf()
 
-    single_core = ports.select_context(elf)
+    missing_macros = ports.select_context(elf)
     macros = {"configENABLE_FPU": "0", "configENABLE_TRUSTZONE": "0"}
+    single_core = ports.select_context(elf, macros=macros | {"configENABLE_MPU": "0"})
     smp = ports.select_context(elf, smp=True, macros=macros | {"configENABLE_MPU": "0"})
     mpu = ports.select_context(
         elf,
@@ -434,10 +437,14 @@ def test_m33_profile_requires_explicit_smp_or_mpu_configuration(monkeypatch):
         macros=macros | {"configENABLE_MPU": "1", "configUSE_MPU_WRAPPERS_V1": "0"},
     )
 
-    assert single_core.context is None and single_core.reason == "unverified-port"
+    assert (
+        missing_macros.context is None
+        and missing_macros.reason == "port-configuration-unavailable"
+    )
+    assert single_core.context is ARMV8M_MAINLINE_INTEGER and single_core.reason == "ok"
     assert smp.context is ARMV8M_MAINLINE_SMP_INTEGER and smp.reason == "ok"
     assert mpu.context is ARMV8M_MAINLINE_MPU_INTEGER and mpu.reason == "ok"
-    assert smp.evidence == (
+    assert single_core.evidence == (
         ".ARM.attributes Tag_CPU_arch/profile",
         "port symbols",
         "kernel configuration",
@@ -874,7 +881,7 @@ def _handler_session(monkeypatch, *, exception_number=24, isa="armv7-m"):
 @pytest.mark.parametrize(
     "isa,reason",
     [
-        ("armv8-m.mainline", "unsupported-exception-model"),
+        ("armv8-m.baseline", "unverified-port"),
     ],
 )
 def test_handler_mode_refuses_unverified_isa_profiles(monkeypatch, isa, reason):
@@ -908,8 +915,50 @@ def test_handler_mode_refuses_svc_and_pendsv_ownership(monkeypatch):
 def test_handler_mode_refuses_synchronous_fault_ownership(monkeypatch):
     adapter, _task = _handler_session(monkeypatch, exception_number=3)
     report = bridge.backtrace(adapter, "worker")
-    assert report.stop_reason == "exception-frame-type-unproven"
+    assert report.stop_reason == "fault-frame-imprecise"
     assert report.frames == []
+
+
+@pytest.mark.parametrize(
+    "complete,raw_reason,expected_reason",
+    [
+        (True, "task-exit", "synchronous-fault"),
+        (False, "max-depth", "max-depth"),
+    ],
+)
+def test_handler_mode_precise_fault_preserves_failure_or_marks_synchronous_fault(
+    monkeypatch, complete, raw_reason, expected_reason
+):
+    adapter, _task = _handler_session(monkeypatch, exception_number=6)
+    monkeypatch.setattr(bridge, "_scheduler_running", lambda: True)
+    monkeypatch.setattr(bridge, "_irq_stack_bounds", lambda: (0x203FC000, 0x20400000))
+    monkeypatch.setattr(bridge, "_external_exception_limit", lambda: 47)
+    monkeypatch.setattr(bridge, "_ccr_stkalign", lambda: True)
+    monkeypatch.setattr(bridge, "_vector_entry", lambda _n: None)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    words = {0xE000ED28: 0x00010000, 0xE000ED2C: 0}
+    monkeypatch.setattr(
+        bridge,
+        "read_bytes",
+        lambda address, size: words.get(address, 0).to_bytes(size, "little"),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda seed, *_a, **_k: UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            raw_reason,
+            complete,
+            not complete,
+            "current",
+            "seed",
+        ),
+    )
+    report = bridge.backtrace(adapter, "worker")
+    assert report.complete is complete
+    assert report.stop_reason == expected_reason
+    assert any("synchronous fault UsageFault:UNDEFINSTR" in m for m in report.messages)
 
 
 @pytest.mark.parametrize("ipsr", [1, 7, 8, 9, 10, 13])
@@ -917,13 +966,13 @@ def test_exception_guard_refuses_architecturally_invalid_numbers(ipsr):
     assert bridge._exception_guard(ipsr, 0x1000) == "exception-number-invalid"
 
 
-@pytest.mark.parametrize("ipsr", [2, 12, 15])
+@pytest.mark.parametrize("ipsr", [2, 12])
 def test_exception_guard_classifies_valid_but_unverified_system_numbers(ipsr):
     assert bridge._exception_guard(ipsr, 0x1000) == "exception-number-unverified"
 
 
-@pytest.mark.parametrize("ipsr", [16, 24, 25, 511])
-def test_exception_guard_admits_the_architectural_external_range(ipsr):
+@pytest.mark.parametrize("ipsr", [15, 16, 24, 25, 511])
+def test_exception_guard_admits_systick_and_the_architectural_external_range(ipsr):
     assert bridge._exception_guard(ipsr, 0x1000) is None
 
 
@@ -1050,7 +1099,6 @@ def _scheduler_report(
     adapter, task = _session(monkeypatch)
     task.top_of_stack = task_top
     monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [(0, task.address)])
-    monkeypatch.setattr(bridge, "session_meta", lambda: ("freertos", "10.3.1"))
     monkeypatch.setattr(
         bridge, "build_scheduler_profile", lambda _elf: (_scheduler_profile(), "ok")
     )

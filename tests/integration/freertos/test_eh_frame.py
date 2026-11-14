@@ -19,8 +19,8 @@ from tests.support.qemu_harness import (
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = load_integration_spec()
 pytestmark = pytest.mark.skipif(
-    SPEC.rtos != "freertos" or SPEC.variant != "eh-frame",
-    reason="requires the FreeRTOS eh-frame fixture lane",
+    SPEC.rtos != "bare" or SPEC.variant != "eh-frame",
+    reason="requires the bare eh-frame fixture lane",
 )
 
 
@@ -31,7 +31,7 @@ def eh_frame_image():
         (output / name).is_file() for name in ("unwind.elf", "unwind.bin", "frames.txt")
     ):
         pytest.skip(
-            "missing eh-frame fixture; use python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 eh-frame"
+            "missing eh-frame fixture; use python3 ci/test.py run bare qemu-virt-rv64 none eh-frame"
         )
     image = ElfImage.from_path(output / "unwind.elf")
     assert image is not None and image.section(".eh_frame") is not None

@@ -90,12 +90,22 @@ def test_fpu_task_backtrace_is_complete(gdb_session):
     assert any("worker_fpu_entry" in function for function in functions), functions
 
 
-def test_switch_request_window_refuses_task_ownership_live(gdb_session):
+def test_switch_request_window_refuses_unverified_profile_live(gdb_session):
     gdb_session.run("tbreak PendSV_Handler")
     gdb_session.run("continue", timeout=60)
-    data = _envelope(gdb_session.run("gdr api backtrace worker_fpu --json", timeout=30))
+    data = _envelope(
+        gdb_session.run_python("""
+import rtthread.backtrace_gdb as bridge
+original = bridge.build_scheduler_profile
+try:
+    bridge.build_scheduler_profile = lambda _elf: None
+    print(gdb.execute('gdr api backtrace worker_fpu --json', to_string=True))
+finally:
+    bridge.build_scheduler_profile = original
+""")
+    )
     assert data["ok"] is True, data
     data = data["data"]
     assert not data["complete"], data
-    assert data["stop_reason"] == "scheduler-transition-unproven", data
+    assert data["stop_reason"] == "scheduler-profile-unverified", data
     assert data["frames"] == [], data

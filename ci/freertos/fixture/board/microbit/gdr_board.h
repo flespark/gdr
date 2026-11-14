@@ -14,6 +14,9 @@
 #define GDR_PORT_PROVIDES_SYSTICK_HANDLER 1
 #define GDR_BOARD_HAS_IRQ_FIXTURE 1
 
+/* Deterministic HardFault fixture lives in board/microbit/fault.c. */
+#define GDR_BOARD_HAS_FAULT_FIXTURE 1
+
 #ifndef configCPU_CLOCK_HZ
 #define configCPU_CLOCK_HZ ((unsigned long)16000000)
 #endif

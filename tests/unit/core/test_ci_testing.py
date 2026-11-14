@@ -86,9 +86,12 @@ def test_lane_defaults_and_metadata_are_explicit():
     snapshot = matrix.select("freertos", "mps2-an521", "11.1.0", "snapshot")
     assert snapshot.qemu is None
     assert snapshot.artifacts == ("freertos.elf", "snapshot_heap.elf")
-    metadata = matrix.select("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame")
+    metadata = matrix.select("bare", "qemu-virt-rv64", "none", "eh-frame")
     assert metadata.architecture == "riscv:rv64"
     assert "frames.txt" in metadata.artifacts
+    assert metadata.tag == "bare"
+    with pytest.raises(ValueError, match="unsupported lane"):
+        matrix.select("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame")
     with pytest.raises(ValueError, match="unsupported lane"):
         matrix.select("freertos", "qemu-virt-rv64", "11.1.0", "base")
 
@@ -209,8 +212,8 @@ def test_new_port_bsp_and_application_patches_only_add_fixture_files(target):
 def test_cli_list_and_invalid_coordinates_have_no_cache_side_effects(
     isolated_cache, capsys
 ):
-    assert cli.main(["list", "smoke"]) == 0
-    assert "freertos/qemu-virt-rv64/11.1.0/eh-frame" in capsys.readouterr().out
+    assert cli.main(["list", "bare"]) == 0
+    assert "bare/qemu-virt-rv64/none/eh-frame" in capsys.readouterr().out
     assert cli.main(["run", "freertos", "bad-board", "11.1.0"]) == 1
     assert not isolated_cache.exists()
 
@@ -325,7 +328,7 @@ def test_fresh_rejects_incomplete_or_invalid_manifests(manifest):
     [
         ("freertos", "mps2-an385", "11.1.0", "base"),
         ("freertos", "mps2-an521", "11.1.0", "snapshot"),
-        ("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame"),
+        ("bare", "qemu-virt-rv64", "none", "eh-frame"),
         ("rtthread", "rv64", "4.0.5", ""),
         ("rtthread", "mps2-an385", "4.0.5", ""),
         ("rtthread", "mps2-an505", "4.0.5", ""),
@@ -374,7 +377,7 @@ def test_build_publishes_complete_artifacts_and_reuses_manifest(
 
 
 def test_failed_build_does_not_publish_manifest(isolated_cache, monkeypatch):
-    lane = matrix.select("freertos", "qemu-virt-rv64", "11.1.0", "eh-frame")
+    lane = matrix.select("bare", "qemu-virt-rv64", "none", "eh-frame")
     monkeypatch.setattr(runner, "fingerprint", lambda _lane: "current")
     monkeypatch.setattr(runner, "compiler", lambda _lane: (isolated_cache, "cross-"))
     monkeypatch.setattr(runner, "command", Mock())
@@ -493,8 +496,10 @@ def test_pytest_forwarding_and_live_panel_coverage(monkeypatch, extra, expected)
 @pytest.mark.parametrize("variant", ["snapshot", "eh-frame"])
 def test_metadata_and_snapshot_runs_reject_all_skipped(monkeypatch, variant):
     monkeypatch.setattr(runner, "gdb_for", lambda _lane: "cached-gdb")
-    target = "mps2-an521" if variant == "snapshot" else "qemu-virt-rv64"
-    lane = matrix.select("freertos", target, "11.1.0", variant)
+    if variant == "snapshot":
+        lane = matrix.select("freertos", "mps2-an521", "11.1.0", variant)
+    else:
+        lane = matrix.select("bare", "qemu-virt-rv64", "none", variant)
 
     def command(args, *, env, log=None):
         assert env["GDR_FIXTURE_VARIANT"] == variant

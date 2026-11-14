@@ -348,7 +348,9 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
             "msr",
             {"rn": first & 0xF, "sysm": second & 0xFF},
         )
-    if first & 0xFBF0 == 0xF040 and first & 0x000F == 0x000F and second & 0x8000 == 0:
+    if first == 0xF3AF and second == 0x8000:
+        return ThumbInstruction(address, 4, "nop", {})
+    if first & 0xFBE0 == 0xF040 and first & 0x000F == 0x000F and second & 0x8000 == 0:
         imm12 = (
             (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
         )
@@ -358,7 +360,7 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
             "mov_imm",
             {"rd": (second >> 8) & 0xF, "imm": _thumb_expand_imm(imm12)},
         )
-    if first & 0xFBF0 in (0xF000, 0xF020):
+    if first & 0xFBF0 in (0xF000, 0xF020) and second & 0x8000 == 0:
         immediate = (
             (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
         )
@@ -383,7 +385,7 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
             "tst_imm",
             {"rn": first & 0xF, "imm": _thumb_expand_imm(immediate)},
         )
-    if first == 0xF04E and second & 0x8000 == 0:
+    if first & 0xFBE0 == 0xF040 and second & 0x8000 == 0:
         imm12 = (
             (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
         )
@@ -396,16 +398,6 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
                 "rn": first & 0xF,
                 "imm": _thumb_expand_imm(imm12),
             },
-        )
-    if first & 0xFBE0 == 0xF040 and second & 0x8000 == 0:
-        imm12 = (
-            (((first >> 10) & 1) << 11) | (((second >> 12) & 7) << 8) | (second & 0xFF)
-        )
-        return ThumbInstruction(
-            address,
-            4,
-            "mov_imm",
-            {"rd": (second >> 8) & 0xF, "imm": _thumb_expand_imm(imm12)},
         )
     if first & 0xFFF0 in (0xF8C0, 0xF8D0):
         return ThumbInstruction(
@@ -443,6 +435,18 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
                 "count": (second & 0xFF) // 2,
             },
         )
+    if first & 0xFFB0 in (0xED20, 0xECB0) and second & 0x0F00 == 0x0A00:
+        return ThumbInstruction(
+            address,
+            4,
+            "vstmdb" if first & 0xFFB0 == 0xED20 else "vldmia",
+            {
+                "rn": first & 0xF,
+                "first": (((second >> 12) & 0xF) << 1) | ((first >> 6) & 0x1),
+                "count": second & 0xFF,
+                "single": True,
+            },
+        )
     if first == 0xF3BF and second in (0x8F4F, 0x8F6F):
         return ThumbInstruction(address, 4, "dsb" if second == 0x8F4F else "isb", {})
     mov_encoding = first & 0xFBF0
@@ -463,7 +467,18 @@ def decode_thumb32(address: int, first: int, second: int) -> ThumbInstruction:
         return ThumbInstruction(
             address, 4, "clz", {"rd": (second >> 8) & 0xF, "rm": second & 0xF}
         )
-    if first & 0xFFF0 == 0xF850:
+    if first & 0xFFF0 == 0xF850 and second & 0x0F00 == 0x0B00:
+        return ThumbInstruction(
+            address,
+            4,
+            "ldr_post",
+            {
+                "rn": first & 0xF,
+                "rt": (second >> 12) & 0xF,
+                "imm": second & 0xFF,
+            },
+        )
+    if first & 0xFFF0 == 0xF850 and second & 0x0FC0 == 0:
         return ThumbInstruction(
             address,
             4,

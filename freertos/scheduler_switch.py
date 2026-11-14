@@ -1,10 +1,11 @@
-"""Compiled FreeRTOS Armv7-M (ARM_CM3) scheduler-transition evidence (pure).
+"""Compiled FreeRTOS Arm M-profile scheduler-transition evidence (pure).
 
 The module proves the PendSV/SVC/start-first-task instruction sequences of the
-kernel's ``portable/GCC/ARM_CM3`` port from the loaded ELF and classifies a live
-stop inside them.  A symbol-relative decoder keeps this independent of any
-one fixture's link address.  Owner-consistent seeds for classified stages live
-in :mod:`freertos.scheduler_seed`.
+supported FreeRTOS GCC ports (``ARM_CM0``, ``ARM_CM3``, ``ARM_CM4F``, and
+single-core non-MPU ``ARM_CM33_NTZ``) from the loaded ELF and classifies a live
+stop inside them.  A symbol-relative decoder keeps this independent of any one
+fixture's link address.  Owner-consistent seeds for classified stages live in
+:mod:`freertos.scheduler_seed`.
 """
 
 from __future__ import annotations
@@ -36,10 +37,26 @@ from core.insn_thumb import (
 from core.unwind_meta import EM_ARM, ElfImage
 
 PROFILE_ID = "freertos/armv7-m/arm-cm3-pendsv-v1"
+CM0_PROFILE_ID = "freertos/armv6-m/arm-cm0-pendsv-v1"
+CM4F_PROFILE_ID = "freertos/armv7e-m/arm-cm4f-pendsv-v1"
+CM33_PROFILE_ID = "freertos/armv8-m.mainline/arm-cm33-pendsv-v1"
 
 _CORE_REGLIST = 0xFF0
+_CORE_LR_REGLIST = 0x4FF0
+_CM33_REGLIST = 0xFFC
+_CM0_LOW_REGLIST = 0xF0
+_CM0_R3_REGLIST = 0xF8
+_CM0_SVC_REGLIST = 0x04
+_CM33_SVC_REGLIST = 0x06
 _R3_LR_PUSH = 0x108
 _R3_LR_LDM = 0x4008
+_R0_R3_REGLIST = 0x09
+_CONTROL_SYSM = 0x14
+_MSP_SYSM = 0x08
+_PSP_SYSM = 0x09
+_PSPLIM_SYSM = 0x0B
+_BASEPRI_SYSM = 0x11
+_VTOR_ADDRESS = 0xE000ED08
 _MAX_PROFILE_INSTRUCTIONS = 96
 _MAX_SWITCH_INSTRUCTIONS = 512
 _AAPCS_CALLER_SAVED = frozenset({0, 1, 2, 3, 12, 14})
@@ -56,14 +73,10 @@ _CALL_MNEMONICS = frozenset({"bl", "blx", "blx_reg", "bx"})
 _BRANCH_MNEMONICS = frozenset({"b", "b_cond", "cbz", "cbnz"})
 _MASK_PRIORITY_TOKEN = "mov_basepri_mask:r0"
 
-# The BASEPRI slot is checked by a predicate rather than an exact operand:
-# any legal non-zero 8-bit interrupt-priority mask is a compiled port choice.
-_BASEPRI_MASK_INDEX = 7
-
 
 @dataclass(frozen=True)
 class SchedulerProfile:
-    """Verified symbol-relative addresses of one Armv7-M (ARM_CM3) switch sequence.
+    """Verified symbol-relative addresses of one Arm M-profile switch sequence.
 
     Stage addresses are instruction addresses: a breakpoint there stops
     *before* that instruction executes.  The profile is invalid unless every
@@ -83,14 +96,14 @@ class SchedulerProfile:
     switch_end: int
     pendsv_entry: int
     pendsv_save_pending: int
-    pendsv_save_written: int
+    pendsv_save_written: int | None
     pendsv_writeback: int
     pendsv_switch_call: int
     pendsv_after_switch: int
     pendsv_select: int
     pendsv_saved_sp: int
     pendsv_restored_pending_psp: int
-    pendsv_psp_written: int
+    pendsv_psp_written: int | None
     pendsv_exception_return: int
     svc_entry: int
     svc_saved_sp: int
@@ -103,6 +116,9 @@ class SchedulerProfile:
     switch_after_update: int
     switch_return: int
     px_current_tcb: int
+    port: str = "arm-cm3"
+    svc_symbol: str = "SVC_Handler"
+    start_first_symbol: str = "prvPortStartFirstTask"
 
 
 @dataclass(frozen=True)
@@ -462,6 +478,541 @@ def _find_switch_update(
     return store, signature
 
 
+@dataclass(frozen=True)
+class _PortSpec:
+    """Expected symbol sequences and exact stage indices for one port."""
+
+    port: str
+    profile_id: str
+    pendsv_symbol: str
+    svc_symbol: str
+    start_first_symbol: str
+    switch_symbol: str
+    pendsv_expected: tuple[tuple[str, Mapping[str, int | bool | str]], ...]
+    svc_expected: tuple[tuple[str, Mapping[str, int | bool | str]], ...]
+    start_expected: tuple[tuple[str, Mapping[str, int | bool | str]], ...]
+    pendsv_tcb_literals: tuple[int, ...]
+    svc_tcb_literals: tuple[int, ...]
+    start_vtor_literal: int | None
+    basepri_mask_index: int | None
+    pendsv_entry_idx: int
+    pendsv_save_pending_idx: int
+    pendsv_save_written_idx: int | None
+    pendsv_writeback_idx: int
+    pendsv_switch_call_idx: int
+    pendsv_after_switch_idx: int
+    pendsv_select_idx: int
+    pendsv_saved_sp_idx: int
+    pendsv_restored_pending_psp_idx: int
+    pendsv_psp_written_idx: int | None
+    pendsv_exception_return_idx: int
+    svc_entry_idx: int
+    svc_saved_sp_idx: int
+    svc_restored_pending_psp_idx: int
+    svc_psp_written_idx: int
+    svc_exception_return_idx: int
+    start_first_svc_idx: int
+
+
+def _has_sized_symbol(elf: ElfImage, name: str) -> bool:
+    return any(symbol.name == name and symbol.size > 0 for symbol in elf.symbols)
+
+
+def _select_port(elf: ElfImage) -> str:
+    """Identify which compiled FreeRTOS M-profile port the image carries."""
+    if _has_sized_symbol(elf, "vStartFirstTask") or _has_sized_symbol(
+        elf, "vRestoreContextOfFirstTask"
+    ):
+        start_span = _symbol_span(elf, "vStartFirstTask")
+        if isinstance(start_span, tuple):
+            first = _decode_thumb(elf, start_span[0], start_span[1])
+            if not isinstance(first, str) and first.mnemonic == "ldr_literal":
+                return "arm-cm33"
+        pendsv_span = _symbol_span(elf, "PendSV_Handler")
+        if isinstance(pendsv_span, tuple):
+            second = _decode_thumb(elf, pendsv_span[0] + 4, pendsv_span[1])
+            if (
+                not isinstance(second, str)
+                and second.mnemonic == "mrs"
+                and second.operands.get("sysm") == _PSPLIM_SYSM
+            ):
+                return "arm-cm33"
+        return "arm-cm0"
+    for sym in ("PendSV_Handler", "SVC_Handler"):
+        span = _symbol_span(elf, sym)
+        if not isinstance(span, tuple):
+            continue
+        code_end = _code_stream_end(elf, span[0], span[1])
+        addr = span[0]
+        count = 0
+        while addr < code_end and count < _MAX_PROFILE_INSTRUCTIONS:
+            decoded = _decode_thumb(elf, addr, code_end)
+            if isinstance(decoded, str):
+                break
+            if decoded.mnemonic in {"vstmdb", "vldmia"} or (
+                decoded.mnemonic in {"stmdb", "ldmia"}
+                and decoded.operands.get("reglist") == _CORE_LR_REGLIST
+            ):
+                return "arm-cm4f"
+            addr += decoded.size
+            count += 1
+    return "arm-cm3"
+
+
+def _port_spec(port: str, switch_start: int) -> _PortSpec:
+    """Return the exact compiled-sequence specification for ``port``."""
+    if port == "arm-cm4f":
+        return _PortSpec(
+            port="arm-cm4f",
+            profile_id=CM4F_PROFILE_ID,
+            pendsv_symbol="PendSV_Handler",
+            svc_symbol="SVC_Handler",
+            start_first_symbol="prvPortStartFirstTask",
+            switch_symbol="vTaskSwitchContext",
+            pendsv_expected=(
+                ("mrs", {"rd": 0, "sysm": _PSP_SYSM}),
+                ("isb", {}),
+                ("ldr_literal", {"rt": 3}),
+                ("ldr_imm", {"rt": 2, "rn": 3, "imm": 0}),
+                ("tst_imm", {"rn": 14, "imm": 16}),
+                ("it", {"firstcond": 0, "mask": 8}),
+                (
+                    "vstmdb",
+                    {
+                        "rn": 0,
+                        "single": True,
+                        "first": 16,
+                        "count": 16,
+                    },
+                ),
+                (
+                    "stmdb",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=False,
+                        direction="db",
+                        reglist=_CORE_LR_REGLIST,
+                    ),
+                ),
+                ("str_imm", {"rt": 0, "rn": 2, "imm": 0}),
+                ("push", {"reglist": _R0_R3_REGLIST}),
+                ("mov_basepri_mask", {"rd": 0}),
+                ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+                ("dsb", {}),
+                ("isb", {}),
+                ("bl", {"target": switch_start}),
+                ("mov_imm", {"rd": 0, "imm": 0}),
+                ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+                ("pop", {"reglist": _R0_R3_REGLIST}),
+                ("ldr_imm", {"rt": 1, "rn": 3, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                (
+                    "ldmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=True,
+                        direction="ia",
+                        reglist=_CORE_LR_REGLIST,
+                    ),
+                ),
+                ("tst_imm", {"rn": 14, "imm": 16}),
+                ("it", {"firstcond": 0, "mask": 8}),
+                (
+                    "vldmia",
+                    {
+                        "rn": 0,
+                        "single": True,
+                        "first": 16,
+                        "count": 16,
+                    },
+                ),
+                ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+                ("isb", {}),
+                ("bx", {"rm": 14}),
+            ),
+            svc_expected=(
+                ("ldr_literal", {"rt": 3}),
+                ("ldr_imm", {"rt": 1, "rn": 3, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                (
+                    "ldmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=True,
+                        direction="ia",
+                        reglist=_CORE_LR_REGLIST,
+                    ),
+                ),
+                ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+                ("isb", {}),
+                ("mov_imm", {"rd": 0, "imm": 0}),
+                ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+                ("bx", {"rm": 14}),
+            ),
+            start_expected=(
+                ("ldr_literal", {"rt": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+                ("msr", {"rn": 0, "sysm": _MSP_SYSM}),
+                ("mov_imm", {"rd": 0, "imm": 0}),
+                ("msr", {"rn": 0, "sysm": _CONTROL_SYSM}),
+                ("cpsie", {"flag": "i"}),
+                ("cpsie", {"flag": "f"}),
+                ("dsb", {}),
+                ("isb", {}),
+                ("svc", {"imm": 0}),
+                ("nop", {}),
+            ),
+            pendsv_tcb_literals=(2,),
+            svc_tcb_literals=(0,),
+            start_vtor_literal=0,
+            basepri_mask_index=10,
+            pendsv_entry_idx=0,
+            pendsv_save_pending_idx=4,
+            pendsv_save_written_idx=8,
+            pendsv_writeback_idx=9,
+            pendsv_switch_call_idx=14,
+            pendsv_after_switch_idx=15,
+            pendsv_select_idx=19,
+            pendsv_saved_sp_idx=20,
+            pendsv_restored_pending_psp_idx=24,
+            pendsv_psp_written_idx=25,
+            pendsv_exception_return_idx=26,
+            svc_entry_idx=0,
+            svc_saved_sp_idx=3,
+            svc_restored_pending_psp_idx=4,
+            svc_psp_written_idx=5,
+            svc_exception_return_idx=8,
+            start_first_svc_idx=10,
+        )
+    if port == "arm-cm0":
+        return _PortSpec(
+            port="arm-cm0",
+            profile_id=CM0_PROFILE_ID,
+            pendsv_symbol="PendSV_Handler",
+            svc_symbol="vRestoreContextOfFirstTask",
+            start_first_symbol="vStartFirstTask",
+            switch_symbol="vTaskSwitchContext",
+            pendsv_expected=(
+                ("mrs", {"rd": 0, "sysm": _PSP_SYSM}),
+                ("ldr_literal", {"rt": 2}),
+                ("ldr_imm", {"rt": 1, "rn": 2, "imm": 0}),
+                ("subs", {"rd": 0, "rn": 0, "imm": 36, "set_flags": True}),
+                ("str_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                ("mov", {"rd": 3, "rm": 14, "set_flags": False}),
+                (
+                    "stmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=False,
+                        direction="ia",
+                        reglist=_CM0_R3_REGLIST,
+                    ),
+                ),
+                ("mov", {"rd": 4, "rm": 8, "set_flags": False}),
+                ("mov", {"rd": 5, "rm": 9, "set_flags": False}),
+                ("mov", {"rd": 6, "rm": 10, "set_flags": False}),
+                ("mov", {"rd": 7, "rm": 11, "set_flags": False}),
+                (
+                    "stmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=False,
+                        direction="ia",
+                        reglist=_CM0_LOW_REGLIST,
+                    ),
+                ),
+                ("cpsid", {"flag": "i"}),
+                ("bl", {"target": switch_start}),
+                ("cpsie", {"flag": "i"}),
+                ("ldr_literal", {"rt": 2}),
+                ("ldr_imm", {"rt": 1, "rn": 2, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                ("adds", {"rd": 0, "rn": 0, "imm": 20, "set_flags": True}),
+                (
+                    "ldmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=True,
+                        direction="ia",
+                        reglist=_CM0_LOW_REGLIST,
+                    ),
+                ),
+                ("mov", {"rd": 8, "rm": 4, "set_flags": False}),
+                ("mov", {"rd": 9, "rm": 5, "set_flags": False}),
+                ("mov", {"rd": 10, "rm": 6, "set_flags": False}),
+                ("mov", {"rd": 11, "rm": 7, "set_flags": False}),
+                ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+                ("subs", {"rd": 0, "rn": 0, "imm": 36, "set_flags": True}),
+                (
+                    "ldmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=True,
+                        direction="ia",
+                        reglist=_CM0_R3_REGLIST,
+                    ),
+                ),
+                ("bx", {"rm": 3}),
+            ),
+            svc_expected=(
+                ("ldr_literal", {"rt": 2}),
+                ("ldr_imm", {"rt": 1, "rn": 2, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                (
+                    "ldmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=True,
+                        direction="ia",
+                        reglist=_CM0_SVC_REGLIST,
+                    ),
+                ),
+                ("mov_imm", {"rd": 1, "imm": 2}),
+                ("msr", {"rn": 1, "sysm": _CONTROL_SYSM}),
+                ("adds", {"rd": 0, "rn": 0, "imm": 32, "set_flags": True}),
+                ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+                ("isb", {}),
+                ("bx", {"rm": 2}),
+            ),
+            start_expected=(
+                ("cpsie", {"flag": "i"}),
+                ("dsb", {}),
+                ("isb", {}),
+                ("svc", {}),
+            ),
+            pendsv_tcb_literals=(1, 15),
+            svc_tcb_literals=(0,),
+            start_vtor_literal=None,
+            basepri_mask_index=None,
+            pendsv_entry_idx=0,
+            pendsv_save_pending_idx=3,
+            pendsv_save_written_idx=None,
+            pendsv_writeback_idx=12,
+            pendsv_switch_call_idx=13,
+            pendsv_after_switch_idx=14,
+            pendsv_select_idx=17,
+            pendsv_saved_sp_idx=18,
+            pendsv_restored_pending_psp_idx=24,
+            pendsv_psp_written_idx=25,
+            pendsv_exception_return_idx=27,
+            svc_entry_idx=0,
+            svc_saved_sp_idx=3,
+            svc_restored_pending_psp_idx=7,
+            svc_psp_written_idx=8,
+            svc_exception_return_idx=9,
+            start_first_svc_idx=3,
+        )
+    if port == "arm-cm33":
+        return _PortSpec(
+            port="arm-cm33",
+            profile_id=CM33_PROFILE_ID,
+            pendsv_symbol="PendSV_Handler",
+            svc_symbol="vRestoreContextOfFirstTask",
+            start_first_symbol="vStartFirstTask",
+            switch_symbol="vTaskSwitchContext",
+            pendsv_expected=(
+                ("mrs", {"rd": 0, "sysm": _PSP_SYSM}),
+                ("mrs", {"rd": 2, "sysm": _PSPLIM_SYSM}),
+                ("mov", {"rd": 3, "rm": 14, "set_flags": False}),
+                (
+                    "stmdb",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=False,
+                        direction="db",
+                        reglist=_CM33_REGLIST,
+                    ),
+                ),
+                ("ldr_literal", {"rt": 2}),
+                ("ldr_imm", {"rt": 1, "rn": 2, "imm": 0}),
+                ("str_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                ("mov_basepri_mask", {"rd": 0}),
+                ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+                ("dsb", {}),
+                ("isb", {}),
+                ("bl", {"target": switch_start}),
+                ("mov_imm", {"rd": 0, "imm": 0}),
+                ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+                ("ldr_literal", {"rt": 2}),
+                ("ldr_imm", {"rt": 1, "rn": 2, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                (
+                    "ldmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=True,
+                        direction="ia",
+                        reglist=_CM33_REGLIST,
+                    ),
+                ),
+                ("msr", {"rn": 2, "sysm": _PSPLIM_SYSM}),
+                ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+                ("bx", {"rm": 3}),
+            ),
+            svc_expected=(
+                ("ldr_literal", {"rt": 2}),
+                ("ldr_imm", {"rt": 1, "rn": 2, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+                (
+                    "ldmia",
+                    dict(
+                        rn=0,
+                        wback=True,
+                        load=True,
+                        direction="ia",
+                        reglist=_CM33_SVC_REGLIST,
+                    ),
+                ),
+                ("msr", {"rn": 1, "sysm": _PSPLIM_SYSM}),
+                ("mrs", {"rd": 1, "sysm": _CONTROL_SYSM}),
+                ("orr_imm", {"rd": 1, "rn": 1, "imm": 2}),
+                ("msr", {"rn": 1, "sysm": _CONTROL_SYSM}),
+                ("adds", {"rd": 0, "rn": 0, "imm": 32, "set_flags": True}),
+                ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+                ("isb", {}),
+                ("mov_imm", {"rd": 0, "imm": 0}),
+                ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+                ("bx", {"rm": 2}),
+            ),
+            start_expected=(
+                ("ldr_literal", {"rt": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+                ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+                ("msr", {"rn": 0, "sysm": _MSP_SYSM}),
+                ("cpsie", {"flag": "i"}),
+                ("cpsie", {"flag": "f"}),
+                ("dsb", {}),
+                ("isb", {}),
+                ("svc", {}),
+                ("nop", {}),
+            ),
+            pendsv_tcb_literals=(4, 14),
+            svc_tcb_literals=(0,),
+            start_vtor_literal=0,
+            basepri_mask_index=7,
+            pendsv_entry_idx=0,
+            pendsv_save_pending_idx=3,
+            pendsv_save_written_idx=6,
+            pendsv_writeback_idx=7,
+            pendsv_switch_call_idx=11,
+            pendsv_after_switch_idx=12,
+            pendsv_select_idx=16,
+            pendsv_saved_sp_idx=17,
+            pendsv_restored_pending_psp_idx=19,
+            pendsv_psp_written_idx=None,
+            pendsv_exception_return_idx=20,
+            svc_entry_idx=0,
+            svc_saved_sp_idx=3,
+            svc_restored_pending_psp_idx=9,
+            svc_psp_written_idx=10,
+            svc_exception_return_idx=13,
+            start_first_svc_idx=8,
+        )
+    return _PortSpec(
+        port="arm-cm3",
+        profile_id=PROFILE_ID,
+        pendsv_symbol="PendSV_Handler",
+        svc_symbol="SVC_Handler",
+        start_first_symbol="prvPortStartFirstTask",
+        switch_symbol="vTaskSwitchContext",
+        pendsv_expected=(
+            ("mrs", {"rd": 0, "sysm": _PSP_SYSM}),
+            ("isb", {}),
+            ("ldr_literal", {"rt": 3}),
+            ("ldr_imm", {"rt": 2, "rn": 3, "imm": 0}),
+            (
+                "stmdb",
+                dict(
+                    rn=0, wback=True, load=False, direction="db", reglist=_CORE_REGLIST
+                ),
+            ),
+            ("str_imm", {"rt": 0, "rn": 2, "imm": 0}),
+            ("push", {"reglist": _R3_LR_PUSH}),
+            ("mov_basepri_mask", {"rd": 0}),
+            ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+            ("bl", {"target": switch_start}),
+            ("mov_imm", {"rd": 0, "imm": 0}),
+            ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+            (
+                "ldmia",
+                dict(rn=13, wback=True, load=True, direction="ia", reglist=_R3_LR_LDM),
+            ),
+            ("ldr_imm", {"rt": 1, "rn": 3, "imm": 0}),
+            ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+            (
+                "ldmia",
+                dict(
+                    rn=0, wback=True, load=True, direction="ia", reglist=_CORE_REGLIST
+                ),
+            ),
+            ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+            ("isb", {}),
+            ("bx", {"rm": 14}),
+        ),
+        svc_expected=(
+            ("ldr_literal", {"rt": 3}),
+            ("ldr_imm", {"rt": 1, "rn": 3, "imm": 0}),
+            ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
+            (
+                "ldmia",
+                dict(
+                    rn=0, wback=True, load=True, direction="ia", reglist=_CORE_REGLIST
+                ),
+            ),
+            ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
+            ("isb", {}),
+            ("mov_imm", {"rd": 0, "imm": 0}),
+            ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
+            ("orr_imm", {"rd": 14, "rn": 14, "imm": 13}),
+            ("bx", {"rm": 14}),
+        ),
+        start_expected=(
+            ("ldr_literal", {"rt": 0}),
+            ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+            ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
+            ("msr", {"rn": 0, "sysm": _MSP_SYSM}),
+            ("cpsie", {"flag": "i"}),
+            ("cpsie", {"flag": "f"}),
+            ("dsb", {}),
+            ("isb", {}),
+            ("svc", {"imm": 0}),
+            ("nop", {}),
+        ),
+        pendsv_tcb_literals=(2,),
+        svc_tcb_literals=(0,),
+        start_vtor_literal=0,
+        basepri_mask_index=7,
+        pendsv_entry_idx=0,
+        pendsv_save_pending_idx=4,
+        pendsv_save_written_idx=5,
+        pendsv_writeback_idx=6,
+        pendsv_switch_call_idx=9,
+        pendsv_after_switch_idx=10,
+        pendsv_select_idx=14,
+        pendsv_saved_sp_idx=15,
+        pendsv_restored_pending_psp_idx=16,
+        pendsv_psp_written_idx=17,
+        pendsv_exception_return_idx=18,
+        svc_entry_idx=0,
+        svc_saved_sp_idx=3,
+        svc_restored_pending_psp_idx=4,
+        svc_psp_written_idx=5,
+        svc_exception_return_idx=9,
+        start_first_svc_idx=8,
+    )
+
+
 def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
     """Verify every compiled transition sequence and return its stage map.
 
@@ -473,11 +1024,13 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
         return None, "scheduler-profile-unsupported-image"
     if elf.endian != "little":
         return None, "scheduler-profile-unsupported-endian"
+    port = _select_port(elf)
+    placeholder = _port_spec(port, 0)
     names = (
-        "PendSV_Handler",
-        "SVC_Handler",
-        "prvPortStartFirstTask",
-        "vTaskSwitchContext",
+        placeholder.pendsv_symbol,
+        placeholder.svc_symbol,
+        placeholder.start_first_symbol,
+        placeholder.switch_symbol,
     )
     spans: dict[str, tuple[int, int]] = {}
     for name in names:
@@ -491,10 +1044,10 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
     ):
         if cstart < pend:
             return None, (f"scheduler-profile-symbol-overlap:{previous}:{current}")
-    pendsv_start, pendsv_end = spans["PendSV_Handler"]
-    svc_start, svc_end = spans["SVC_Handler"]
-    start_start, start_end = spans["prvPortStartFirstTask"]
-    switch_start, switch_end = spans["vTaskSwitchContext"]
+    pendsv_start, pendsv_end = spans[placeholder.pendsv_symbol]
+    svc_start, svc_end = spans[placeholder.svc_symbol]
+    start_start, start_end = spans[placeholder.start_first_symbol]
+    switch_start, switch_end = spans[placeholder.switch_symbol]
     if min(pendsv_end, svc_end, start_end, switch_end) <= 0:
         return None, "scheduler-profile-symbol-unbounded"
     tcb_pointer = elf.symbol_address("pxCurrentTCB")
@@ -503,103 +1056,61 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
     code_ends = {
         name: _code_stream_end(elf, span[0], span[1]) for name, span in spans.items()
     }
-
-    pendsv_expected = (
-        ("mrs", {"rd": 0, "sysm": 0x09}),
-        ("isb", {}),
-        ("ldr_literal", {"rt": 3}),
-        ("ldr_imm", {"rt": 2, "rn": 3, "imm": 0}),
-        (
-            "stmdb",
-            dict(rn=0, wback=True, load=False, direction="db", reglist=_CORE_REGLIST),
-        ),
-        ("str_imm", {"rt": 0, "rn": 2, "imm": 0}),
-        ("push", {"reglist": _R3_LR_PUSH}),
-        ("mov_basepri_mask", {"rd": 0}),
-        ("msr", {"rn": 0, "sysm": 0x11}),
-        ("bl", {"target": switch_start}),
-        ("mov_imm", {"rd": 0, "imm": 0}),
-        ("msr", {"rn": 0, "sysm": 0x11}),
-        (
-            "ldmia",
-            dict(rn=13, wback=True, load=True, direction="ia", reglist=_R3_LR_LDM),
-        ),
-        ("ldr_imm", {"rt": 1, "rn": 3, "imm": 0}),
-        ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
-        (
-            "ldmia",
-            dict(rn=0, wback=True, load=True, direction="ia", reglist=_CORE_REGLIST),
-        ),
-        ("msr", {"rn": 0, "sysm": 0x09}),
-        ("isb", {}),
-        ("bx", {"rm": 14}),
-    )
-    svc_expected = (
-        ("ldr_literal", {"rt": 3}),
-        ("ldr_imm", {"rt": 1, "rn": 3, "imm": 0}),
-        ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
-        (
-            "ldmia",
-            dict(rn=0, wback=True, load=True, direction="ia", reglist=_CORE_REGLIST),
-        ),
-        ("msr", {"rn": 0, "sysm": 0x09}),
-        ("isb", {}),
-        ("mov_imm", {"rd": 0, "imm": 0}),
-        ("msr", {"rn": 0, "sysm": 0x11}),
-        ("orr_imm", {"rd": 14, "rn": 14, "imm": 13}),
-        ("bx", {"rm": 14}),
-    )
-    start_expected = (
-        ("ldr_literal", {"rt": 0}),
-        ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
-        ("ldr_imm", {"rt": 0, "rn": 0, "imm": 0}),
-        ("msr", {"rn": 0, "sysm": 0x08}),
-        ("cpsie", {"flag": "i"}),
-        ("cpsie", {"flag": "f"}),
-        ("dsb", {}),
-        ("isb", {}),
-        ("svc", {"imm": 0}),
-        ("nop", {}),
-    )
+    spec = _port_spec(port, switch_start)
 
     pendsv, reason = _decode_expected(
         elf,
-        "PendSV_Handler",
+        spec.pendsv_symbol,
         pendsv_start,
-        code_ends["PendSV_Handler"],
-        pendsv_expected,
-        mask_index=_BASEPRI_MASK_INDEX,
+        code_ends[spec.pendsv_symbol],
+        spec.pendsv_expected,
+        mask_index=spec.basepri_mask_index,
     )
     if pendsv is None:
         return None, reason
-    if _resolved_literal(elf, pendsv[2]) != tcb_pointer:
-        return None, "scheduler-profile-mismatch:PendSV_Handler:tcb-literal"
+    for lit_idx in spec.pendsv_tcb_literals:
+        if _resolved_literal(elf, pendsv[lit_idx]) != tcb_pointer:
+            return None, f"scheduler-profile-mismatch:{spec.pendsv_symbol}:tcb-literal"
     svc, reason = _decode_expected(
-        elf, "SVC_Handler", svc_start, code_ends["SVC_Handler"], svc_expected
+        elf, spec.svc_symbol, svc_start, code_ends[spec.svc_symbol], spec.svc_expected
     )
     if svc is None:
         return None, reason
-    if _resolved_literal(elf, svc[0]) != tcb_pointer:
-        return None, "scheduler-profile-mismatch:SVC_Handler:tcb-literal"
+    for lit_idx in spec.svc_tcb_literals:
+        if _resolved_literal(elf, svc[lit_idx]) != tcb_pointer:
+            return None, f"scheduler-profile-mismatch:{spec.svc_symbol}:tcb-literal"
     start_first, reason = _decode_expected(
         elf,
-        "prvPortStartFirstTask",
+        spec.start_first_symbol,
         start_start,
-        code_ends["prvPortStartFirstTask"],
-        start_expected,
+        code_ends[spec.start_first_symbol],
+        spec.start_expected,
     )
     if start_first is None:
         return None, reason
-    if _resolved_literal(elf, start_first[0]) != 0xE000ED08:
-        return None, "scheduler-profile-mismatch:prvPortStartFirstTask:vtor"
+    if (
+        spec.start_vtor_literal is not None
+        and _resolved_literal(elf, start_first[spec.start_vtor_literal])
+        != _VTOR_ADDRESS
+    ):
+        return (
+            None,
+            f"scheduler-profile-mismatch:{spec.start_first_symbol}:vtor",
+        )
     streams: dict[str, tuple[str, ...]] = {}
     for symbol, start, end, instructions, mask_index in (
-        ("PendSV_Handler", pendsv_start, code_ends["PendSV_Handler"], pendsv, 7),
-        ("SVC_Handler", svc_start, code_ends["SVC_Handler"], svc, None),
         (
-            "prvPortStartFirstTask",
+            spec.pendsv_symbol,
+            pendsv_start,
+            code_ends[spec.pendsv_symbol],
+            pendsv,
+            spec.basepri_mask_index,
+        ),
+        (spec.svc_symbol, svc_start, code_ends[spec.svc_symbol], svc, None),
+        (
+            spec.start_first_symbol,
             start_start,
-            code_ends["prvPortStartFirstTask"],
+            code_ends[spec.start_first_symbol],
             start_first,
             None,
         ),
@@ -630,18 +1141,19 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
             [
                 token
                 for symbol in (
-                    "PendSV_Handler",
-                    "SVC_Handler",
-                    "prvPortStartFirstTask",
+                    spec.pendsv_symbol,
+                    spec.svc_symbol,
+                    spec.start_first_symbol,
                 )
                 for token in streams[symbol]
             ]
             + [switch_signature]
         ).encode("utf-8")
     ).hexdigest()[:16]
+    call_insn = pendsv[spec.pendsv_switch_call_idx]
     return (
         SchedulerProfile(
-            profile_id=PROFILE_ID,
+            profile_id=spec.profile_id,
             fingerprint=fingerprint,
             pendsv_start=pendsv_start,
             pendsv_end=pendsv_end,
@@ -651,28 +1163,41 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
             start_first_end=start_end,
             switch_start=switch_start,
             switch_end=switch_end,
-            pendsv_entry=pendsv[0].address,
-            pendsv_save_pending=pendsv[4].address,
-            pendsv_save_written=pendsv[5].address,
-            pendsv_writeback=pendsv[6].address,
-            pendsv_switch_call=pendsv[9].address,
-            pendsv_after_switch=pendsv[10].address,
-            pendsv_select=pendsv[14].address,
-            pendsv_saved_sp=pendsv[15].address,
-            pendsv_restored_pending_psp=pendsv[16].address,
-            pendsv_psp_written=pendsv[17].address,
-            pendsv_exception_return=pendsv[18].address,
-            svc_entry=svc[0].address,
-            svc_saved_sp=svc[3].address,
-            svc_restored_pending_psp=svc[4].address,
-            svc_psp_written=svc[5].address,
-            svc_exception_return=svc[9].address,
-            start_first_svc=start_first[8].address,
+            pendsv_entry=pendsv[spec.pendsv_entry_idx].address,
+            pendsv_save_pending=pendsv[spec.pendsv_save_pending_idx].address,
+            pendsv_save_written=(
+                pendsv[spec.pendsv_save_written_idx].address
+                if spec.pendsv_save_written_idx is not None
+                else None
+            ),
+            pendsv_writeback=pendsv[spec.pendsv_writeback_idx].address,
+            pendsv_switch_call=call_insn.address,
+            pendsv_after_switch=pendsv[spec.pendsv_after_switch_idx].address,
+            pendsv_select=pendsv[spec.pendsv_select_idx].address,
+            pendsv_saved_sp=pendsv[spec.pendsv_saved_sp_idx].address,
+            pendsv_restored_pending_psp=pendsv[
+                spec.pendsv_restored_pending_psp_idx
+            ].address,
+            pendsv_psp_written=(
+                pendsv[spec.pendsv_psp_written_idx].address
+                if spec.pendsv_psp_written_idx is not None
+                else None
+            ),
+            pendsv_exception_return=pendsv[spec.pendsv_exception_return_idx].address,
+            svc_entry=svc[spec.svc_entry_idx].address,
+            svc_saved_sp=svc[spec.svc_saved_sp_idx].address,
+            svc_restored_pending_psp=svc[spec.svc_restored_pending_psp_idx].address,
+            svc_psp_written=svc[spec.svc_psp_written_idx].address,
+            svc_exception_return=svc[spec.svc_exception_return_idx].address,
+            start_first_svc=start_first[spec.start_first_svc_idx].address,
             switch_entry=switch_start,
             switch_update=store.address,
             switch_after_update=store.address + store.size,
-            switch_return=pendsv[9].address + pendsv[9].size,
+            switch_return=call_insn.address + call_insn.size,
             px_current_tcb=tcb_pointer,
+            port=spec.port,
+            svc_symbol=spec.svc_symbol,
+            start_first_symbol=spec.start_first_symbol,
         ),
         "ok",
     )
@@ -680,15 +1205,12 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
 
 def classify_stage(profile: SchedulerProfile, pc: int) -> SchedulerStage | str | None:
     """Classify one exact PC; unknown PCs inside a verified range are refused."""
-    exact = {
+    exact: dict[int, SchedulerStage] = {
         profile.pendsv_entry: SchedulerStage(
             "pendsv-entry", "old", "live-frame", profile.pendsv_entry
         ),
         profile.pendsv_save_pending: SchedulerStage(
             "pendsv-save-pending", "old", "live-frame", profile.pendsv_save_pending
-        ),
-        profile.pendsv_save_written: SchedulerStage(
-            "pendsv-save-written", "old", "saved-buffer", profile.pendsv_save_written
         ),
         profile.pendsv_writeback: SchedulerStage(
             "pendsv-writeback", "old", "saved-tcb", profile.pendsv_writeback
@@ -710,9 +1232,6 @@ def classify_stage(profile: SchedulerProfile, pc: int) -> SchedulerStage | str |
             "new",
             "restore-buffer",
             profile.pendsv_restored_pending_psp,
-        ),
-        profile.pendsv_psp_written: SchedulerStage(
-            "pendsv-psp-written", "new", "live-frame-new", profile.pendsv_psp_written
         ),
         profile.pendsv_exception_return: SchedulerStage(
             "pendsv-exception-return",
@@ -751,6 +1270,14 @@ def classify_stage(profile: SchedulerProfile, pc: int) -> SchedulerStage | str |
             "switch-after-update", "new", "saved-tcb", profile.switch_after_update
         ),
     }
+    if profile.pendsv_save_written is not None:
+        exact[profile.pendsv_save_written] = SchedulerStage(
+            "pendsv-save-written", "old", "saved-buffer", profile.pendsv_save_written
+        )
+    if profile.pendsv_psp_written is not None:
+        exact[profile.pendsv_psp_written] = SchedulerStage(
+            "pendsv-psp-written", "new", "live-frame-new", profile.pendsv_psp_written
+        )
     if pc in exact:
         return exact[pc]
     if pc == profile.start_first_svc:
@@ -759,8 +1286,12 @@ def classify_stage(profile: SchedulerProfile, pc: int) -> SchedulerStage | str |
         )
     for start, end, name in (
         (profile.pendsv_start, profile.pendsv_end, "PendSV_Handler"),
-        (profile.svc_start, profile.svc_end, "SVC_Handler"),
-        (profile.start_first_start, profile.start_first_end, "prvPortStartFirstTask"),
+        (profile.svc_start, profile.svc_end, profile.svc_symbol),
+        (
+            profile.start_first_start,
+            profile.start_first_end,
+            profile.start_first_symbol,
+        ),
         (profile.switch_start, profile.switch_end, "vTaskSwitchContext"),
     ):
         if start <= pc < end:

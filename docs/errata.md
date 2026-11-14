@@ -115,8 +115,9 @@ allocated-bit cell lives in a second, heap-only ELF (`snapshot_heap.c`).
 ## Task backtraces
 
 **Verified saved-context matrix.** FreeRTOS backtraces are verified on
-Armv6-M (`microbit`), Armv7-M (`mps2-an385`), Armv8-M Mainline SMP and MPU
-(`mps2-an521`), RV32 (`qemu-virt-rv32`) and RV64 (`qemu-virt-rv64`).
+Armv6-M (`microbit`), Armv7-M (`mps2-an385`), Armv7E-M (`mps2-an386`),
+Armv8-M Mainline single-core (`mps2-an505`) and SMP/MPU (`mps2-an521`), RV32
+(`qemu-virt-rv32`) and RV64 (`qemu-virt-rv64`).
 The Armv8-M Mainline fixtures disable FPU and TrustZone; other extended-context
 configurations are not verified.
 Armv8-M Mainline profile selection requires explicit FPU, TrustZone and MPU configuration
@@ -140,8 +141,8 @@ fallback has no Armv7-A acceptance. Armv8-M Mainline (`mps2-an505/4.0.5`) covers
 the 80-byte single-Secure-state integer frame: saved `tz=0`, `EXC_RETURN=0xFFFFFFFD`,
 `PSPLIM=0` and privileged CONTROL (0 before first return, 2 while using PSP).
 The current seed requires readable CONTROL/PSPLIM and a zero TrustZone context.
-Non-secure/cross-security returns, nonzero stack limits, FPU and unprivileged
-contexts remain refused; this lane does not establish Armv8-M handler unwinding.
+Non-secure/cross-security returns, nonzero stack limits and unprivileged
+contexts remain refused; dual-world TrustZone switching stays unsupported.
 The `mps2-an505/4.0.5/fpu` lane adds compiled FPU save/restore evidence
 (`tst`/`it`/`vstmdb`/`vldmia` around the core block) and verifies the live
 216-byte FPU image alongside the basic pair; other VFP-ABI images stop at
@@ -197,12 +198,14 @@ be promoted to an exact PC or a proven task root. Repeated `(PC, SP)` pairs
 still stop at `loop`. Other tasks can reach the recorded `xTaskReturnAddress`
 value, including zero, and finish at `task-exit`.
 
-**Hardware exception cross-stack unwinding is verified on basic Armv6-M/Armv7-M IRQ fixtures.**
-FreeRTOS `microbit/11.1.0/full` (Armv6-M, `ARM_CM0`) and
-`mps2-an385/10.3.1/full` (Armv7-M, `ARM_CM3`) verify external exception numbers
-24/25, nested handlers, ordinary handler calls and four-byte padding with
-linker-owned MSP bounds. `core/unwind_arm.py` shares the basic eight-word frame
-layout while keeping ISA exception policies explicit;
+**Hardware exception cross-stack unwinding is verified on Armv6-M/Armv7-M/Armv7E-M/single-Secure-state Armv8-M Mainline fixtures.**
+FreeRTOS `microbit/11.1.0/full` (Armv6-M, `ARM_CM0`),
+`mps2-an385/10.3.1/full` (Armv7-M, `ARM_CM3`), `mps2-an386/11.3.1/fpu`
+(Armv7E-M, `ARM_CM4F`), and `mps2-an505/11.3.1/full` (single-core Armv8-M Mainline,
+`ARM_CM33_NTZ`) plus the corresponding RT-Thread `4.0.5` M-profile lanes verify
+external IRQs, SysTick, nested handlers, ordinary handler calls, and four-byte alignment
+padding with linker-owned MSP bounds. `core/unwind_arm.py` shares the basic
+eight-word frame layout while keeping ISA exception policies explicit;
 Armv6-M has a six-bit IPSR and mandatory 8-byte entry alignment, while Armv7-M
 has a nine-bit IPSR and CCR.STKALIGN-controlled alignment. Both require readable
 xPSR/MSP/PSP, running-scheduler ownership and a proven MSP span resolved from
@@ -218,39 +221,58 @@ or the first executable symbol after `0x0`; missing or
 conflicting evidence fails closed. Cortex-M0+ CPUs, relocated vector tables and
 unproven Armv6-M vector configurations have no live acceptance. Capacity upper bound 47 does not
 establish a live handler for every IRQ; only exception numbers 24/25 have
-fixture coverage. NMI and SysTick (plus Armv7-M DebugMonitor) stop as
-`exception-number-unverified`; synchronous faults, Armv8-M Mainline,
-TrustZone and SMP handler contexts remain gated. Armv7-M non-secure FPU
-extended frames (`0xFFFFFFE1/E9/ED`) decode the `0x68`-byte frame when FPCCR
-is readable, including lazy `LSPACT=1` (only integer registers are consumed),
-and stop at `exception-fp-state-unavailable` otherwise; Armv6-M has no FPU
-and still refuses extended encodings. Other saved-context lanes
-do not establish handler-mode support. Armv6-M SVC/PendSV remain
-`scheduler-transition-unproven`; Armv7-M (`ARM_CM3`) uses the separate scheduler rules below.
+fixture coverage. NMI and DebugMonitor stop as
+`exception-number-unverified`. SysTick is admitted as a proven periodic
+interrupt on both FreeRTOS and RT-Thread M-profile lanes (same ownership, IRQ
+stack and vector-entry proof as external IRQs, including stops inside
+`xPortSysTickHandler` / `xTaskIncrementTick` / `rt_tick_increase`; fault and
+scheduler frames encountered mid-tick still refuse).
+Synchronous faults cross the stack with `stop_reason=synchronous-fault`
+only with precise CFSR/HFSR evidence (UsageFault bits, `IACCVIOL`/`DACCVIOL`,
+`PRECISERR`+`BFARVALID` or `IBUSERR`, escalated HardFault with `FORCED` plus
+one of those causes), including stops inside C fault handlers and
+RT-Thread's `rt_hw_hard_fault_exception` / `rt_exception_hook` after the
+`HardFault_Handler` assembly trampoline pushes its software context block onto
+PSP; imprecise, stacking/lazy-stacking, vector-fetch and
+debug-event faults stop as `fault-frame-imprecise` without presenting a task
+chain. Single-Secure-state Armv8-M Mainline admits synchronous fault frames,
+SysTick and external IRQs on both RT-Thread (`mps2-an505/4.0.5`) and single-core
+FreeRTOS (`mps2-an505/11.3.1`); FreeRTOS `mps2-an521` SMP/MPU handlers,
+TrustZone dual-world state (SecureFault, cross-security returns, nonzero SPLIM)
+and SMP handler contexts stay `unsupported`. On QEMU AN505 an MPU-blocked data load
+surfaces as a precise bus fault rather than the specified MemManage fault, so
+DACCVIOL live proof stays on the Armv7-M/Armv7E-M lanes; IACCVIOL has
+synthetic unit coverage only, since branching into an execute-never region
+does not raise the specified direct fault on the QEMU MPS2 model and a fixture
+must never contain a path that can wedge the shared halted session. Live fault
+evidence covers the Armv7-M/Armv7E-M and single-core Armv8-M Mainline lanes of
+both kernels (UsageFault escalation, precise bus, escalated or direct MemManage) and
+the Armv6-M `fault-frame-imprecise` refusal on FreeRTOS `microbit/11.1.0/fault`;
+there is no RT-Thread Armv6-M fault lane. Armv7-M/Armv7E-M/Armv8-M Mainline non-secure FPU extended frames
+(`0xFFFFFFE1/E9/ED`) decode the `0x68`-byte frame when FPCCR is readable,
+including lazy `LSPACT=1` (only integer registers are consumed), and stop at
+`exception-fp-state-unavailable` otherwise; Armv6-M has no FPU and still
+refuses extended encodings. Other saved-context lanes do not establish
+handler-mode support; unproven ports and unmatched scheduler transitions stay refused.
 
-**Scheduler backtraces require the verified FreeRTOS 10.3.1 ARM_CM3 profile.**
-Only `portable/GCC/ARM_CM3` with a matching
-`freertos/armv7-m/arm-cm3-pendsv-v1` compiled profile is supported; changing
-compiler output or configuration can invalidate the match. The verified
-stages are PendSV entry, save-pending, save-written, TCB-writeback, switch-call,
-after-switch, select, saved-SP, restored-before-PSP, PSP-written and
-exception-return; `vTaskSwitchContext` entry and immediately before/after
-its current-TCB store; and first SVC entry, saved-SP, restored-before-PSP,
-PSP-written and exception-return. Every other PC inside these functions is
-refused. Live evidence is limited to the
-[AN385 scheduler fixture](testing.md#freertos-suite-organization-and-capability-coverage).
-
-First SVC returns `source=unstarted` and `task-entry` only with initial
-registers, exit sentinel and exact sized ELF function-entry evidence. Its
-software-prebuilt frame requires ALIGN=0, no padding and a 4-byte-aligned
-base; CCR.STKALIGN does not describe its construction, though the live path
-still requires readable CCR. Before SVC executes there is no running-task
-seed. PendSV selection of a never-started task remains refused. Scheduler FPU
-geometry (S16–S31 software block, `0x68`-byte hardware frame, per-seed
-FPU-context consistency) is verified on the live FPU lanes: a basic profile
-never decodes an extended frame and vice versa, and inconsistent or unproven
-windows still stop at `scheduler-fpu-context-unproven`. Other
-versions/ports, unmatched profiles, and SMP remain unestablished.
+**Scheduler backtraces require verified compiled M-profile port profiles.**
+FreeRTOS verifies `ARM_CM0` (`freertos/armv6-m/arm-cm0-pendsv-v1`), `ARM_CM3`
+(`freertos/armv7-m/arm-cm3-pendsv-v1`), `ARM_CM4F` (`freertos/armv7e-m/arm-cm4f-pendsv-v1`),
+and non-secure single-core `ARM_CM33_NTZ` (`freertos/armv8-m.mainline/arm-cm33-ntz-pendsv-v1`)
+across PendSV, `vTaskSwitchContext`, and first SVC startup stages; RT-Thread verifies
+`armv6-m`, `armv7-m`, `armv7e-m-fpu`, and single-Secure-state `armv8m-integer`/`fpu`
+across first-thread startup, PendSV save/restore stages, and `switch-return`.
+Every other PC inside these functions stops as `scheduler-stage-ambiguous:*`.
+Live stage-by-stage evidence covers all four M-profile ISAs on both RTOSes
+([FreeRTOS/RT-Thread scheduler fixtures](testing.md#rt-thread-integration-testing-testsintegrationrtthread)).
+On FreeRTOS, first SVC returns `source=unstarted` and `task-entry` only with
+initial registers, exit sentinel and exact sized ELF function-entry evidence;
+its software-prebuilt frame requires ALIGN=0, no padding and a 4-byte-aligned
+base (live path still requires readable CCR), before SVC executes there is no
+running-task seed, and PendSV selection of a never-started task remains refused.
+On RT-Thread, `first_thread_start` (`from_ptr == 0`) decodes `source=unstarted`
+for the incoming thread only after its saved frame is restored. Unmatched ports,
+TrustZone dual-world states, and SMP scheduler transitions remain refused.
 
 **SMP tasks on another core have no saved context.** A task currently running
 on a core other than the selected one reports `smp-no-context`; GDR never

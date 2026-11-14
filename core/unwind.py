@@ -787,7 +787,18 @@ def unwind_chain(
                     stack_high=high,
                     endian=endian,
                 )
-                if isinstance(outcome, tuple):
+                # NOTE: .ARM.exidx encodes a single post-prologue unwind program
+                # per function. At the first instruction (lookup_pc == symbol.start)
+                # no prologue push has executed yet, so a non-zero VSP delta from
+                # EHABI cannot apply; defer to per-PC DWARF CFI when available.
+                if (
+                    isinstance(outcome, tuple)
+                    and lookup_pc == symbol.start
+                    and outcome[1] != sp
+                ):
+                    attempts.append("ehabi-prologue-unexecuted")
+                    outcome = None
+                elif isinstance(outcome, tuple):
                     new_regs, new_sp, new_pc = outcome
                     step_method: Method = "ehabi"
                 else:

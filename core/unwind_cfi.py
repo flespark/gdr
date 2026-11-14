@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import struct
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -170,6 +170,40 @@ class CfiTable:
             address_size=self._address_size,
             endian=self._endian,
         )
+
+    @classmethod
+    def from_rows(
+        cls,
+        ranges: Sequence[tuple[int, int, CfiRow]],
+        *,
+        return_register: int = 14,
+        address_size: int = 4,
+        endian: Endian = "little",
+    ) -> CfiTable:
+        """Build a bounded table from pre-verified ``(start, end, row)`` spans."""
+        fdes = tuple(
+            _Fde(
+                start=start,
+                end=end,
+                cie=_Cie(
+                    code_alignment=1,
+                    data_alignment=-4,
+                    return_register=(
+                        row.return_register
+                        if row.return_register is not None
+                        else return_register
+                    ),
+                    initial=row,
+                    augmentation="S" if row.signal_frame else "",
+                    fde_encoding=None,
+                ),
+                instructions=b"",
+                section_address=0,
+            )
+            for start, end, row in ranges
+            if 0 < start < end
+        )
+        return cls(fdes, address_size=address_size, endian=endian)
 
 
 def parse_cfi_section(

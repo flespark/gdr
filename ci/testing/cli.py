@@ -40,7 +40,7 @@ def parser() -> argparse.ArgumentParser:
                 "run": "build if necessary, then run pytest",
             }[name],
         )
-        cmd.add_argument("rtos", choices=("rtthread", "freertos"))
+        cmd.add_argument("rtos", choices=("rtthread", "freertos", "bare"))
         cmd.add_argument("target")
         cmd.add_argument("version")
         cmd.add_argument("variant", nargs="?")

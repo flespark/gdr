@@ -7,7 +7,7 @@ import pytest
 
 import rtthread.backtrace_gdb as bridge
 from core.stack_frame_parser import StackContextSelection
-from core.unwind import SeedFrame, UnwindFrame, UnwindResult
+from core.unwind import SeedFrame, UnwindFrame, UnwindMetadata, UnwindResult
 from rtthread.adapter import Thread
 from rtthread.backtrace import (
     ARMV7EM_FPU,
@@ -303,7 +303,7 @@ def _arm_current(monkeypatch, *, pending=0, exception=24, psp=0x2080):
 
 @pytest.mark.parametrize(
     "pending,reason",
-    [(None, "scheduler-state-unavailable"), (1, "scheduler-transition-unproven")],
+    [(None, "scheduler-state-unavailable"), (1, "scheduler-profile-unverified")],
 )
 def test_pending_arm_switch_cannot_select_a_task_seed(monkeypatch, pending, reason):
     adapter = _arm_current(monkeypatch, pending=pending)
@@ -318,7 +318,7 @@ def test_pending_arm_switch_cannot_select_a_task_seed(monkeypatch, pending, reas
     "exception,psp,reason",
     [
         (24, 0x2500, "exception-task-context-conflict"),
-        (15, 0x2080, "exception-number-unverified"),
+        (2, 0x2080, "exception-number-unverified"),
         (14, 0x2080, "scheduler-transition-unproven"),
     ],
 )
@@ -365,6 +365,61 @@ def test_arm_irq_supplies_shared_segments_hooks_and_vector_entry_proof(monkeypat
     assert seen["exception_detector"](0xFFFFFFFD)
     assert callable(seen["exception_hook"]) and callable(seen["exception_guard"])
     assert seen["stkalign"] is True
+
+
+def test_arm_systick_tick_is_admitted_as_a_proven_periodic_interrupt(monkeypatch):
+    adapter = _arm_current(monkeypatch, exception=15)
+    seen = {}
+
+    def unwind(seed, _metadata, **kwargs):
+        seen.update(kwargs)
+        return UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "max-depth",
+            False,
+            True,
+            "current",
+            "seed",
+        )
+
+    monkeypatch.setattr(bridge, "unwind_chain", unwind)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    report = bridge.backtrace(adapter, "worker")
+    assert report.truncated and seen["current_segment"] == "exception:15"
+    assert callable(seen["exception_guard"])
+    assert seen["exception_guard"](15, 0x1000) is None
+    assert seen["exception_guard"](11, 0x1000) == "scheduler-transition-unproven"
+    assert seen["exception_guard"](4, 0x1000) == "exception-frame-type-unproven"
+
+
+@pytest.mark.parametrize(
+    "number,reason",
+    [
+        (15, None),
+        (24, None),
+        (11, "scheduler-transition-unproven"),
+        (14, "scheduler-transition-unproven"),
+        (3, "exception-frame-type-unproven"),
+        (2, "exception-number-unverified"),
+        (1, "exception-number-invalid"),
+    ],
+)
+def test_systick_aware_guard_admits_only_the_tick(number, reason):
+    assert bridge._systick_aware_guard(number, 0x1000) == reason
+
+
+@pytest.mark.parametrize(
+    "number,limit,reason",
+    [
+        (15, 15, None),
+        (24, 47, None),
+        (48, 47, "exception-number-unimplemented"),
+        (11, 47, "scheduler-transition-unproven"),
+    ],
+)
+def test_systick_capacity_guard_keeps_external_bounds(number, limit, reason):
+    assert bridge._systick_capacity_guard(limit, "armv7-m")(number, 0x1000) == reason
 
 
 @pytest.mark.parametrize(
@@ -571,3 +626,183 @@ def test_armv8m_mainline_wiring_refuses_secure_header(monkeypatch):
     assert seeds == []
     assert report.stop_reason == "unsupported-extension-context"
     assert report.frames == []
+
+
+@pytest.mark.parametrize(
+    "complete,raw_reason,expected_reason",
+    [
+        (True, "task-exit", "synchronous-fault"),
+        (False, "max-depth", "max-depth"),
+    ],
+)
+def test_arm_precise_fault_preserves_failure_or_marks_synchronous_fault(
+    monkeypatch, complete, raw_reason, expected_reason
+):
+    adapter = _arm_current(monkeypatch, exception=6)
+    words = {
+        0xE000ED08: 0x1000,
+        0xE000E004: 0,
+        0xE000ED14: 1 << 9,
+        0xE000ED28: 0x00010000,
+        0xE000ED2C: 0,
+    }
+    monkeypatch.setattr(
+        bridge,
+        "read_bytes",
+        lambda address, size: words.get(address, 0).to_bytes(size, "little"),
+    )
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda seed, _metadata, **kwargs: UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            raw_reason,
+            complete,
+            not complete,
+            "current",
+            "seed",
+            segments=kwargs["segments"],
+        ),
+    )
+    report = bridge.backtrace(adapter, "worker")
+    assert report.complete is complete
+    assert report.stop_reason == expected_reason
+    assert len(report.segments) == 2
+    assert any("synchronous fault UsageFault:UNDEFINSTR" in m for m in report.messages)
+
+
+def test_apply_hardfault_trampoline_recovers_psp_software_frame_and_refuses_bad_marker(
+    monkeypatch,
+):
+    from core.unwind import UnwindMetadata
+    from core.unwind_segments import (
+        ExceptionTransitionContext,
+        ExceptionTransitionResult,
+        StackSegment,
+    )
+    from rtthread.stack_frame_profile import HardFaultTrampolineProfile
+
+    profile = HardFaultTrampolineProfile(
+        start=0x5ADC,
+        end=0x5B12,
+        msr_psp_after_pc=0x5AFC,
+        push_lr_after_pc=0x5B04,
+        pop_lr_after_pc=0x5B0C,
+        software_bytes=36,
+        r4_offset=4,
+    )
+    monkeypatch.setattr(bridge, "analyze_hardfault_trampoline", lambda _elf: profile)
+    meta = UnwindMetadata(
+        elf=SimpleNamespace(pointer_size=4, endian="little"),
+        arch="arm",
+        cfi_tables=(),
+        ehabi=None,
+        return_register=14,
+        frame_pointer_register=7,
+    )
+    seed = SeedFrame(
+        0x58D8,
+        0x20003FD0,
+        {13: 0x20003FD0, 14: 0x5B09},
+        source="current",
+        process_sp=0x20001000,
+        exception_number=3,
+    )
+    task_seg = StackSegment(
+        ident="task:0x100",
+        owner="worker",
+        low=0x20000800,
+        high=0x20001800,
+        source="task-recorded",
+        stack="process",
+        kind="task",
+    )
+    exc_seg = StackSegment(
+        ident="exception:3",
+        owner="exception:3",
+        low=0x20003000,
+        high=0x20004000,
+        source="linker",
+        stack="main",
+        kind="exception",
+    )
+    captured = []
+
+    def base_hook(ctx: ExceptionTransitionContext):
+        captured.append(ctx)
+        return ExceptionTransitionResult(
+            segment=task_seg,
+            pc=0x1234,
+            sp=ctx.process_sp + 32,
+            registers=ctx.registers,
+            method="exception",
+            source="armv7m-exception-frame",
+            value=ctx.value,
+            bytes_read=32,
+            evidence=("basic",),
+        )
+
+    updated_meta, wrapped = bridge._apply_hardfault_trampoline(
+        seed, meta, "exception:3", base_hook
+    )
+    assert updated_meta is not None and len(updated_meta.cfi_tables) == 1
+    row_pushed = updated_meta.cfi_tables[0].row_for(0x5B07)
+    assert row_pushed is not None and row_pushed.cfa.offset == 4
+    row_unpushed = updated_meta.cfi_tables[0].row_for(0x5AE0)
+    assert row_unpushed is not None and row_unpushed.cfa.offset == 0
+
+    sw_words = [0xFFFFFFFD, *(0x40 + i for i in range(8))]
+    sw_bytes = b"".join(w.to_bytes(4, "little") for w in sw_words)
+    ctx = ExceptionTransitionContext(
+        value=0xFFFFFFFD,
+        registers={14: 0xFFFFFFFD},
+        frame_sp=0x20003FE0,
+        current_segment=exc_seg,
+        segments={"task:0x100": task_seg, "exception:3": exc_seg},
+        process_sp=0x20001000,
+        read=lambda addr, size: sw_bytes if addr == 0x20001000 and size == 36 else None,
+        stkalign=True,
+        remaining_exception_bytes=256,
+    )
+    res = wrapped(ctx)
+    assert isinstance(res, ExceptionTransitionResult)
+    assert res.bytes_read == 68
+    assert res.sp == 0x20001000 + 36 + 32
+    assert res.registers[4] == 0x40 and res.registers[11] == 0x47
+    assert "rtthread-hardfault-software-frame=36B" in res.evidence
+
+    bad_marker = b"\x00\x00\x00\x00" + sw_bytes[4:]
+    assert (
+        wrapped(replace(ctx, read=lambda _a, _n: bad_marker))
+        == "exception-context-unproven"
+    )
+    assert (
+        wrapped(replace(ctx, remaining_exception_bytes=16))
+        == "exception-read-budget-exceeded"
+    )
+    assert (
+        wrapped(replace(ctx, process_sp=0x200007F0)) == "exception-frame-outside-bounds"
+    )
+
+
+def test_apply_switch_return_cfi_adds_lr_return_only_for_switch_return():
+    meta = UnwindMetadata(
+        elf=SimpleNamespace(pointer_size=4, endian="little"),
+        arch="arm",
+        cfi_tables=(),
+        ehabi=None,
+        return_register=14,
+        frame_pointer_register=7,
+    )
+    seed = SeedFrame(0x5B2B, 0x20001000, {13: 0x20001000, 14: 0x1235}, source="current")
+    switch_dec = SimpleNamespace(stage="switch-return", seed=seed)
+    updated = bridge._apply_switch_return_cfi(meta, switch_dec)
+    assert updated is not None and len(updated.cfi_tables) == 1
+    row = updated.cfi_tables[0].row_for(0x5B2A)
+    assert row is not None and row.cfa.register == 13 and row.cfa.offset == 0
+    assert row.return_register == 14
+
+    other_dec = SimpleNamespace(stage="pendsv-entry", seed=seed)
+    assert bridge._apply_switch_return_cfi(meta, other_dec) is meta

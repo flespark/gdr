@@ -374,13 +374,17 @@ def _assert_thumb_semantics(blob: bytes, label: str) -> int:
             cap_regs = [
                 operand.reg
                 for operand in cap_operands
-                if operand.type == arm.ARM_OP_REG
+                if operand.type == cs.arm.ARM_OP_REG
             ]
             assert _cap_reg(cap_regs[0]) == operands["rn"], (
                 label,
                 hex(instruction.address),
             )
-            assert [reg - 22 + 8 for reg in cap_regs[1:]] == list(
+            if operands.get("single"):
+                expected_regs = [reg - cs.arm.ARM_REG_S0 for reg in cap_regs[1:]]
+            else:
+                expected_regs = [reg - 22 + 8 for reg in cap_regs[1:]]
+            assert expected_regs == list(
                 range(
                     int(operands["first"]),
                     int(operands["first"]) + int(operands["count"]),
@@ -419,6 +423,19 @@ def test_thumb_fpu_prologue_decodes_with_proven_operands():
     decoded = decode_thumb(elf, 0x100A, end)
     assert not isinstance(decoded, str) and decoded.mnemonic == "vldmia"
     assert decoded.operands == {"rn": 1, "first": 8, "count": 8}
+
+    single_blob = bytes.fromhex("20ed108ab0ec108aaff30080")
+    single_elf = _image(single_blob)
+    single_end = 0x1000 + len(single_blob)
+    decoded = decode_thumb(single_elf, 0x1000, single_end)
+    assert not isinstance(decoded, str) and decoded.mnemonic == "vstmdb"
+    assert decoded.operands == {"rn": 0, "first": 16, "count": 16, "single": True}
+    decoded = decode_thumb(single_elf, 0x1004, single_end)
+    assert not isinstance(decoded, str) and decoded.mnemonic == "vldmia"
+    assert decoded.operands == {"rn": 0, "first": 16, "count": 16, "single": True}
+    decoded = decode_thumb(single_elf, 0x1008, single_end)
+    assert not isinstance(decoded, str) and decoded.mnemonic == "nop"
+    assert decoded.operands == {}
 
 
 def test_thumb_preindexed_writeback_store_decodes_with_signed_offset():

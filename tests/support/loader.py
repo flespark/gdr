@@ -17,6 +17,10 @@ from ci.testing.cache import CACHE
 
 _DEFAULT_FREERTOS_CACHE = CACHE / "fixtures" / "freertos"
 _DEFAULT_RTTHREAD_CACHE = CACHE / "fixtures" / "rtthread"
+_DEFAULT_BARE_CACHE = CACHE / "fixtures" / "bare"
+_DEFAULT_BARE_VERSION = "none"
+_DEFAULT_BARE_TARGET = "qemu-virt-rv64"
+_DEFAULT_BARE_VARIANT = "eh-frame"
 
 
 def fixture_cache_root() -> Path:
@@ -45,6 +49,7 @@ _RAW_BIN_BOOT_TARGETS = frozenset(
         ("freertos", "qemu-virt-rv64"),
         ("rtthread", "rv32"),
         ("rtthread", "rv64"),
+        ("bare", "qemu-virt-rv64"),
     }
 )
 
@@ -61,7 +66,7 @@ class IntegrationSpec:
     """Closed-loop session selected by the environment.
 
     Attributes:
-        rtos: ``rtthread`` or ``freertos``.
+        rtos: ``rtthread``, ``freertos`` or ``bare``.
         version: Kernel version string passed to ``gdr init``.
         target: QEMU board / ISA selector.
         variant: FreeRTOS fixture variant; ``snapshot`` selects the file-only
@@ -146,6 +151,11 @@ def load_integration_spec(
         version = _env_str(env, "GDR_VERSION", _RTTHREAD_DEFAULT_VERSION)
         target = _env_str(env, "GDR_QEMU_TARGET", _RTTHREAD_DEFAULT_TARGET)
         cache = _DEFAULT_RTTHREAD_CACHE
+    elif rtos == "bare":
+        variant = _env_str(env, "GDR_FIXTURE_VARIANT", _DEFAULT_BARE_VARIANT)
+        version = _env_str(env, "GDR_VERSION", _DEFAULT_BARE_VERSION)
+        target = _env_str(env, "GDR_QEMU_TARGET", _DEFAULT_BARE_TARGET)
+        cache = _DEFAULT_BARE_CACHE
     else:
         raise RuntimeError(f"unknown GDR_RTOS: {rtos}")
     return IntegrationSpec(

@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from core.unwind_meta import ElfImage
+from freertos.scheduler_switch import SchedulerProfile, build_profile
 from tests.support.freertos_qemu_profiles import get_freertos_qemu_profile
 from tests.support.gdb_process import has_embedded_python
 from tests.support.loader import load_integration_spec
@@ -23,33 +25,36 @@ from tests.support.qemu_harness import GdbSession, QemuSession, check_tools
 SPEC = load_integration_spec()
 pytestmark = pytest.mark.skipif(
     SPEC.rtos != "freertos"
-    or SPEC.target != "mps2-an385"
-    or SPEC.variant != "sched"
-    or SPEC.version != "10.3.1",
-    reason="requires the FreeRTOS AN385 scheduler fixture at 10.3.1",
+    or (SPEC.variant, SPEC.target, SPEC.version)
+    not in (
+        ("sched", "mps2-an385", "10.3.1"),
+        ("sched", "mps2-an386", "11.3.1"),
+        ("sched", "microbit", "11.1.0"),
+        ("sched", "mps2-an505", "11.3.1"),
+    ),
+    reason="requires a FreeRTOS M-profile scheduler fixture lane",
 )
 
 GDR_ROOT = Path(__file__).resolve().parents[3]
-PENDSV_ENTRY = 0x00
-PENDSV_SAVE = 0x0C
-PENDSV_WRITEBACK = 0x12
-PENDSV_CALL = 0x1C
-PENDSV_AFTER_SWITCH = 0x20
-PENDSV_AFTER_SWITCH = 0x20
-PENDSV_SELECT = 0x2E
-PENDSV_SAVED_SP = 0x30
-PENDSV_RESTORED = 0x34
-PENDSV_PSP = 0x38
-PENDSV_RETURN = 0x3C
-SVC_ENTRY = 0x00
-SVC_SAVED_SP = 0x06
-SVC_RESTORED = 0x0A
-SVC_PSP = 0x0E
-SVC_RETURN = 0x1E
-START_FIRST_SVC = 0x16
-SWITCH_UPDATE = 0xA0
+_PORT_SPECS = {
+    "mps2-an385": ("arm-cm3", 0x20, 0x00, False, 24, 25),
+    "mps2-an386": ("arm-cm4f", 0x24, 0x00, False, 24, 25),
+    "microbit": ("arm-cm0", 0x24, 0x04, True, 24, 25),
+    "mps2-an505": ("arm-cm33", 0x28, 0x08, True, 19, 20),
+}
+_PORT, _SW_SIZE, _R4_OFF, _EXC_RET_IN_R3, _TIMER0_EXC, _TIMER1_EXC = _PORT_SPECS.get(
+    SPEC.target, _PORT_SPECS["mps2-an385"]
+)
+_PROFILE_CACHE: SchedulerProfile | None = None
 
-PROFILE_ID = "freertos/armv7-m/arm-cm3-pendsv-v1"
+
+def _profile() -> SchedulerProfile:
+    global _PROFILE_CACHE
+    if _PROFILE_CACHE is None:
+        profile, reason = build_profile(ElfImage.from_path(SPEC.elf_path()))
+        assert profile is not None, reason
+        _PROFILE_CACHE = profile
+    return _PROFILE_CACHE
 
 
 def _json_line(output: str) -> dict:
@@ -94,9 +99,10 @@ gdb.selected_inferior().write_memory(address, ({value}).to_bytes(4, "little"))
 
 
 def _state(session) -> dict:
+    prof = _profile()
     return _json_line(
         session.run_python(
-            """
+            f"""
 import gdb, json
 
 def u16(address):
@@ -106,42 +112,39 @@ def u32(address):
     return int.from_bytes(bytes(gdb.selected_inferior().read_memory(address, 4)), "little")
 
 def symbol(address):
-    return gdb.execute(f"info symbol {address:#x}", to_string=True).split(" in section ")[0].strip()
+    return gdb.execute(f"info symbol {{address:#x}}", to_string=True).split(" in section ")[0].strip()
 
 def tcb(name):
     address = int(gdb.parse_and_eval(name))
-    value = gdb.parse_and_eval(f"(struct tskTaskControlBlock*){address:#x}")
+    value = gdb.parse_and_eval(f"(struct tskTaskControlBlock*){{address:#x}}")
     top = int(value["pxTopOfStack"])
-    return {
+    return {{
         "addr": address,
         "top": top,
         "base": int(value["pxStack"]),
         "end": int(value["pxEndOfStack"]) + 4,
-        "saved": [u32(top + 4 * index) for index in range(8)],
-        "frame": [u32(top + 32 + 4 * index) for index in range(8)],
-    }
+        "saved": [u32(top + {_R4_OFF} + 4 * index) for index in range(8)],
+        "frame": [u32(top + {_SW_SIZE} + 4 * index) for index in range(8)],
+    }}
 
-handles = {
+handles = {{
     name: int(gdb.parse_and_eval(name))
     for name in ("gdr_sched_task_handle", "gdr_sched_tick_handle",
                  "gdr_sched_irq_handle", "gdr_sched_first_handle")
-}
-tcbs = {name: tcb(name) for name in handles}
+}}
+tcbs = {{name: tcb(name) for name in handles}}
 current = int(gdb.parse_and_eval("pxCurrentTCB"))
-print(json.dumps({
+psp_val = int(gdb.parse_and_eval("$psp"))
+print(json.dumps({{
     "pc": int(gdb.parse_and_eval("$pc")),
     "sp": int(gdb.parse_and_eval("$sp")),
     "msp": int(gdb.parse_and_eval("$msp")),
-    "psp": int(gdb.parse_and_eval("$psp")),
-    "psp_frame": [u32(int(gdb.parse_and_eval("$psp")) + 4 * index)
-                  for index in range(8)]
-    if int(gdb.parse_and_eval("$psp")) else [],
-    "saved_buffer": [u32(int(gdb.parse_and_eval("$psp")) - 0x20 + 4 * index)
-                     for index in range(8)]
-    if int(gdb.parse_and_eval("$psp")) else [],
+    "psp": psp_val,
+    "psp_frame": [u32(psp_val + 4 * index) for index in range(8)] if psp_val else [],
+    "saved_buffer": [u32(psp_val - {_SW_SIZE} + {_R4_OFF} + 4 * index) for index in range(8)] if psp_val else [],
     "xpsr": int(gdb.parse_and_eval("$xpsr")),
     "lr": int(gdb.parse_and_eval("$lr")) & 0xFFFFFFFF,
-    "regs": {f"r{index}": int(gdb.parse_and_eval(f"$r{index}")) & 0xFFFFFFFF for index in range(13)},
+    "regs": {{f"r{{index}}": int(gdb.parse_and_eval(f"$r{{index}}")) & 0xFFFFFFFF for index in range(13)}},
     "current": current,
     "current_symbol": symbol(current),
     "handles": handles,
@@ -154,8 +157,8 @@ print(json.dumps({
     "first_started": int(gdb.parse_and_eval("gdr_sched_first_started")),
     "tick_count": int(gdb.parse_and_eval("xTickCount")),
     "pendsv_pc_symbol": symbol(int(gdb.parse_and_eval("&PendSV_Handler"))),
-    "svc_pc_symbol": symbol(int(gdb.parse_and_eval("&SVC_Handler"))),
-}))
+    "svc_pc_symbol": symbol(int(gdb.parse_and_eval("&{prof.svc_symbol}"))),
+}}))
 """
         )
     )
@@ -242,6 +245,7 @@ print(json.dumps({{
 
 
 def _compiled_oracle(session) -> dict:
+    prof = _profile()
     values = _json_line(
         session.run_python(
             f"""
@@ -254,21 +258,21 @@ def u32(address):
     return int.from_bytes(bytes(gdb.selected_inferior().read_memory(address, 4)), "little")
 
 pendsv = int(gdb.parse_and_eval("&PendSV_Handler"))
-svc = int(gdb.parse_and_eval("&SVC_Handler"))
-start = int(gdb.parse_and_eval("&prvPortStartFirstTask"))
+svc = int(gdb.parse_and_eval("&{prof.svc_symbol}"))
+start = int(gdb.parse_and_eval("&{prof.start_first_symbol}"))
 switch = int(gdb.parse_and_eval("&vTaskSwitchContext"))
 print(json.dumps({{
     "pendsv": pendsv, "svc": svc, "start": start, "switch": switch,
     "pendsv_entry": u32(pendsv),
-    "pendsv_save": u32(pendsv + {PENDSV_SAVE:#x}),
-    "pendsv_psp": u32(pendsv + {PENDSV_RESTORED:#x}),
-    "pendsv_return": u16(pendsv + {PENDSV_RETURN:#x}),
+    "pendsv_save": u32({prof.pendsv_save_pending:#x}),
+    "pendsv_psp": u32({prof.pendsv_restored_pending_psp:#x}),
+    "pendsv_return": u16({prof.pendsv_exception_return:#x}),
     "svc_entry": u32(svc),
-    "svc_restored": u32(svc + {SVC_RESTORED:#x}),
-    "svc_return": u16(svc + {SVC_RETURN:#x}),
-    "start_svc": u16(start + {START_FIRST_SVC:#x}),
-    "switch_update": u16(switch + {SWITCH_UPDATE:#x}),
-    "switch_after": u16(switch + {SWITCH_UPDATE + 2:#x}),
+    "svc_restored": u32({prof.svc_restored_pending_psp:#x}),
+    "svc_return": u16({prof.svc_exception_return:#x}),
+    "start_svc": u16({prof.start_first_svc:#x}),
+    "switch_update": u16({prof.switch_update:#x}),
+    "switch_after": u16({prof.switch_after_update:#x}),
     "sys_tick": int(gdb.parse_and_eval("&SysTick_Handler")),
     "timer0": int(gdb.parse_and_eval("&Timer0_Handler")),
     "timer1": int(gdb.parse_and_eval("&Timer1_Handler")),
@@ -280,35 +284,44 @@ print(json.dumps({{
 
 
 def test_compiled_transition_bytes_match_the_independent_oracle(gdb_session):
+    prof = _profile()
     oracle = _compiled_oracle(gdb_session)
-    assert oracle["pendsv_entry"] == 0x8009F3EF, oracle
-    assert oracle["pendsv_save"] == 0x0FF0E920, oracle
-    assert oracle["pendsv_psp"] == 0x8809F380, oracle
-    assert oracle["pendsv_return"] == 0x4770, oracle
-    assert oracle["svc_entry"] == 0x68194B07, oracle
-    assert oracle["svc_restored"] == 0x8809F380, oracle
-    assert oracle["svc_return"] == 0x4770, oracle
-    assert oracle["start_svc"] == 0xDF00, oracle
-    assert oracle["switch_update"] == 0x601A, oracle
-    assert oracle["switch_after"] == 0xBD10, oracle
+    assert oracle["pendsv"] == prof.pendsv_entry
+    assert oracle["svc"] == prof.svc_entry
+    assert oracle["start"] == prof.start_first_start
+    assert oracle["switch"] == prof.switch_entry
+    if _PORT == "arm-cm3":
+        assert oracle["pendsv_entry"] == 0x8009F3EF, oracle
+        assert oracle["pendsv_save"] == 0x0FF0E920, oracle
+        assert oracle["pendsv_psp"] == 0x8809F380, oracle
+        assert oracle["pendsv_return"] == 0x4770, oracle
+        assert oracle["svc_entry"] == 0x68194B07, oracle
+        assert oracle["svc_restored"] == 0x8809F380, oracle
+        assert oracle["svc_return"] == 0x4770, oracle
+        assert oracle["start_svc"] == 0xDF00, oracle
+        assert oracle["switch_update"] == 0x601A, oracle
+        assert oracle["switch_after"] == 0xBD10, oracle
+    else:
+        assert oracle["pendsv_return"] == (0x4718 if _EXC_RET_IN_R3 else 0x4770), oracle
+        assert oracle["svc_return"] == (0x4710 if _EXC_RET_IN_R3 else 0x4770), oracle
+        assert (oracle["start_svc"] >> 8) == 0xDF, oracle
 
 
 def test_cooperative_yield_marks_old_task_before_and_after_the_tcb_writeback(
     gdb_session,
 ):
+    prof = _profile()
     _set_gate(gdb_session, 1)
-    oracle = _compiled_oracle(gdb_session)
-    entry = oracle["pendsv"]
     state = _wait_stage(
         gdb_session,
-        entry + PENDSV_ENTRY,
+        prof.pendsv_entry,
         lambda item: (
             item["current"] == item["handles"]["gdr_sched_task_handle"]
             and item["phase"] == 1
             and item["yield_count"] >= 1
         ),
     )
-    assert state["pc"] == entry + PENDSV_ENTRY, state
+    assert state["pc"] == prof.pendsv_entry, state
     assert state["xpsr"] & 0x1FF == 14, state
     assert state["xpsr"] & (1 << 24), state
     assert state["lr"] == 0xFFFFFFFD, state
@@ -322,37 +335,40 @@ def test_cooperative_yield_marks_old_task_before_and_after_the_tcb_writeback(
     _assert_no_cross_task(data["frames"], "gdr_sched_task", "gdr_sched_tick_hi")
     evidence = " ".join(data["messages"])
     assert "stage=pendsv-entry" in evidence and "owner=old" in evidence, data
-    assert PROFILE_ID in evidence, data
+    assert prof.profile_id in evidence, data
 
     state = _wait_stage(
         gdb_session,
-        entry + PENDSV_SAVE,
+        prof.pendsv_save_pending,
         lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
     )
-    assert state["pc"] == entry + PENDSV_SAVE, state
+    assert state["pc"] == prof.pendsv_save_pending, state
     data = _backtrace(gdb_session, "gdr_sched")
     assert "stage=pendsv-save-pending" in " ".join(data["messages"]), data
 
-    state = _wait_stage(
-        gdb_session,
-        entry + 0x10,
-        lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
-    )
-    assert state["psp"] == entry_psp, state
-    assert state["regs"]["r0"] == state["psp"] - 0x20, state
-    assert state["saved_buffer"] == [
-        state["regs"][f"r{index}"] for index in range(4, 12)
-    ], state
-    data = _backtrace(gdb_session, "gdr_sched")
-    assert data["source"] == "current", data
-    assert "stage=pendsv-save-written" in " ".join(data["messages"]), data
+    if prof.pendsv_save_written is not None:
+        state = _wait_stage(
+            gdb_session,
+            prof.pendsv_save_written,
+            lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
+        )
+        assert state["psp"] == entry_psp, state
+        assert state["regs"]["r0"] == state["psp"] - _SW_SIZE, state
+        assert state["saved_buffer"] == [
+            state["regs"][f"r{index}"] for index in range(4, 12)
+        ], state
+        data = _backtrace(gdb_session, "gdr_sched")
+        assert data["source"] == "current", data
+        assert "stage=pendsv-save-written" in " ".join(data["messages"]), data
 
     state = _wait_stage(
         gdb_session,
-        entry + PENDSV_WRITEBACK,
+        prof.pendsv_writeback,
         lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
     )
-    assert state["tcbs"]["gdr_sched_task_handle"]["top"] == state["psp"] - 0x20, state
+    assert state["tcbs"]["gdr_sched_task_handle"]["top"] == state["psp"] - _SW_SIZE, (
+        state
+    )
     data = _backtrace(gdb_session, "gdr_sched")
     assert data["source"] == "saved" and data["complete"], data
     assert data["frames"][0]["pc"] == old_pc, data
@@ -362,6 +378,7 @@ def test_cooperative_yield_marks_old_task_before_and_after_the_tcb_writeback(
 
 
 def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_session):
+    prof = _profile()
     _set_gate(gdb_session, 2)
     oracle = _compiled_oracle(gdb_session)
     tick = _wait_stage(
@@ -380,7 +397,7 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
     tick_before = tick["tick_count"]
     state = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_ENTRY,
+        prof.pendsv_entry,
         lambda item: (
             item["current"] == item["handles"]["gdr_sched_task_handle"]
             and item["phase"] == 2
@@ -392,7 +409,7 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
 
     call = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_CALL,
+        prof.pendsv_switch_call,
         lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
     )
     assert call["lr"] == 0xFFFFFFFD, call
@@ -403,23 +420,23 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
 
     entry_state = _wait_stage(
         gdb_session,
-        oracle["switch"],
+        prof.switch_entry,
         lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
     )
-    assert (entry_state["lr"] & ~1) == oracle["pendsv"] + PENDSV_AFTER_SWITCH, (
-        entry_state
-    )
+    assert (entry_state["lr"] & ~1) == prof.pendsv_after_switch, entry_state
     data = _backtrace(gdb_session, "gdr_sched")
     assert data["source"] == "saved" and data["complete"], data
     assert "stage=switch-entry" in " ".join(data["messages"]), data
 
-    update = oracle["switch"] + SWITCH_UPDATE
+    update = prof.switch_update
     state = _wait_stage(
         gdb_session,
         update,
         lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
     )
-    assert state["tcbs"]["gdr_sched_task_handle"]["top"] == state["psp"] - 0x20, state
+    assert state["tcbs"]["gdr_sched_task_handle"]["top"] == state["psp"] - _SW_SIZE, (
+        state
+    )
     data = _backtrace(gdb_session, "gdr_sched")
     assert data["source"] == "saved" and data["complete"], data
     assert "stage=switch-before-update" in " ".join(data["messages"]), data
@@ -427,7 +444,7 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
     gdb_session.run("stepi", timeout=10)
     after = _state(gdb_session)
     assert after["current"] == after["handles"]["gdr_sched_tick_handle"], after
-    assert after["pc"] == update + 2, after
+    assert after["pc"] == prof.switch_after_update, after
     tick = after["tcbs"]["gdr_sched_tick_handle"]
     _assert_task_frame(after, "gdr_sched_tick_handle")
     data = _backtrace(gdb_session, "gdr_sched_tick")
@@ -438,10 +455,10 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
 
     after = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_AFTER_SWITCH,
+        prof.pendsv_after_switch,
         lambda item: item["current"] == item["handles"]["gdr_sched_tick_handle"],
     )
-    assert after["pc"] == oracle["pendsv"] + PENDSV_AFTER_SWITCH, after
+    assert after["pc"] == prof.pendsv_after_switch, after
     data = _backtrace(gdb_session, "gdr_sched_tick")
     assert data["source"] == "saved" and data["complete"], data
     assert "stage=pendsv-after-switch" in " ".join(data["messages"]), data
@@ -454,7 +471,7 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
 
     state = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_SELECT,
+        prof.pendsv_select,
         lambda item: item["current"] == item["handles"]["gdr_sched_tick_handle"],
     )
     assert state["regs"]["r1"] == state["handles"]["gdr_sched_tick_handle"], state
@@ -464,7 +481,7 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
 
     state = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_SAVED_SP,
+        prof.pendsv_saved_sp,
         lambda item: item["current"] == item["handles"]["gdr_sched_tick_handle"],
     )
     tick_top = state["tcbs"]["gdr_sched_tick_handle"]["top"]
@@ -476,11 +493,11 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
 
 
 def test_restore_window_distinguishes_restored_cores_from_the_old_psp(gdb_session):
+    prof = _profile()
     _set_gate(gdb_session, 2)
-    oracle = _compiled_oracle(gdb_session)
     _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_ENTRY,
+        prof.pendsv_entry,
         lambda item: (
             item["current"] == item["handles"]["gdr_sched_task_handle"]
             and item["phase"] == 2
@@ -488,49 +505,66 @@ def test_restore_window_distinguishes_restored_cores_from_the_old_psp(gdb_sessio
     )
     state = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_RESTORED,
+        prof.pendsv_restored_pending_psp,
         lambda item: item["current"] == item["handles"]["gdr_sched_tick_handle"],
     )
     tick = state["tcbs"]["gdr_sched_tick_handle"]
-    assert state["psp"] != tick["top"] + 0x20, state
-    assert state["pc"] == oracle["pendsv"] + PENDSV_RESTORED, state
-    assert state["regs"]["r0"] == tick["top"] + 0x20, state
-    assert [state["regs"][f"r{index}"] for index in range(4, 12)] == tick["saved"], (
-        state
-    )
+    assert state["psp"] != tick["top"] + _SW_SIZE, state
+    assert state["pc"] == prof.pendsv_restored_pending_psp, state
+    assert state["regs"]["r0"] == tick["top"] + _SW_SIZE, state
+    if _PORT == "arm-cm0":
+        assert [state["regs"][f"r{index}"] for index in range(8, 12)] == tick["saved"][
+            4:
+        ], state
+    else:
+        assert [state["regs"][f"r{index}"] for index in range(4, 12)] == tick[
+            "saved"
+        ], state
     data = _backtrace(gdb_session, "gdr_sched_tick")
     assert data["source"] == "current", data
     assert data["frames"][0]["pc"] == tick["frame"][6] & ~1, data
     _assert_no_cross_task(data["frames"], "gdr_sched_tick_hi_task", "gdr_sched_task")
     assert "stage=pendsv-restored-pending-psp" in " ".join(data["messages"]), data
 
-    gdb_session.run("stepi", timeout=10)
-    written = _state(gdb_session)
-    assert written["pc"] == oracle["pendsv"] + PENDSV_PSP, written
-    assert written["psp"] == tick["top"] + 0x20, written
-    assert written["current"] == written["handles"]["gdr_sched_tick_handle"], written
-    data = _backtrace(gdb_session, "gdr_sched_tick")
-    assert data["source"] == "current", data
-    assert data["frames"][0]["pc"] == tick["frame"][6] & ~1, data
-    assert "stage=pendsv-psp-written" in " ".join(data["messages"]), data
+    if prof.pendsv_psp_written is not None:
+        gdb_session.run("stepi", timeout=10)
+        written = _state(gdb_session)
+        assert written["pc"] == prof.pendsv_psp_written, written
+        assert written["psp"] == tick["top"] + _SW_SIZE, written
+        assert written["current"] == written["handles"]["gdr_sched_tick_handle"], (
+            written
+        )
+        data = _backtrace(gdb_session, "gdr_sched_tick")
+        assert data["source"] == "current", data
+        assert data["frames"][0]["pc"] == tick["frame"][6] & ~1, data
+        assert "stage=pendsv-psp-written" in " ".join(data["messages"]), data
 
-    gdb_session.run("stepi", timeout=10)
+    gdb_session.run(f"tbreak *{prof.pendsv_exception_return:#x}")
+    gdb_session.run("continue", timeout=10)
     pending = _state(gdb_session)
-    assert pending["pc"] == oracle["pendsv"] + PENDSV_RETURN, pending
-    assert pending["lr"] == 0xFFFFFFFD, pending
+    assert pending["pc"] == prof.pendsv_exception_return, pending
+    if _PORT == "arm-cm0":
+        assert [pending["regs"][f"r{index}"] for index in range(4, 12)] == tick[
+            "saved"
+        ], pending
+    exc_ret = pending["regs"]["r3"] if _EXC_RET_IN_R3 else pending["lr"]
+    assert exc_ret == 0xFFFFFFFD, pending
     data = _backtrace(gdb_session, "gdr_sched_tick")
     assert "stage=pendsv-exception-return" in " ".join(data["messages"]), data
     gdb_session.run("stepi", timeout=10)
     returned = _state(gdb_session)
-    assert tick["top"] + 0x20 <= returned["psp"] <= tick["top"] + 0x40, returned
+    assert tick["top"] + _SW_SIZE <= returned["psp"] <= tick["top"] + _SW_SIZE + 0x20, (
+        returned
+    )
     assert returned["current"] == returned["handles"]["gdr_sched_tick_handle"], returned
-    assert returned["pc"] != oracle["pendsv"] + PENDSV_RETURN, returned
+    assert returned["pc"] != prof.pendsv_exception_return, returned
     _finish_cycle(gdb_session)
 
 
 def test_nested_irq_truly_preempts_timer0_before_requesting_scheduling(
     gdb_session,
 ):
+    prof = _profile()
     _set_gate(gdb_session, 3)
     oracle = _compiled_oracle(gdb_session)
     timer0 = _wait_stage(
@@ -541,7 +575,7 @@ def test_nested_irq_truly_preempts_timer0_before_requesting_scheduling(
             and item["phase"] == 3
         ),
     )
-    assert timer0["xpsr"] & 0x1FF == 24, timer0
+    assert timer0["xpsr"] & 0x1FF == _TIMER0_EXC, timer0
     task_frame = _frame_at(gdb_session, timer0["psp"])
     assert task_frame["ipsr"] == 0, task_frame
     assert "gdr_sched_task" in task_frame["pc_symbol"], task_frame
@@ -551,14 +585,14 @@ def test_nested_irq_truly_preempts_timer0_before_requesting_scheduling(
         oracle["timer1"],
         lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
     )
-    assert timer1["xpsr"] & 0x1FF == 25, timer1
+    assert timer1["xpsr"] & 0x1FF == _TIMER1_EXC, timer1
     nested_frame = _frame_at(gdb_session, timer1["msp"])
-    assert nested_frame["ipsr"] == 24, nested_frame
+    assert nested_frame["ipsr"] == _TIMER0_EXC, nested_frame
     assert "Timer0_Handler" in nested_frame["pc_symbol"], nested_frame
 
     state = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_ENTRY,
+        prof.pendsv_entry,
         lambda item: (
             item["current"] == item["handles"]["gdr_sched_task_handle"]
             and item["phase"] == 3
@@ -578,11 +612,11 @@ def test_nested_irq_truly_preempts_timer0_before_requesting_scheduling(
 def test_nested_irq_requesting_scheduling_keeps_the_interrupted_task_owner(
     gdb_session,
 ):
+    prof = _profile()
     _set_gate(gdb_session, 3)
-    oracle = _compiled_oracle(gdb_session)
     state = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_ENTRY,
+        prof.pendsv_entry,
         lambda item: (
             item["current"] == item["handles"]["gdr_sched_task_handle"]
             and item["phase"] == 3
@@ -599,7 +633,7 @@ def test_nested_irq_requesting_scheduling_keeps_the_interrupted_task_owner(
     symbols = " ".join(frame["symbol"] or "" for frame in data["frames"])
     assert "Timer0_Handler" not in symbols and "Timer1_Handler" not in symbols, data
 
-    update = oracle["switch"] + SWITCH_UPDATE
+    update = prof.switch_update
     _wait_stage(
         gdb_session,
         update,
@@ -611,7 +645,11 @@ def test_nested_irq_requesting_scheduling_keeps_the_interrupted_task_owner(
     data = _backtrace(gdb_session, "gdr_sched_irq")
     assert data["source"] == "saved", data
     symbols = [frame["symbol"] or "" for frame in data["frames"]]
-    notify = next(i for i, name in enumerate(symbols) if "ulTaskNotifyTake" in name)
+    notify = next(
+        i
+        for i, name in enumerate(symbols)
+        if "ulTaskNotifyTake" in name or "ulTaskGenericNotifyTake" in name
+    )
     irq_entry = next(
         i for i, name in enumerate(symbols) if "gdr_sched_irq_hi_task" in name
     )
@@ -627,14 +665,14 @@ def test_unsupported_and_mismatched_scheduler_stops_are_refused(gdb_session):
     That half is synthetic instrumentation, not hardware evidence of a
     different compiled body; the ambiguous-PC half is a real live stop.
     """
+    prof = _profile()
     _set_gate(gdb_session, 1)
-    oracle = _compiled_oracle(gdb_session)
     state = _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_ENTRY + 4,
+        prof.pendsv_entry + 4,
         lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
     )
-    assert state["pc"] == oracle["pendsv"] + PENDSV_ENTRY + 4, state
+    assert state["pc"] == prof.pendsv_entry + 4, state
     data = _backtrace(gdb_session, "gdr_sched")
     assert data["frames"] == [], data
     assert data["stop_reason"].startswith("scheduler-stage-ambiguous"), data
@@ -676,11 +714,11 @@ print("DATA=" + json.dumps({
 def test_irq_saved_paths_still_complete_while_stopped_in_a_scheduler_stage(
     gdb_session,
 ):
+    prof = _profile()
     _set_gate(gdb_session, 1)
-    oracle = _compiled_oracle(gdb_session)
     _wait_stage(
         gdb_session,
-        oracle["pendsv"] + PENDSV_ENTRY,
+        prof.pendsv_entry,
         lambda item: (
             item["current"] == item["handles"]["gdr_sched_task_handle"]
             and item["phase"] == 1
@@ -705,7 +743,7 @@ def first_start_session():
     session = GdbSession(SPEC.gdb, profile, qemu.gdb_port, GDR_ROOT)
     try:
         session.start()
-        session.run("gdr init freertos 10.3.1", timeout=30)
+        session.run(f"gdr init freertos {SPEC.version}", timeout=30)
         yield session
     finally:
         session.stop()
@@ -714,8 +752,8 @@ def first_start_session():
 
 def test_first_task_start_uses_the_independent_svc_restore_path(first_start_session):
     session = first_start_session
-    oracle = _compiled_oracle(session)
-    start = oracle["start"]
+    prof = _profile()
+    start = prof.start_first_start
     session.run(f"tbreak *{start:#x}")
     output = session.run("continue", timeout=20)
     assert "breakpoint" in output.lower(), output
@@ -725,23 +763,23 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
     assert data["frames"] == [], data
     assert data["stop_reason"].startswith("scheduler-stage-ambiguous"), data
 
-    session.run(f"tbreak *{start + START_FIRST_SVC:#x}")
+    session.run(f"tbreak *{prof.start_first_svc:#x}")
     output = session.run("continue", timeout=20)
     assert "breakpoint" in output.lower(), output
     state = _state(session)
-    assert state["pc"] == start + START_FIRST_SVC, state
+    assert state["pc"] == prof.start_first_svc, state
     data = _backtrace(session, "gdr_sched_first")
     assert data["frames"] == [], data
     assert data["stop_reason"] == "scheduler-first-start-pending", data
 
-    svc = oracle["svc"]
-    session.run(f"tbreak *{svc + SVC_ENTRY:#x}")
+    session.run(f"tbreak *{prof.svc_entry:#x}")
     output = session.run("continue", timeout=20)
     assert "breakpoint" in output.lower(), output
     state = _state(session)
     assert state["xpsr"] & 0x1FF == 11, state
     assert state["xpsr"] & (1 << 24), state
-    assert state["lr"] == 0xFFFFFFF9, state
+    if prof.svc_symbol == "SVC_Handler":
+        assert state["lr"] == 0xFFFFFFF9, state
     assert state["psp"] == 0, state
     first = state["tcbs"]["gdr_sched_first_handle"]
     data = _backtrace(session, "gdr_sched_first")
@@ -750,49 +788,67 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
     assert data["frames"][0]["pc"] == first["frame"][6] & ~1, data
     assert "stage=svc-entry" in " ".join(data["messages"]), data
 
-    session.run(f"tbreak *{svc + SVC_SAVED_SP:#x}")
+    session.run(f"tbreak *{prof.svc_saved_sp:#x}")
     output = session.run("continue", timeout=20)
     assert "breakpoint" in output.lower(), output
     saved = _state(session)
     assert saved["psp"] == 0, saved
     assert saved["regs"]["r0"] == first["top"], saved
-    assert saved["lr"] == 0xFFFFFFF9, saved
     data = _backtrace(session, "gdr_sched_first")
-    assert data["source"] == "unstarted" and data["complete"], data
+    assert data["complete"] and data["source"] == "unstarted", (
+        data["stop_reason"],
+        data["messages"],
+        data,
+    )
     assert "stage=svc-saved-sp" in " ".join(data["messages"]), data
 
-    session.run(f"tbreak *{svc + SVC_RESTORED:#x}")
+    session.run(f"tbreak *{prof.svc_restored_pending_psp:#x}")
     output = session.run("continue", timeout=20)
     assert "breakpoint" in output.lower(), output
     restored = _state(session)
     assert restored["psp"] == 0, restored
-    assert restored["regs"]["r0"] == first["top"] + 0x20, restored
+    assert restored["regs"]["r0"] == first["top"] + _SW_SIZE, restored
     data = _backtrace(session, "gdr_sched_first")
-    assert data["source"] == "unstarted" and data["complete"], data
+    assert data["complete"] and data["source"] == "unstarted", (
+        data["stop_reason"],
+        data["messages"],
+        data,
+    )
     assert "stage=svc-restored-pending-psp" in " ".join(data["messages"]), data
 
-    session.run(f"tbreak *{svc + SVC_PSP:#x}")
+    session.run(f"tbreak *{prof.svc_psp_written:#x}")
     output = session.run("continue", timeout=20)
     assert "breakpoint" in output.lower(), output
     written = _state(session)
-    assert written["psp"] == first["top"] + 0x20, written
+    assert written["psp"] == first["top"] + _SW_SIZE, written
     data = _backtrace(session, "gdr_sched_first")
-    assert data["source"] == "unstarted" and data["complete"], data
+    assert data["complete"] and data["source"] == "unstarted", (
+        data["stop_reason"],
+        data["messages"],
+        data,
+    )
     assert "stage=svc-psp-written" in " ".join(data["messages"]), data
 
-    session.run(f"tbreak *{svc + SVC_RETURN:#x}")
+    session.run(f"tbreak *{prof.svc_exception_return:#x}")
     output = session.run("continue", timeout=20)
     assert "breakpoint" in output.lower(), output
     pending = _state(session)
-    assert pending["lr"] == 0xFFFFFFFD, pending
+    exc_ret = pending["regs"]["r2"] if _EXC_RET_IN_R3 else pending["lr"]
+    assert exc_ret == 0xFFFFFFFD, pending
     data = _backtrace(session, "gdr_sched_first")
-    assert data["source"] == "unstarted" and data["complete"], data
+    assert data["complete"] and data["source"] == "unstarted", (
+        data["stop_reason"],
+        data["messages"],
+        data,
+    )
     assert "stage=svc-exception-return" in " ".join(data["messages"]), data
 
     session.run("stepi", timeout=10)
     returned = _state(session)
-    assert first["top"] + 0x20 <= returned["psp"] <= first["top"] + 0x40, returned
+    assert (
+        first["top"] + _SW_SIZE <= returned["psp"] <= first["top"] + _SW_SIZE + 0x20
+    ), returned
     assert returned["current"] == returned["handles"]["gdr_sched_first_handle"], (
         returned
     )
-    assert returned["pc"] != svc + SVC_RETURN, returned
+    assert returned["pc"] != prof.svc_exception_return, returned

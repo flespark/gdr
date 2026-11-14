@@ -1,0 +1,142 @@
+diff --git a/bsp/gdr-mps2-an385/fault.c b/bsp/gdr-mps2-an385/fault.c
+new file mode 100644
+index 00000000..5cb81dbf
+--- /dev/null
++++ b/bsp/gdr-mps2-an385/fault.c
+@@ -0,0 +1,117 @@
++/* Deterministic synchronous-fault fixture for the RT-Thread M3 port.
++ *
++ * UsageFault stays disabled so an undefined instruction escalates to
++ * HardFault (FORCED + UFSR UNDEFINSTR), which GDR reports as a synchronous
++ * fault. Recovery uses RT-Thread's own rt_exception_hook: the hook advances
++ * the stacked PC past the 4-byte undefined word, clears the sticky status
++ * bits and returns RT_EOK. The hook also compensates libcpu's
++ * context_gcc.S prologue, which pushes r4-r11 plus EXC_RETURN (9 words)
++ * below the hardware frame and repoints PSP at the pushed block; without
++ * the 36-byte add-back the forced PSP return would unstack garbage.
++ */
++#include <rthw.h>
++#include <rtthread.h>
++
++#define GDR_SCB_CFSR (*(volatile rt_uint32_t *)0xE000ED28u)
++#define GDR_SCB_HFSR (*(volatile rt_uint32_t *)0xE000ED2Cu)
++#define GDR_MPU_CTRL (*(volatile rt_uint32_t *)0xE000ED94u)
++#define GDR_MPU_RNR (*(volatile rt_uint32_t *)0xE000ED98u)
++#define GDR_MPU_RBAR (*(volatile rt_uint32_t *)0xE000ED9Cu)
++#define GDR_MPU_RASR (*(volatile rt_uint32_t *)0xE000EDA0u)
++
++static volatile rt_uint32_t gdr_fault_done;
++static volatile rt_uint32_t gdr_fault_scenario;
++
++static struct rt_thread gdr_fault_thread;
++static rt_uint8_t gdr_fault_stack[2048];
++
++__attribute__((noinline, used)) static void gdr_fault_undefinstr_leaf(void)
++{
++    __asm volatile(".global gdr_fault_ud_stop\ngdr_fault_ud_stop:\nnop" ::: "memory");
++    __asm volatile(".word 0xFFFFFFFF");
++    __asm volatile("" ::: "memory");
++}
++
++__attribute__((noinline, used)) static void gdr_fault_bus_leaf(void)
++{
++    __asm volatile(".global gdr_fault_bus_stop\ngdr_fault_bus_stop:\nnop" ::: "memory");
++    __asm volatile(
++        "ldr r0, =0x50000000\n"
++        "ldr r1, [r0]\n"
++        ::: "r0", "r1", "memory");
++}
++
++__attribute__((noinline, used)) static void gdr_fault_memmanage_leaf(void)
++{
++    __asm volatile(".global gdr_fault_mm_stop\ngdr_fault_mm_stop:\nnop" ::: "memory");
++    __asm volatile(
++        "ldr r0, =0x60000000\n"
++        "ldr r1, [r0]\n"
++        ::: "r0", "r1", "memory");
++}
++
++__attribute__((noinline, used)) static void gdr_fault_trigger(void)
++{
++    if (gdr_fault_scenario == 1)
++        gdr_fault_bus_leaf();
++    else if (gdr_fault_scenario == 2)
++        gdr_fault_memmanage_leaf();
++    else
++        gdr_fault_undefinstr_leaf();
++    __asm volatile("" ::: "memory");
++}
++
++static rt_err_t gdr_fault_hook(void *context)
++{
++    rt_uint32_t *info = (rt_uint32_t *)context;
++
++    info[15] += gdr_fault_scenario == 0 ? 4 : 2;
++    GDR_SCB_CFSR = GDR_SCB_CFSR;
++    GDR_SCB_HFSR = GDR_SCB_HFSR;
++    /* NOTE: libcpu pushes 9 words before this hook runs; restore PSP to the
++       hardware frame base or the forced return unstacks the pushed block. */
++    __asm volatile(
++        "mrs r0, psp\n"
++        "adds r0, r0, #36\n"
++        "msr psp, r0"
++        ::: "r0", "memory");
++    gdr_fault_done++;
++    return RT_EOK;
++}
++
++static void gdr_fault_entry(void *argument)
++{
++    (void)argument;
++    rt_thread_mdelay(150);
++    while (1)
++    {
++        gdr_fault_scenario = 0;
++        gdr_fault_trigger();
++        rt_thread_mdelay(100);
++        gdr_fault_scenario = 1;
++        gdr_fault_trigger();
++        rt_thread_mdelay(100);
++        gdr_fault_scenario = 2;
++        gdr_fault_trigger();
++        rt_thread_mdelay(100);
++    }
++}
++
++static void gdr_fault_mpu_init(void)
++{
++    GDR_MPU_RNR = 0;
++    GDR_MPU_RBAR = 0x60000000u;
++    GDR_MPU_RASR = (19u << 1) | (1u << 28) | 1u;
++    GDR_MPU_CTRL = (1u << 0) | (1u << 2);
++    __asm volatile("dsb\n isb\n" ::: "memory");
++}
++
++void gdr_fault_fixture_start(void)
++{
++    gdr_fault_mpu_init();
++    rt_hw_exception_install(gdr_fault_hook);
++    RT_ASSERT(rt_thread_init(&gdr_fault_thread, "gdr_fault", gdr_fault_entry,
++                             RT_NULL, gdr_fault_stack, sizeof(gdr_fault_stack),
++                             20, 10) == RT_EOK);
++    RT_ASSERT(rt_thread_startup(&gdr_fault_thread) == RT_EOK);
++}
+diff --git a/bsp/gdr-mps2-an385/main.c b/bsp/gdr-mps2-an385/main.c
+index 0f4c0f8a..af2f2459 100644
+--- a/bsp/gdr-mps2-an385/main.c
++++ b/bsp/gdr-mps2-an385/main.c
+@@ -1,5 +1,6 @@
+ #include <rtthread.h>
+ extern void gdr_irq_fixture_start(void);
++extern void gdr_fault_fixture_start(void);
+ 
+ #define THREAD_STACK_SIZE 1024
+ #define MAILBOX_SIZE 4
+@@ -245,6 +246,7 @@ int main(void)
+     START_THREAD(worker10);
+     START_THREAD(worker11);
+     gdr_irq_fixture_start();
++    gdr_fault_fixture_start();
+     rt_thread_mdelay(20);
+     rt_kprintf("GDR test fixture ready.\n");
+     return 0;

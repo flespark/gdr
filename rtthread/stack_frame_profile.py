@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 
 from core.cpus import Cpu, cpu_of
 from core.insn_arm import ArmInstruction, decode_arm
@@ -648,4 +649,121 @@ def _armv7a_verify_context(elf: ElfImage) -> bool:
         return False
     return any(
         instruction.mnemonic in ("str", "stmdb", "stmia") for instruction in init
+    )
+
+
+@dataclass(frozen=True)
+class HardFaultTrampolineProfile:
+    """Verified instruction boundaries and PSP software-frame geometry for ``HardFault_Handler``."""
+
+    start: int
+    end: int
+    msr_psp_after_pc: int
+    push_lr_after_pc: int
+    pop_lr_after_pc: int
+    software_bytes: int
+    r4_offset: int
+
+
+def analyze_hardfault_trampoline(elf: ElfImage) -> HardFaultTrampolineProfile | None:
+    """Decode RT-Thread's M-profile ``HardFault_Handler`` assembly trampoline."""
+    start = elf.symbol_address("HardFault_Handler")
+    if start is None or elf.endian != "little" or not elf.is_code(start):
+        return None
+    limit = start + 128
+    address = start
+    instructions: list[ThumbInstruction] = []
+    while address < limit and elf.is_code(address):
+        decoded = decode_thumb(elf, address, limit)
+        if isinstance(decoded, str) or decoded.mnemonic == "other":
+            return None
+        instructions.append(decoded)
+        address += decoded.size
+        if decoded.mnemonic == "bx" and decoded.operands.get("rm") == 14:
+            break
+    else:
+        return None
+    saw_mrs_psp = False
+    r4_pushed = False
+    software_bytes = 0
+    r4_offset = 0
+    last_r0_store_rt: int | None = None
+    msr_psp_after_pc: int | None = None
+    push_lr_after_pc: int | None = None
+    saw_call = False
+    pop_lr_after_pc: int | None = None
+    for instruction in instructions:
+        mnemonic = instruction.mnemonic
+        operands = instruction.operands
+        if (
+            mnemonic == "mrs"
+            and operands.get("rd") == 0
+            and operands.get("sysm") == _PSP_SYSM
+        ):
+            saw_mrs_psp = True
+        elif saw_mrs_psp and msr_psp_after_pc is None:
+            if (
+                mnemonic == "stmdb"
+                and operands.get("rn") == 0
+                and operands.get("wback") is True
+            ):
+                reglist = int(operands.get("reglist", 0))
+                size = reglist.bit_count() * 4
+                software_bytes += size
+                if reglist == _M_PROFILE_CORE:
+                    r4_pushed = True
+                    r4_offset = 0
+                elif r4_pushed:
+                    r4_offset += size
+            elif (
+                mnemonic == "str_pre"
+                and operands.get("rn") == 0
+                and operands.get("imm") == -4
+            ):
+                software_bytes += 4
+                if r4_pushed:
+                    r4_offset += 4
+                last_r0_store_rt = _operand(instruction, "rt")
+            elif (
+                mnemonic == "msr"
+                and operands.get("rn") == 0
+                and operands.get("sysm") == _PSP_SYSM
+            ):
+                if not r4_pushed or last_r0_store_rt != 14 or software_bytes < 36:
+                    return None
+                msr_psp_after_pc = instruction.address + instruction.size
+        elif msr_psp_after_pc is not None:
+            if (
+                mnemonic == "push"
+                and operands.get("reglist") == 0x100
+                and push_lr_after_pc is None
+            ):
+                push_lr_after_pc = instruction.address + instruction.size
+            elif mnemonic == "bl" and push_lr_after_pc is not None:
+                saw_call = True
+            elif (
+                mnemonic == "ldr_post"
+                and operands.get("rn") == 13
+                and operands.get("rt") == 14
+                and operands.get("imm") == 4
+                and saw_call
+                and pop_lr_after_pc is None
+            ):
+                pop_lr_after_pc = instruction.address + instruction.size
+    if (
+        msr_psp_after_pc is None
+        or push_lr_after_pc is None
+        or not saw_call
+        or pop_lr_after_pc is None
+        or not (msr_psp_after_pc <= push_lr_after_pc < pop_lr_after_pc <= address)
+    ):
+        return None
+    return HardFaultTrampolineProfile(
+        start=start,
+        end=address,
+        msr_psp_after_pc=msr_psp_after_pc,
+        push_lr_after_pc=push_lr_after_pc,
+        pop_lr_after_pc=pop_lr_after_pc,
+        software_bytes=software_bytes,
+        r4_offset=r4_offset,
     )

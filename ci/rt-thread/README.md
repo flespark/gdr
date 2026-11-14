@@ -137,6 +137,38 @@ and 25 MHz SysTick setup match the AN385 lane. Acceptance and runtime
 limits live in [testing](../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage)
 and [errata](../../docs/errata.md#task-backtraces).
 
+## Fault fixtures (`fault` overlays)
+
+```bash
+python3 ci/test.py run rtthread mps2-an385 4.0.5 fault
+python3 ci/test.py run rtthread mps2-an505 4.0.5 fault
+python3 ci/test.py run rtthread mps2-an386 4.0.5 fault
+```
+
+`patches/<target>/4.0.5/fault/001-fault-fixture.patch` layers a `gdr_fault`
+thread and a `HardFault_Handler` recovery hook on top of the unmodified port
+context code (the overlay applies after the base series, so the base lanes
+stay byte-identical). The task cycles an undefined instruction, an unmapped
+data load (`0x50000000`, precise BusFault) and an MPU-blocked data load
+(`0x60000000`, escalated MemManage with `DACCVIOL` + `MMARVALID`), each
+entered through a global `gdr_fault_*_stop` label so tests stop at the exact
+faulting instruction regardless of DWARF line mapping. Recovery uses
+RT-Thread's own `rt_exception_hook`: the hook advances the stacked PC past
+the faulting word, clears the sticky CFSR/HFSR bits and returns `RT_EOK`.
+The hook also compensates libcpu's entry prologue, which pushes `r4-r11`
+plus `EXC_RETURN` below the hardware frame and repoints PSP at the pushed
+block (9 words / 36 bytes on M3; 10 with the hard-float dummy word on M4;
+13 words / 52 bytes with the TrustZone context block on M33); without the
+add-back the forced PSP return would unstack garbage. The M3 hook receives
+`struct exception_info`, while the M4/M33 hooks receive the hardware frame
+directly. No vector-table surgery and no `SHCSR` changes are involved:
+UsageFault stays disabled so faults escalate to HardFault, which GDR reports
+as `synchronous-fault`. On AN505 an MPU-blocked load surfaces as a precise
+bus fault instead of the specified MemManage fault, so the DACCVIOL live
+proof stays on the M3 lanes (see errata). There is no microbit fault lane:
+the M0 port has no exception hook, and the FreeRTOS microbit lane already
+covers the `fault-frame-imprecise` refusal live.
+
 ## RV32 common integer port fixture
 
 ```bash

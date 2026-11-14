@@ -1,0 +1,121 @@
+diff --git a/bsp/gdr-mps2-an505/fault.c b/bsp/gdr-mps2-an505/fault.c
+new file mode 100644
+index 00000000..c1d5d259
+--- /dev/null
++++ b/bsp/gdr-mps2-an505/fault.c
+@@ -0,0 +1,95 @@
++/* Deterministic synchronous-fault fixture for the RT-Thread M33 port.
++ *
++ * UsageFault stays disabled so an undefined instruction escalates to
++ * HardFault (FORCED + UFSR UNDEFINSTR), which GDR reports as a synchronous
++ * fault through the Armv8-M Mainline fault-only handler path. Recovery uses
++ * RT-Thread's own rt_exception_hook: the hook advances the stacked PC past
++ * the 4-byte undefined word, clears the sticky status bits and returns
++ * RT_EOK. The hook also compensates libcpu's context_gcc.S prologue, which
++ * pushes r4-r11, the TrustZone context block (tz, EXC_RETURN copy, psplim,
++ * control) and EXC_RETURN (13 words) below the hardware frame and repoints
++ * PSP at the pushed block; without the 52-byte add-back the forced PSP
++ * return would unstack garbage.
++ */
++#include <rthw.h>
++#include <rtthread.h>
++
++#define GDR_SCB_CFSR (*(volatile rt_uint32_t *)0xE000ED28u)
++#define GDR_SCB_HFSR (*(volatile rt_uint32_t *)0xE000ED2Cu)
++
++static volatile rt_uint32_t gdr_fault_done;
++static volatile rt_uint32_t gdr_fault_scenario;
++
++static struct rt_thread gdr_fault_thread;
++static rt_uint8_t gdr_fault_stack[2048];
++
++__attribute__((noinline, used)) static void gdr_fault_undefinstr_leaf(void)
++{
++    __asm volatile(".global gdr_fault_ud_stop\ngdr_fault_ud_stop:\nnop" ::: "memory");
++    __asm volatile(".word 0xFFFFFFFF");
++    __asm volatile("" ::: "memory");
++}
++
++__attribute__((noinline, used)) static void gdr_fault_bus_leaf(void)
++{
++    __asm volatile(".global gdr_fault_bus_stop\ngdr_fault_bus_stop:\nnop" ::: "memory");
++    __asm volatile(
++        "ldr r0, =0xA0000000\n"
++        "ldr r1, [r0]\n"
++        ::: "r0", "r1", "memory");
++}
++
++__attribute__((noinline, used)) static void gdr_fault_trigger(void)
++{
++    if (gdr_fault_scenario == 1)
++        gdr_fault_bus_leaf();
++    else
++        gdr_fault_undefinstr_leaf();
++    __asm volatile("" ::: "memory");
++}
++
++static rt_err_t gdr_fault_hook(void *context)
++{
++    /* NOTE: unlike the M3 port, the M33 fault entry passes the hardware
++       frame itself (not struct exception_info), so the stacked PC is word
++       6 of the hook argument. */
++    rt_uint32_t *frame = (rt_uint32_t *)context;
++
++    frame[6] += gdr_fault_scenario == 1 ? 2 : 4;
++    GDR_SCB_CFSR = GDR_SCB_CFSR;
++    GDR_SCB_HFSR = GDR_SCB_HFSR;
++    /* NOTE: libcpu pushes 13 words before this hook runs; restore PSP to
++       the hardware frame base or the forced return unstacks the pushed
++       block. */
++    __asm volatile(
++        "mrs r0, psp\n"
++        "adds r0, r0, #52\n"
++        "msr psp, r0"
++        ::: "r0", "memory");
++    gdr_fault_done++;
++    return RT_EOK;
++}
++
++static void gdr_fault_entry(void *argument)
++{
++    (void)argument;
++    rt_thread_mdelay(150);
++    while (1)
++    {
++        gdr_fault_scenario = 0;
++        gdr_fault_trigger();
++        rt_thread_mdelay(100);
++        gdr_fault_scenario = 1;
++        gdr_fault_trigger();
++        rt_thread_mdelay(100);
++    }
++}
++
++void gdr_fault_fixture_start(void)
++{
++    rt_hw_exception_install(gdr_fault_hook);
++    RT_ASSERT(rt_thread_init(&gdr_fault_thread, "gdr_fault", gdr_fault_entry,
++                             RT_NULL, gdr_fault_stack, sizeof(gdr_fault_stack),
++                             20, 10) == RT_EOK);
++    RT_ASSERT(rt_thread_startup(&gdr_fault_thread) == RT_EOK);
++}
+diff --git a/bsp/gdr-mps2-an505/main.c b/bsp/gdr-mps2-an505/main.c
+index ca32285f..aedddd0b 100644
+--- a/bsp/gdr-mps2-an505/main.c
++++ b/bsp/gdr-mps2-an505/main.c
+@@ -1,5 +1,6 @@
+ #include <rtthread.h>
++extern void gdr_fault_fixture_start(void);
+ extern void gdr_irq_fixture_start(void);
+ 
+ #define THREAD_STACK_SIZE 2048
+ #define MAILBOX_SIZE 4
+@@ -223,6 +224,7 @@ int main(void)
+     START_THREAD(worker9);
+     START_THREAD(worker10);
+     START_THREAD(worker11);
++    gdr_fault_fixture_start();
+     gdr_irq_fixture_start();
+     rt_thread_mdelay(20);
+     rt_kprintf("GDR test fixture ready.\n");
+     return 0;

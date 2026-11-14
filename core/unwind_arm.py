@@ -34,6 +34,62 @@ FPCCR_ADDRESS = 0xE000EF34
 
 FPCCR_LSPACT_BIT = 0x1
 
+SCB_CFSR_ADDRESS = 0xE000ED28
+
+SCB_HFSR_ADDRESS = 0xE000ED2C
+
+SCB_MMFAR_ADDRESS = 0xE000ED34
+
+SCB_BFAR_ADDRESS = 0xE000ED38
+
+CFSR_IACCVIOL = 0x01
+
+CFSR_DACCVIOL = 0x02
+
+CFSR_MUNSTKERR = 0x08
+
+CFSR_MSTKERR = 0x10
+
+CFSR_MLSPERR = 0x20
+
+CFSR_MMARVALID = 0x80
+
+CFSR_IBUSERR = 0x0100
+
+CFSR_PRECISERR = 0x0200
+
+CFSR_IMPRECISERR = 0x0400
+
+CFSR_UNSTKERR = 0x0800
+
+CFSR_STKERR = 0x1000
+
+CFSR_LSPERR = 0x2000
+
+CFSR_BFARVALID = 0x8000
+
+CFSR_UFSR_MASK = 0xFFFF0000
+
+CFSR_UNDEFINSTR = 0x00010000
+
+CFSR_INVSTATE = 0x00020000
+
+CFSR_INVPC = 0x00040000
+
+CFSR_NOCP = 0x00080000
+
+CFSR_STKOF = 0x00100000
+
+CFSR_UNALIGNED = 0x01000000
+
+CFSR_DIVBYZERO = 0x02000000
+
+HFSR_VECTTBL = 0x02
+
+HFSR_FORCED = 0x40000000
+
+HFSR_DEBUGEVT = 0x80000000
+
 XPSR_T_BIT = 1 << 24
 
 XPSR_ALIGN_BIT = 1 << 9
@@ -351,6 +407,94 @@ def armv7m_exception_return_candidate(value: int) -> bool:
     return (value & 0xFFFFFF00) == 0xFFFFFF00
 
 
+# Armv8-M Baseline (Cortex-M23, no Main Extension) exception rules
+
+ARMV8M_BASELINE_MAX_EXCEPTION_NUMBER = 47
+
+ARMV8M_BASELINE_IPSR_MASK = 0x1FF
+
+ARMV8M_BASELINE_FAULT_EXCEPTION_NUMBERS = frozenset((3,))
+
+ARMV8M_BASELINE_SCHEDULER_EXCEPTION_NUMBERS = frozenset((11, 14))
+
+ARMV8M_BASELINE_SYSTEM_EXCEPTION_NUMBERS = frozenset((2, 15))
+
+
+def armv8m_baseline_exception_number_kind(number: int) -> ExceptionNumberKind:
+    """Classify an Armv8-M Baseline IPSR number (no Main Extension).
+
+    Only HardFault is a fault; MemManage/BusFault/UsageFault numbers and
+    SecureFault have no handler on this profile and stay invalid.
+    """
+    if number == 0:
+        return "thread"
+    if number < 0 or number > ARMV8M_BASELINE_MAX_EXCEPTION_NUMBER:
+        return "invalid"
+    if number in ARMV8M_BASELINE_FAULT_EXCEPTION_NUMBERS:
+        return "fault"
+    if number in ARMV8M_BASELINE_SCHEDULER_EXCEPTION_NUMBERS:
+        return "scheduler"
+    if number in ARMV8M_BASELINE_SYSTEM_EXCEPTION_NUMBERS:
+        return "system"
+    if number >= ARMV7M_FIRST_EXTERNAL_EXCEPTION:
+        return "external"
+    return "invalid"
+
+
+# Armv8-M Mainline (Cortex-M33, Main Extension) exception rules
+
+ARMV8M_MAINLINE_MAX_EXCEPTION_NUMBER = 511
+
+ARMV8M_MAINLINE_IPSR_MASK = 0x1FF
+
+ARMV8M_MAINLINE_FAULT_EXCEPTION_NUMBERS = frozenset((3, 4, 5, 6, 7))
+
+ARMV8M_MAINLINE_SCHEDULER_EXCEPTION_NUMBERS = frozenset((11, 14))
+
+ARMV8M_MAINLINE_SYSTEM_EXCEPTION_NUMBERS = frozenset((2, 12, 15))
+
+ARMV8M_MAINLINE_INVALID_EXCEPTION_NUMBERS = frozenset((1, 8, 9, 10, 13))
+
+
+def armv8m_mainline_exception_number_kind(number: int) -> ExceptionNumberKind:
+    """Classify an Armv8-M Mainline IPSR number.
+
+    SecureFault (7) is a real fault for seed validity but stays refused in
+    :func:`prepare_arm_handler_unwind` as TrustZone support is deferred.
+    """
+    if number == 0:
+        return "thread"
+    if number < 0 or number > ARMV8M_MAINLINE_MAX_EXCEPTION_NUMBER:
+        return "invalid"
+    if number in ARMV8M_MAINLINE_INVALID_EXCEPTION_NUMBERS:
+        return "invalid"
+    if number in ARMV8M_MAINLINE_FAULT_EXCEPTION_NUMBERS:
+        return "fault"
+    if number in ARMV8M_MAINLINE_SCHEDULER_EXCEPTION_NUMBERS:
+        return "scheduler"
+    if number in ARMV8M_MAINLINE_SYSTEM_EXCEPTION_NUMBERS:
+        return "system"
+    if number >= ARMV7M_FIRST_EXTERNAL_EXCEPTION:
+        return "external"
+    return "invalid"
+
+
+def arm_exception_number_kind(isa: str | None, number: int) -> ExceptionNumberKind:
+    """Dispatch an IPSR number to its ISA exception table.
+
+    Unknown ISAs fail closed as invalid; Armv7E-M shares the Armv7-M table.
+    """
+    if isa == "armv6-m":
+        return armv6m_exception_number_kind(number)
+    if isa in ("armv7-m", "armv7e-m"):
+        return armv7m_exception_number_kind(number)
+    if isa == "armv8-m.baseline":
+        return armv8m_baseline_exception_number_kind(number)
+    if isa == "armv8-m.mainline":
+        return armv8m_mainline_exception_number_kind(number)
+    return "invalid"
+
+
 def decode_armv7m_exception_return(value: int) -> ExceptionReturn | str:
     """Decode an Armv7-M basic or non-secure FPU-extended return value."""
     if value in EXTENDED_EXC_RETURNS:
@@ -369,10 +513,12 @@ def decode_armv7m_exception_return(value: int) -> ExceptionReturn | str:
     )
 
 
-def armv7m_exception_transition(
+def _armv7m_like_exception_transition(
     context: ExceptionTransitionContext,
+    *,
+    exception_number_kind: Callable[[int], ExceptionNumberKind],
+    ipsr_mask: int,
 ) -> ExceptionTransitionResult | str | None:
-    """Decode an Armv7-M basic or FPU-extended frame using CCR.STKALIGN."""
     value = context.value & 0xFFFFFFFF
     if not armv7m_exception_return_candidate(value):
         return None
@@ -387,23 +533,201 @@ def armv7m_exception_transition(
     return _basic_exception_transition(
         context,
         decoded,
-        exception_number_kind=armv7m_exception_number_kind,
-        ipsr_mask=ARMV7M_IPSR_MASK,
+        exception_number_kind=exception_number_kind,
+        ipsr_mask=ipsr_mask,
         source=source,
     )
+
+
+def armv7m_exception_transition(
+    context: ExceptionTransitionContext,
+) -> ExceptionTransitionResult | str | None:
+    """Decode an Armv7-M basic or FPU-extended frame using CCR.STKALIGN."""
+    return _armv7m_like_exception_transition(
+        context,
+        exception_number_kind=armv7m_exception_number_kind,
+        ipsr_mask=ARMV7M_IPSR_MASK,
+    )
+
+
+def armv8m_mainline_exception_transition(
+    context: ExceptionTransitionContext,
+) -> ExceptionTransitionResult | str | None:
+    """Decode an Armv8-M Mainline basic or FPU-extended frame."""
+    return _armv7m_like_exception_transition(
+        context,
+        exception_number_kind=armv8m_mainline_exception_number_kind,
+        ipsr_mask=ARMV8M_MAINLINE_IPSR_MASK,
+    )
+
+
+@dataclass(frozen=True)
+class FaultPrecision:
+    """Synchronous-fault precision verdict from SCB fault registers."""
+
+    precise: bool
+    fault: str
+    evidence: str
+
+
+def _fault_register(address: int, *, read: Reader) -> int | None:
+    """Read one 32-bit SCB fault register without inferring missing bytes."""
+    try:
+        raw = read(address, 4)
+    except RuntimeError:
+        return None
+    if raw is None or len(raw) != 4:
+        return None
+    return int.from_bytes(raw, "little")
+
+
+def _fault_names(value: int, specs: tuple[tuple[int, str], ...]) -> list[str]:
+    return [name for mask, name in specs if value & mask]
+
+
+_UFSR_SPECS: tuple[tuple[int, str], ...] = (
+    (CFSR_UNDEFINSTR, "UNDEFINSTR"),
+    (CFSR_INVSTATE, "INVSTATE"),
+    (CFSR_INVPC, "INVPC"),
+    (CFSR_NOCP, "NOCP"),
+    (CFSR_STKOF, "STKOF"),
+    (CFSR_UNALIGNED, "UNALIGNED"),
+    (CFSR_DIVBYZERO, "DIVBYZERO"),
+)
+
+
+def arm_fault_precision(
+    exception_number: int, isa: str | None, *, read: Reader = read_bytes
+) -> FaultPrecision:
+    """Decide whether a fault frame names a proven synchronous resume PC.
+
+    Precise faults (UsageFault bits; MemManage ``IACCVIOL``/``DACCVIOL``;
+    BusFault ``PRECISERR`` + ``BFARVALID`` or ``IBUSERR``; escalated HardFault
+    with ``FORCED`` plus one of those CFSR causes) return ``precise=True``.
+    Stacking faults (``MSTKERR``/``MUNSTKERR``/``STKERR``/``UNSTKERR``),
+    lazy-stacking faults (``MLSPERR``/``LSPERR``), asynchronous BusFault
+    (``IMPRECISERR``), vector-fetch (``VECTTBL``), debug-event
+    (``DEBUGEVT``), unreadable registers and Armv6-M/Armv8-M Baseline
+    (no CFSR) return ``precise=False`` for ``fault-frame-imprecise``.
+    """
+    if isa in ("armv6-m", "armv8-m.baseline"):
+        return FaultPrecision(
+            False,
+            "HardFault",
+            "Armv6-M/Baseline implements no CFSR; the stacked PC is unproven",
+        )
+    if exception_number not in (3, 4, 5, 6):
+        return FaultPrecision(
+            False,
+            "non-fault",
+            f"exception {exception_number} is not a synchronous fault",
+        )
+    cfsr = _fault_register(SCB_CFSR_ADDRESS, read=read)
+    hfsr = _fault_register(SCB_HFSR_ADDRESS, read=read)
+    if cfsr is None or hfsr is None:
+        return FaultPrecision(
+            False,
+            "unknown",
+            "CFSR/HFSR are not readable; the fault cause is unproven",
+        )
+    base = f"CFSR={cfsr:#010x} HFSR={hfsr:#010x}"
+    if hfsr & HFSR_VECTTBL:
+        return FaultPrecision(False, "HardFault:VECTTBL", base)
+    if hfsr & HFSR_DEBUGEVT:
+        return FaultPrecision(False, "HardFault:DEBUGEVT", base)
+    stacking = cfsr & (
+        CFSR_MSTKERR
+        | CFSR_MUNSTKERR
+        | CFSR_MLSPERR
+        | CFSR_STKERR
+        | CFSR_UNSTKERR
+        | CFSR_LSPERR
+        | CFSR_IMPRECISERR
+    )
+    if stacking:
+        names = _fault_names(
+            cfsr,
+            (
+                (CFSR_MSTKERR, "MSTKERR"),
+                (CFSR_MUNSTKERR, "MUNSTKERR"),
+                (CFSR_MLSPERR, "MLSPERR"),
+                (CFSR_STKERR, "STKERR"),
+                (CFSR_UNSTKERR, "UNSTKERR"),
+                (CFSR_LSPERR, "LSPERR"),
+                (CFSR_IMPRECISERR, "IMPRECISERR"),
+            ),
+        )
+        return FaultPrecision(False, f"imprecise:{'+'.join(names)}", base)
+    ufsr_names = _fault_names(cfsr, _UFSR_SPECS)
+    mem_names = _fault_names(
+        cfsr, ((CFSR_IACCVIOL, "IACCVIOL"), (CFSR_DACCVIOL, "DACCVIOL"))
+    )
+    bus_precise = bool(cfsr & CFSR_PRECISERR) and bool(cfsr & CFSR_BFARVALID)
+    bus_names = _fault_names(
+        cfsr, ((CFSR_PRECISERR, "PRECISERR"), (CFSR_IBUSERR, "IBUSERR"))
+    )
+    ibus_only = bool(cfsr & CFSR_IBUSERR) and not bool(cfsr & CFSR_PRECISERR)
+    evidence = base
+    if cfsr & CFSR_MMARVALID:
+        mmfar = _fault_register(SCB_MMFAR_ADDRESS, read=read)
+        evidence += (
+            f" MMFAR={mmfar:#010x}" if mmfar is not None else " MMFAR-unreadable"
+        )
+    if cfsr & CFSR_BFARVALID:
+        bfar = _fault_register(SCB_BFAR_ADDRESS, read=read)
+        evidence += f" BFAR={bfar:#010x}" if bfar is not None else " BFAR-unreadable"
+    if exception_number == 6:
+        if ufsr_names:
+            return FaultPrecision(True, f"UsageFault:{'+'.join(ufsr_names)}", evidence)
+        return FaultPrecision(False, "UsageFault:unknown", evidence)
+    if exception_number == 4:
+        if mem_names:
+            return FaultPrecision(True, f"MemManage:{'+'.join(mem_names)}", evidence)
+        if ufsr_names:
+            return FaultPrecision(
+                True, f"MemManage:escalated-UsageFault:{'+'.join(ufsr_names)}", evidence
+            )
+        return FaultPrecision(False, "MemManage:unknown", evidence)
+    if exception_number == 5:
+        if bus_precise:
+            return FaultPrecision(True, f"BusFault:{'+'.join(bus_names)}", evidence)
+        if ibus_only:
+            return FaultPrecision(True, "BusFault:IBUSERR", evidence)
+        if ufsr_names:
+            return FaultPrecision(
+                True, f"BusFault:escalated-UsageFault:{'+'.join(ufsr_names)}", evidence
+            )
+        return FaultPrecision(False, "BusFault:unknown", evidence)
+    if not hfsr & HFSR_FORCED:
+        return FaultPrecision(False, "HardFault:unknown", evidence)
+    if ufsr_names:
+        return FaultPrecision(
+            True, f"HardFault:escalated-UsageFault:{'+'.join(ufsr_names)}", evidence
+        )
+    if mem_names:
+        return FaultPrecision(
+            True, f"HardFault:escalated-MemManage:{'+'.join(mem_names)}", evidence
+        )
+    if bus_precise:
+        return FaultPrecision(
+            True, f"HardFault:escalated-BusFault:{'+'.join(bus_names)}", evidence
+        )
+    if ibus_only:
+        return FaultPrecision(True, "HardFault:escalated-BusFault:IBUSERR", evidence)
+    return FaultPrecision(False, "HardFault:unknown", evidence)
 
 
 def arm_exception_guard(
     exception_number: int, pc: int, isa: str = "armv7-m"
 ) -> str | None:
-    """Refuse exception frames whose interrupted PC is not a proven resume PC."""
+    """Refuse exception frames whose interrupted PC is not a proven resume PC.
+
+    Top-level fault seeds are evaluated by :func:`arm_fault_precision` with
+    target CFSR/HFSR reads; stateless callers and nested handler returns
+    refuse fault frames here.
+    """
     del pc
-    classifier = (
-        armv6m_exception_number_kind
-        if isa == "armv6-m"
-        else armv7m_exception_number_kind
-    )
-    kind = classifier(exception_number)
+    kind = arm_exception_number_kind(isa, exception_number)
     if kind == "invalid":
         return "exception-number-invalid"
     if kind == "scheduler":
@@ -411,7 +735,7 @@ def arm_exception_guard(
     if kind == "fault":
         return "exception-frame-type-unproven"
     if kind == "system":
-        return "exception-number-unverified"
+        return None if exception_number == 15 else "exception-number-unverified"
     return None
 
 
@@ -554,14 +878,16 @@ def arm_live_seed_detail(
                 return None, "exception-frame-not-thumb"
             if isa is None:
                 return None, "unsupported-exception-model"
-            classifier = (
-                armv6m_exception_number_kind
-                if isa == "armv6-m"
-                else armv7m_exception_number_kind
-            )
             if (
-                isa in ("armv6-m", "armv7-m", "armv7e-m")
-                and classifier(exception_number) == "invalid"
+                isa
+                in (
+                    "armv6-m",
+                    "armv7-m",
+                    "armv7e-m",
+                    "armv8-m.baseline",
+                    "armv8-m.mainline",
+                )
+                and arm_exception_number_kind(isa, exception_number) == "invalid"
             ):
                 return None, "exception-number-invalid"
             if snapshot.sp != snapshot.msp:
@@ -928,6 +1254,7 @@ class ArmHandlerSetup:
     exception_detector: ExceptionDetector
     exception_hook: ExceptionHook
     exception_guard: TransitionGuard
+    fault: FaultPrecision | None = None
 
 
 def prepare_arm_handler_unwind(
@@ -944,39 +1271,71 @@ def prepare_arm_handler_unwind(
     capacity_guard_factory: Callable[
         [int, str], TransitionGuard
     ] = arm_capacity_exception_guard,
+    read: Reader = read_bytes,
 ) -> ArmHandlerSetup | tuple[str, str]:
     """Validate an Arm handler-mode seed and build its segment and hooks.
 
-    Returns :class:`ArmHandlerSetup` when all architectural and port invariants
-    hold, or ``(stop_reason, message)`` when the stop must be refused.
+    Fault seeds require a precise :func:`arm_fault_precision` verdict from
+    target CFSR/HFSR reads; imprecise faults stop as
+    ``fault-frame-imprecise``. Armv8-M Mainline only admits fault frames and
+    guard-approved SysTick ticks; other external IRQ/system/scheduler handler
+    modes stay ``unsupported``. Returns :class:`ArmHandlerSetup` when all
+    architectural and port invariants hold, or ``(stop_reason, message)``
+    when the stop must be refused.
     """
-    if isa not in ("armv6-m", "armv7-m", "armv7e-m") or seed.exception_number is None:
+    if seed.exception_number is None:
         return (
             "unsupported-exception-model",
             "handler-mode seeds require a verified Armv6-M/Armv7-M/Armv7E-M model",
         )
-    guard_reason = guard_fn(seed.exception_number, seed.pc, isa)
-    if guard_reason == "scheduler-transition-unproven":
+    if isa == "armv8-m.mainline" and seed.exception_number == 7:
         return (
-            guard_reason,
-            "the stop is inside the scheduler's SVC/PendSV transition path",
+            "unsupported-exception-model",
+            "SecureFault unwind needs TrustZone dual-world evidence; deferred",
         )
-    if guard_reason == "exception-frame-type-unproven":
+    kind = arm_exception_number_kind(isa, seed.exception_number)
+    if isa not in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline"):
         return (
-            guard_reason,
-            "a synchronous fault frame does not name a proven resume PC",
+            "unsupported-exception-model",
+            "handler-mode seeds require a verified Armv6-M/Armv7-M/Armv7E-M/Armv8-M Mainline model",
         )
-    if guard_reason == "exception-number-unverified":
-        return (
-            guard_reason,
-            "the live exception number is architecturally valid but "
-            "outside the verified external-IRQ proof scope",
-        )
-    if guard_reason == "exception-number-invalid":
-        return (
-            guard_reason,
-            "the live IPSR names no architecturally valid exception",
-        )
+    fault_precision: FaultPrecision | None = None
+    if kind == "fault":
+        fault_precision = arm_fault_precision(seed.exception_number, isa, read=read)
+        if not fault_precision.precise:
+            return (
+                "fault-frame-imprecise",
+                f"{fault_precision.fault} names no proven resume PC: "
+                f"{fault_precision.evidence}",
+            )
+    else:
+        guard_reason = guard_fn(seed.exception_number, seed.pc, isa)
+        if guard_reason == "unsupported-exception-model":
+            return (
+                guard_reason,
+                "handler-mode seeds require a verified Armv6-M/Armv7-M/Armv7E-M model",
+            )
+        if guard_reason == "scheduler-transition-unproven":
+            return (
+                guard_reason,
+                "the stop is inside the scheduler's SVC/PendSV transition path",
+            )
+        if guard_reason == "exception-frame-type-unproven":
+            return (
+                guard_reason,
+                "a synchronous fault frame does not name a proven resume PC",
+            )
+        if guard_reason == "exception-number-unverified":
+            return (
+                guard_reason,
+                "the live exception number is architecturally valid but "
+                "outside the verified external-IRQ proof scope",
+            )
+        if guard_reason == "exception-number-invalid":
+            return (
+                guard_reason,
+                "the live IPSR names no architecturally valid exception",
+            )
     running = scheduler_running()
     if running is None:
         return (
@@ -1041,7 +1400,11 @@ def prepare_arm_handler_unwind(
         else armv7m_exception_return_candidate
     )
     hook = (
-        armv6m_exception_transition if isa == "armv6-m" else armv7m_exception_transition
+        armv6m_exception_transition
+        if isa == "armv6-m"
+        else armv8m_mainline_exception_transition
+        if isa == "armv8-m.mainline"
+        else armv7m_exception_transition
     )
     return ArmHandlerSetup(
         seed=seed,
@@ -1050,4 +1413,5 @@ def prepare_arm_handler_unwind(
         exception_detector=detector,
         exception_hook=hook,
         exception_guard=capacity_guard_factory(capacity, isa),
+        fault=fault_precision,
     )

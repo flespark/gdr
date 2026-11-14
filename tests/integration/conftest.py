@@ -32,7 +32,8 @@ def pytest_ignore_collect(collection_path: Path) -> bool | None:
     ):
         return True
     if (
-        SPEC.variant != "sched"
+        SPEC.rtos == "freertos"
+        and SPEC.variant != "sched"
         and collection_path.name == "test_scheduler_backtrace.py"
     ):
         return True

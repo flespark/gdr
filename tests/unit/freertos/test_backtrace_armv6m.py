@@ -1,6 +1,7 @@
 """FreeRTOS ARM_CM0 exception integration acceptance, separate from ISA rules."""
 
 import struct
+from typing import Any, cast
 
 import pytest
 
@@ -29,7 +30,7 @@ def _port(monkeypatch, *, version="11.1.0", cpuid=0x410CC200, **symbols):
         reads.append((address, size))
         return cpuid.to_bytes(4, "little") if isinstance(cpuid, int) else cpuid
 
-    monkeypatch.setattr(bridge, "session_meta", lambda: ("freertos", version))
+    del version
     monkeypatch.setattr(bridge, "read_bytes", read)
     monkeypatch.setattr(bridge, "linker_symbol_address", values.get)
     return reads
@@ -87,29 +88,38 @@ def test_m0_capacity_agnostic_tiers_resolve_without_gdr_symbols(monkeypatch):
 
     # Sub-tier 2b: Dedicated .isr_vector section at 0x0.
     symbols = {}
-    elf = SimpleNamespace(
-        symbol_address=lambda _name: None,
-        section_bounds=lambda name: (
-            (0, (16 + 20) * 4) if name == ".isr_vector" else None
+    elf = cast(
+        Any,
+        SimpleNamespace(
+            symbol_address=lambda _name: None,
+            section_bounds=lambda name: (
+                (0, (16 + 20) * 4) if name == ".isr_vector" else None
+            ),
+            symbols=(),
         ),
-        symbols=(),
     )
     assert bridge._armv6m_port_limit(elf=elf) == 16 + 20 - 1
 
     # Sub-tier 2c: g_pfnVectors at 0x0 + first executable symbol after vector table.
     symbols = {"g_pfnVectors": 0}
-    elf_code = SimpleNamespace(
-        symbol_address=lambda _name: None,
-        section_bounds=lambda _name: None,
-        symbols=(SimpleNamespace(start=(16 + 16) * 4),),
+    elf_code = cast(
+        Any,
+        SimpleNamespace(
+            symbol_address=lambda _name: None,
+            section_bounds=lambda _name: None,
+            symbols=(SimpleNamespace(start=(16 + 16) * 4),),
+        ),
     )
     assert bridge._armv6m_port_limit(elf=elf_code) == 16 + 16 - 1
 
     # Fails closed when first executable symbol is beyond max Armv6-M vector size.
-    elf_far = SimpleNamespace(
-        symbol_address=lambda _name: None,
-        section_bounds=lambda _name: None,
-        symbols=(SimpleNamespace(start=0x400),),
+    elf_far = cast(
+        Any,
+        SimpleNamespace(
+            symbol_address=lambda _name: None,
+            section_bounds=lambda _name: None,
+            symbols=(SimpleNamespace(start=0x400),),
+        ),
     )
     assert bridge._armv6m_port_limit(elf=elf_far) is None
 
@@ -153,9 +163,8 @@ def test_m0_live_seed_rejects_reserved_ipsr(monkeypatch, ipsr):
     [
         (11, "scheduler-transition-unproven"),
         (14, "scheduler-transition-unproven"),
-        (3, "exception-frame-type-unproven"),
+        (3, "fault-frame-imprecise"),
         (2, "exception-number-unverified"),
-        (15, "exception-number-unverified"),
         (4, "exception-number-invalid"),
         (48, "exception-number-invalid"),
         (63, "exception-number-invalid"),
@@ -230,7 +239,7 @@ def test_m0_live_routing_uses_own_hook_alignment_and_vector_proof(monkeypatch):
         (14, "scheduler-transition-unproven"),
         (3, "exception-frame-type-unproven"),
         (2, "exception-number-unverified"),
-        (15, "exception-number-unverified"),
+        (15, None),
         (24, None),
         (25, None),
     ],

@@ -26,6 +26,7 @@ from .backtrace import (
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
     RISCV32_INTEGER,
@@ -466,6 +467,8 @@ def _arm_profile(isa: str | None, *, smp: bool, mpu: bool) -> SavedStackContext 
         return ARMV6M_INTEGER
     if isa == "armv7-m" and not smp and not mpu:
         return ARMV7M_INTEGER
+    if isa == "armv8-m.mainline" and not smp and not mpu:
+        return ARMV8M_MAINLINE_INTEGER
     if isa == "armv8-m.mainline" and smp and not mpu:
         return ARMV8M_MAINLINE_SMP_INTEGER
     if isa == "armv8-m.mainline" and mpu and not smp:

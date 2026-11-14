@@ -25,4 +25,7 @@
 /* The AN386 board carries the same CMSDK timer IRQ fixture as AN385. */
 #define GDR_BOARD_HAS_IRQ_FIXTURE 1
 
+/* Deterministic HardFault fixture lives in board/mps2-an386/fault.c. */
+#define GDR_BOARD_HAS_FAULT_FIXTURE 1
+
 #endif

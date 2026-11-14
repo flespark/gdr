@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from core.adapter import BacktraceFrame, BacktraceReport, active, session_meta
+from core.adapter import BacktraceFrame, BacktraceReport, active
 from core.gdb_bridge import (
     arch_or_default,
     eval_identifier,
@@ -204,7 +204,14 @@ class _SchedulerDecision:
 
 
 _SCHEDULER_SYMBOLS = frozenset(
-    ("PendSV_Handler", "SVC_Handler", "prvPortStartFirstTask", "vTaskSwitchContext")
+    (
+        "PendSV_Handler",
+        "SVC_Handler",
+        "prvPortStartFirstTask",
+        "vStartFirstTask",
+        "vRestoreContextOfFirstTask",
+        "vTaskSwitchContext",
+    )
 )
 
 
@@ -215,6 +222,8 @@ def _scheduler_live_decision(
     low: int,
     high: int,
     fpu_context=None,
+    *,
+    isa: str | None = "armv7-m",
 ) -> _SchedulerDecision | None:
     """Classify a live Arm stop without assuming every stop is an IRQ.
 
@@ -223,8 +232,6 @@ def _scheduler_live_decision(
     the port's transition functions when the profile or its invariants do not
     match.
     """
-    if session_meta()[1] != "10.3.1":
-        return None
     snapshot, _snapshot_reason = _arm_snapshot()
     if snapshot is None:
         return None
@@ -236,8 +243,8 @@ def _scheduler_live_decision(
             return _SchedulerDecision(
                 reason=profile_reason,
                 message=(
-                    "the compiled scheduler transition does not match the "
-                    "verified Armv7-M (ARM_CM3) profile"
+                    "the compiled scheduler transition does not match a "
+                    "verified Arm M-profile transition profile"
                 ),
             )
         return None
@@ -275,7 +282,7 @@ def _scheduler_live_decision(
         )
     irq_bounds = (
         _irq_stack_bounds(
-            isa="armv7-m",
+            isa=isa or "armv7-m",
             elf=elf,
             live_msp=snapshot.msp,
             task_bounds=(low, high),
@@ -297,7 +304,7 @@ def _scheduler_live_decision(
             reason="exception-stack-outside-bounds",
             message="the live MSP is outside the resolved interrupt stack span",
         )
-    stkalign = _ccr_stkalign()
+    stkalign = True if isa == "armv6-m" else _ccr_stkalign()
     if stkalign is None:
         return _SchedulerDecision(
             reason="exception-alignment-unavailable",
@@ -458,7 +465,11 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             )
         seed = None
         live_reason = "live-registers-unavailable"
-        if arch == "arm" and selection.isa == "armv7-m" and metadata is not None:
+        if (
+            arch == "arm"
+            and selection.isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
+            and metadata is not None
+        ):
             decision = _scheduler_live_decision(
                 metadata.elf,
                 context,
@@ -466,6 +477,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 low,
                 high,
                 fpu_context=selection.alt_context,
+                isa=selection.isa,
             )
             if decision is not None:
                 if decision.seed is None:
@@ -549,6 +561,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
     exception_hook = None
     exception_guard = None
     stkalign = True
+    fault = None
     handler_mode = arch == "arm" and bool(seed.exception_number)
     if arch == "arm":
         task_segment = _task_segment(task, low, high)
@@ -594,10 +607,12 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
                 ),
                 guard_fn=_exception_guard,
                 capacity_guard_factory=_capacity_exception_guard,
+                read=read_bytes,
             )
             if isinstance(setup, tuple):
                 return _stop(setup[0], setup[1])
             seed = setup.seed
+            fault = setup.fault
             stkalign = setup.stkalign
             segments.append(setup.exception_segment)
             current_segment = setup.exception_segment.ident
@@ -642,6 +657,11 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
     method = next(
         (item.method for item in result.frames if item.method != "seed"), "seed"
     )
+    stop_reason = result.stop_reason
+    if fault is not None and fault.precise:
+        messages.append(f"synchronous fault {fault.fault}: {fault.evidence}")
+        if result.complete:
+            stop_reason = "synchronous-fault"
     if result.stop_reason == "no-unwind-info" and metadata is not None:
         messages.append(
             "no EHABI/CFI entry covers the stop PC and the frame-pointer "
@@ -665,7 +685,7 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         method=method,
         source=seed.source,
         complete=result.complete,
-        stop_reason=result.stop_reason,
+        stop_reason=stop_reason,
         truncated=result.truncated,
         max_depth=max_depth,
         bounds=bounds,

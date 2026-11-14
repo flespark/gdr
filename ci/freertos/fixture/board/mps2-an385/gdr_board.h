@@ -8,6 +8,9 @@
  * APB timer IRQs to produce deterministic live exception frames. */
 #define GDR_BOARD_HAS_IRQ_FIXTURE 1
 
+/* Deterministic HardFault fixture lives in board/mps2-an385/fault.c. */
+#define GDR_BOARD_HAS_FAULT_FIXTURE 1
+
 #ifndef configCPU_CLOCK_HZ
 #define configCPU_CLOCK_HZ ((unsigned long)25000000)
 #endif

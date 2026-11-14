@@ -316,7 +316,12 @@ def _sources(lane: Lane) -> Path:
 
 def fingerprint(lane: Lane) -> str:
     """Hash fixture inputs and compiler identity, not host-dependent mtimes."""
-    directory = ROOT / "ci" / ("freertos" if lane.rtos == "freertos" else "rt-thread")
+    if lane.rtos == "bare":
+        directory = ROOT / "ci" / "bare"
+    else:
+        directory = (
+            ROOT / "ci" / ("freertos" if lane.rtos == "freertos" else "rt-thread")
+        )
     digest = hashlib.sha256(lane.key.encode())
     paths = [
         p

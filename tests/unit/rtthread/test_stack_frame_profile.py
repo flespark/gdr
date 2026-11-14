@@ -18,6 +18,7 @@ from core.unwind_meta import ElfImage
 from rtthread.stack_frame_profile import (
     _armv7em_fpu_verify_context,
     _armv8m_mainline_fpu_verify_context,
+    analyze_hardfault_trampoline,
     select_context,
 )
 from tests.support.loader import cached_elfs, fixture_cache_root
@@ -337,6 +338,39 @@ def test_cached_firmware_fpu_verifier_matches_only_fpu_lanes(path):
         assert selected.context is not None
         assert selected.alt_context is not None
         assert selected.alt_context.fpu
+    elif "mps2-an386" in path.parts:
+        # The CM4F port requires a hard-float build, so its save/restore
+        # carries the FPU block even for integer-only lanes; selection must
+        # still prefer the integer profile and keep FPU as the per-task alt.
+        assert _armv7em_fpu_verify_context(image)
+        selected = select_context(image)
+        assert selected.reason == "ok"
+        assert selected.context is not None and not selected.context.fpu
+        assert selected.alt_context is not None and selected.alt_context.fpu
     else:
         assert not _armv8m_mainline_fpu_verify_context(image)
         assert not _armv7em_fpu_verify_context(image)
+
+
+@pytest.mark.skipif(not _CACHE_ELFS, reason="no cached RT-Thread firmware ELFs")
+@pytest.mark.parametrize(
+    "path",
+    _CACHE_ELFS,
+    ids=[str(p.relative_to(fixture_cache_root())) for p in _CACHE_ELFS],
+)
+def test_cached_firmware_hardfault_trampoline_matches_m3_m4_m33_lanes(path):
+    image = ElfImage.from_path(path)
+    assert image is not None
+    isa = cpu_of(image).isa
+    profile = analyze_hardfault_trampoline(image)
+    if isa == "armv7-m":
+        assert profile is not None
+        assert profile.software_bytes == 36 and profile.r4_offset == 4
+    elif isa == "armv7e-m":
+        assert profile is not None
+        assert profile.software_bytes == 40 and profile.r4_offset == 8
+    elif isa == "armv8-m.mainline":
+        assert profile is not None
+        assert profile.software_bytes == 52 and profile.r4_offset == 20
+    else:
+        assert profile is None

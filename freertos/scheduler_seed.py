@@ -186,7 +186,7 @@ def _decode_frame(
     )
     if sp is None:
         return None, xpsr, reason
-    if pc == 0 or pc & 1:
+    if (pc & ~1) == 0 or (hardware_frame and (pc & 1)):
         return None, xpsr, "scheduler-frame-pc-invalid"
     registers.update({13: sp, 14: lr, 15: pc & ~1})
     return (
@@ -204,9 +204,10 @@ def _saved_core_matches(
     registers: Mapping[int, int],
     low: int,
     high: int,
+    core_regs: tuple[int, ...] = _CORE_REGS,
 ) -> bool:
     offsets = dict(context.registers)
-    for register in _CORE_REGS:
+    for register in core_regs:
         saved = read_slot(
             read,
             top + offsets[register],
@@ -295,6 +296,7 @@ def _saved_seed(
         frame_xpsr=frame_xpsr,
         exit_pc=exit_pc,
         fill_word=context.fill_word,
+        initial_registers=context.initial_registers,
     ):
         return None, "scheduler-unstarted-selection-unproven"
     return seed, "ok"
@@ -306,12 +308,16 @@ def _initial_pattern(
     frame_xpsr: int | None,
     exit_pc: int | None,
     fill_word: int,
+    initial_registers: tuple[int, ...] | None = None,
 ) -> bool:
     if frame_xpsr != 0x01000000:
         return False
     if exit_pc is None or (seed.regs.get(14, 0) & ~1) != (exit_pc & ~1):
         return False
-    return all(seed.regs.get(register, 0) == fill_word for register in _CORE_REGS)
+    core = tuple(seed.regs.get(register, 0) for register in _CORE_REGS)
+    if initial_registers is not None:
+        return core == initial_registers
+    return all(value == fill_word for value in core)
 
 
 def _looks_unstarted(
@@ -320,6 +326,7 @@ def _looks_unstarted(
     frame_xpsr: int | None,
     exit_pc: int | None,
     fill_word: int,
+    initial_registers: tuple[int, ...] | None,
     is_entry: Callable[[int], bool] | None,
 ) -> bool:
     if not _initial_pattern(
@@ -327,6 +334,7 @@ def _looks_unstarted(
         frame_xpsr=frame_xpsr,
         exit_pc=exit_pc,
         fill_word=fill_word,
+        initial_registers=initial_registers,
     ):
         return False
     return is_entry is not None and is_entry(seed.pc)
@@ -338,6 +346,7 @@ def _initial_seed_ok(
     frame_xpsr: int | None,
     exit_pc: int | None,
     fill_word: int,
+    initial_registers: tuple[int, ...] | None,
     is_entry: Callable[[int], bool] | None,
 ) -> bool:
     return _looks_unstarted(
@@ -345,6 +354,7 @@ def _initial_seed_ok(
         frame_xpsr=frame_xpsr,
         exit_pc=exit_pc,
         fill_word=fill_word,
+        initial_registers=initial_registers,
         is_entry=is_entry,
     )
 
@@ -413,6 +423,111 @@ def _resolve_pair_profile(
     return context
 
 
+def _check_pendsv_exc_return(
+    port: str,
+    stage_name: str,
+    registers: Mapping[int, int],
+    *,
+    read: Reader,
+    task_top: int,
+    task_low: int,
+    task_high: int,
+) -> str | None:
+    """Validate EXC_RETURN for the active PendSV stage and port."""
+    lr = registers.get(14, 0) & 0xFFFFFFFF
+    if stage_name in (
+        "pendsv-entry",
+        "pendsv-save-pending",
+        "pendsv-save-written",
+        "pendsv-writeback",
+        "pendsv-switch-call",
+    ):
+        return _require_exception_return(lr, "thread", "process")
+    if stage_name == "pendsv-after-switch":
+        return None
+    if stage_name in ("pendsv-select", "pendsv-saved-sp"):
+        if port == "arm-cm3":
+            return _require_exception_return(lr, "thread", "process")
+        return None
+    if stage_name in ("pendsv-restored-pending-psp", "pendsv-psp-written"):
+        if port == "arm-cm33":
+            return _require_exception_return(
+                registers.get(3, 0) & 0xFFFFFFFF, "thread", "process"
+            )
+        if port == "arm-cm0":
+            slot = read_slot(
+                read, task_top, 4, "little", stack_low=task_low, stack_high=task_high
+            )
+            if slot is None:
+                return "scheduler-context-unreadable"
+            return _require_exception_return(slot, "thread", "process")
+        return _require_exception_return(lr, "thread", "process")
+    if stage_name == "pendsv-exception-return":
+        reg = 3 if port in ("arm-cm0", "arm-cm33") else 14
+        return _require_exception_return(
+            registers.get(reg, 0) & 0xFFFFFFFF, "thread", "process"
+        )
+    return None
+
+
+def _check_svc_exc_return(
+    port: str,
+    stage_name: str,
+    registers: Mapping[int, int],
+) -> str | None:
+    """Validate EXC_RETURN for the active first-start restore stage and port."""
+    lr = registers.get(14, 0) & 0xFFFFFFFF
+    if port in ("arm-cm0", "arm-cm33"):
+        if stage_name in (
+            "svc-restored-pending-psp",
+            "svc-psp-written",
+            "svc-exception-return",
+        ):
+            return _require_exception_return(
+                registers.get(2, 0) & 0xFFFFFFFF, "thread", "process"
+            )
+        return None
+    if port == "arm-cm4f":
+        if stage_name in (
+            "svc-restored-pending-psp",
+            "svc-psp-written",
+            "svc-exception-return",
+        ):
+            return _require_exception_return(lr, "thread", "process")
+        return _require_exception_return(lr, "thread", "main")
+    if stage_name == "svc-exception-return":
+        return _require_exception_return(lr, "thread", "process")
+    return _require_exception_return(lr, "thread", "main")
+
+
+def _stage_live_core_regs(port: str, seed_kind: str) -> tuple[int, ...]:
+    """Return callee-saved core registers already live in CPU regs at ``seed_kind``."""
+    if seed_kind in ("first-start-buffer", "first-start-live"):
+        if port in ("arm-cm0", "arm-cm33"):
+            return ()
+        return _CORE_REGS
+    if seed_kind in ("restore-buffer", "live-frame-new"):
+        if port == "arm-cm0":
+            return (8, 9, 10, 11)
+        return _CORE_REGS
+    return _CORE_REGS
+
+
+def _live_core_mapping(
+    port: str, stage_name: str, seed_kind: str, registers: Mapping[int, int]
+) -> dict[int, int]:
+    """Build CPU-register core mapping for ``_decode_frame`` on restore stages."""
+    if seed_kind in ("restore-buffer", "live-frame-new"):
+        if port == "arm-cm0" and stage_name != "pendsv-exception-return":
+            return {r: registers[r] for r in (8, 9, 10, 11)}
+        return {r: registers[r] for r in _CORE_REGS}
+    if seed_kind in ("first-start-buffer", "first-start-live"):
+        if port in ("arm-cm0", "arm-cm33"):
+            return {}
+        return {r: registers[r] for r in _CORE_REGS}
+    return {r: registers[r] for r in _CORE_REGS}
+
+
 def build_stage_seed(
     profile: SchedulerProfile,
     stage: SchedulerStage,
@@ -448,13 +563,21 @@ def build_stage_seed(
         return "exception-frame-alignment-invalid"
     lr = registers.get(14, 0) & 0xFFFFFFFF
     live_extended = _live_extended(lr)
+    port = getattr(profile, "port", "arm-cm3")
     if stage.pc in range(profile.pendsv_start, profile.pendsv_end):
         if ipsr != 14 or registers.get(13) != msp:
             return "scheduler-handler-mode-unproven"
-        if stage.name != "pendsv-after-switch":
-            reason = _require_exception_return(lr, "thread", "process")
-            if reason is not None:
-                return reason
+        reason = _check_pendsv_exc_return(
+            port,
+            stage.name,
+            registers,
+            read=read,
+            task_top=task_top,
+            task_low=task_low,
+            task_high=task_high,
+        )
+        if reason is not None:
+            return reason
     elif stage.pc in range(profile.switch_start, profile.switch_end):
         if ipsr != 14 or registers.get(13) != msp:
             return "scheduler-handler-mode-unproven"
@@ -463,10 +586,7 @@ def build_stage_seed(
     elif stage.pc in range(profile.svc_start, profile.svc_end):
         if ipsr != 11 or registers.get(13) != msp:
             return "scheduler-handler-mode-unproven"
-        if stage.name == "svc-exception-return":
-            reason = _require_exception_return(lr, "thread", "process")
-        else:
-            reason = _require_exception_return(lr, "thread", "main")
+        reason = _check_svc_exc_return(port, stage.name, registers)
         if reason is not None:
             return reason
     else:
@@ -477,6 +597,8 @@ def build_stage_seed(
         if live_extended is None:
             return "scheduler-fpu-context-unproven"
         evidenced: bool | str = live_extended
+    elif port in ("arm-cm0", "arm-cm33") and not context.fpu and fpu_context is None:
+        evidenced = False
     else:
         evidenced = _saved_slot_extended(
             top=task_top, read=read, low=task_low, high=task_high, fpu=context.fpu
@@ -498,6 +620,12 @@ def build_stage_seed(
         f" psp={psp:#x} msp={msp:#x} xpsr={xpsr:#010x}"
     )
     core = {register: registers[register] for register in _CORE_REGS}
+    live_core = _live_core_mapping(port, stage.name, stage.seed, registers)
+    match_regs = (
+        _CORE_REGS
+        if stage.name == "pendsv-exception-return"
+        else _stage_live_core_regs(port, stage.seed)
+    )
 
     if stage.seed == "live-frame":
         if not _in_bounds(task_low, task_high, psp, hw_size):
@@ -580,11 +708,12 @@ def build_stage_seed(
             registers=registers,
             low=task_low,
             high=task_high,
+            core_regs=match_regs,
         ):
             return "scheduler-restore-window-inconsistent"
         seed, frame_xpsr, reason = _decode_frame(
             top=task_top,
-            core=core,
+            core=live_core,
             context=effective,
             read=read,
             low=task_low,
@@ -600,6 +729,7 @@ def build_stage_seed(
             frame_xpsr=frame_xpsr,
             exit_pc=exit_pc,
             fill_word=effective.fill_word,
+            initial_registers=effective.initial_registers,
         ):
             return "scheduler-unstarted-selection-unproven"
         return SchedulerSeed(seed, stage.name, stage.owner, evidence)
@@ -614,16 +744,18 @@ def build_stage_seed(
             registers=registers,
             low=task_low,
             high=task_high,
+            core_regs=match_regs,
         ):
             return "scheduler-restore-window-inconsistent"
-        if stage.name == "pendsv-exception-return" and registers.get(14) not in (
+        exc_reg = 3 if port in ("arm-cm0", "arm-cm33") else 14
+        if stage.name == "pendsv-exception-return" and registers.get(exc_reg) not in (
             EXC_RETURN_THREAD_PROCESS,
             EXC_RETURN_EXTENDED_THREAD_PROCESS,
         ):
             return "scheduler-exception-return-unproven"
         seed, frame_xpsr, reason = _decode_frame(
             top=task_top,
-            core=core,
+            core=live_core,
             context=effective,
             read=read,
             low=task_low,
@@ -639,6 +771,7 @@ def build_stage_seed(
             frame_xpsr=frame_xpsr,
             exit_pc=exit_pc,
             fill_word=effective.fill_word,
+            initial_registers=effective.initial_registers,
         ):
             return "scheduler-unstarted-selection-unproven"
         return SchedulerSeed(seed, stage.name, stage.owner, evidence)
@@ -669,11 +802,12 @@ def build_stage_seed(
             registers=registers,
             low=task_low,
             high=task_high,
+            core_regs=match_regs,
         ):
             return "scheduler-saved-buffer-inconsistent"
         seed, frame_xpsr, reason = _decode_frame(
             top=task_top,
-            core=core,
+            core=live_core,
             context=effective,
             read=read,
             low=task_low,
@@ -689,6 +823,7 @@ def build_stage_seed(
             frame_xpsr=frame_xpsr,
             exit_pc=exit_pc,
             fill_word=effective.fill_word,
+            initial_registers=effective.initial_registers,
             is_entry=is_entry,
         ):
             if is_entry is None or not is_entry(seed.pc):
@@ -718,16 +853,18 @@ def build_stage_seed(
             registers=registers,
             low=task_low,
             high=task_high,
+            core_regs=match_regs,
         ):
             return "scheduler-saved-buffer-inconsistent"
+        exc_reg = 2 if port in ("arm-cm0", "arm-cm33") else 14
         if (
             stage.name == "svc-exception-return"
-            and registers.get(14) != EXC_RETURN_THREAD_PROCESS
+            and registers.get(exc_reg) != EXC_RETURN_THREAD_PROCESS
         ):
             return "scheduler-exception-return-unproven"
         seed, frame_xpsr, reason = _decode_frame(
             top=task_top,
-            core=core,
+            core=live_core,
             context=effective,
             read=read,
             low=task_low,
@@ -743,6 +880,7 @@ def build_stage_seed(
             frame_xpsr=frame_xpsr,
             exit_pc=exit_pc,
             fill_word=effective.fill_word,
+            initial_registers=effective.initial_registers,
             is_entry=is_entry,
         ):
             if is_entry is None or not is_entry(seed.pc):

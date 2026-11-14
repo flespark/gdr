@@ -17,14 +17,30 @@ All notable changes to GDR are documented in this file.
   frames with linker-owned MSP bounds; unverified exception modes stop explicitly.
 - FreeRTOS 11.1.0 Armv6-M (`ARM_CM0`) backtraces cross basic IRQ and nested
   frames on the verified microbit port; Armv6-M scheduler transitions remain gated.
-- FreeRTOS 10.3.1 Armv7-M (`ARM_CM3`) backtraces resolve proven PendSV/SVC scheduling
-  stages with a matching compiled profile; unproven windows stop explicitly.
+- FreeRTOS (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, single-core `ARM_CM33_NTZ`) and
+  RT-Thread (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state
+  `armv8m-integer`/`fpu`) scheduler backtraces resolve owner-consistent seeds across
+  proven PendSV/SVC and startup stages with a matching compiled profile; unproven
+  windows stay gated.
+- Single-core FreeRTOS Armv8-M Mainline (`mps2-an505/11.3.1`) and RT-Thread
+  (`mps2-an505/4.0.5`) handler backtraces cover external IRQs, SysTick, and
+  synchronous faults alongside `ARM_CM0`/`ARM_CM3`/`ARM_CM4F`.
 - Backtraces recover instruction-proven leaf returns without requiring added
   firmware CFI; clobbered registers remain unavailable to later frames.
 - RT-Thread integer backtraces support verified Armv6-M, Armv7-M and Armv7-A
   kernel contexts, with bounded saved/live chains and independent entry roots.
 - RT-Thread integer backtraces support RV32 and single-Secure-state Armv8-M
   Mainline saved/current contexts; extended and cross-security contexts remain refused.
+- Synchronous Arm M-profile faults unwind with `stop_reason=synchronous-fault`
+  when `CFSR`/`HFSR`/`MMFAR`/`BFAR` prove a precise cause (including inside C
+  fault callees and RT-Thread's `HardFault_Handler` PSP software-frame
+  trampoline); imprecise faults stop as `fault-frame-imprecise`.
+- FreeRTOS and RT-Thread SysTick halts (at vector entry and inside
+  `xPortSysTickHandler`/`xTaskIncrementTick`/`rt_tick_increase`) cross to the
+  interrupted task as a proven periodic interrupt.
+- Non-secure FPU task and extended exception-frame backtraces (`0xFFFFFFE1/E9/ED`)
+  are supported on Armv7E-M (FreeRTOS `ARM_CM4F`, RT-Thread) and Armv8-M Mainline
+  (RT-Thread).
 
 ### Changed
 

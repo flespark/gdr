@@ -56,30 +56,38 @@ ARMV6M_INTEGER = SavedStackContext(
     ),
 )
 
-# Armv8-M Mainline non-MPU (SMP lane): pxTopOfStack = psp-40; the saved hardware
-# frame begins at +40 and the original SP is one hardware frame above it.
-ARMV8M_MAINLINE_SMP_INTEGER = SavedStackContext(
-    profile_id="freertos/armv8-m.mainline/non-mpu-smp",
-    validation="live",
-    pointer_size=4,
-    registers=tuple((register, 8 + (register - 4) * 4) for register in range(4, 12))
-    + ((0, 40), (1, 44), (2, 48), (3, 52), (12, 56)),
-    pc_offset=64,
-    lr_offset=60,
-    status_offset=68,
-    sp_offset=72,
-    context_span=(0, 72),
-    fill_word=_ARM_FILL,
-    initial_registers=(
-        0x04040404,
-        0x05050505,
-        0x06060606,
-        0x07070707,
-        0x08080808,
-        0x09090909,
-        0x10101010,
-        0x11111111,
-    ),
+
+# Armv8-M Mainline non-MPU (single-core and SMP): pxTopOfStack = psp-40; the
+# saved hardware frame begins at +40 and the original SP is one frame above it.
+def _armv8m_mainline_non_mpu(profile_id: str) -> SavedStackContext:
+    return SavedStackContext(
+        profile_id=profile_id,
+        validation="live",
+        pointer_size=4,
+        registers=tuple((register, 8 + (register - 4) * 4) for register in range(4, 12))
+        + ((0, 40), (1, 44), (2, 48), (3, 52), (12, 56)),
+        pc_offset=64,
+        lr_offset=60,
+        status_offset=68,
+        sp_offset=72,
+        context_span=(0, 72),
+        fill_word=_ARM_FILL,
+        initial_registers=(
+            0x04040404,
+            0x05050505,
+            0x06060606,
+            0x07070707,
+            0x08080808,
+            0x09090909,
+            0x10101010,
+            0x11111111,
+        ),
+    )
+
+
+ARMV8M_MAINLINE_INTEGER = _armv8m_mainline_non_mpu("freertos/armv8-m.mainline/non-mpu")
+ARMV8M_MAINLINE_SMP_INTEGER = _armv8m_mainline_non_mpu(
+    "freertos/armv8-m.mainline/non-mpu-smp"
 )
 
 # Armv8-M Mainline MPU wrappers v2: the port's context array ends at

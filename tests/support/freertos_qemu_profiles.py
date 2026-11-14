@@ -16,6 +16,7 @@ from tests.support.qemu_harness import QemuProfile
 _KNOWN_TARGETS = (
     "mps2-an385",
     "microbit",
+    "mps2-an505",
     "mps2-an521",
     "mps2-an386",
     "qemu-virt-rv32",
@@ -24,6 +25,7 @@ _KNOWN_TARGETS = (
 _MACHINES = {
     "mps2-an385": "mps2-an385",
     "microbit": "microbit",
+    "mps2-an505": "mps2-an505",
     "mps2-an521": "mps2-an521",
     "mps2-an386": "mps2-an386",
     "qemu-virt-rv32": "virt",
