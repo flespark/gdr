@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from core.unwind_meta import ElfImage
-from freertos.scheduler_switch import SchedulerProfile, build_profile
+from freertos.arm_scheduler_switch import SchedulerProfile, build_profile
 from tests.support.freertos_backtrace_oracles import (
     compiled_sched_oracle,
     current_task_name,

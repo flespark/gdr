@@ -64,7 +64,8 @@ duplicating what GDB already displays well. Design rationale lives in
 | `navigation.py` | Registry/current-thread/tick symbols, type codes, timer traversal, halted system-heap snapshot. Returns raw `gdb.Value`. |
 | `stackpc.py` | Last PC from the version-specific frame, retaining the Cortex-A9 path. Verified RV64 uses the selected saved-context profile. |
 | `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing orchestration for integer Arm M/A-profile and RV32/RV64 contexts. Arm M-profile handler contexts use shared segment/exception validation; proven scheduler transitions select owner-consistent seeds per stage. Verified configurations and extension limits live in [errata](errata.md#task-backtraces). |
-| `scheduler_switch.py` / `scheduler_seed.py` | Pure compiled Arm M-profile (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state `armv8m-integer`/`fpu`) transition profiles, stage classification, and owner-consistent seed selection. |
+| `arm_scheduler_switch.py` / `scheduler_seed.py` | Pure compiled Arm M-profile (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state `armv8m-integer`/`fpu`) transition profiles, stage classification, and owner-consistent seed selection. |
+| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and stage classification (`virt64` `stacked-epc`, `e310` `deferred-mepc`). |
 | `stack_frame_profile.py` | ISA selection and decoded Arm/RISC-V save/restore/initial-context evidence (register bitmaps, SP switch, LWP header) without fixed instruction-stream fingerprints; unverified profiles remain gated. |
 | `adapter.py` | Intermediate models, value conversion, task/object tables, detail dispatch, system summaries. |
 | `views.py` | Column contracts, typed detail-table navigation cells, heap views and verdicts. |
@@ -79,7 +80,8 @@ duplicating what GDB already displays well. Design rationale lives in
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
 | `stackpc.py` | Last PC projection from the selected saved-context profile. |
 | `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic handler-frame transitions use ISA-specific validation and verified port evidence. |
-| `scheduler_switch.py` | Pure compiled Arm M-profile (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, `ARM_CM33_NTZ`) transition profiles and instruction-relative stage classification; GDB-facing collection remains in `backtrace_gdb.py`. |
+| `arm_scheduler_switch.py` | Pure compiled Arm M-profile (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, `ARM_CM33_NTZ`) transition profiles and instruction-relative stage classification; GDB-facing collection remains in `backtrace_gdb.py`. |
+| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and CFG-partitioned stage classification (`xPortStartFirstTask`, `freertos_risc_v_trap_handler`, `vTaskSwitchContext`). |
 | `scheduler_seed.py` | Owner-consistent seeds from classified stages under basic/FPU software-block and hardware-frame geometry. |
 | `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled RISC-V save-layout evidence for verified profile selection. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |

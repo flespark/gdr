@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from freertos.arm_scheduler_switch import SchedulerProfile, SchedulerStage
 from freertos.backtrace import ARMV7M_CM4F_BASIC, ARMV7M_CM4F_FPU, ARMV7M_INTEGER
 from freertos.scheduler_seed import build_stage_seed
-from freertos.scheduler_switch import SchedulerProfile, SchedulerStage
 
 TASK_TCB = 0x20001000
 TASK_TOP = 0x20002004

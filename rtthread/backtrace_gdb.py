@@ -70,6 +70,12 @@ from core.unwind_segments import (
     StackSegment,
 )
 from rtthread.adapter import value_to_thread
+from rtthread.arm_scheduler_switch import (
+    build_profile as build_scheduler_profile,
+)
+from rtthread.arm_scheduler_switch import (
+    classify_stage as classify_scheduler_stage,
+)
 from rtthread.backtrace import (
     decode_armv7em_saved_context,
     decode_armv8m_mainline_saved_context,
@@ -78,12 +84,6 @@ from rtthread.backtrace import decode_saved_context as decode_backtrace_context
 from rtthread.layout import RT_THREAD_STACK_FILL
 from rtthread.navigation import find_thread, get_current_thread
 from rtthread.scheduler_seed import SchedulerSeed, build_stage_seed
-from rtthread.scheduler_switch import (
-    build_profile as build_scheduler_profile,
-)
-from rtthread.scheduler_switch import (
-    classify_stage as classify_scheduler_stage,
-)
 from rtthread.stack_frame_profile import (
     analyze_hardfault_trampoline,
     analyze_riscv_trap_profile,

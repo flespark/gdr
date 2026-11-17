@@ -361,3 +361,99 @@ def riscv_target_loads(elf: ElfImage, code: dict[int, tuple]) -> dict[int, str]:
         if len(names) == 1:
             loads[lower[1]] = next(iter(names))
     return loads
+
+
+def riscv_written_register(op: tuple) -> int | None:
+    """Return the GPR written by *op*, or ``None`` when no GPR changes."""
+    mnemonic = op[0]
+    if mnemonic in (
+        "lw",
+        "ld",
+        "addi",
+        "addiw",
+        "andi",
+        "xori",
+        "slli",
+        "srli",
+        "srai",
+        "add",
+        "sub",
+        "sltu",
+        "xor",
+        "or",
+        "and",
+        "mul",
+        "auipc",
+        "lui",
+        "csrr",
+        "jal",
+        "jalr",
+    ):
+        rd = op[1]
+        return rd if isinstance(rd, int) and rd > 0 else None
+    return None
+
+
+def riscv_update_const_addr(
+    op: tuple, pc: int, mask: int, const_addrs: dict[int, int]
+) -> None:
+    """Update *const_addrs* for PC-relative or upper-immediate address synthesis."""
+    mnemonic = op[0]
+    written = riscv_written_register(op)
+    if mnemonic == "auipc":
+        if written is not None:
+            const_addrs[written] = (pc + op[2]) & mask
+        return
+    if mnemonic == "lui":
+        if written is not None:
+            const_addrs[written] = op[2] & mask
+        return
+    if mnemonic == "addi" and written is not None:
+        base_val = 0 if op[2] == 0 else const_addrs.get(op[2])
+        if base_val is not None:
+            const_addrs[written] = (base_val + op[3]) & mask
+        else:
+            const_addrs.pop(written, None)
+        return
+    if mnemonic == "add" and written is not None:
+        if op[2] == 0 and op[3] in const_addrs:
+            const_addrs[written] = const_addrs[op[3]]
+        elif op[3] == 0 and op[2] in const_addrs:
+            const_addrs[written] = const_addrs[op[2]]
+        else:
+            const_addrs.pop(written, None)
+        return
+    if written is not None:
+        const_addrs.pop(written, None)
+
+
+def riscv_store_completion_slots(
+    code: dict[int, tuple],
+    store_op: str,
+    *,
+    base: int = 2,
+    expected_offsets: dict[int, int],
+) -> tuple[tuple[int, int, int], ...] | None:
+    """Return ``(reg, offset, done_pc)`` for each saved GPR, or ``None`` if clobbered."""
+    ordered = sorted(code)
+    clobbered: set[int] = set()
+    recorded: dict[int, tuple[int, int]] = {}
+    for idx, pc in enumerate(ordered):
+        op = code[pc]
+        if op[0] == store_op and op[2] == base:
+            reg, offset = op[1], op[3]
+            if (
+                expected_offsets.get(reg) == offset
+                and reg not in recorded
+                and reg not in clobbered
+            ):
+                done_pc = ordered[idx + 1] if idx + 1 < len(ordered) else pc + 4
+                recorded[reg] = (offset, done_pc)
+        written = riscv_written_register(op)
+        if written is not None and written in expected_offsets:
+            clobbered.add(written)
+    if len(recorded) != len(expected_offsets):
+        return None
+    return tuple(
+        (reg, recorded[reg][0], recorded[reg][1]) for reg in sorted(expected_offsets)
+    )

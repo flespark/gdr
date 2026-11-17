@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import struct
 
-from freertos.scheduler_switch import SchedulerProfile
+from freertos.arm_scheduler_switch import SchedulerProfile
 
 
 def json_line(output: str) -> dict:

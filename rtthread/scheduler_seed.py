@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from core.stack_frame_parser import SavedStackContext, StackContextSelection
 from core.unwind import Endian, Reader, SeedFrame, read_slot
 
+from .arm_scheduler_switch import SchedulerProfile, SchedulerStage, classify_stage
 from .backtrace import (
     ARMV7EM_EXC_RETURN_SLOT,
     ARMV8M_MAINLINE_BASIC_EXC_RETURN,
@@ -24,7 +25,6 @@ from .backtrace import (
     decode_armv8m_mainline_saved_context,
     decode_saved_context,
 )
-from .scheduler_switch import SchedulerProfile, SchedulerStage, classify_stage
 
 _XPSR_T_BIT = 1 << 24
 _XPSR_STKALIGN_BIT = 1 << 9

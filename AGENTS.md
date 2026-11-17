@@ -43,8 +43,9 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   stackpc.py           last PC from the saved switch frame (pure; slot table + proofs)
   backtrace.py         saved-context layouts and seed decoding (pure)
   backtrace_gdb.py     GDB-facing thread backtrace orchestration
-  scheduler_switch.py  compiled M-profile transition profiles and stage classification
-  scheduler_seed.py    owner-consistent seeds from classified M-profile stages
+  arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
+  riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
+  scheduler_seed.py         owner-consistent seeds from classified M-profile stages
   stack_frame_profile.py compiled save-layout evidence and profile selection
   adapter.py           intermediate models, value converters, summaries and tables
   views.py             column contracts, detail-table cells, heap views/verdicts
@@ -56,8 +57,9 @@ freertos/              FreeRTOS adapter
   stackpc.py           last PC from the saved frame (pure; port evidence + proofs)
   backtrace.py         saved-context layouts and seed decoding (pure)
   backtrace_gdb.py     GDB-facing task backtrace orchestration
-  scheduler_switch.py compiled M-profile transition profiles and stage classification
-  scheduler_seed.py owner-consistent seeds from classified stages (basic/FPU geometry)
+  arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
+  riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
+  scheduler_seed.py         owner-consistent seeds from classified stages (basic/FPU geometry)
   stack_frame_profile.py compiled save-layout evidence and profile selection
   objects.py           per-kind decode: timers, event groups, stream buffers
   heap.py              heap_1..5 snapshot, canary, walks and cross-check verdicts

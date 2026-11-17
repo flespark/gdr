@@ -811,7 +811,7 @@ def test_apply_switch_return_cfi_adds_lr_return_only_for_switch_return():
 def test_current_pc_backtrace_tracks_outgoing_pendsv_and_boot(monkeypatch):
     from core.unwind import UnwindFrame, UnwindResult
     from core.unwind_arm import ArmSnapshot
-    from rtthread.scheduler_switch import SchedulerProfile, SchedulerStage
+    from rtthread.arm_scheduler_switch import SchedulerProfile, SchedulerStage
 
     adapter = _arm_current(monkeypatch, exception=0)
     monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"fn_{pc:#x}")

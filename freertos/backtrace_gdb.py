@@ -81,6 +81,8 @@ from core.unwind_riscv import (
 )
 from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
+from freertos.arm_scheduler_switch import build_profile as build_scheduler_profile
+from freertos.arm_scheduler_switch import classify_stage
 from freertos.backtrace import decode_cm4f_saved_context
 from freertos.backtrace import decode_saved_context as decode_backtrace_context
 from freertos.navigation import (
@@ -90,8 +92,6 @@ from freertos.navigation import (
     task_state,
 )
 from freertos.scheduler_seed import build_stage_seed
-from freertos.scheduler_switch import build_profile as build_scheduler_profile
-from freertos.scheduler_switch import classify_stage
 from freertos.stack_frame_profile import analyze_riscv_trap_profile
 
 try:

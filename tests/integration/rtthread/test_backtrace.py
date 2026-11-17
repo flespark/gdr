@@ -12,7 +12,7 @@ import pytest
 
 from core.insn_thumb import decode_thumb
 from core.unwind_meta import ElfImage
-from rtthread.scheduler_switch import SchedulerProfile, build_profile
+from rtthread.arm_scheduler_switch import SchedulerProfile, build_profile
 from tests.support.gdb_process import has_embedded_python
 from tests.support.loader import load_integration_spec
 from tests.support.qemu_harness import GdbSession, QemuSession, check_tools

@@ -23,8 +23,8 @@ from core.unwind_arm import (
 )
 from core.unwind_meta import Reader
 
+from .arm_scheduler_switch import SchedulerProfile, SchedulerStage
 from .backtrace import CM4F_EXC_RETURN_SLOT, decode_saved_context
-from .scheduler_switch import SchedulerProfile, SchedulerStage
 
 EXC_RETURN_THREAD_PROCESS = 0xFFFFFFFD
 XPSR_T_BIT = 1 << 24
