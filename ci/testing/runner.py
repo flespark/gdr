@@ -345,12 +345,7 @@ def _sources(lane: Lane) -> Path:
 
 def fingerprint(lane: Lane) -> str:
     """Hash fixture inputs and compiler identity, not host-dependent mtimes."""
-    if lane.rtos == "bare":
-        directory = ROOT / "ci" / "bare"
-    else:
-        directory = (
-            ROOT / "ci" / ("freertos" if lane.rtos == "freertos" else "rt-thread")
-        )
+    directory = ROOT / "ci" / "fixture" / lane.rtos
     digest = hashlib.sha256(lane.key.encode())
     paths = [
         p
@@ -422,14 +417,14 @@ def _build(lane: Lane, *, rebuild: bool = False) -> None:
     if lane.variant == "eh-frame":
         args = [
             "bash",
-            str(ROOT / "ci/bare/eh-frame/build.sh"),
+            str(ROOT / "ci/fixture/bare/eh-frame/build.sh"),
             str(work),
             str(tool_dir),
         ]
     elif lane.rtos == "freertos":
         args = [
             "bash",
-            str(ROOT / "ci/freertos/build.sh"),
+            str(ROOT / "ci/fixture/freertos/build.sh"),
             "--kernel-dir",
             str(sources(lane)),
             "--tag",
@@ -450,7 +445,7 @@ def _build(lane: Lane, *, rebuild: bool = False) -> None:
     else:
         args = [
             "bash",
-            str(ROOT / "ci/rt-thread/build.sh"),
+            str(ROOT / "ci/fixture/rtthread/build.sh"),
             "--repo",
             str(sources(lane)),
             "--ref",

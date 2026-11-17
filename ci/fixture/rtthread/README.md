@@ -2,7 +2,7 @@
 
 <!-- markdownlint-configure-file { "MD024": { "siblings_only": true } } -->
 
-Use the [shared CLI](../README.md) to prepare and run firmware. `build.sh`
+Use the [shared CLI](../../README.md) to prepare and run firmware. `build.sh`
 is the internal builder: it receives an immutable tagged source checkout,
 creates a new private clone, applies the target/version patch set, and
 publishes `rtthread.elf` (plus `rtthread.bin` on RISC-V). It never resets or
@@ -24,7 +24,7 @@ cleans an existing working tree.
 Patch series live under `patches/<target>/<version>/`. A patch must apply
 cleanly to its own BSP and toolchain; do not share patches between the
 Cortex-A9 and RV64 directories without verifying both. Shared coverage and matrix
-policy are documented in [testing](../../docs/testing.md).
+policy are documented in [testing](../../../docs/testing.md).
 
 ## Build dependencies
 
@@ -76,8 +76,8 @@ Covers saved integer thread context (`context_gcc.S`), live C EHABI/CFI
 through the `gdr_bt_live_middle` -> `gdr_bt_live_leaf` (`gdr_bt_live_stop`)
 chain (4.0.4+), unstarted-thread entry (`gdr_unstarted`), `rt_thread_exit`
 stop sentinel, and omitted-target live unwind (`rt bt`). Acceptance and runtime
-limits live in [testing](../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage)
-and [errata](../../docs/errata.md#task-backtraces).
+limits live in [testing](../../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage)
+and [errata](../../../docs/errata.md#task-backtraces).
 
 ## `microbit` (Armv6-M)
 
@@ -124,7 +124,7 @@ UART0).
 - **Fault gap**: No `fault` overlay on `microbit`; the Armv6-M port lacks
   `rt_hw_exception_install` and `CFSR` status registers. The `fault-frame-imprecise`
   refusal is covered by FreeRTOS `microbit`. Raw compatibility checks live in
-  [testing](../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage).
+  [testing](../../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage).
 
 ## `mps2-an385` (Armv7-M)
 
@@ -264,7 +264,7 @@ The `fault` overlay applies after base patches.
   13-word (52-byte) software block (`r4-r11`, TrustZone/LR metadata).
   QEMU AN505 surfaces MPU-blocked loads as precise BusFault rather than MemManage
   `DACCVIOL` (live `DACCVIOL` proof remains on AN385/AN386; see
-  [errata](../../docs/errata.md#task-backtraces)).
+  [errata](../../../docs/errata.md#task-backtraces)).
 
 ## `rv32` (RV32)
 
@@ -300,7 +300,7 @@ Covers 32-bit pointer width, saved/live `ilp32` CFI, `gdr_unstarted`, live
 `rt_tick_increase` cross-stack unwind (including E310 `mepc` CSR fallback and
 fail-closed refusal in the `trap_entry` epilogue switch region). Vendor IRQ/fault
 extensions (XuanTie, Nuclei ECLIC, WCH PFIC) are not supported or built. Trap
-unwinding scope lives in [errata](../../docs/errata.md#task-backtraces).
+unwinding scope lives in [errata](../../../docs/errata.md#task-backtraces).
 
 ## `rv64` (RV64)
 

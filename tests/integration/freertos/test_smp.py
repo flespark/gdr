@@ -1,8 +1,8 @@
 """Live dual-core SMP assertions (QEMU mps2-an521, kernel V11.3.1).
 
-COUPLED: ci/freertos/fixture/config/smp/FreeRTOSConfig.h builds the smp
+COUPLED: ci/fixture/freertos/profiles/config/smp/FreeRTOSConfig.h builds the smp
 variant with two cores, configUSE_CORE_AFFINITY and
-configUSE_TASK_PREEMPTION_DISABLE; ci/freertos/fixture/main.c creates
+configUSE_TASK_PREEMPTION_DISABLE; ci/fixture/freertos/profiles/main.c creates
 gdr_bound (pinned to core 1 via vTaskCoreAffinitySet) and gdr_preempt
 (vTaskPreemptionDisable) under that variant.
 

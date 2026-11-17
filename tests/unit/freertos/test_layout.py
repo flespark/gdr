@@ -915,14 +915,14 @@ def test_variant_names_are_unique():
 
 def test_every_variant_has_config_directory():
     for variant in list_freertos_variants():
-        path = _REPO / "ci" / "freertos" / "fixture" / "config" / variant
+        path = _REPO / "ci" / "fixture" / "freertos" / "profiles" / "config" / variant
         assert path.is_dir(), path
         assert (path / "FreeRTOSConfig.h").is_file(), path
 
 
 def test_every_board_has_port_directory():
     for board in list_freertos_boards():
-        path = _REPO / "ci" / "freertos" / "fixture" / "board" / board
+        path = _REPO / "ci" / "fixture" / "freertos" / "profiles" / "board" / board
         assert path.is_dir(), path
         assert (path / "gdr_board.h").is_file(), path
 

@@ -6,7 +6,7 @@ object addresses, and that the capability claim describes *this* build's
 configuration (queue sets, trace facility, registry, timers).
 
 COUPLED: fixture names and the variant matrix come from
-``ci/freertos/fixture/main.c`` and ``ci/freertos/fixture/config/<variant>/``.
+``ci/fixture/freertos/profiles/main.c`` and ``ci/fixture/freertos/profiles/config/<variant>/``.
 """
 
 from __future__ import annotations

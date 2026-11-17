@@ -2,7 +2,7 @@
 
 COUPLED: the canonical symbols and object names used here are created by the
 matching RT-Thread fixture patch in
-``ci/rt-thread/patches/<target>/<version>/``. Keep fixture patch changes and
+``ci/fixture/rtthread/patches/<target>/<version>/``. Keep fixture patch changes and
 these target-native value assertions synchronized.
 """
 

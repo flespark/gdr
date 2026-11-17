@@ -137,8 +137,8 @@ The public integration entry point is `python3 ci/test.py`. Commands, cache
 initialization/linking, tool registration, containers, logs, and interface
 layering are documented in [ci/README.md](ci/README.md). Coverage and target
 profiles live in [docs/testing.md](docs/testing.md); measured build facts
-belong to the [FreeRTOS](ci/freertos/README.md) and
-[RT-Thread](ci/rt-thread/README.md) lane READMEs.
+belong to the [FreeRTOS](ci/fixture/freertos/README.md) and
+[RT-Thread](ci/fixture/rtthread/README.md) lane READMEs.
 
 ```bash
 python3 ci/test.py list smoke
@@ -150,7 +150,7 @@ python3 ci/test.py container run -- matrix smoke
 Any work that consumes a config branch (SMP, heap_N, static allocation,
 stream buffers, MPU, runtime stats, IRQ stacks, scheduling transitions, …)
 must first have a fixture or snapshot that can falsify it. Target-specific
-patches belong under `ci/rt-thread/patches/<target>/<version>/`; verify each
+patches belong under `ci/fixture/rtthread/patches/<target>/<version>/`; verify each
 BSP/toolchain before sharing a patch.
 
 ### CI pipelines
@@ -179,15 +179,15 @@ that owns the fact:
 | File | Audience | Owns | Must **not** carry | Granularity |
 | --- | --- | --- | --- | --- |
 | `README.md` / `README.zh-CN.md` | users | install, load, command index, output-decode notes | kernel internals, fixtures/CI, design rationale | each note ≤2 lines, mirror both languages |
-| `AGENTS.md` | contributors/agents | file map (one line per file), setup/commands, CI lane table, conventions | per-module prose (point to architecture.md), lane internals (point to ci/*/README.md) | one line per file |
+| `AGENTS.md` | contributors/agents | file map (one line per file), setup/commands, CI lane table, conventions | per-module prose (point to architecture.md), lane internals (point to ci/fixture/*/README.md) | one line per file |
 | `docs/architecture.md` | design readers | layering, module contracts, runtime flows, core mechanisms, RTOS capability comparison | VSCode panel/DOM detail, trial-and-error history, fixture build details | module-table cells ≤1-3 sentences |
 | `docs/decisions.md` | design readers | architecture decisions and why they exist | mechanisms (→ architecture.md), limits (→ errata.md) | one decision per section, no change narration |
-| `docs/testing.md` | contributors | closed-loop harness, QEMU profiles, version/variant matrices | fixture build steps (→ ci/*/README.md) | link lane READMEs, never copy |
+| `docs/testing.md` | contributors | closed-loop harness, QEMU profiles, version/variant matrices | fixture build steps (→ ci/fixture/*/README.md) | link lane READMEs, never copy |
 | `docs/errata.md` | design readers | known limits and kernel differences by adapter | development rules (→ AGENTS.md) | one fact per bold item |
 | `docs/gdb_python_reference.md` | developers | offline GDB Python API reference for bridge/stack work | project-specific claims | reference only, never edit by hand |
 | `CHANGELOG.md` | users | user-visible behaviour changes | fixture/CI/lane/variant internals, implementation narrative, test-fix process notes | one line per change, ≤3 lines each |
 | `ci/README.md` | contributors | integration CLI, shared cache, containers and orchestration layering | RTOS build mechanics | command-oriented |
-| `ci/<rtos>/README.md` | lane maintainers | measured build facts, toolchains, cache, linker traps, unreachable variants | adapter design | none |
+| `ci/fixture/<rtos>/README.md` | lane maintainers | measured build facts, toolchains, cache, linker traps, unreachable variants | adapter design | none |
 | `vscode/README.md` | extension users and lane maintainers | build/test/vendor commands, supported adapters, known limits | GDR internals, envelope design (link to architecture.md) | short sections, no per-file prose |
 
 Rule of thumb: if a fact already exists in another file, add a link, never a

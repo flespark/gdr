@@ -11,10 +11,10 @@ repos:
     hooks:
       - id: end-of-file-fixer
         # patch context is byte-sensitive; preserve upstream whitespace exactly.
-        exclude: ^ci/rt-thread/patches/.*\.patch$
+        exclude: ^ci/fixture/rtthread/patches/.*\.patch$
       - id: trailing-whitespace
         # patch context is byte-sensitive; preserve upstream whitespace exactly.
-        exclude: ^ci/rt-thread/patches/.*\.patch$
+        exclude: ^ci/fixture/rtthread/patches/.*\.patch$
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict
@@ -24,7 +24,7 @@ repos:
       - id: mixed-line-ending
         args: ["--fix=lf"]
         # patch context is byte-sensitive; preserve upstream whitespace exactly.
-        exclude: ^ci/rt-thread/patches/.*\.patch$
+        exclude: ^ci/fixture/rtthread/patches/.*\.patch$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.12

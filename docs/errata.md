@@ -62,7 +62,7 @@ A remaining miss degrades to a warning ("target FreeRTOS version is not
 exported") and skips the mismatch check rather than guessing.
 
 **Live fixtures are a variant matrix**, not a single configuration.
-`ci/freertos/fixture/config/<variant>/` plus a shared `main.c` produce
+`ci/fixture/freertos/profiles/config/<variant>/` plus a shared `main.c` produce
 `base` (the historical 10.3.1 combination), `full`,
 `static-only`, `static-dynamic`, `trace-off`, `heap-1`/`2`/`3`/`5`,
 `heap-protector` (≥V11), `heap-5-protector` (heap_5 + the protector, one
@@ -95,17 +95,17 @@ bits at 16/64-bit tick widths (`tick16` / the RISC-V lane), the timer
 pended-callback arm (`pend-callback`), stream-buffer ring wrap and the
 deleted-buffer signature (`streams`), and `ListIntegrityBytes` on the static
 snapshot.  Each variant's exact scope is documented in
-`ci/freertos/README.md`; the snapshot variant carries the diagnostic negatives
+`ci/fixture/freertos/README.md`; the snapshot variant carries the diagnostic negatives
 a healthy kernel cannot produce.
 
-**Static snapshot variant** (`ci/freertos/build.sh --variant snapshot`,
-cell `mps2-an521/11.1.0`, sources in `ci/freertos/fixture/config/snapshot/`)
+**Static snapshot variant** (`ci/fixture/freertos/build.sh --variant snapshot`,
+cell `mps2-an521/11.1.0`, sources in `ci/fixture/freertos/profiles/config/snapshot/`)
 covers states a healthy kernel cannot produce
 (corrupt lists, SMP `xTaskRunState` of `0`/`1`/`-1`/`-2` without a live
 dual-core port, a timer on the overflow list, and corrupt-heap cells). Snapshot
 data is non-zero-initialized into `.data`; file-only GDB synthesises zeros for
 `.bss`, so a BSS-resident structure would read back as a successful decode of
-empty lists (see `ci/freertos/README.md`). Zero-valued standalone globals are
+empty lists (see `ci/fixture/freertos/README.md`). Zero-valued standalone globals are
 forced into `.data` with `__attribute__((section(".data")))` for the same
 reason. The heap *mismatch* cell (free-list vs linear vs counter disagree) and
 the *allocated-bit* cell (free-list member with the size_t MSB) cannot share
@@ -463,7 +463,7 @@ pointer, so the symbol and user channels translate such a value through
 is neither a valid index nor a pointer inside a mapped section) instead of
 reading `0x3` as an address. The `waiter` channel is pinned by a deliberate
 fixture object:
-`gdr_waiter_only_eg_task` (ci/freertos/fixture/main.c) blocks forever on an
+`gdr_waiter_only_eg_task` (`ci/fixture/freertos/profiles/main.c`) blocks forever on an
 event group whose handle lives only on its own stack, so that group is
 discoverable *only* through the waiter channel -- the live no-ghost assertion
 now permits exactly one host (that anonymous event group) that no earlier

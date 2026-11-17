@@ -114,7 +114,7 @@ On RISC-V lanes, QEMU boots the raw
 ### Fixture and version matrix
 
 RT-Thread fixtures are built by applying platform- and version-scoped patch
-series (`ci/rt-thread/patches/<target>/<version>/`) to upstream RT-Thread BSPs
+series (`ci/fixture/rtthread/patches/<target>/<version>/`) to upstream RT-Thread BSPs
 and caching `ci/.cache/fixtures/rtthread/<target>/<version>/rtthread.elf` (plus
 `rtthread.bin` on RISC-V):
 
@@ -133,14 +133,14 @@ and caching `ci/.cache/fixtures/rtthread/<target>/<version>/rtthread.elf` (plus
   `4.1.1`). Upstream has no QEMU RV64 BSP for `3.1.x`.
 - **`mps2-an385` (`4.0.5`)**: Runs the shared integration suite and independent
   compiled-port/saved-frame checks on an RT-Thread-owned BSP. Build inputs live
-  in the [AN385 fixture guide](../ci/rt-thread/README.md#an385-armv7-m-port-fixture).
+  in the [AN385 fixture guide](../ci/fixture/rtthread/README.md#mps2-an385-armv7-m).
 - **`microbit` (`4.0.5`)**: Runs the shared suite and raw port-compatibility
   checks on an RT-Thread-owned BSP. Build inputs and the Nordic tick source
-  live in the [microbit fixture guide](../ci/rt-thread/README.md#microbit-armv6-m-port-fixture).
+  live in the [microbit fixture guide](../ci/fixture/rtthread/README.md#microbit-armv6-m).
 - **`mps2-an505` and `rv32` (`4.0.5`)**: Run the shared suite and independent
   80/128-byte port-frame checks, initial entry/exit checks and read-only current
-  chains. Build inputs live in the [AN505](../ci/rt-thread/README.md#an505-armv8-m-mainline-port-fixture)
-  and [RV32](../ci/rt-thread/README.md#rv32-common-integer-port-fixture) fixture guides.
+  chains. Build inputs live in the [AN505](../ci/fixture/rtthread/README.md#mps2-an505-armv8-m-mainline)
+  and [RV32](../ci/fixture/rtthread/README.md#rv32-rv32) fixture guides.
 
 Each fixture spawns a deterministic set of healthy and blocked worker threads
 (`worker1`..`worker11`, `locker`) contended on canonical IPC objects
@@ -175,9 +175,9 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 ### Fixture and variant matrix
 
 FreeRTOS fixtures are built directly from `FreeRTOS-Kernel` git tags by
-`ci/freertos/build.sh`, combining shared application code
-(`ci/freertos/fixture/main.c`), board startup (`fixture/board/<target>/`),
-and per-variant headers (`fixture/config/<variant>/FreeRTOSConfig.h`) into
+`ci/fixture/freertos/build.sh`, combining shared application code
+(`ci/fixture/freertos/profiles/main.c`), board startup (`profiles/board/<target>/`),
+and per-variant headers (`profiles/config/<variant>/FreeRTOSConfig.h`) into
 `ci/.cache/fixtures/freertos/<target>/<version>/<variant>/freertos.elf`.
 Verification spans three complementary execution arms:
 
@@ -207,7 +207,7 @@ Verification spans three complementary execution arms:
      64-bit heap allocation-bitmask arithmetic.
    - **Armv6-M (`microbit` / `11.1.0` / `full`, `fault`, `sched`)**: Builds the shared fixture
      against `portable/GCC/ARM_CM0` with the expanded QEMU memory setup (see
-     the [lane README](../ci/freertos/README.md#cortex-m0-microbit-variant-full));
+     the [lane README](../ci/fixture/freertos/README.md#microbit-armv6-m));
      verifies the Thumb-1 context frame, EHABI/CFI selection, IRQ/SysTick handler
      unwinding, `fault-frame-imprecise` refusal, and Armv6-M scheduler transitions.
    - **Armv7E-M (`mps2-an386` / `11.3.1` / `fpu`, `fault`, `sched`)**: Builds
@@ -271,8 +271,8 @@ ICTR upper bound 47 and reject malformed/unreadable ICTR or out-of-capacity
 live/restored exception numbers. Only exception numbers 24/25 have live
 vector/handler coverage; capacity acceptance of 47 is not a live handler proof.
 Other ports and extended frames need their own fixtures. Build facts live in
-the [microbit](../ci/freertos/README.md#cortex-m0-microbit-variant-full) and
-[AN385](../ci/freertos/README.md#an385-basic-irq-fixture-full) fixture guides.
+the [microbit](../ci/fixture/freertos/README.md#microbit-armv6-m) and
+[AN385](../ci/fixture/freertos/README.md#mps2-an385-armv7-m) fixture guides.
 
 ```bash
 uv run pytest tests/unit/core/test_unwind_armv6m.py tests/unit/core/test_unwind_armv7m.py tests/unit/freertos/test_backtrace_armv6m.py tests/unit/freertos/test_backtrace_gdb.py
@@ -292,7 +292,7 @@ restored registers before PSP writeback, real timer preemption
 before scheduling, and the first SVC path. Refusal tests cover unmatched
 profiles and unproven stops. Unit/synthetic mutations and offline ELF
 perturbations test rejection but do not establish additional live support.
-Build facts live in the [scheduler fixture guide](../ci/freertos/README.md#an385-scheduler-fixture-sched);
+Build facts live in the [scheduler fixture guide](../ci/fixture/freertos/README.md#mps2-an385-armv7-m);
 the supported stages and exclusions live in [errata](errata.md#task-backtraces).
 
 ## Isolated `.eh_frame` variant
@@ -312,7 +312,7 @@ resolution/rejection of `DW_EH_PE_textrel`, `DW_EH_PE_datarel`,
 Undefined return columns remain partial endpoints.
 Signal-CIE coverage does not verify hardware exception decoding or
 cross-stack unwinding. Build details live in
-[the fixture README](../ci/bare/eh-frame/README.md).
+[the fixture README](../ci/fixture/bare/eh-frame/README.md).
 
 The fixture is RTOS-independent on purpose: it tests the shared `core`
 CFI decoder, so one lane covers both adapters. The regular RV lanes
@@ -328,9 +328,9 @@ assertions through the [same lane extension contract](../ci/README.md#layering-a
 
 ## Summary comparison of RT-Thread vs FreeRTOS test strategies
 
-| Dimension | RT-Thread (`ci/rt-thread/`) | FreeRTOS (`ci/freertos/`) |
+| Dimension | RT-Thread (`ci/fixture/rtthread/`) | FreeRTOS (`ci/fixture/freertos/`) |
 | --- | --- | --- |
-| **Firmware source** | Upstream RT-Thread repo + per-BSP/version patch sets | Upstream `FreeRTOS-Kernel` tags + shared `fixture/main.c`, `board/`, `config/<variant>/` |
+| **Firmware source** | Upstream RT-Thread repo + per-BSP/version patch sets | Upstream `FreeRTOS-Kernel` tags + shared `profiles/main.c`, `board/`, `config/<variant>/` |
 | **Primary matrix axis** | Kernel release history (`3.1.0–3.1.5`, `4.0.0–4.1.1`) across 32-bit ARM and 64-bit RV64 | Compile-time `FreeRTOSConfig.h` feature matrix (19 variants) + kernel version sweep (`10.3.1–11.3.1`) |
 | **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv32`, `rv64` (`virt`), `microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505` | `microbit` (Armv6-M), `mps2-an385` (Armv7-M), `mps2-an386` (Armv7E-M FPU), `mps2-an505` (Armv8-M Mainline single-core), `mps2-an521` (Armv8-M Mainline SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
 | **Negative / corruption testing** | Unit tests + reset-vector `NULL`-head startup session (`test_startup.py`) | Dedicated file-only static ELF pair (`test_snapshot.py`: `freertos.elf` + `snapshot_heap.elf`) |

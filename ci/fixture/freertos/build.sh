@@ -21,7 +21,7 @@
 #   --toolchain-path DIR    directory containing arm-none-eabi-* binaries
 #
 # ``--variant snapshot`` builds the static snapshot instead: a file-only
-# Cortex-M33 ELF pair from fixture/config/snapshot/ for the data-corruption
+# Cortex-M33 ELF pair from profiles/config/snapshot/ for the data-corruption
 # negatives a healthy kernel cannot produce. It compiles against kernel
 # headers only (no kernel sources, port or board) and never boots QEMU, so
 # --out-bin is unused on this variant.
@@ -100,8 +100,8 @@ board_flags() {
 compile_fixture() {
     local cc="$TOOLCHAIN_PATH/$(toolchain_prefix_for)gcc"
     local objcopy="$TOOLCHAIN_PATH/$(toolchain_prefix_for)objcopy"
-    local config_dir="$SCRIPT_DIR/fixture/config/$VARIANT"
-    local board_dir="$SCRIPT_DIR/fixture/board/$TARGET"
+    local config_dir="$SCRIPT_DIR/profiles/config/$VARIANT"
+    local board_dir="$SCRIPT_DIR/profiles/board/$TARGET"
     local heap
     local -a cflags sources cpu_flags
     local port_dir
@@ -173,9 +173,9 @@ compile_fixture() {
         -Og -g3 -ffunction-sections -fdata-sections -fno-lto
         -Wall -Wextra -Werror -std=c11
         -I"$config_dir"
-        -I"$SCRIPT_DIR/fixture/config"
+        -I"$SCRIPT_DIR/profiles/config"
         -I"$board_dir"
-        -I"$SCRIPT_DIR/fixture/common"
+        -I"$SCRIPT_DIR/profiles/common"
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
@@ -215,10 +215,10 @@ compile_fixture() {
     # unbound-variable error on older bash, so gate the expansion on length.
     if [[ ${#port_sources[@]} -gt 0 ]]; then
         sources=(
-            "$SCRIPT_DIR/fixture/main.c"
+            "$SCRIPT_DIR/profiles/main.c"
             "$board_dir/system_init.c"
-            "$SCRIPT_DIR/fixture/common/syscalls.c"
-            "$SCRIPT_DIR/fixture/common/runtime_timer.c"
+            "$SCRIPT_DIR/profiles/common/syscalls.c"
+            "$SCRIPT_DIR/profiles/common/runtime_timer.c"
             "$board_dir/startup.s"
             "$KERNEL_DIR/tasks.c" "$KERNEL_DIR/queue.c" "$KERNEL_DIR/list.c"
             "$KERNEL_DIR/timers.c" "$KERNEL_DIR/event_groups.c"
@@ -228,10 +228,10 @@ compile_fixture() {
         )
     else
         sources=(
-            "$SCRIPT_DIR/fixture/main.c"
+            "$SCRIPT_DIR/profiles/main.c"
             "$board_dir/system_init.c"
-            "$SCRIPT_DIR/fixture/common/syscalls.c"
-            "$SCRIPT_DIR/fixture/common/runtime_timer.c"
+            "$SCRIPT_DIR/profiles/common/syscalls.c"
+            "$SCRIPT_DIR/profiles/common/runtime_timer.c"
             "$board_dir/startup.s"
             "$KERNEL_DIR/tasks.c" "$KERNEL_DIR/queue.c" "$KERNEL_DIR/list.c"
             "$KERNEL_DIR/timers.c" "$KERNEL_DIR/event_groups.c"
@@ -293,7 +293,7 @@ compile_fixture() {
 # snapshot plus the heap-only allocated-bit negative.
 compile_snapshot() {
     local cc="$TOOLCHAIN_PATH/$(toolchain_prefix_for)gcc"
-    local config_dir="$SCRIPT_DIR/fixture/config/$VARIANT"
+    local config_dir="$SCRIPT_DIR/profiles/config/$VARIANT"
     local heap_elf
     [[ -d "$config_dir" ]] || die "unknown variant: $VARIANT ($config_dir)"
     heap_elf="${OUT_ELF%.elf}_heap.elf"

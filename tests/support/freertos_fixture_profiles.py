@@ -1,7 +1,7 @@
 """Independent FreeRTOS fixture capability expectations.
 
-COUPLED: ci/freertos/fixture/config/<variant>/FreeRTOSConfig.h and the
-matching board under ci/freertos/fixture/board/<board>/. Keep this table
+COUPLED: ci/fixture/freertos/profiles/config/<variant>/FreeRTOSConfig.h and the
+matching board under ci/fixture/freertos/profiles/board/<board>/. Keep this table
 synchronized with those headers, but do not import freertos.layout or any
 other production probe — a GDR regression must not silently update the
 expected values.

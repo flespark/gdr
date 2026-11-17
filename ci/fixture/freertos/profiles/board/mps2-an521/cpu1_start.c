@@ -27,7 +27,7 @@
  * depending on this by pinning every ground-truth waiter task to core 0
  * (configNUMBER_OF_CORES > 1), so no shared assertion ever needs a cross-core
  * yield to be delivered.  This is a known fixture limitation (see
- * ci/freertos/README.md), not a GDR defect.
+ * ci/fixture/freertos/README.md), not a GDR defect.
  */
 #include <stdint.h>
 

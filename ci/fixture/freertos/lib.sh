@@ -67,5 +67,5 @@ install_to_cache() {
 
 # Repository-owned fixture cache root.
 fixture_cache_root() {
-    echo "$SCRIPT_DIR/../.cache/fixtures/freertos"
+    echo "$SCRIPT_DIR/../../.cache/fixtures/freertos"
 }

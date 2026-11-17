@@ -2,7 +2,7 @@
 
 COUPLED: fixture object names, waiter relationships, capacities, timer mode and
 callback symbols are supplied by the matching patch under
-``ci/rt-thread/patches/<target>/<version>/``. Keep changes to those patches and
+``ci/fixture/rtthread/patches/<target>/<version>/``. Keep changes to those patches and
 these assertions synchronized; layout/diagnostic behavior that is independent
 of the fixture belongs in unit tests instead.
 """

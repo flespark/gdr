@@ -1,7 +1,7 @@
 """Real QEMU checks for the FreeRTOS command tree.
 
 COUPLED: fixture object names and waiter relationships come from
-``ci/freertos/fixture/main.c`` plus ``ci/freertos/fixture/config/<variant>/``.
+``ci/fixture/freertos/profiles/main.c`` plus ``ci/fixture/freertos/profiles/config/<variant>/``.
 """
 
 from __future__ import annotations
@@ -315,7 +315,7 @@ def test_waiter_channel_hosts_are_known_objects(gdb_session):
     every host address must either already be reachable through an earlier
     (registry/symbol/active) channel or be the deliberately anonymous event
     group that only the waiter channel can see (gdr_waiter_only_eg_task's
-    stack-local group, COUPLED to ci/freertos/fixture/main.c).
+    stack-local group, COUPLED to ci/fixture/freertos/profiles/main.c).
     """
     probe = gdb_session.run_python(
         """
@@ -364,7 +364,7 @@ if unknown:
 def test_queue_family_tables_match_fixture_ground_truth(gdb_session):
     """frt queues/semaphores/mutexes agree with the fixture's objects.
 
-    COUPLED: object names come from ci/freertos/fixture/main.c -- the
+    COUPLED: object names come from ci/fixture/freertos/profiles/main.c -- the
     registry names (gdr_queue/gdr_semaphore/gdr_mutex), the handle symbols
     found via the symbol channel (gdr_full_queue/gdr_empty_queue/
     gdr_recursive_mutex) and the blocked-task waiters created in main.
@@ -465,7 +465,7 @@ def test_queue_detail_and_semaphore_detail_field_contract(gdb_session):
 def test_timers_table_matches_fixture_ground_truth(gdb_session):
     """frt timers renders the ten-column contract with live fixture timers.
 
-    COUPLED: ci/freertos/fixture/main.c creates gdr_active (started,
+    COUPLED: ci/fixture/freertos/profiles/main.c creates gdr_active (started,
     auto-reload), gdr_stopped (started then stopped), gdr_oneshot (a 1 ms
     one-shot, long expired), plus gdr_idle/gdr_created (never started) --
     the stopped/expired/never-started states must each be reported honestly
@@ -628,7 +628,7 @@ def test_queue_set_column_only_on_full_variant(gdb_session):
 def test_event_group_table_and_detail_decode_live_waiter(gdb_session):
     """frt eventgroups/detail pin the waiter decode on the live gdr_evw.
 
-    COUPLED: ci/freertos/fixture/main.c makes gdr_evw wait ALL on bits 0x3 of
+    COUPLED: ci/fixture/freertos/profiles/main.c makes gdr_evw wait ALL on bits 0x3 of
     gdr_event_group forever and never calls xEventGroupSetBits, so Bits=0x0,
     missing=0x3 and the waiter is unsatisfied -- the ``(satisfied —
     mid-unblock)`` marker must not appear.
@@ -807,7 +807,7 @@ def test_stream_actions_live_geometry(gdb_session):
     level, NextMsg decodes the first message length, and the deleted static
     buffer detail short-circuits instead of computing geometry.
 
-    COUPLED: ci/freertos/fixture/main.c's GDR_FIXTURE_STREAM_ACTIONS block
+    COUPLED: ci/fixture/freertos/profiles/main.c's GDR_FIXTURE_STREAM_ACTIONS block
     (1 byte to gdr_stream_buffer, 1 byte to gdr_batching_buffer, three
     4-byte messages written/two read/three written to gdr_message_buffer,
     and a static buffer deleted).
@@ -1043,7 +1043,7 @@ _HEAP_KEYS = [
 def test_freertos_heap_contract_matches_variant(gdb_session):
     """frt heap renders nine summary keys plus optional problem evidence.
 
-    COUPLED: heap expectations come from ci/freertos/fixture/config/<variant>/
+    COUPLED: heap expectations come from ci/fixture/freertos/profiles/config/<variant>/
     (which MemMang source is linked) and the profile table in
     tests/support/freertos_fixture_profiles.py.
     """

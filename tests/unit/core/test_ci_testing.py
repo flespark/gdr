@@ -123,7 +123,7 @@ def test_rtthread_port_fixture_uses_the_shared_lane_contract(target):
 
 def test_rtthread_armv7m_patches_preserve_upstream_context_code():
     root = Path(__file__).resolve().parents[3]
-    patches = root / "ci/rt-thread/patches/mps2-an385/4.0.5"
+    patches = root / "ci/fixture/rtthread/patches/mps2-an385/4.0.5"
     changed = set()
     for patch in sorted(patches.glob("*.patch")):
         output = subprocess.check_output(
@@ -149,7 +149,7 @@ def test_rtthread_armv7m_patches_preserve_upstream_context_code():
 
 def test_microbit_fixture_compatibility_changes_are_explicit_and_do_not_use_systick():
     root = Path(__file__).resolve().parents[3]
-    patches = root / "ci/rt-thread/patches/microbit/4.0.5"
+    patches = root / "ci/fixture/rtthread/patches/microbit/4.0.5"
     for path in patches.glob("*.patch"):
         subprocess.check_output(["git", "apply", "--numstat", str(path)])
     compat = (patches / "003-port-compat.patch").read_text()
@@ -173,7 +173,7 @@ def test_microbit_fixture_compatibility_changes_are_explicit_and_do_not_use_syst
 @pytest.mark.parametrize("target", ["mps2-an505", "rv32"])
 def test_new_port_bsp_and_application_patches_only_add_fixture_files(target):
     root = Path(__file__).resolve().parents[3]
-    patches = root / f"ci/rt-thread/patches/{target}/4.0.5"
+    patches = root / f"ci/fixture/rtthread/patches/{target}/4.0.5"
     changed = set()
     for name in ("001-qemu-bsp.patch", "002-test-fixture.patch"):
         output = subprocess.check_output(

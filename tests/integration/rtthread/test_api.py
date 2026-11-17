@@ -6,7 +6,7 @@ is parseable JSON at the prompt, or that a rejected re-init leaves the live
 session usable. Those are the plugin contract, so they are asserted here.
 
 COUPLED: the fixture object names come from the matching patch under
-``ci/rt-thread/patches/<target>/<version>/``; keep both sides synchronized.
+``ci/fixture/rtthread/patches/<target>/<version>/``; keep both sides synchronized.
 """
 
 from __future__ import annotations

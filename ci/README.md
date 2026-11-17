@@ -138,14 +138,14 @@ no-op.
 | `testing/matrix.py` | Explicit coordinates, artifacts, and matrix policy. |
 | `testing/runner.py` | Tools, locks, sources, fingerprints, builds, and pytest transport. |
 | `testing/containers.py` | Podman configuration, image builds, and mounts. |
-| `freertos/build.sh`, `freertos/lib.sh` | FreeRTOS-specific compilation and artifact installation. |
-| `rt-thread/build.sh` | RT-Thread-specific BSP cloning, patches, and compilation. |
+| `fixture/freertos/build.sh`, `fixture/freertos/lib.sh` | FreeRTOS-specific compilation and artifact installation. |
+| `fixture/rtthread/build.sh` | RT-Thread-specific BSP cloning, patches, and compilation. |
 | `checks/`, `containers/`, `release/` | Tool gates, image definitions, and runtime release packaging. |
 
 Builders are internal interfaces; they receive explicit paths and do not
 orchestrate pytest. Extension packaging and schema scripts live under
-`vscode/scripts/`. Build details live in the [FreeRTOS](freertos/README.md)
-and [RT-Thread](rt-thread/README.md) lane READMEs; coverage lives in
+`vscode/scripts/`. Build details live in the [FreeRTOS](fixture/freertos/README.md)
+and [RT-Thread](fixture/rtthread/README.md) lane READMEs; coverage lives in
 [testing](../docs/testing.md).
 
 For unwind work, add deterministic board/config/assembly inputs under the

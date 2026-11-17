@@ -1,8 +1,8 @@
 """FreeRTOS QEMU launch profiles kept separate from fixture assertions.
 
 COUPLED: each target/variant selected here must have a fixture config under
-``ci/freertos/fixture/config/<variant>/`` plus a board under
-``ci/freertos/fixture/board/<target>/``, and a matching capability profile in
+``ci/fixture/freertos/profiles/config/<variant>/`` plus a board under
+``ci/fixture/freertos/profiles/board/<target>/``, and a matching capability profile in
 ``tests.support.freertos_fixture_profiles``.
 """
 

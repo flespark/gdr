@@ -2,18 +2,18 @@
 
 <!-- markdownlint-configure-file { "MD024": { "siblings_only": true } } -->
 
-Use the [shared CLI](../README.md) for cache setup, tools, firmware
+Use the [shared CLI](../../README.md) for cache setup, tools, firmware
 preparation and test execution. This document owns FreeRTOS-specific
 compilation and measured platform facts; coverage and matrix coordinates
-are described in [testing](../../docs/testing.md).
+are described in [testing](../../../docs/testing.md).
 
 | Variant family | Internal builder | Inputs |
 | --- | --- | --- |
 | Live kernel-direct | `build.sh` | Clean `FreeRTOS-Kernel` tag, shared application, board and config headers. |
-| File-only `snapshot` | `build.sh` | Kernel headers and `fixture/config/snapshot/` data-only sources. |
-| Isolated `eh-frame` | `../bare/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
-| M-profile IRQ / fault fixtures | `build.sh` | Board-specific `irq.c` / `fault.c` under `fixture/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) and linker-reserved `.irq_stack`. |
-| M-profile scheduler fixture | `build.sh` | Board-specific `sched.c` under `fixture/board/<target>/`, `config/sched/` and linker-reserved `.irq_stack`; excludes `irq.c` and `fault.c`. |
+| File-only `snapshot` | `build.sh` | Kernel headers and `profiles/config/snapshot/` data-only sources. |
+| Isolated `eh-frame` | `../../bare/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
+| M-profile IRQ / fault fixtures | `build.sh` | Board-specific `irq.c` / `fault.c` under `profiles/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) and linker-reserved `.irq_stack`. |
+| M-profile scheduler fixture | `build.sh` | Board-specific `sched.c` under `profiles/board/<target>/`, `config/sched/` and linker-reserved `.irq_stack`; excludes `irq.c` and `fault.c`. |
 
 The shared runner supplies explicit source, build, compiler and install
 paths. `build.sh` rejects a modified or mismatched tag checkout and never
@@ -27,14 +27,14 @@ preparation.
 
 | Target | ISA | Releases | Variants | Port / board source | Unwind coverage |
 | --- | --- | --- | --- | --- | --- |
-| `microbit` | Armv6-M | `11.1.0` | `full`, `sched`, `fault` | `portable/GCC/ARM_CM0`, `fixture/board/microbit/` | `sched` (PendSV/SVC stages), `irq` (single, nested, 4B `STKALIGN`), `fault` (`fault-frame-imprecise` on M0 `udf`), saved/live Thumb-1 + EHABI |
-| `mps2-an385` | Armv7-M | `10.3.1`, `10.4.6`, `10.5.1`, `11.1.0` | `10.3.1`: config matrix (`base`, `full`, `sched`, `fault`, `tick16`, heap/static/stream); `10.4.6–10.5.1`: `base`; `11.1.0`: `base`, `full`, `tick16`, `streams` | `portable/GCC/ARM_CM3`, `fixture/board/mps2-an385/` | `sched` (cooperative/tick/nested-IRQ PendSV & `vTaskSwitchContext`), `irq` (single, nested, 4B `STKALIGN`, SysTick `xTaskIncrementTick`), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`), EHABI `.ARM.exidx` |
-| `mps2-an386` | Armv7E-M | `11.3.1` | `fpu`, `sched`, `fault` | `portable/GCC/ARM_CM4F`, `fixture/board/mps2-an386/` | `sched` (CM4F basic/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
-| `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full`, `sched`, `fault` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `fixture/board/mps2-an505/` | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
-| `mps2-an521` | Armv8-M Mainline | `11.3.1`, `11.1.0` | `11.3.1`: `smp`, `mpu`; `11.1.0`: `snapshot` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `fixture/board/mps2-an521/` | Saved/live task unwind on `smp` (with `smp-no-context` cross-core refusal) and `mpu` (`mpu-pool`); `snapshot` file-only negative ELF; SMP/MPU handler cross-stack unsupported |
+| `microbit` | Armv6-M | `11.1.0` | `full`, `sched`, `fault` | `portable/GCC/ARM_CM0`, `profiles/board/microbit/` | `sched` (PendSV/SVC stages), `irq` (single, nested, 4B `STKALIGN`), `fault` (`fault-frame-imprecise` on M0 `udf`), saved/live Thumb-1 + EHABI |
+| `mps2-an385` | Armv7-M | `10.3.1`, `10.4.6`, `10.5.1`, `11.1.0` | `10.3.1`: config matrix (`base`, `full`, `sched`, `fault`, `tick16`, heap/static/stream); `10.4.6–10.5.1`: `base`; `11.1.0`: `base`, `full`, `tick16`, `streams` | `portable/GCC/ARM_CM3`, `profiles/board/mps2-an385/` | `sched` (cooperative/tick/nested-IRQ PendSV & `vTaskSwitchContext`), `irq` (single, nested, 4B `STKALIGN`, SysTick `xTaskIncrementTick`), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`), EHABI `.ARM.exidx` |
+| `mps2-an386` | Armv7E-M | `11.3.1` | `fpu`, `sched`, `fault` | `portable/GCC/ARM_CM4F`, `profiles/board/mps2-an386/` | `sched` (CM4F basic/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
+| `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full`, `sched`, `fault` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an505/` | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
+| `mps2-an521` | Armv8-M Mainline | `11.3.1`, `11.1.0` | `11.3.1`: `smp`, `mpu`; `11.1.0`: `snapshot` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an521/` | Saved/live task unwind on `smp` (with `smp-no-context` cross-core refusal) and `mpu` (`mpu-pool`); `snapshot` file-only negative ELF; SMP/MPU handler cross-stack unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
-| `qemu-virt-rv32` | RV32 | `11.1.0` | `base` | `portable/GCC/RISC-V`, `fixture/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` -> task cross-stack (`vTaskSwitchContext` fails closed); no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
-| `qemu-virt-rv64` | RV64 | `11.1.0` | `rv64` | `portable/GCC/RISC-V`, `fixture/board/qemu-virt-rv64/` | Saved/live CFI (`lp64`, 64-bit tick), M-mode `freertos_risc_v_trap_handler` cross-stack (`vTaskSwitchContext` fails closed); no vendor IRQ/fault extensions |
+| `qemu-virt-rv32` | RV32 | `11.1.0` | `base` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` -> task cross-stack (`vTaskSwitchContext` fails closed); no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
+| `qemu-virt-rv64` | RV64 | `11.1.0` | `rv64` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv64/` | Saved/live CFI (`lp64`, 64-bit tick), M-mode `freertos_risc_v_trap_handler` cross-stack (`vTaskSwitchContext` fails closed); no vendor IRQ/fault extensions |
 
 ## Container tools and cache
 
@@ -56,12 +56,12 @@ links have no targets and tool preflight fails. The GDB 12 profile resolves
 `/usr/bin/gdb-multiarch` in its own image, not in the default QEMU image.
 Tool downloads occur when the relevant image build steps execute; repeated
 test runs reuse installed tools through the image, not through the links.
-See the shared [container instructions](../README.md#containers) for image
+See the shared [container instructions](../../README.md#containers) for image
 reuse and `--no-build`.
 
 Kernel source checkouts are separate cached data, not links to image
 contents. Their reuse and validation follow the shared
-[cache rules](../README.md#cache-and-provenance).
+[cache rules](../../README.md#cache-and-provenance).
 
 ## `microbit` (Armv6-M)
 
@@ -73,7 +73,7 @@ python3 ci/test.py run freertos microbit 11.1.0 fault
 
 ### RTOS config
 
-Links `portable/GCC/ARM_CM0` plus `portasm.c` and `fixture/board/microbit/`
+Links `portable/GCC/ARM_CM0` plus `portasm.c` and `profiles/board/microbit/`
 (`configCPU_CLOCK_HZ=16000000`, `configPRIO_BITS=8`, `configENABLE_MPU=0`,
 CLZ priority selection disabled for Thumb-1). Flash is 256 KiB at `0x0` and
 RAM is expanded to 256 KiB at `0x20000000` (a fixture setting so `full` fits,
@@ -97,7 +97,7 @@ GDB uses `arm` and waits for semihosting `"GDR FreeRTOS fixture ready."`.
 
 - **Scheduled & saved**: Verifies Cortex-M0 saved-context slot layout (`EXC_RETURN` at top, PC at +60, xPSR at +64), Thumb-1 C CFI chains, and `sched` PendSV/SVC ownership across `ARM_CM0`.
 - **IRQ (`full`)**: `gdr_irq_task` runs `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED` (TIMER1 preempting TIMER0 across MSP), and `GDR_IRQ_SCENARIO_ALIGN` (4-byte SP misalignment exercising `STKALIGN` padding).
-- **Fault (`fault`)**: `gdr_fault_trigger` executes `udf #0` (`gdr_fault_udf_leaf`); M0 lacks fault status registers (`CFSR`), so GDR stops cleanly with `fault-frame-imprecise` while the handler advances stacked PC to keep the session healthy. Acceptance and limits live in [testing](../../docs/testing.md#exception-unwind-acceptance) and [errata](../../docs/errata.md#task-backtraces).
+- **Fault (`fault`)**: `gdr_fault_trigger` executes `udf #0` (`gdr_fault_udf_leaf`); M0 lacks fault status registers (`CFSR`), so GDR stops cleanly with `fault-frame-imprecise` while the handler advances stacked PC to keep the session healthy. Acceptance and limits live in [testing](../../../docs/testing.md#exception-unwind-acceptance) and [errata](../../../docs/errata.md#task-backtraces).
 
 ## `mps2-an385` (Armv7-M)
 
@@ -110,7 +110,7 @@ python3 ci/test.py run freertos mps2-an385 11.1.0 full
 
 ### RTOS config
 
-Links `portable/GCC/ARM_CM3` and `fixture/board/mps2-an385/`
+Links `portable/GCC/ARM_CM3` and `profiles/board/mps2-an385/`
 (`configCPU_CLOCK_HZ=25000000`, 4 MiB flash at `0x0`, 4 MiB RAM at `0x20000000`,
 top 16 KiB `.irq_stack` exporting `__gdr_irq_stack_low=0x203FC000` and
 `__gdr_irq_stack_top=0x20400000`, equal to `_estack`). CMSDK Timer0 (`0x40000000`,
@@ -155,7 +155,7 @@ python3 ci/test.py run freertos mps2-an386 11.3.1 fault
 
 ### RTOS config
 
-Links `V11.3.1` `portable/GCC/ARM_CM4F` with `fixture/board/mps2-an386/`
+Links `V11.3.1` `portable/GCC/ARM_CM4F` with `profiles/board/mps2-an386/`
 (single Cortex-M4 with FPU: `MVFR0` nonzero, `CPACR` writable; `configCPU_CLOCK_HZ=25000000`,
 `configPRIO_BITS=8`, 4 MiB flash at `0x0`, 4 MiB RAM at `0x20000000`, top 16 KiB
 `.irq_stack`, CMSDK Timer0/1). Variant `fpu` enables `configENABLE_FPU 1` and
@@ -190,7 +190,7 @@ python3 ci/test.py run freertos mps2-an505 11.3.1 fault
 
 Links `V11.3.1` `portable/GCC/ARM_CM33_NTZ/non_secure` single-core Secure-only
 (`configENABLE_TRUSTZONE=0`, `configENABLE_MPU=0`, `configENABLE_FPU=0`,
-`configRUN_FREERTOS_SECURE_ONLY=1`) with `fixture/board/mps2-an505/`
+`configRUN_FREERTOS_SECURE_ONLY=1`) with `profiles/board/mps2-an505/`
 (`configCPU_CLOCK_HZ=20000000`, `configPRIO_BITS=8`). Maps 4 MiB flash at
 `0x10000000` (Secure SSRAM alias), 2 MiB RAM at `0x28000000`, top 16 KiB
 `.irq_stack`, and Secure APB Timer0 (`0x50000000`, IRQ3 / exception 19) and
@@ -222,7 +222,7 @@ python3 ci/test.py run freertos mps2-an521 11.1.0 snapshot
 
 ### RTOS config
 
-Links `portable/GCC/ARM_CM33_NTZ/non_secure` with `fixture/board/mps2-an521/`
+Links `portable/GCC/ARM_CM33_NTZ/non_secure` with `profiles/board/mps2-an521/`
 (SSE-200 dual Cortex-M33, 20 MHz `configCPU_CLOCK_HZ`, `configPRIO_BITS=8`,
 4 MiB Secure SSRAM alias at `0x10000000`, 2 MiB RAM at `0x28000000`).
 
@@ -252,7 +252,7 @@ python3 ci/test.py run freertos qemu-virt-rv32 11.1.0 base
 
 ### RTOS config
 
-Links `V11.1.0` `portable/GCC/RISC-V` with `fixture/board/qemu-virt-rv32/`
+Links `V11.1.0` `portable/GCC/RISC-V` with `profiles/board/qemu-virt-rv32/`
 (QEMU `virt` RAM: 128 MiB at `0x80000000`, no flash, 10 MHz CLINT timer `configCPU_CLOCK_HZ=10000000`, `configISR_STACK_SIZE_WORDS=512`). Retains `.eh_frame` with `KEEP` in `linker.ld` so `--gc-sections` does not discard unwind tables.
 
 ### Build option
@@ -276,7 +276,7 @@ python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 rv64
 
 ### RTOS config
 
-Links `V11.1.0` `portable/GCC/RISC-V` with `fixture/board/qemu-virt-rv64/`
+Links `V11.1.0` `portable/GCC/RISC-V` with `profiles/board/qemu-virt-rv64/`
 (128 MiB RAM at `0x80000000`, 10 MHz CLINT timer, `configISR_STACK_SIZE_WORDS=512`).
 Requires variant `rv64`: the RISC-V port hardcodes `TickType_t` to 64 bits on
 RV64, whereas plain `base` leaves `configTICK_TYPE_WIDTH_IN_BITS` at 32 and
@@ -316,7 +316,7 @@ Vendor RISC-V IRQ/fault extensions are unsupported.
 
 ## Static snapshot variant
 
-`build.sh --variant snapshot` compiles `fixture/config/snapshot/snapshot.c` for
+`build.sh --variant snapshot` compiles `profiles/config/snapshot/snapshot.c` for
 Cortex-M33 into `snapshot.elf` and pairs it with `snapshot_heap.elf`
 (`snapshot_heap.c`) on cell `mps2-an521/11.1.0/snapshot`.
 `tests/integration/freertos/test_snapshot.py` loads each ELF with GDB `file`

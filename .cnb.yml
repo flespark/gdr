@@ -15,7 +15,7 @@
 # names the axis that broke without opening a log. RT-Thread splits by target
 # (Cortex-A9 / RV64) because a failure there is almost always ISA- or
 # port-specific. FreeRTOS builds every cell from FreeRTOS-Kernel at a tag with
-# one builder (see ci/freertos/README.md), so it runs as a single kernel-scope
+# one builder (see ci/fixture/freertos/README.md), so it runs as a single kernel-scope
 # pipeline whose stages split by what each one can falsify: the config variant
 # matrix on mps2-an385 at 10.3.1 (14 variants, `V10.3.1-kernel-only` tag),
 # the version sweep on mps2-an385 (10.4.6, 10.5.1, 11.1.0), dual-core SMP and

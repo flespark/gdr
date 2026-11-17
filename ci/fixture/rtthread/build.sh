@@ -254,7 +254,7 @@ build_bsp() {
         # NOTE: RT-Thread 3.1.x's tools/building.py has Python 2 syntax, while
         # 4.x is verified with the default Python 3/SCons 4 environment.
         if [[ "$REF" == v3.1.* ]]; then
-            python2="$SCRIPT_DIR/../.cache/tools/$(python3 -c 'import platform,sys; print(sys.platform+"-"+platform.machine())')/python2/bin/python"
+            python2="$SCRIPT_DIR/../../.cache/tools/$(python3 -c 'import platform,sys; print(sys.platform+"-"+platform.machine())')/python2/bin/python"
             scons="$(dirname "$python2")/scons"
             # NOTE: the relocated /opt/python2 interpreter needs its private
             # libpython/OpenSSL path only for this process, not the whole container.
