@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000..5cb81dbf
 --- /dev/null
 +++ b/bsp/gdr-mps2-an385/fault.c
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,131 @@
 +/* Deterministic synchronous-fault fixture for the RT-Thread M3 port.
 + *
 + * UsageFault stays disabled so an undefined instruction escalates to
@@ -27,6 +27,13 @@ index 00000000..5cb81dbf
 +
 +static volatile rt_uint32_t gdr_fault_done;
 +static volatile rt_uint32_t gdr_fault_scenario;
++
++enum
++{
++    GDR_FAULT_SCENARIO_UNDEFINSTR = 0,
++    GDR_FAULT_SCENARIO_BUS = 1,
++    GDR_FAULT_SCENARIO_MEMMANAGE = 2,
++};
 +
 +static struct rt_thread gdr_fault_thread;
 +static rt_uint8_t gdr_fault_stack[2048];
@@ -58,12 +65,19 @@ index 00000000..5cb81dbf
 +
 +__attribute__((noinline, used)) static void gdr_fault_trigger(void)
 +{
-+    if (gdr_fault_scenario == 1)
++    switch (gdr_fault_scenario)
++    {
++    case GDR_FAULT_SCENARIO_BUS:
 +        gdr_fault_bus_leaf();
-+    else if (gdr_fault_scenario == 2)
++        break;
++    case GDR_FAULT_SCENARIO_MEMMANAGE:
 +        gdr_fault_memmanage_leaf();
-+    else
++        break;
++    case GDR_FAULT_SCENARIO_UNDEFINSTR:
++    default:
 +        gdr_fault_undefinstr_leaf();
++        break;
++    }
 +    __asm volatile("" ::: "memory");
 +}
 +
@@ -71,7 +85,7 @@ index 00000000..5cb81dbf
 +{
 +    rt_uint32_t *info = (rt_uint32_t *)context;
 +
-+    info[15] += gdr_fault_scenario == 0 ? 4 : 2;
++    info[15] += gdr_fault_scenario == GDR_FAULT_SCENARIO_UNDEFINSTR ? 4 : 2;
 +    GDR_SCB_CFSR = GDR_SCB_CFSR;
 +    GDR_SCB_HFSR = GDR_SCB_HFSR;
 +    /* NOTE: libcpu pushes 9 words before this hook runs; restore PSP to the
@@ -91,13 +105,13 @@ index 00000000..5cb81dbf
 +    rt_thread_mdelay(150);
 +    while (1)
 +    {
-+        gdr_fault_scenario = 0;
++        gdr_fault_scenario = GDR_FAULT_SCENARIO_UNDEFINSTR;
 +        gdr_fault_trigger();
 +        rt_thread_mdelay(100);
-+        gdr_fault_scenario = 1;
++        gdr_fault_scenario = GDR_FAULT_SCENARIO_BUS;
 +        gdr_fault_trigger();
 +        rt_thread_mdelay(100);
-+        gdr_fault_scenario = 2;
++        gdr_fault_scenario = GDR_FAULT_SCENARIO_MEMMANAGE;
 +        gdr_fault_trigger();
 +        rt_thread_mdelay(100);
 +    }

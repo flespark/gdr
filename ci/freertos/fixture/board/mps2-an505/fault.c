@@ -19,6 +19,11 @@
 static volatile uint32_t gdr_fault_done;
 static volatile uint32_t gdr_fault_scenario;
 
+enum {
+    GDR_FAULT_SCENARIO_UNDEFINSTR = 0,
+    GDR_FAULT_SCENARIO_BUS = 1,
+};
+
 __attribute__((noinline, used)) void gdr_fault_undefinstr_leaf(void)
 {
     __asm volatile(".global gdr_fault_ud_stop\ngdr_fault_ud_stop:\nnop" ::: "memory");
@@ -53,7 +58,7 @@ void HardFault_Handler(void)
     __asm__ volatile("mov %0, lr" : "=r"(exc_return)::"memory");
     uint32_t *frame = gdr_fault_frame(exc_return);
 
-    frame[6] += gdr_fault_scenario == 0 ? 4 : 2;
+    frame[6] += gdr_fault_scenario == GDR_FAULT_SCENARIO_UNDEFINSTR ? 4 : 2;
     GDR_SCB_CFSR = GDR_SCB_CFSR;
     GDR_SCB_HFSR = GDR_SCB_HFSR;
     gdr_fault_done++;
@@ -64,10 +69,10 @@ static void gdr_fault_task(void *argument)
     (void)argument;
     vTaskDelay(pdMS_TO_TICKS(150));
     for (;;) {
-        gdr_fault_scenario = 0;
+        gdr_fault_scenario = GDR_FAULT_SCENARIO_UNDEFINSTR;
         gdr_fault_undefinstr_leaf();
         vTaskDelay(pdMS_TO_TICKS(100));
-        gdr_fault_scenario = 1;
+        gdr_fault_scenario = GDR_FAULT_SCENARIO_BUS;
         gdr_fault_bus_leaf();
         vTaskDelay(pdMS_TO_TICKS(100));
     }

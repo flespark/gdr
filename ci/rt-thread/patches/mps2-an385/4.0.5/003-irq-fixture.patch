@@ -2,7 +2,7 @@ diff --git a/bsp/gdr-mps2-an385/irq.c b/bsp/gdr-mps2-an385/irq.c
 new file mode 100644
 --- /dev/null
 +++ b/bsp/gdr-mps2-an385/irq.c
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,139 @@
 +#include <rthw.h>
 +#include <rtthread.h>
 +
@@ -13,6 +13,13 @@ new file mode 100644
 +static volatile rt_uint32_t gdr_irq_done, gdr_irq_nested_seen, gdr_irq_scenario;
 +static struct rt_thread gdr_irq_thread;
 +static rt_uint8_t gdr_irq_stack[2048];
++
++enum
++{
++    GDR_IRQ_SCENARIO_SINGLE = 0,
++    GDR_IRQ_SCENARIO_NESTED = 1,
++    GDR_IRQ_SCENARIO_ALIGN = 2,
++};
 +
 +static void timer_stop(rt_uint32_t base)
 +{
@@ -61,13 +68,21 @@ new file mode 100644
 +{
 +    rt_interrupt_enter();
 +    timer_stop(TIMER0);
-+    if (gdr_irq_scenario == 0) gdr_irq_single_leaf();
-+    else if (gdr_irq_scenario == 1)
++    switch (gdr_irq_scenario)
 +    {
++    case GDR_IRQ_SCENARIO_SINGLE:
++        gdr_irq_single_leaf();
++        break;
++    case GDR_IRQ_SCENARIO_NESTED:
 +        timer_arm(TIMER1, 2500);
 +        gdr_irq_nested_wait();
++        break;
++    case GDR_IRQ_SCENARIO_ALIGN:
++        gdr_irq_align_leaf();
++        break;
++    default:
++        break;
 +    }
-+    else gdr_irq_align_leaf();
 +    gdr_irq_done = 1;
 +    rt_interrupt_leave();
 +}
@@ -102,12 +117,18 @@ new file mode 100644
 +    rt_thread_mdelay(150);
 +    while (1)
 +    {
-+        for (gdr_irq_scenario = 0; gdr_irq_scenario < 3; gdr_irq_scenario++)
++        const rt_uint32_t scenarios[] = {
++            GDR_IRQ_SCENARIO_SINGLE,
++            GDR_IRQ_SCENARIO_NESTED,
++            GDR_IRQ_SCENARIO_ALIGN,
++        };
++        for (rt_size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++)
 +        {
++            gdr_irq_scenario = scenarios[i];
 +            rt_enter_critical();
 +            gdr_irq_done = gdr_irq_nested_seen = 0;
 +            timer_arm(TIMER0, 125000);
-+            if (gdr_irq_scenario == 2) gdr_irq_misaligned_wait();
++            if (gdr_irq_scenario == GDR_IRQ_SCENARIO_ALIGN) gdr_irq_misaligned_wait();
 +            else gdr_irq_wait();
 +            rt_exit_critical();
 +            rt_thread_mdelay(100);

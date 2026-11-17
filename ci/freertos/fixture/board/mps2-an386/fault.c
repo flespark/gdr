@@ -32,6 +32,12 @@
 static volatile uint32_t gdr_fault_done;
 static volatile uint32_t gdr_fault_scenario;
 
+enum {
+    GDR_FAULT_SCENARIO_UNDEFINSTR = 0,
+    GDR_FAULT_SCENARIO_BUS = 1,
+    GDR_FAULT_SCENARIO_MEMMANAGE = 2,
+};
+
 __attribute__((noinline, used)) void gdr_fault_undefinstr_leaf(void)
 {
     __asm volatile(".global gdr_fault_ud_stop\ngdr_fault_ud_stop:\nnop" ::: "memory");
@@ -57,24 +63,25 @@ __attribute__((noinline, used)) void gdr_fault_memmanage_leaf(void)
         ::: "r0", "r1", "memory");
 }
 
-static uint32_t *gdr_fault_frame(void)
+static uint32_t *gdr_fault_frame(uint32_t exc_return)
 {
     uint32_t *frame;
 
-    __asm__ volatile(
-        "tst lr, #4\n"
-        "ite eq\n"
-        "mrseq %0, msp\n"
-        "mrsne %0, psp\n"
-        : "=r"(frame)::"memory");
+    if (exc_return & 4U) {
+        __asm__ volatile("mrs %0, psp" : "=r"(frame)::"memory");
+    } else {
+        __asm__ volatile("mrs %0, msp" : "=r"(frame)::"memory");
+    }
     return frame;
 }
 
 void HardFault_Handler(void)
 {
-    uint32_t *frame = gdr_fault_frame();
+    uint32_t exc_return;
+    __asm__ volatile("mov %0, lr" : "=r"(exc_return)::"memory");
+    uint32_t *frame = gdr_fault_frame(exc_return);
 
-    frame[6] += gdr_fault_scenario == 0 ? 4 : 2;
+    frame[6] += gdr_fault_scenario == GDR_FAULT_SCENARIO_UNDEFINSTR ? 4 : 2;
     GDR_SCB_CFSR = GDR_SCB_CFSR;
     GDR_SCB_HFSR = GDR_SCB_HFSR;
     gdr_fault_done++;
@@ -82,7 +89,9 @@ void HardFault_Handler(void)
 
 void MemManage_Handler(void)
 {
-    uint32_t *frame = gdr_fault_frame();
+    uint32_t exc_return;
+    __asm__ volatile("mov %0, lr" : "=r"(exc_return)::"memory");
+    uint32_t *frame = gdr_fault_frame(exc_return);
 
     frame[6] += 2;
     GDR_SCB_CFSR = GDR_SCB_CFSR;
@@ -104,13 +113,13 @@ static void gdr_fault_task(void *argument)
     (void)argument;
     vTaskDelay(pdMS_TO_TICKS(150));
     for (;;) {
-        gdr_fault_scenario = 0;
+        gdr_fault_scenario = GDR_FAULT_SCENARIO_UNDEFINSTR;
         gdr_fault_undefinstr_leaf();
         vTaskDelay(pdMS_TO_TICKS(100));
-        gdr_fault_scenario = 1;
+        gdr_fault_scenario = GDR_FAULT_SCENARIO_BUS;
         gdr_fault_bus_leaf();
         vTaskDelay(pdMS_TO_TICKS(100));
-        gdr_fault_scenario = 2;
+        gdr_fault_scenario = GDR_FAULT_SCENARIO_MEMMANAGE;
         gdr_fault_memmanage_leaf();
         vTaskDelay(pdMS_TO_TICKS(100));
     }

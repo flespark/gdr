@@ -15,6 +15,12 @@ static volatile uint32_t gdr_irq_scenario;
 static volatile uint32_t gdr_irq_done;
 static volatile uint32_t gdr_irq_nested_seen;
 
+enum {
+    GDR_IRQ_SCENARIO_SINGLE = 0,
+    GDR_IRQ_SCENARIO_NESTED = 1,
+    GDR_IRQ_SCENARIO_ALIGN = 2,
+};
+
 static void timer_stop(uint32_t base)
 {
     REG(base, 0x004) = 1;
@@ -71,15 +77,24 @@ void Timer1_Handler(void)
 __attribute__((noinline, used)) void gdr_irq0_body(void)
 {
     timer_stop(TIMER0);
-    if (gdr_irq_scenario == 0) {
+    switch (gdr_irq_scenario) {
+    case GDR_IRQ_SCENARIO_SINGLE:
         gdr_irq_single_leaf();
-    } else if (gdr_irq_scenario == 1) {
+        gdr_irq_done = 1;
+        break;
+    case GDR_IRQ_SCENARIO_NESTED:
         timer_arm(TIMER1, 2500U);
         gdr_irq_nested_wait();
-    } else {
+        timer_stop(TIMER1);
+        gdr_irq_done = 1;
+        break;
+    case GDR_IRQ_SCENARIO_ALIGN:
         gdr_irq_align_leaf();
+        gdr_irq_done = 1;
+        break;
+    default:
+        break;
     }
-    gdr_irq_done = 1;
 }
 
 void Timer0_Handler(void)
@@ -122,18 +137,24 @@ static void gdr_irq_task(void *argument)
     NVIC_ISER = (1U << 8) | (1U << 9);
     vTaskDelay(pdMS_TO_TICKS(150));
     for (;;) {
-        for (uint32_t scenario = 0; scenario < 3; scenario++) {
-            gdr_irq_scenario = scenario;
-            gdr_irq_done = 0;
-            gdr_irq_nested_seen = 0;
-            timer_arm(TIMER0, 12500U);
-            if (scenario == 2) {
-                gdr_irq_misaligned_wait();
-            } else {
-                gdr_irq_wait();
-            }
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
+        gdr_irq_scenario = GDR_IRQ_SCENARIO_SINGLE;
+        gdr_irq_done = 0;
+        timer_arm(TIMER0, 12500U);
+        gdr_irq_wait();
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        gdr_irq_scenario = GDR_IRQ_SCENARIO_NESTED;
+        gdr_irq_done = 0;
+        gdr_irq_nested_seen = 0;
+        timer_arm(TIMER0, 12500U);
+        gdr_irq_wait();
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        gdr_irq_scenario = GDR_IRQ_SCENARIO_ALIGN;
+        gdr_irq_done = 0;
+        timer_arm(TIMER0, 12500U);
+        gdr_irq_misaligned_wait();
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
