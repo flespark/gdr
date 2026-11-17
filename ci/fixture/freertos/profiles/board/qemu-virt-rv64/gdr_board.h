@@ -19,7 +19,7 @@
  * crash.  QEMU virt places the CLINT at 0x2000000 (dumpdtb), SiFive
  * layout fixed: mtimecmp = base + 0x4000, mtime = base + 0xbff8. */
 #ifndef configMTIME_BASE_ADDRESS
-#define configMTIME_BASE_ADDRESS 0x2000000UL
+#define configMTIME_BASE_ADDRESS 0x200bff8UL
 #endif
 #ifndef configMTIMECMP_BASE_ADDRESS
 #define configMTIMECMP_BASE_ADDRESS 0x2004000UL
