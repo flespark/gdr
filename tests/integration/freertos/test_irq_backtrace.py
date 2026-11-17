@@ -163,6 +163,9 @@ def test_single_irq_returns_the_exact_interrupted_task_frame(gdb_session):
     assert transitions[0]["pc"] == raw["frame_pc"], data
     assert "gdr_irq_wait" in (transitions[0]["symbol"] or ""), data
     assert any("EXC_RETURN=0xfffffffd" in message for message in data["messages"])
+    current_data = _envelope(gdb_session.run("gdr api backtrace --json", timeout=30))
+    assert current_data["frames"] == data["frames"], current_data
+    assert "warning: usage:" not in gdb_session.run("frt bt", timeout=30)
 
 
 def test_nested_irq_crosses_handler_then_task_with_two_exact_pcs(gdb_session):

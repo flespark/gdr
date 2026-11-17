@@ -684,3 +684,25 @@ def test_complete_watch_offers_kinds_then_live_names():
     assert complete_watch(spec, "watch sem", "sem") == ["semaphores", "semaphore"]
     assert complete_watch(spec, "watch semaphore ", "") == ["work_sem"]
     assert complete_watch(spec, "watch sem ", "") == ["work_sem"]
+
+
+def test_invoke_backtrace_command_supports_omitted_and_explicit_targets(monkeypatch):
+    calls: list[tuple[str | None, int]] = []
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        commands,
+        "render_backtrace",
+        lambda target=None, max_depth=32: calls.append((target, max_depth)),
+    )
+    monkeypatch.setattr(commands, "warn", warnings.append)
+
+    commands.invoke_backtrace_command("bt", "usage: test")
+    commands.invoke_backtrace_command("bt --max-depth 8", "usage: test")
+    commands.invoke_backtrace_command("bt --max-depth=12", "usage: test")
+    commands.invoke_backtrace_command("backtrace Tmr Svc --max-depth 6", "usage: test")
+    commands.invoke_backtrace_command("bt --max-depth", "usage: test")
+    commands.invoke_backtrace_command("bt --unknown", "usage: test")
+    commands.invoke_backtrace_command("bt --max-depth abc", "usage: test")
+
+    assert calls == [(None, 32), (None, 8), (None, 12), ("Tmr Svc", 6)]
+    assert warnings == ["usage: test", "usage: test", "invalid --max-depth: abc"]

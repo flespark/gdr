@@ -334,9 +334,9 @@ def _heap_command() -> CommandHelp:
 def _backtrace_help() -> CommandHelp:
     return CommandHelp(
         "backtrace",
-        "Unwind one thread's stack",
-        "Walks the saved or live context of one thread through ARM EHABI, DWARF CFI or a validated frame-pointer chain, bounded by the thread stack and a maximum depth.",
-        usage=("rtt backtrace <thread> [--max-depth N]",),
+        "Unwind one thread's or current PC's stack",
+        "Walks the saved or live context of one thread (or the selected core's current running thread / pre-scheduler context when omitted) through ARM EHABI, DWARF CFI or a validated frame-pointer chain, bounded by the active stack and a maximum depth.",
+        usage=("rtt backtrace [<thread>] [--max-depth N]",),
         fields=_fields(
             ("#", "Frame index, starting at the thread's current PC."),
             ("PC", "Instruction address of the frame."),
@@ -808,9 +808,9 @@ def _invoke_command(argument: str) -> None:
 
 
 def _invoke_backtrace(argument: str) -> None:
-    """Parse ``backtrace <thread> [--max-depth N]`` without touching target state."""
+    """Parse ``backtrace [<thread>] [--max-depth N]`` without touching target state."""
     invoke_backtrace_command(
-        argument, "usage: rtthread backtrace <thread> [--max-depth N]"
+        argument, "usage: rtthread backtrace [<thread>] [--max-depth N]"
     )
 
 

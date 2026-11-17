@@ -41,21 +41,22 @@ def render_tasks() -> None:
 
 
 @gdb_command_guard
-def render_backtrace(target: str, max_depth: int = 32) -> None:
-    """Render one bounded task backtrace as a compact frame table.
+def render_backtrace(target: str | None = None, max_depth: int = 32) -> None:
+    """Render one bounded task or current-PC backtrace as a compact frame table.
 
-    The header states the evidence and completeness; each row names the frame
-    index, PC, resolved symbol and source line.  ``N/A`` means the unwinder
-    stopped before that frame existed, never a fabricated address.
+    ``target=None`` selects the halted core's current running task or pre-
+    scheduler live context.  Each row names the frame index, PC, resolved
+    symbol and source line.
     """
     adapter = active()
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
-    if not target.strip():
+    if target is not None and not target.strip():
         warn("task name or address must not be empty")
         return
-    report = adapter.backtrace(target, max_depth)
+    normalized = target.strip() if target is not None else None
+    report = adapter.backtrace(normalized, max_depth)
     if report is None:
         warn("this adapter cannot unwind task stacks")
         return
@@ -87,32 +88,36 @@ def render_backtrace(target: str, max_depth: int = 32) -> None:
 
 
 def invoke_backtrace_command(argument: str, usage: str) -> None:
-    """Parse ``backtrace <target> [--max-depth N]`` and render the frame table."""
+    """Parse ``backtrace [<target>] [--max-depth N]`` and render the frame table."""
     words = argument.split(None, 1)
-    if len(words) != 2 or not words[1].strip():
-        warn(usage)
-        return
-    rest = words[1].strip()
+    rest = words[1].strip() if len(words) == 2 else ""
     max_depth = 32
     marker = rest.rfind("--max-depth")
-    if marker >= 0:
+    if marker >= 0 and (marker == 0 or rest[marker - 1].isspace()):
         option = rest[marker:].split()
-        if len(option) != 2:
+        if option[0] == "--max-depth":
+            if len(option) != 2:
+                warn(usage)
+                return
+            depth_text = option[1]
+        elif option[0].startswith("--max-depth=") and len(option) == 1:
+            depth_text = option[0].split("=", 1)[1]
+        else:
             warn(usage)
             return
         try:
-            max_depth = int(option[1])
+            max_depth = int(depth_text)
         except ValueError:
-            warn(f"invalid --max-depth: {option[1]}")
+            warn(f"invalid --max-depth: {depth_text}")
             return
         rest = rest[:marker].strip()
-    if not rest:
+    if rest.startswith("--"):
         warn(usage)
         return
     if max_depth < 1 or max_depth > 64:
         warn("--max-depth must be between 1 and 64")
         return
-    render_backtrace(rest, max_depth)
+    render_backtrace(rest or None, max_depth)
 
 
 @gdb_command_guard

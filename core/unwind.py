@@ -1166,3 +1166,204 @@ def live_seed(
         gdb_module=gdb_module,
     )
     return seed
+
+
+def _resolve_boot_riscv_bounds(
+    *,
+    seed: SeedFrame,
+    elf: ElfImage | None,
+    hart_id: int,
+    symbol_lookup: Callable[[str], int | None],
+) -> tuple[int, int, str] | None:
+    from .unwind_arm import MAX_INFERRED_IRQ_STACK_BYTES
+    from .unwind_riscv import resolve_riscv_irq_stack_bounds_detail
+
+    bounds = resolve_riscv_irq_stack_bounds_detail(
+        symbol_lookup=symbol_lookup,
+        elf=elf,
+        hart_id=hart_id,
+    )
+    if bounds is not None:
+        return bounds
+    for name in (
+        "_stack_top",
+        "_estack",
+        "__stack_end__",
+        "__freertos_irq_stack_top",
+    ):
+        top = symbol_lookup(name)
+        if top is None and elf is not None:
+            top = elf.symbol_address(name)
+        if (
+            top is not None
+            and 0 < seed.sp <= top
+            and top - seed.sp <= MAX_INFERRED_IRQ_STACK_BYTES
+        ):
+            return seed.sp, top, f"sp:live..{name}"
+    return None
+
+
+def live_boot_unwind(
+    arch: Arch,
+    isa: str | None,
+    metadata: UnwindMetadata | None,
+    *,
+    max_depth: int = 32,
+    hart_id: int = 0,
+    gdb_module: Any = None,
+    read: Reader | None = None,
+    symbol_lookup: Callable[[str], int | None] | None = None,
+    arm_snapshot_reader: Callable[[], tuple[Any, str]] | None = None,
+) -> tuple[UnwindResult | None, str, str, str]:
+    """Unwind the halted core's current pre-scheduler stack within boot bounds."""
+    from .gdb_bridge import linker_symbol_address, read_bytes
+    from .unwind_arm import (
+        XPSR_IPSR_MAX_MASK,
+        arm_snapshot,
+        resolve_arm_irq_stack_bounds_detail,
+    )
+
+    active_gdb = gdb if gdb_module is None else gdb_module
+    reader = read_bytes if read is None else read
+    lookup = linker_symbol_address if symbol_lookup is None else symbol_lookup
+    elf = metadata.elf if metadata is not None else None
+    m_profile = isa in (
+        "armv6-m",
+        "armv7-m",
+        "armv7e-m",
+        "armv8-m.baseline",
+        "armv8-m.mainline",
+    )
+
+    if arch == "arm" and m_profile:
+        snapshot, snap_reason = (
+            arm_snapshot_reader()
+            if arm_snapshot_reader is not None
+            else arm_snapshot(gdb_module=active_gdb)
+        )
+        if snapshot is None:
+            return (
+                None,
+                snap_reason,
+                "the selected core's exception/stack registers are unavailable",
+                "unknown",
+            )
+        if snapshot.xpsr & XPSR_IPSR_MAX_MASK:
+            return (
+                None,
+                "scheduler-not-running",
+                "an M-profile exception handler is active before the scheduler is started",
+                "unknown",
+            )
+        if snapshot.msp <= 0 or snapshot.sp != snapshot.msp:
+            return (
+                None,
+                "live-stack-selection-invalid",
+                "the live pre-scheduler SP is not the active MSP",
+                "unknown",
+            )
+        seed = SeedFrame(
+            pc=snapshot.pc & ~1,
+            sp=snapshot.sp,
+            regs=dict(snapshot.registers),
+            source="current",
+        )
+        bounds = resolve_arm_irq_stack_bounds_detail(
+            symbol_lookup=lookup,
+            read=reader,
+            isa=isa,
+            elf=elf,
+            live_msp=seed.sp,
+        )
+    elif arch == "arm":
+        seed_or_none, seed_reason = live_seed_detail(
+            "arm",
+            isa,
+            require_exception_registers=False,
+            gdb_module=active_gdb,
+        )
+        if seed_or_none is None:
+            return (
+                None,
+                seed_reason,
+                "the selected core's live registers are unavailable",
+                "unknown",
+            )
+        if isa == "armv7-a":
+            if active_gdb is None:
+                return (
+                    None,
+                    "live-registers-unavailable",
+                    "the selected core's CPSR is unavailable",
+                    "unknown",
+                )
+            try:
+                cpsr = int(active_gdb.newest_frame().read_register("cpsr"))
+            except (active_gdb.error, AttributeError, RuntimeError, TypeError):
+                return (
+                    None,
+                    "live-registers-unavailable",
+                    "the selected core's CPSR is unavailable",
+                    "unknown",
+                )
+            if cpsr & 0x1F not in (0x13, 0x1F):
+                return (
+                    None,
+                    "unsupported-exception-model",
+                    "pre-scheduler Armv7-A unwind requires SVC or System mode",
+                    "unknown",
+                )
+        seed = seed_or_none
+        bounds = resolve_arm_irq_stack_bounds_detail(
+            symbol_lookup=lookup,
+            read=reader,
+            isa=isa,
+            elf=elf,
+            live_msp=seed.sp,
+        )
+    elif arch == "riscv":
+        seed_or_none, seed_reason = live_seed_detail(
+            "riscv",
+            isa,
+            gdb_module=active_gdb,
+        )
+        if seed_or_none is None:
+            return (
+                None,
+                seed_reason,
+                "the selected core's live registers are unavailable",
+                "unknown",
+            )
+        seed = seed_or_none
+        bounds = _resolve_boot_riscv_bounds(
+            seed=seed,
+            elf=elf,
+            hart_id=hart_id,
+            symbol_lookup=lookup,
+        )
+    else:
+        return (
+            None,
+            "unsupported-architecture",
+            f"pre-scheduler live unwind is unsupported for {arch!r}",
+            "unknown",
+        )
+
+    if bounds is None:
+        return (
+            None,
+            "stack-bounds-unavailable",
+            "live boot stack bounds could not be resolved",
+            "unknown",
+        )
+    low, high, _ = bounds
+    result = unwind_chain(
+        seed,
+        metadata,
+        read=reader,
+        max_depth=max_depth,
+        stack_low=low,
+        stack_high=high,
+        allow_frame_pointer=isa != "armv7-a",
+    )
+    return result, result.stop_reason, "", "recorded"

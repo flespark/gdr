@@ -156,3 +156,28 @@ print(json.dumps({{'pc': int(frame.pc()), 'function': frame.name(), 'registers':
     entry = next(i for i, name in enumerate(functions) if "worker3_entry" in name)
     assert leaf < middle < entry < len(functions) - 1, functions
     assert data["complete"] and data["stop_reason"] == "task-exit", data
+
+
+def test_omitted_target_backtrace_unwinds_current_halted_pc(gdb_session):
+    """Running ``rtt bt`` or ``gdr api backtrace`` without a thread uses current PC."""
+    cur_name = gdb_session.run_python(
+        """
+from rtthread.navigation import get_current_thread
+cur = get_current_thread()
+raw = bytes(gdb.selected_inferior().read_memory(int(cur["name"].address), int(cur["name"].type.sizeof)))
+print(raw.split(b"\\x00", 1)[0].decode("ascii", errors="replace"))
+"""
+    ).strip()
+    assert cur_name
+    cli_out = gdb_session.run("rtt bt", timeout=30)
+    assert "[gdr] warning: usage:" not in cli_out, cli_out
+    assert f"{cur_name}:" in cli_out, cli_out
+
+    current_data = _envelope(gdb_session.run("gdr api backtrace --json"))["data"]
+    explicit_data = _envelope(gdb_session.run(f"gdr api backtrace {cur_name} --json"))[
+        "data"
+    ]
+    assert current_data["task"] == cur_name
+    assert current_data["source"] == "current"
+    assert current_data["frames"] == explicit_data["frames"]
+    assert current_data["stop_reason"] == explicit_data["stop_reason"]

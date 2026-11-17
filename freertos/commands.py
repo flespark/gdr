@@ -369,9 +369,9 @@ def _heap_command_help() -> CommandHelp:
 def _backtrace_help() -> CommandHelp:
     return CommandHelp(
         "backtrace",
-        "Unwind one task's stack",
-        "Walks the saved or live context of one task through ARM EHABI, DWARF CFI or a validated frame-pointer chain, bounded by the task stack and a maximum depth.",
-        usage=("frt backtrace <task> [--max-depth N]",),
+        "Unwind one task's or current PC's stack",
+        "Walks the saved or live context of one task (or the selected core's current running task / pre-scheduler context when omitted) through ARM EHABI, DWARF CFI or a validated frame-pointer chain, bounded by the active stack and a maximum depth.",
+        usage=("frt backtrace [<task>] [--max-depth N]",),
         fields=_fields(
             ("#", "Frame index, starting at the task's current PC."),
             ("PC", "Instruction address of the frame."),
@@ -882,9 +882,9 @@ def _invoke_command(argument: str) -> None:
 
 
 def _invoke_backtrace(argument: str) -> None:
-    """Parse ``backtrace <task> [--max-depth N]`` without touching target state."""
+    """Parse ``backtrace [<task>] [--max-depth N]`` without touching target state."""
     invoke_backtrace_command(
-        argument, "usage: freertos backtrace <task> [--max-depth N]"
+        argument, "usage: freertos backtrace [<task>] [--max-depth N]"
     )
 
 

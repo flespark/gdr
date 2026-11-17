@@ -520,10 +520,8 @@ def _table_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
 
 
 def _backtrace_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
-    """One task's bounded backtrace; ``backtrace <task> [--max-depth N]``."""
-    if not args:
-        raise ApiError("bad_args", "backtrace requires <task> [--max-depth N]")
-    target = ""
+    """One task's or current PC's bounded backtrace; ``backtrace [<task>] [--max-depth N]``."""
+    target: str | None = None
     max_depth = 32
     index = 0
     while index < len(args):
@@ -548,15 +546,17 @@ def _backtrace_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
             continue
         if arg.startswith("--"):
             raise ApiError("bad_args", f"unknown backtrace option: {arg}")
-        if target:
-            raise ApiError("bad_args", "backtrace takes one task name")
+        if target is not None:
+            raise ApiError("bad_args", "backtrace takes at most one task name")
         target = arg
         index += 1
-    if not target.strip():
+    if target is not None and not target.strip():
         raise ApiError("empty_name", "task name must not be empty")
     if max_depth < 1 or max_depth > 64:
         raise ApiError("bad_args", "--max-depth must be between 1 and 64")
-    report = adapter.backtrace(target, max_depth)
+    report = adapter.backtrace(
+        target.strip() if target is not None else None, max_depth
+    )
     if report is None:
         raise ApiError(
             "backtrace_unavailable", "this adapter cannot unwind task stacks"

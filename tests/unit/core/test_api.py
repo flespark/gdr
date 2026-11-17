@@ -823,3 +823,35 @@ def test_backtrace_verb_serializes_the_bounded_contract(session):
         "method": "seed",
     }
     assert backtrace_to_dict(session.backtrace_value)["max_depth"] == 2
+
+
+def test_backtrace_verb_accepts_omitted_target_for_current_pc(session):
+    recorded: list[tuple[str | None, int]] = []
+    report = BacktraceReport(
+        task="<current>",
+        address=0,
+        architecture="armv7-m",
+        abi="aapcs32",
+        method="cfi",
+        source="current",
+        complete=True,
+        stop_reason="task-exit",
+        truncated=False,
+        max_depth=4,
+        bounds="recorded",
+        frames=[BacktraceFrame(0, 0x1000, "seed", "main+4")],
+    )
+
+    def _bt(target, max_depth=32):
+        recorded.append((target, max_depth))
+        return report
+
+    session.backtrace = _bt
+    data = _data(api.api_call("backtrace"))
+    assert data["task"] == "<current>"
+    data_limited = _data(api.api_call("backtrace", "--max-depth", "4"))
+    assert data_limited["max_depth"] == 4
+    assert recorded == [(None, 32), (None, 4)]
+
+    err_env = api.api_call("backtrace", "")
+    assert err_env["ok"] is False and err_env["error"]["code"] == "empty_name"

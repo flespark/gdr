@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from core.adapter import BacktraceFrame, BacktraceReport
+from core.adapter import (
+    BacktraceReport,
+    build_backtrace_report,
+    live_boot_backtrace_report,
+)
 from core.gdb_bridge import (
     arch_or_default,
     eval_identifier,
@@ -541,8 +545,131 @@ def _stack_growth(low: int, high: int) -> bool | None:
     return high_untouched
 
 
-def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
-    """Unwind one RT-Thread thread from its saved or live context."""
+def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
+    current = get_current_thread()
+    selection = _backtrace_context()
+    architecture = selection.isa or "unknown"
+    metadata = _unwind_metadata(adapter)
+    flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
+    if current is not None:
+        value = current
+        if (
+            selection.isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
+            and metadata is not None
+        ):
+            profile = build_scheduler_profile(metadata.elf)
+            snapshot, _reason = _arm_snapshot()
+            if profile is not None and snapshot is not None:
+                stage = classify_scheduler_stage(profile, snapshot.pc)
+                use_from = (stage is None and flag == 1) or (
+                    stage is not None
+                    and stage.name
+                    in (
+                        "switch-return",
+                        "pendsv-entry",
+                        "pendsv-save-pending",
+                        "pendsv-save-written",
+                    )
+                )
+                if use_from:
+                    from_ptr = read_int(eval_identifier("rt_interrupt_from_thread"))
+                    sp_offset = member_offset("struct rt_thread", ("sp",))
+                    if from_ptr not in (None, 0) and sp_offset is not None:
+                        outgoing = find_thread(
+                            f"{from_ptr - sp_offset:#x}", adapter.layout
+                        )
+                        if outgoing is not None:
+                            value = outgoing
+        target_addr = value_address(value)
+        target_label = (
+            f"{target_addr:#x}"
+            if isinstance(target_addr, int) and target_addr
+            else "<current>"
+        )
+        return _backtrace_thread(
+            adapter,
+            value,
+            target_label,
+            max_depth,
+        )
+
+    if selection.context is None or not selection.context.verified:
+        return BacktraceReport(
+            task="<current>",
+            address=0,
+            architecture=architecture,
+            method="none",
+            source="current",
+            complete=False,
+            stop_reason=selection.reason,
+            truncated=False,
+            max_depth=max_depth,
+            bounds="unknown",
+            frames=[],
+            messages=["no verified libcpu save profile matches the image evidence"],
+            abi=selection.abi,
+        )
+    if flag:
+        return BacktraceReport(
+            task="<current>",
+            address=0,
+            architecture=architecture,
+            method="none",
+            source="current",
+            complete=False,
+            stop_reason="scheduler-current-tcb-unavailable",
+            truncated=False,
+            max_depth=max_depth,
+            bounds="unknown",
+            frames=[],
+            messages=["rt_current_thread is unavailable while a switch is pending"],
+            abi=selection.abi,
+        )
+    if (
+        selection.isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
+        and metadata is not None
+    ):
+        snapshot, _reason = _arm_snapshot()
+        if snapshot is not None:
+            sym = metadata.elf.function_containing(snapshot.pc & ~1)
+            if sym is not None and sym.name in _SCHEDULER_SYMBOLS:
+                return BacktraceReport(
+                    task="<current>",
+                    address=0,
+                    architecture=architecture,
+                    method="none",
+                    source="current",
+                    complete=False,
+                    stop_reason="scheduler-current-tcb-unavailable",
+                    truncated=False,
+                    max_depth=max_depth,
+                    bounds="unknown",
+                    frames=[],
+                    messages=[
+                        "rt_current_thread is unavailable inside a scheduler handler"
+                    ],
+                    abi=selection.abi,
+                )
+    return live_boot_backtrace_report(
+        architecture=architecture,
+        abi=selection.abi,
+        family=selection.family,
+        max_depth=max_depth,
+        metadata=metadata,
+        symbol_lookup=lookup_symbol_at,
+        source_lookup=source_location_at,
+        linker_lookup=linker_symbol_address,
+        read=read_bytes,
+        arm_snapshot_reader=_arm_snapshot,
+    )
+
+
+def backtrace(
+    adapter, target: str | None = None, max_depth: int = 32
+) -> BacktraceReport:
+    """Unwind one RT-Thread thread (or the current halted core context)."""
+    if target is None:
+        return _current_pc_backtrace(adapter, max_depth)
     value = find_thread(target, adapter.layout)
     if value is None:
         return BacktraceReport(
@@ -559,6 +686,12 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             frames=[],
             messages=[f"thread {target!r} was not found in the registry"],
         )
+    return _backtrace_thread(adapter, value, target, max_depth)
+
+
+def _backtrace_thread(
+    adapter, value, target: str, max_depth: int = 32
+) -> BacktraceReport:
     selection = _backtrace_context()
     thread = value_to_thread(value, adapter.layout, collect_stack_metrics=False)
     context = selection.context
@@ -985,53 +1118,19 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         exception_guard=guard,
         stkalign=stkalign,
     )
-    frames = [
-        BacktraceFrame(
-            index=item.index,
-            pc=item.pc,
-            method=item.method,
-            symbol=lookup_symbol_at(item.address_in_block),
-            source=source_location_at(item.address_in_block),
-            segment=item.segment,
-        )
-        for item in result.frames
-    ]
-    method = next(
-        (item.method for item in result.frames if item.method != "seed"), "seed"
-    )
-    stop_reason = result.stop_reason
-    messages = []
-    if scheduler_note is not None:
-        messages.append(scheduler_note)
-    if fault is not None and fault.precise:
-        messages.append(f"synchronous fault {fault.fault}: {fault.evidence}")
-        if result.complete:
-            stop_reason = "synchronous-fault"
-    if metadata is None:
-        messages.append("no ELF unwind metadata could be read")
-    messages.extend(
-        f"frame {item.index}: {evidence}"
-        for item in result.frames
-        for evidence in item.evidence
-    )
-    messages.extend(
-        f"exception transition {transition.from_segment} -> {transition.to_segment} at {transition.pc:#x} ({transition.evidence})"
-        for transition in result.transitions
-    )
-    return BacktraceReport(
+    initial_messages = [scheduler_note] if scheduler_note is not None else []
+    return build_backtrace_report(
         task=thread.name or target,
         address=thread.address,
         architecture=architecture,
-        method=method,
-        source=seed.source,
-        complete=result.complete,
-        stop_reason=stop_reason,
-        truncated=result.truncated,
-        max_depth=max_depth,
-        bounds="recorded",
-        frames=frames,
-        messages=messages,
         abi=selection.abi,
-        segments=list(result.segments),
-        transitions=list(result.transitions),
+        source=seed.source,
+        bounds="recorded",
+        max_depth=max_depth,
+        result=result,
+        metadata=metadata,
+        symbol_lookup=lookup_symbol_at,
+        source_lookup=source_location_at,
+        initial_messages=initial_messages,
+        fault=fault,
     )

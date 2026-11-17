@@ -91,6 +91,137 @@ class BacktraceReport:
     transitions: list[SegmentTransition] = field(default_factory=list)
 
 
+def build_backtrace_report(
+    *,
+    task: str,
+    address: int,
+    architecture: str,
+    abi: str | None,
+    source: str,
+    bounds: str,
+    max_depth: int,
+    result,
+    metadata,
+    symbol_lookup,
+    source_lookup,
+    initial_messages: Sequence[str] = (),
+    fault=None,
+) -> BacktraceReport:
+    """Convert one :class:`core.unwind.UnwindResult` into :class:`BacktraceReport`."""
+    frames = [
+        BacktraceFrame(
+            index=item.index,
+            pc=item.pc,
+            method=item.method,
+            symbol=symbol_lookup(item.address_in_block),
+            source=source_lookup(item.address_in_block),
+            segment=item.segment,
+        )
+        for item in result.frames
+    ]
+    method = next(
+        (item.method for item in result.frames if item.method != "seed"), "seed"
+    )
+    stop_reason = result.stop_reason
+    messages = list(initial_messages)
+    if metadata is None:
+        messages.append("no ELF unwind metadata could be read")
+    if fault is not None and fault.precise:
+        messages.append(f"synchronous fault {fault.fault}: {fault.evidence}")
+        if result.complete:
+            stop_reason = "synchronous-fault"
+    if result.stop_reason == "no-unwind-info" and metadata is not None:
+        messages.append(
+            "no EHABI/CFI entry covers the stop PC and the frame-pointer "
+            "chain did not validate"
+        )
+    messages.extend(
+        f"exception transition {transition.from_segment} -> "
+        f"{transition.to_segment} at {transition.pc:#x} ({transition.evidence})"
+        for transition in result.transitions
+    )
+    messages.extend(
+        f"frame {item.index}: {evidence}"
+        for item in result.frames
+        for evidence in item.evidence
+    )
+    return BacktraceReport(
+        task=task,
+        address=address,
+        architecture=architecture,
+        method=method,
+        source=source,
+        complete=result.complete,
+        stop_reason=stop_reason,
+        truncated=result.truncated,
+        max_depth=max_depth,
+        bounds=bounds,
+        frames=frames,
+        messages=messages,
+        abi=abi,
+        segments=list(result.segments),
+        transitions=list(result.transitions),
+    )
+
+
+def live_boot_backtrace_report(
+    *,
+    architecture: str,
+    abi: str | None,
+    family: str,
+    max_depth: int,
+    metadata,
+    symbol_lookup,
+    source_lookup,
+    linker_lookup,
+    read,
+    hart_id: int = 0,
+    arm_snapshot_reader=None,
+) -> BacktraceReport:
+    """Build a bounded live backtrace report before the RTOS scheduler starts."""
+    from .unwind import live_boot_unwind
+
+    result, stop_reason, message, bounds = live_boot_unwind(
+        family,
+        architecture,
+        metadata,
+        max_depth=max_depth,
+        hart_id=hart_id,
+        read=read,
+        symbol_lookup=linker_lookup,
+        arm_snapshot_reader=arm_snapshot_reader,
+    )
+    if result is None:
+        return BacktraceReport(
+            task="<current>",
+            address=0,
+            architecture=architecture or "unknown",
+            method="none",
+            source="current",
+            complete=False,
+            stop_reason=stop_reason,
+            truncated=False,
+            max_depth=max_depth,
+            bounds=bounds,
+            frames=[],
+            messages=[message],
+            abi=abi,
+        )
+    return build_backtrace_report(
+        task="<current>",
+        address=0,
+        architecture=architecture or "unknown",
+        abi=abi,
+        source="current",
+        bounds=bounds,
+        max_depth=max_depth,
+        result=result,
+        metadata=metadata,
+        symbol_lookup=symbol_lookup,
+        source_lookup=source_lookup,
+    )
+
+
 @dataclass(frozen=True)
 class ColumnSpec:
     """Plugin-facing metadata for one list column.
@@ -795,13 +926,16 @@ class RtosAdapter(Protocol):
         """
         return None
 
-    def backtrace(self, target: str, max_depth: int = 32) -> BacktraceReport | None:
-        """Return one task's bounded backtrace, or ``None`` when unsupported.
+    def backtrace(
+        self, target: str | None = None, max_depth: int = 32
+    ) -> BacktraceReport | None:
+        """Return one task's or the current context's bounded backtrace.
 
-        ``None`` means the adapter cannot decode this port at all; a task that
-        exists but has no saved context returns a report whose ``stop_reason``
-        says why.  Implementations must never call an inferior function or
-        write target memory.
+        ``target=None`` unwinds from the selected core's current stopped
+        context.  ``None`` return means the adapter cannot decode this port at
+        all; a task that exists but has no saved context returns a report whose
+        ``stop_reason`` says why.  Implementations must never call an inferior
+        function or write target memory.
         """
         del target, max_depth
         return None

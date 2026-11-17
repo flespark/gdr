@@ -626,8 +626,10 @@ class FreeRtosAdapter(RtosAdapter):
         source = source_location_at(decoded.pc)
         return symbol_cell(decoded.pc, symbol, source)
 
-    def backtrace(self, target: str, max_depth: int = 32) -> BacktraceReport:
-        """Unwind one FreeRTOS task from its saved or live context."""
+    def backtrace(
+        self, target: str | None = None, max_depth: int = 32
+    ) -> BacktraceReport:
+        """Unwind one FreeRTOS task or the current halted core context."""
         from freertos.backtrace_gdb import backtrace as run_backtrace
 
         return run_backtrace(self, target, max_depth)

@@ -153,7 +153,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |
 | `<rtos> <object> <name-or-address>` | Show one object's details as a vertical `Key: Value` block |
-| `<rtos> backtrace <task> [--max-depth N]` | Unwind one task's saved or live stack through EHABI, DWARF CFI, instruction-proven leaf returns or a validated frame-pointer chain; prints frame PC, symbol/source, method, completeness and stop reason |
+| `<rtos> backtrace [<task>] [--max-depth N]` | Unwind one task's (or the current PC's) saved or live stack through EHABI, DWARF CFI, instruction-proven leaf returns or a validated frame-pointer chain; prints frame PC, symbol/source, method, completeness and stop reason |
 | `<rtos> check [scope] [name]` | Run complete consistency checks (`rtt help check`) |
 | `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | Print watched kinds/objects on every stop, like `display` of gdb but never stops the target |
 | `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG |

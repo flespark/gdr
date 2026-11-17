@@ -1287,3 +1287,122 @@ def test_scheduler_report_refuses_inconsistent_frame_alignment_before_unwind(
     )
     assert report.stop_reason == "exception-frame-alignment-invalid", report
     assert report.frames == [] and not report.complete
+
+
+def test_current_pc_backtrace_delegates_to_running_task_and_handles_boot(monkeypatch):
+    from core.unwind import UnwindFrame, UnwindMetadata, UnwindResult
+    from core.unwind_arm import ArmSnapshot
+
+    adapter, task = _session(monkeypatch)
+    current_val = object()
+    monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [(0, task.address)])
+    monkeypatch.setattr(
+        bridge, "iter_tasks", lambda _layout: [(current_val, "Running", 0)]
+    )
+    monkeypatch.setattr(bridge, "value_address", lambda _val: task.address)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"fn_{pc:#x}")
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "_scheduler_running", lambda: True)
+    frame = _LiveFrame(
+        pc=0x1004, sp=0x20004000, xpsr=0x01000000, msp=0x203FF000, psp=0x20004000
+    )
+    monkeypatch.setattr(bridge, "gdb", _live_gdb(frame))
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda seed, _meta, **_kwargs: UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "task-exit",
+            True,
+            False,
+            "current",
+            "seed",
+        ),
+    )
+    report = bridge.backtrace(adapter)
+    assert report.task == "worker" and report.address == task.address
+    assert report.source == "current" and report.complete is True
+
+    # Running scheduler with NULL current TCB fails closed.
+    monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [])
+    null_tcb = bridge.backtrace(adapter)
+    assert not null_tcb.complete
+    assert null_tcb.stop_reason == "scheduler-current-tcb-unavailable"
+
+    # Pre-scheduler boot unwinds current MSP within boot stack bounds.
+    from core.unwind_cfi import CfaRule, CfiRow, RegisterRule
+    from core.unwind_meta import EM_ARM, CodeSymbol, ElfImage, ElfSection
+
+    monkeypatch.setattr(bridge, "_scheduler_running", lambda: False)
+    boot_elf = ElfImage(
+        pointer_size=4,
+        endian="little",
+        machine=EM_ARM,
+        sections=(
+            ElfSection(
+                name=".text",
+                address=0x1000,
+                data=b"\x70\x47\x00\x00\x70\x47",
+                flags=0x6,
+                section_type=1,
+            ),
+        ),
+        symbols=(CodeSymbol("boot_leaf", 0x1004, 2),),
+    )
+    boot_row = CfiRow(
+        cfa=CfaRule(13, 4),
+        registers={14: RegisterRule("offset", -4)},
+        return_register=14,
+    )
+    meta = UnwindMetadata(
+        elf=boot_elf,
+        arch="arm",
+        cfi_tables=(SimpleNamespace(row_for=lambda _pc: boot_row, error=None),),
+        ehabi=None,
+        return_register=14,
+        frame_pointer_register=7,
+    )
+    monkeypatch.setattr(bridge, "_unwind_metadata", lambda _adapter: meta)
+    boot_regs = {index: index for index in range(13)} | {
+        13: 0x20001FE0,
+        14: 0x0,
+        15: 0x1004,
+    }
+    monkeypatch.setattr(
+        bridge,
+        "read_bytes",
+        lambda address, size: (
+            b"\x00\x00\x00\x00" if address == 0x20001FE0 and size == 4 else None
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x1004, 0x20001FE0, 0x20001FE0, 0, 0x01000000, boot_regs),
+            "ok",
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "linker_symbol_address",
+        lambda name: {"_sstack": 0x20001000, "_estack": 0x20002000}.get(name),
+    )
+    boot_report = bridge.backtrace(adapter)
+    assert boot_report.task == "<current>"
+    assert boot_report.source == "current"
+    assert boot_report.bounds == "recorded"
+    assert [frame.pc for frame in boot_report.frames] == [0x1004]
+    assert boot_report.stop_reason == "return-address-zero"
+
+    # Pre-scheduler active handler refuses rather than guessing an exception boundary.
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x1004, 0x20001FE0, 0x20001FE0, 0, 0x01000003, boot_regs),
+            "ok",
+        ),
+    )
+    irq_boot = bridge.backtrace(adapter)
+    assert not irq_boot.complete and irq_boot.stop_reason == "scheduler-not-running"

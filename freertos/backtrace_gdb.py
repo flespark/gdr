@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from core.adapter import BacktraceFrame, BacktraceReport, active
+from core.adapter import (
+    BacktraceReport,
+    active,
+    build_backtrace_report,
+    live_boot_backtrace_report,
+)
 from core.gdb_bridge import (
     arch_or_default,
     eval_identifier,
@@ -78,7 +83,12 @@ from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
 from freertos.backtrace import decode_cm4f_saved_context
 from freertos.backtrace import decode_saved_context as decode_backtrace_context
-from freertos.navigation import current_tasks, saved_context_bounds, task_state
+from freertos.navigation import (
+    current_tasks,
+    iter_tasks,
+    saved_context_bounds,
+    task_state,
+)
 from freertos.scheduler_seed import build_stage_seed
 from freertos.scheduler_switch import build_profile as build_scheduler_profile
 from freertos.scheduler_switch import classify_stage
@@ -386,8 +396,126 @@ def _scheduler_live_decision(
     return _SchedulerDecision(seed=outcome.seed, message=outcome.evidence)
 
 
-def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
-    """Unwind one FreeRTOS task from its saved or live context."""
+def _selected_core() -> int:
+    if gdb is not None:
+        try:
+            thread = gdb.selected_thread()
+            if thread is not None and int(thread.num) >= 1:
+                return int(thread.num) - 1
+        except (gdb.error, AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+    return 0
+
+
+def _task_value_by_address(adapter, address: int):
+    if getattr(adapter.layout, "structs", None) is not None:
+        for value, _state, _core in iter_tasks(adapter.layout):
+            if value_address(value) == address:
+                return value
+        if callable(getattr(adapter, "find_object", None)):
+            found = adapter.find_object("task", f"{address:#x}")
+            if found is not None:
+                return found
+    return find_task(f"{address:#x}", adapter.layout)
+
+
+def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
+    selected = _selected_core()
+    current_addr = next(
+        (addr for core, addr in current_tasks(adapter.layout) if core == selected),
+        None,
+    )
+    if current_addr is not None:
+        value = _task_value_by_address(adapter, current_addr)
+        if value is not None:
+            return _backtrace_task_value(
+                adapter, value, f"{current_addr:#x}", max_depth
+            )
+    selection = adapter._context_selection()
+    context = selection.context
+    if context is None or not context.verified:
+        return BacktraceReport(
+            task="<current>",
+            address=0,
+            architecture=selection.isa or "unknown",
+            method="none",
+            source="current",
+            complete=False,
+            stop_reason=selection.reason,
+            truncated=False,
+            max_depth=max_depth,
+            bounds="unknown",
+            frames=[],
+            messages=[
+                "no verified save profile matches the image/configuration evidence"
+            ],
+            abi=selection.abi,
+        )
+    architecture = selection.isa or "unknown"
+    if current_addr is not None or _scheduler_running() is True:
+        return BacktraceReport(
+            task="<current>",
+            address=current_addr or 0,
+            architecture=architecture,
+            method="none",
+            source="current",
+            complete=False,
+            stop_reason="scheduler-current-tcb-unavailable",
+            truncated=False,
+            max_depth=max_depth,
+            bounds="unknown",
+            frames=[],
+            messages=["pxCurrentTCB is unavailable or invalid on the selected core"],
+            abi=selection.abi,
+        )
+    metadata = _unwind_metadata(adapter)
+    if (
+        selection.family == "arm"
+        and selection.isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
+        and metadata is not None
+    ):
+        snapshot, _reason = _arm_snapshot()
+        if snapshot is not None:
+            symbol = metadata.elf.function_containing(snapshot.pc & ~1)
+            if symbol is not None and symbol.name in _SCHEDULER_SYMBOLS:
+                return BacktraceReport(
+                    task="<current>",
+                    address=0,
+                    architecture=architecture,
+                    method="none",
+                    source="current",
+                    complete=False,
+                    stop_reason="scheduler-not-running",
+                    truncated=False,
+                    max_depth=max_depth,
+                    bounds="unknown",
+                    frames=[],
+                    messages=[
+                        "a scheduler transition is halted before xSchedulerRunning"
+                    ],
+                    abi=selection.abi,
+                )
+    return live_boot_backtrace_report(
+        architecture=architecture,
+        abi=selection.abi,
+        family=selection.family,
+        max_depth=max_depth,
+        metadata=metadata,
+        symbol_lookup=lookup_symbol_at,
+        source_lookup=source_location_at,
+        linker_lookup=linker_symbol_address,
+        read=read_bytes,
+        hart_id=selected,
+        arm_snapshot_reader=_arm_snapshot,
+    )
+
+
+def backtrace(
+    adapter, target: str | None = None, max_depth: int = 32
+) -> BacktraceReport:
+    """Unwind one FreeRTOS task (or the current halted core context)."""
+    if target is None:
+        return _current_pc_backtrace(adapter, max_depth)
     value = find_task(target, adapter.layout)
     if value is None:
         return BacktraceReport(
@@ -404,6 +532,12 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
             frames=[],
             messages=[f"task {target!r} was not found in the scheduler lists"],
         )
+    return _backtrace_task_value(adapter, value, target, max_depth)
+
+
+def _backtrace_task_value(
+    adapter, value, target: str, max_depth: int = 32
+) -> BacktraceReport:
     selection = adapter._context_selection()
     _state, core = task_state(value, adapter.layout)
     task = value_to_task(
@@ -749,58 +883,18 @@ def backtrace(adapter, target: str, max_depth: int = 32) -> BacktraceReport:
         exception_guard=exception_guard,
         stkalign=stkalign,
     )
-    frames = []
-    for item in result.frames:
-        symbol = lookup_symbol_at(item.address_in_block)
-        source = source_location_at(item.address_in_block)
-        frames.append(
-            BacktraceFrame(
-                index=item.index,
-                pc=item.pc,
-                method=item.method,
-                symbol=symbol,
-                source=source,
-                segment=item.segment,
-            )
-        )
-    method = next(
-        (item.method for item in result.frames if item.method != "seed"), "seed"
-    )
-    stop_reason = result.stop_reason
-    if fault is not None and fault.precise:
-        messages.append(f"synchronous fault {fault.fault}: {fault.evidence}")
-        if result.complete:
-            stop_reason = "synchronous-fault"
-    if result.stop_reason == "no-unwind-info" and metadata is not None:
-        messages.append(
-            "no EHABI/CFI entry covers the stop PC and the frame-pointer "
-            "chain did not validate"
-        )
-    messages.extend(
-        f"exception transition {transition.from_segment} -> "
-        f"{transition.to_segment} at {transition.pc:#x} "
-        f"({transition.evidence})"
-        for transition in result.transitions
-    )
-    messages.extend(
-        f"frame {item.index}: {evidence}"
-        for item in result.frames
-        for evidence in item.evidence
-    )
-    return BacktraceReport(
+    return build_backtrace_report(
         task=task.name or target,
         address=task.address,
         architecture=architecture,
-        method=method,
-        source=seed.source,
-        complete=result.complete,
-        stop_reason=stop_reason,
-        truncated=result.truncated,
-        max_depth=max_depth,
-        bounds=bounds,
-        frames=frames,
-        messages=messages,
         abi=selection.abi,
-        segments=list(result.segments),
-        transitions=list(result.transitions),
+        source=seed.source,
+        bounds=bounds,
+        max_depth=max_depth,
+        result=result,
+        metadata=metadata,
+        symbol_lookup=lookup_symbol_at,
+        source_lookup=source_location_at,
+        initial_messages=messages,
+        fault=fault,
     )

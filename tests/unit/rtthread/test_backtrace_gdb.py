@@ -806,3 +806,188 @@ def test_apply_switch_return_cfi_adds_lr_return_only_for_switch_return():
 
     other_dec = SimpleNamespace(stage="pendsv-entry", seed=seed)
     assert bridge._apply_switch_return_cfi(meta, other_dec) is meta
+
+
+def test_current_pc_backtrace_tracks_outgoing_pendsv_and_boot(monkeypatch):
+    from core.unwind import UnwindFrame, UnwindResult
+    from core.unwind_arm import ArmSnapshot
+    from rtthread.scheduler_switch import SchedulerProfile, SchedulerStage
+
+    adapter = _arm_current(monkeypatch, exception=0)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"fn_{pc:#x}")
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda seed, _metadata, **_kwargs: UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "task-exit",
+            True,
+            False,
+            seed.source,
+            "seed",
+        ),
+    )
+    # Normal current thread.
+    report = bridge.backtrace(adapter)
+    assert report.task == "worker" and report.source == "current" and report.complete
+
+    # During PendSV early save window, omitted target picks rt_interrupt_from_thread (old).
+    old_val = object()
+    old_thread = SimpleNamespace(
+        name="outgoing",
+        address=0x5000,
+        sp=0x20005000,
+        entry=0x1100,
+        stack_addr=0x20005000,
+        stack_size=0x400,
+        stack_grows_up=False,
+        oncpu=None,
+    )
+    from core.unwind_cfi import CfaRule, CfiRow, RegisterRule
+    from core.unwind_meta import EM_ARM, CodeSymbol, ElfImage, ElfSection
+
+    boot_row = CfiRow(
+        cfa=CfaRule(13, 4),
+        registers={14: RegisterRule("offset", -4)},
+        return_register=14,
+    )
+    meta = UnwindMetadata(
+        elf=ElfImage(
+            pointer_size=4,
+            endian="little",
+            machine=EM_ARM,
+            sections=(
+                ElfSection(
+                    name=".text",
+                    address=0x1000,
+                    data=b"\x70\x47\x00\x00\x70\x47",
+                    flags=0x6,
+                    section_type=1,
+                ),
+            ),
+            symbols=(CodeSymbol("boot_leaf", 0x1004, 2),),
+        ),
+        arch="arm",
+        cfi_tables=(SimpleNamespace(row_for=lambda _pc: boot_row, error=None),),
+        ehabi=None,
+        return_register=14,
+        frame_pointer_register=7,
+    )
+    profile = SchedulerProfile(
+        port="armv7-m",
+        isa="armv7-m",
+        fpu=False,
+        switch_start=0x3000,
+        switch_end=0x3010,
+        switch_return=0x300E,
+        pendsv_start=0x3100,
+        pendsv_end=0x3140,
+        switch_to_start=0x3140,
+        switch_to_end=0x3160,
+        pendsv_entry=0x3100,
+        pendsv_save_pending=0x3110,
+        pendsv_save_written=0x3120,
+        pendsv_switch_to=0x3124,
+        pendsv_saved_sp=0x3128,
+        pendsv_restored_pending_psp=0x3130,
+        pendsv_psp_written=0x3134,
+        pendsv_exception_return=0x313C,
+        flag_symbol=0x20000100,
+        from_symbol=0x20000104,
+        to_symbol=0x20000108,
+        trustzone_symbol=None,
+        stages={0x3100: SchedulerStage("pendsv-entry", "PendSV_Handler", "entry")},
+    )
+    monkeypatch.setattr(bridge, "_unwind_metadata", lambda _adapter: meta)
+    monkeypatch.setattr(bridge, "build_scheduler_profile", lambda _elf: profile)
+    monkeypatch.setattr(bridge, "member_offset", lambda _t, _f: 8)
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: {
+            "rt_thread_switch_interrupt_flag": 1,
+            "rt_interrupt_from_thread": 0x5008,
+        }.get(name),
+    )
+    monkeypatch.setattr(bridge, "read_int", lambda val: val)
+    monkeypatch.setattr(
+        bridge,
+        "find_thread",
+        lambda target, _layout: old_val if target == "0x5000" else None,
+    )
+    orig_v2t = bridge.value_to_thread
+    monkeypatch.setattr(
+        bridge,
+        "value_to_thread",
+        lambda v, *args, **kwargs: (
+            old_thread if v is old_val else orig_v2t(v, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(
+                0x3100,
+                0x203FF000,
+                0x203FF000,
+                0x20004000,
+                0x0100000E,
+                {index: index for index in range(16)},
+            ),
+            "ok",
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_scheduler_decision",
+        lambda **_kwargs: bridge.SchedulerSeed(
+            SeedFrame(0x1234, 0x20005100, {}, source="current"),
+            "pendsv-entry",
+            "old",
+            "entry",
+        ),
+    )
+    pendsv_report = bridge.backtrace(adapter)
+    assert pendsv_report.task == "outgoing"
+    assert any(
+        "scheduler stage pendsv-entry (old)" in m for m in pendsv_report.messages
+    )
+
+    # Pre-scheduler boot unwind when rt_current_thread is None.
+    monkeypatch.setattr(bridge, "get_current_thread", lambda: None)
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: 0 if name == "rt_thread_switch_interrupt_flag" else None,
+    )
+    boot_regs = {index: index for index in range(13)} | {
+        13: 0x20001FE0,
+        14: 0x0,
+        15: 0x1004,
+    }
+    monkeypatch.setattr(
+        bridge,
+        "read_bytes",
+        lambda address, size: (
+            b"\x00\x00\x00\x00" if address == 0x20001FE0 and size == 4 else None
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x1004, 0x20001FE0, 0x20001FE0, 0, 0x01000000, boot_regs),
+            "ok",
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "linker_symbol_address",
+        lambda name: {"_sstack": 0x20001000, "_estack": 0x20002000}.get(name),
+    )
+    boot = bridge.backtrace(adapter)
+    assert boot.task == "<current>"
+    assert [frame.pc for frame in boot.frames] == [0x1004]
+    assert boot.stop_reason == "return-address-zero"

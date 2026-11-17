@@ -1153,8 +1153,10 @@ class RtThreadAdapter(RtosAdapter):
         )
         return decoded.pc if decoded is not None else None
 
-    def backtrace(self, target: str, max_depth: int = 32) -> BacktraceReport:
-        """Unwind one RT-Thread thread from its saved or live context."""
+    def backtrace(
+        self, target: str | None = None, max_depth: int = 32
+    ) -> BacktraceReport:
+        """Unwind one RT-Thread thread or the current halted core context."""
         from rtthread.backtrace_gdb import backtrace as run_backtrace
 
         return run_backtrace(self, target, max_depth)

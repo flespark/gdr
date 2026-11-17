@@ -179,3 +179,35 @@ def test_unknown_task_reports_structured_failure(gdb_session):
     assert envelope["ok"] is True
     assert envelope["data"]["stop_reason"] == "task-not-found"
     assert envelope["data"]["frames"] == []
+
+
+def test_omitted_target_backtrace_unwinds_current_halted_pc(gdb_session):
+    """Running ``frt bt`` or ``gdr api backtrace`` without a task uses current PC."""
+    cur_name = gdb_session.run_python(
+        """
+from core.adapter import active
+from freertos.navigation import current_tasks, iter_tasks
+from core.gdb_bridge import value_address
+layout = active().layout
+cur_addr = dict(current_tasks(layout))[0]
+for value, _state, _core in iter_tasks(layout):
+    if value_address(value) == cur_addr:
+        print(value["pcTaskName"].string().rstrip("\\x00"))
+        break
+"""
+    ).strip()
+    assert cur_name
+    cli_out = gdb_session.run("frt bt", timeout=30)
+    assert "[gdr] warning: usage:" not in cli_out, cli_out
+    assert f"{cur_name}:" in cli_out, cli_out
+
+    current_data = _envelope(gdb_session.run("gdr api backtrace --json", timeout=30))[
+        "data"
+    ]
+    explicit_data = _envelope(
+        gdb_session.run(f"gdr api backtrace {cur_name} --json", timeout=30)
+    )["data"]
+    assert current_data["task"] == cur_name
+    assert current_data["source"] == "current"
+    assert current_data["frames"] == explicit_data["frames"]
+    assert current_data["stop_reason"] == explicit_data["stop_reason"]
