@@ -739,7 +739,7 @@ void gdr_irq_fixture_start(void);
 #if defined(GDR_FIXTURE_FAULT_TESTS) && defined(GDR_BOARD_HAS_FAULT_FIXTURE)
 void gdr_fault_fixture_start(void);
 #endif
-#if defined(GDR_FIXTURE_SCHED_TESTS)
+#if defined(GDR_FIXTURE_SCHED_TESTS) && defined(GDR_BOARD_HAS_SCHED_FIXTURE)
 void gdr_sched_fixture_start(void);
 #endif
 
@@ -1096,7 +1096,7 @@ int main(void)
 #if defined(GDR_FIXTURE_FAULT_TESTS) && defined(GDR_BOARD_HAS_FAULT_FIXTURE)
     gdr_fault_fixture_start();
 #endif
-#if defined(GDR_FIXTURE_SCHED_TESTS)
+#if defined(GDR_FIXTURE_SCHED_TESTS) && defined(GDR_BOARD_HAS_SCHED_FIXTURE)
     gdr_sched_fixture_start();
 #endif
 

@@ -10,6 +10,7 @@
 
 /* Deterministic HardFault fixture lives in board/mps2-an385/fault.c. */
 #define GDR_BOARD_HAS_FAULT_FIXTURE 1
+#define GDR_BOARD_HAS_SCHED_FIXTURE 1
 
 #ifndef configCPU_CLOCK_HZ
 #define configCPU_CLOCK_HZ ((unsigned long)25000000)

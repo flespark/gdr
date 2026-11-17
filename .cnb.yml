@@ -212,31 +212,14 @@
         python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 rv64
         python3 ci/test.py run bare qemu-virt-rv64 none eh-frame
     - name: FreeRTOS single-core Cortex-M33 (mps2-an505, kernel 11.3.1)
-      script: |
-        python3 ci/test.py run freertos mps2-an505 11.3.1 full
-        python3 ci/test.py run freertos mps2-an505 11.3.1 fault
-        python3 ci/test.py run freertos mps2-an505 11.3.1 sched
+      script: python3 ci/test.py run freertos mps2-an505 11.3.1 full
     - name: FreeRTOS Cortex-M4F (mps2-an386, kernel 11.3.1)
-      script: |
-        python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
-        python3 ci/test.py run freertos mps2-an386 11.3.1 sched
+      script: python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
     # NOTE: the first-version M0 and RV32 targets are separate stages so a
     # 32-bit RISC-V or Thumb-1 port failure is distinguishable from the
     # already-covered M3/M4F/M33/RV64 lanes.
-    - name: FreeRTOS Cortex-M0 + scheduler sweep (microbit, mps2-an385)
-      script: |
-        python3 ci/test.py run freertos microbit 11.1.0 full
-        python3 ci/test.py run freertos microbit 11.1.0 sched
-        python3 ci/test.py run freertos mps2-an385 10.3.1 sched
-    # NOTE: fault lanes are separate stages so a synchronous-fault regression
-    # is attributable by architecture: M3/M4 precise faults versus the M0
-    # imprecise refusal. The fixtures self-heal through their board fault
-    # handlers, so each stop sees a fresh hardware frame in a healthy session.
-    - name: FreeRTOS synchronous faults (M3/M4 precise, M0 imprecise)
-      script: |
-        python3 ci/test.py run freertos mps2-an385 10.3.1 fault
-        python3 ci/test.py run freertos mps2-an386 11.3.1 fault
-        python3 ci/test.py run freertos microbit 11.1.0 fault
+    - name: FreeRTOS Cortex-M0 (microbit, kernel 11.1.0)
+      script: python3 ci/test.py run freertos microbit 11.1.0 full
     - name: FreeRTOS 32-bit RISC-V (qemu-virt-rv32, kernel 11.1.0)
       script: python3 ci/test.py run freertos qemu-virt-rv32 11.1.0 base
     # NOTE: the static snapshot (file-only ELF, no QEMU) is the

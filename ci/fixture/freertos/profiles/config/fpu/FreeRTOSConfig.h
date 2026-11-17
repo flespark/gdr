@@ -20,6 +20,8 @@
 #define configENABLE_TRUSTZONE 0
 #define configRECORD_STACK_HIGH_ADDRESS 1
 #define GDR_FIXTURE_IRQ_TESTS 1
+#define GDR_FIXTURE_SCHED_TESTS 1
+#define GDR_FIXTURE_FAULT_TESTS 1
 
 #include "gdr_fixture_common.h"
 

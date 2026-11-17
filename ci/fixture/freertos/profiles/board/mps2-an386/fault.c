@@ -31,6 +31,7 @@
 
 static volatile uint32_t gdr_fault_done;
 static volatile uint32_t gdr_fault_scenario;
+volatile uint32_t gdr_fault_gate;
 
 enum {
     GDR_FAULT_SCENARIO_UNDEFINSTR = 0,
@@ -111,8 +112,11 @@ static void gdr_fault_mpu_init(void)
 static void gdr_fault_task(void *argument)
 {
     (void)argument;
-    vTaskDelay(pdMS_TO_TICKS(150));
     for (;;) {
+        if (gdr_fault_gate == 0U) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         gdr_fault_scenario = GDR_FAULT_SCENARIO_UNDEFINSTR;
         gdr_fault_undefinstr_leaf();
         vTaskDelay(pdMS_TO_TICKS(100));

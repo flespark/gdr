@@ -13,6 +13,7 @@
 #if defined(GDR_FIXTURE_FAULT_TESTS) && (GDR_FIXTURE_FAULT_TESTS == 1)
 
 static volatile uint32_t gdr_fault_done;
+volatile uint32_t gdr_fault_gate;
 
 __attribute__((noinline, used)) void gdr_fault_udf_leaf(void)
 {
@@ -44,8 +45,11 @@ void HardFault_Handler(void)
 static void gdr_fault_task(void *argument)
 {
     (void)argument;
-    vTaskDelay(pdMS_TO_TICKS(150));
     for (;;) {
+        if (gdr_fault_gate == 0U) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         gdr_fault_trigger();
         vTaskDelay(pdMS_TO_TICKS(100));
     }

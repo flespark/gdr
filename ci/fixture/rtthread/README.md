@@ -13,10 +13,10 @@ cleans an existing working tree.
 | Target | ISA | Releases | Variants | BSP source | Unwind coverage |
 | --- | --- | --- | --- | --- | --- |
 | `cortex-a9` | Armv7-A | `3.1.0–3.1.5, 4.0.0–4.1.1` | default | `bsp/qemu-vexpress-a9` | Saved integer context (`context_gcc.S`), live C EHABI/CFI, initial entry root, `rt_thread_exit` sentinel; no M-profile `sched`/`irq`/`fault` lanes |
-| `microbit` | Armv6-M | `4.0.5` | default | `bsp/gdr-microbit` (patch) | `sched` (first-start & PendSV stages), `irq` (single, nested, 4B `STKALIGN`), saved/live Thumb-1, exit sentinel; no M0 `fault` overlay (`CFSR` and exception hook absent; FreeRTOS `microbit` covers `fault-frame-imprecise`) |
-| `mps2-an385` | Armv7-M | `4.0.5` | default, `fault` | `bsp/gdr-mps2-an385` (patch) | `sched` (PendSV & `rt_hw_context_switch`), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`, HardFault hook trampoline) |
-| `mps2-an386` | Armv7E-M | `4.0.5` | `fpu`, `fault` | `bsp/gdr-mps2-an386` (patch) | `sched` (CM4F integer+FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
-| `mps2-an505` | Armv8-M Mainline | `4.0.5` | default, `fpu`, `fault` | `bsp/gdr-mps2-an505` (patch) | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick; FP lazy stacking in `fpu`), `fault` (`UNDEFINSTR`, precise `BusFault`; MPU load surfaces as BusFault on QEMU AN505); TZ dual-world and nonzero `SPLIM` unsupported |
+| `microbit` | Armv6-M | `4.0.5` | default | `bsp/gdr-microbit` (patch) | `sched` (first-start & PendSV stages), `irq` (single, nested, 4B `STKALIGN`), saved/live Thumb-1, exit sentinel; no M0 fault fixture (`CFSR` and exception hook absent; FreeRTOS `microbit` covers `fault-frame-imprecise`) |
+| `mps2-an385` | Armv7-M | `4.0.5` | default | `bsp/gdr-mps2-an385` (patch) | `sched` (PendSV & `rt_hw_context_switch`), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`, HardFault hook trampoline) |
+| `mps2-an386` | Armv7E-M | `4.0.5` | `fpu` | `bsp/gdr-mps2-an386` (patch) | `sched` (CM4F integer+FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
+| `mps2-an505` | Armv8-M Mainline | `4.0.5` | default, `fpu` | `bsp/gdr-mps2-an505` (patch) | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick; FP lazy stacking in `fpu`), `fault` (`UNDEFINSTR`, precise `BusFault`; MPU load surfaces as BusFault on QEMU AN505); TZ dual-world and nonzero `SPLIM` unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
 | `rv32` | RV32 | `4.0.5` | default | `bsp/gdr-rv32` (patch) | Saved/live CFI (`ilp32`), M-mode `trap_entry` -> `handle_trap` -> `rt_tick_increase` cross-stack (with E310 `mepc` CSR fallback and epilogue switch fail-closed); no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
 | `rv64` | RV64 | `4.0.4, 4.0.5, 4.1.0, 4.1.1` | default | `bsp/qemu-riscv-virt64` (`4.0.4–4.1.0`), `bsp/qemu-virt64-riscv` (`4.1.1`) | Saved/live CFI (`lp64`), M-mode `trap_entry` -> `handle_trap` cross-stack; no vendor IRQ/fault extensions |
@@ -116,12 +116,12 @@ UART0).
 ### Unwind testcase
 
 - **Scheduled & saved**: `sched` stage ownership across first-start and
-  PendSV (`test_scheduler_backtrace.py`), blocked-thread saved Thumb-1 frames,
+  PendSV (`test_backtrace.py`), blocked-thread saved Thumb-1 frames,
   and `rt_thread_exit` stop sentinel.
 - **External IRQ (`004-irq-fixture.patch`)**: `GDR_IRQ_SCENARIO_SINGLE`,
   `GDR_IRQ_SCENARIO_NESTED` (TIMER1 preempting TIMER0 across MSP), and
   `GDR_IRQ_SCENARIO_ALIGN` (4-byte SP alignment padding / `STKALIGN`).
-- **Fault gap**: No `fault` overlay on `microbit`; the Armv6-M port lacks
+- **Fault gap**: No fault fixture on `microbit`; the Armv6-M port lacks
   `rt_hw_exception_install` and `CFSR` status registers. The `fault-frame-imprecise`
   refusal is covered by FreeRTOS `microbit`. Raw compatibility checks live in
   [testing](../../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage).
@@ -130,7 +130,6 @@ UART0).
 
 ```bash
 python3 ci/test.py run rtthread mps2-an385 4.0.5
-python3 ci/test.py run rtthread mps2-an385 4.0.5 fault
 ```
 
 ### RTOS config
@@ -148,9 +147,9 @@ IRQ test exceptions. Has no FPU, TrustZone, or SMP.
 Compiles unmodified upstream `libcpu/arm/cortex-m3/context_gcc.S` and
 `cpuport.c` with `arm-none-eabi-*` and
 `-mcpu=cortex-m3 -mthumb -mfloat-abi=soft -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer`
-against newlib/nosys and `libgcc` EHABI personality routines. Applying the
-`fault` variant layers `fault/001-fault-fixture.patch` cleanly after the base
-series without altering base outputs.
+against newlib/nosys and `libgcc` EHABI personality routines. `003-irq-fixture.patch`
+and `004-fault-fixture.patch` layer the runtime-gated exception fixtures cleanly on
+top of the base BSP.
 
 ### QEMU boot
 
@@ -165,7 +164,7 @@ series without altering base outputs.
 - **IRQ (`003-irq-fixture.patch` + SysTick)**: `GDR_IRQ_SCENARIO_SINGLE`,
   `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, and SysTick
   `rt_tick_increase` cross-stack unwind into the interrupted task.
-- **Fault (`fault/001-fault-fixture.patch`)**: `gdr_fault` thread cycles
+- **Fault (`004-fault-fixture.patch`, `gdr_fault_gate`)**: `gdr_fault` thread cycles
   `GDR_FAULT_SCENARIO_UNDEFINSTR` (escalated UsageFault `UNDEFINSTR`),
   `GDR_FAULT_SCENARIO_BUS` (`0x50000000` precise BusFault), and
   `GDR_FAULT_SCENARIO_MEMMANAGE` (`0x60000000` MPU `DACCVIOL` + `MMARVALID`)
@@ -179,7 +178,6 @@ series without altering base outputs.
 
 ```bash
 python3 ci/test.py run rtthread mps2-an386 4.0.5 fpu
-python3 ci/test.py run rtthread mps2-an386 4.0.5 fault
 ```
 
 ### RTOS config
@@ -195,8 +193,8 @@ access disabled.
 Compiles upstream `libcpu/arm/cortex-m4/` with
 `-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer`.
 `003-fpu-context.patch` wraps upstream conditional `VSTMDBEQ`/`VLDMIANE`/`MOVEQ`/`BICNE`
-instructions in Thumb-2 `IT` blocks and adds `worker_fpu`; `fault/001-fault-fixture.patch`
-adds the fault fixture after base patches.
+instructions in Thumb-2 `IT` blocks and adds `worker_fpu`; `004-irq-fixture.patch`
+and `005-fault-fixture.patch` add the runtime-gated exception fixtures.
 
 ### QEMU boot
 
@@ -211,7 +209,7 @@ adds the fault fixture after base patches.
   `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, `GDR_IRQ_SCENARIO_FP`
   (`EXC_RETURN=0xffffffed` lazy FPU stacking across MSP), and SysTick
   `rt_tick_increase` cross-stack unwind.
-- **Fault (`fault` variant)**: `GDR_FAULT_SCENARIO_UNDEFINSTR`,
+- **Fault (`005-fault-fixture.patch`, `gdr_fault_gate`)**: `GDR_FAULT_SCENARIO_UNDEFINSTR`,
   `GDR_FAULT_SCENARIO_BUS`, and `GDR_FAULT_SCENARIO_MEMMANAGE` (`DACCVIOL`);
   `rt_exception_hook` receives the hardware frame pointer and adds back the
   10-word (40-byte) M4F software prologue (`r4-r11` + `EXC_RETURN` + FPU flag word).
@@ -221,7 +219,6 @@ adds the fault fixture after base patches.
 ```bash
 python3 ci/test.py run rtthread mps2-an505 4.0.5
 python3 ci/test.py run rtthread mps2-an505 4.0.5 fpu
-python3 ci/test.py run rtthread mps2-an505 4.0.5 fault
 ```
 
 ### RTOS config
@@ -241,10 +238,10 @@ Base compiles upstream `libcpu/arm/cortex-m33/` with
 `-mcpu=cortex-m33 -mthumb -mfloat-abi=soft -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer`.
 `003-port-compat.patch` sets assembly CPU to Cortex-M33, clears the Thumb bit on
 the initial hardware PC, and constructs `0xFFFFFFFD` for the first Thread/PSP
-return without adding saved slots or CFI directives to `libcpu`. The `fpu`
-overlay switches to `-mfloat-abi=hard -mfpu=fpv5-sp-d16`, enables CP10/CP11 in
-board init, wraps `VSTMDBEQ`/`VLDMIAEQ` in `IT eq`, and adds `worker_fpu`.
-The `fault` overlay applies after base patches.
+return without adding saved slots or CFI directives to `libcpu`; `004-irq-fixture.patch`
+and `005-fault-fixture.patch` add the runtime-gated IRQ and fault threads. The
+`fpu` overlay switches to `-mfloat-abi=hard -mfpu=fpv5-sp-d16`, enables CP10/CP11
+in board init, wraps `VSTMDBEQ`/`VLDMIAEQ` in `IT eq`, and adds `worker_fpu`.
 
 ### QEMU boot
 
@@ -259,7 +256,7 @@ The `fault` overlay applies after base patches.
 - **IRQ (`004-irq-fixture.patch` + SysTick)**: `GDR_IRQ_SCENARIO_SINGLE`,
   `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, SysTick cross-stack,
   and conditional `GDR_IRQ_SCENARIO_FP` under `fpu` (`__VFP_FP__`).
-- **Fault (`fault` variant)**: `GDR_FAULT_SCENARIO_UNDEFINSTR` and
+- **Fault (`005-fault-fixture.patch`, `gdr_fault_gate`)**: `GDR_FAULT_SCENARIO_UNDEFINSTR` and
   `GDR_FAULT_SCENARIO_BUS` (`0xA0000000`); M33 hook compensates `libcpu`'s
   13-word (52-byte) software block (`r4-r11`, TrustZone/LR metadata).
   QEMU AN505 surfaces MPU-blocked loads as precise BusFault rather than MemManage

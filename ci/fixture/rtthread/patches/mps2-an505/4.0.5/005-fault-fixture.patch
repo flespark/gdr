@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000..c1d5d259
 --- /dev/null
 +++ b/bsp/gdr-mps2-an505/fault.c
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,112 @@
 +/* Deterministic synchronous-fault fixture for the RT-Thread M33 port.
 + *
 + * UsageFault stays disabled so an undefined instruction escalates to
@@ -25,6 +25,7 @@ index 00000000..c1d5d259
 +
 +static volatile rt_uint32_t gdr_fault_done;
 +static volatile rt_uint32_t gdr_fault_scenario;
++volatile rt_uint32_t gdr_fault_gate;
 +
 +enum
 +{
@@ -91,9 +92,13 @@ index 00000000..c1d5d259
 +static void gdr_fault_entry(void *argument)
 +{
 +    (void)argument;
-+    rt_thread_mdelay(150);
 +    while (1)
 +    {
++        if (!gdr_fault_gate)
++        {
++            rt_thread_mdelay(20);
++            continue;
++        }
 +        gdr_fault_scenario = GDR_FAULT_SCENARIO_UNDEFINSTR;
 +        gdr_fault_trigger();
 +        rt_thread_mdelay(100);
@@ -117,8 +122,8 @@ index ca32285f..aedddd0b 100644
 +++ b/bsp/gdr-mps2-an505/main.c
 @@ -1,5 +1,6 @@
  #include <rtthread.h>
-+extern void gdr_fault_fixture_start(void);
  extern void gdr_irq_fixture_start(void);
++extern void gdr_fault_fixture_start(void);
  
  #define THREAD_STACK_SIZE 2048
  #define MAILBOX_SIZE 4
@@ -126,8 +131,8 @@ index ca32285f..aedddd0b 100644
      START_THREAD(worker9);
      START_THREAD(worker10);
      START_THREAD(worker11);
-+    gdr_fault_fixture_start();
      gdr_irq_fixture_start();
++    gdr_fault_fixture_start();
      rt_thread_mdelay(20);
      rt_kprintf("GDR test fixture ready.\n");
      return 0;

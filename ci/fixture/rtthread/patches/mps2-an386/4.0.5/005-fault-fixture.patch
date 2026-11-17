@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000..5c3538fe
 --- /dev/null
 +++ b/bsp/gdr-mps2-an386/fault.c
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,138 @@
 +/* Deterministic synchronous-fault fixture for the RT-Thread M4 port.
 + *
 + * UsageFault stays disabled so an undefined instruction escalates to
@@ -28,6 +28,7 @@ index 00000000..5c3538fe
 +
 +static volatile rt_uint32_t gdr_fault_done;
 +static volatile rt_uint32_t gdr_fault_scenario;
++volatile rt_uint32_t gdr_fault_gate;
 +
 +enum
 +{
@@ -104,9 +105,13 @@ index 00000000..5c3538fe
 +static void gdr_fault_entry(void *argument)
 +{
 +    (void)argument;
-+    rt_thread_mdelay(150);
 +    while (1)
 +    {
++        if (!gdr_fault_gate)
++        {
++            rt_thread_mdelay(20);
++            continue;
++        }
 +        gdr_fault_scenario = GDR_FAULT_SCENARIO_UNDEFINSTR;
 +        gdr_fault_trigger();
 +        rt_thread_mdelay(100);

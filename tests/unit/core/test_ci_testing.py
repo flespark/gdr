@@ -144,6 +144,7 @@ def test_rtthread_armv7m_patches_preserve_upstream_context_code():
         "linker.ld",
         "main.c",
         "irq.c",
+        "fault.c",
     }
 
 

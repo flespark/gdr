@@ -39,6 +39,15 @@ static gdr_cmsdk_timer_t *const gdr_timer1 =
 static volatile uint32_t gdr_irq_scenario;
 static volatile uint32_t gdr_irq_done;
 static volatile uint32_t gdr_irq_nested_seen;
+volatile uint32_t gdr_irq_gate;
+
+#if defined(GDR_FIXTURE_SCHED_TESTS) && (GDR_FIXTURE_SCHED_TESTS == 1)
+extern volatile uint32_t gdr_sched_gate;
+extern volatile uint32_t gdr_sched_timer1_done;
+extern void gdr_sched_timer0_begin(void);
+extern void gdr_sched_timer0_end(void);
+extern void gdr_sched_timer1_isr(void);
+#endif
 
 enum {
     GDR_IRQ_SCENARIO_SINGLE = 0,
@@ -102,6 +111,12 @@ __attribute__((noinline, used)) void gdr_irq1_body(void)
 
 void Timer1_Handler(void)
 {
+#if defined(GDR_FIXTURE_SCHED_TESTS) && (GDR_FIXTURE_SCHED_TESTS == 1)
+    if (gdr_sched_gate == 3U) {
+        gdr_sched_timer1_isr();
+        return;
+    }
+#endif
     gdr_irq1_body();
     __asm__ volatile("" ::: "memory");
 }
@@ -131,6 +146,16 @@ __attribute__((noinline, used)) void gdr_irq0_body(void)
 
 void Timer0_Handler(void)
 {
+#if defined(GDR_FIXTURE_SCHED_TESTS) && (GDR_FIXTURE_SCHED_TESTS == 1)
+    if (gdr_sched_gate == 3U) {
+        gdr_sched_timer0_begin();
+        for (volatile uint32_t spin = 0;
+             !gdr_sched_timer1_done && spin < 2000000U; spin++) {
+        }
+        gdr_sched_timer0_end();
+        return;
+    }
+#endif
     gdr_irq0_body();
     __asm__ volatile("" ::: "memory");
 }
@@ -160,17 +185,31 @@ __attribute__((naked, noinline, used)) static void gdr_irq_misaligned_wait(void)
         ".ltorg\n");
 }
 
+__attribute__((noinline, used)) void gdr_irq_cycle_done(void)
+{
+    __asm__ volatile("" ::: "memory");
+}
+
 static void gdr_irq_task(void *argument)
 {
     (void)argument;
     gdr_irq_hw_init();
-    vTaskDelay(pdMS_TO_TICKS(150));
     for (;;) {
+        if (gdr_irq_gate == 0U) {
+            vTaskPrioritySet(NULL, 2);
+            gdr_irq_cycle_done();
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        vTaskPrioritySet(NULL, 5);
         gdr_irq_scenario = GDR_IRQ_SCENARIO_SINGLE;
         gdr_irq_done = 0;
         gdr_irq_timer_arm(gdr_timer0, 100000U);
         gdr_irq_wait();
         vTaskDelay(pdMS_TO_TICKS(100));
+        if (gdr_irq_gate == 0U) {
+            continue;
+        }
 
         gdr_irq_scenario = GDR_IRQ_SCENARIO_NESTED;
         gdr_irq_done = 0;
@@ -178,6 +217,9 @@ static void gdr_irq_task(void *argument)
         gdr_irq_timer_arm(gdr_timer0, 100000U);
         gdr_irq_wait();
         vTaskDelay(pdMS_TO_TICKS(100));
+        if (gdr_irq_gate == 0U) {
+            continue;
+        }
 
         gdr_irq_scenario = GDR_IRQ_SCENARIO_ALIGN;
         gdr_irq_done = 0;
@@ -189,7 +231,7 @@ static void gdr_irq_task(void *argument)
 
 void gdr_irq_fixture_start(void)
 {
-    configASSERT(xTaskCreate(gdr_irq_task, "gdr_irq", 192, NULL, 4, NULL) ==
+    configASSERT(xTaskCreate(gdr_irq_task, "gdr_irq", 192, NULL, 2, NULL) ==
                  pdPASS);
 }
 

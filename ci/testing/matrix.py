@@ -80,7 +80,6 @@ class Lane:
 FREERTOS_CONFIG_VARIANTS = (
     "base",
     "full",
-    "sched",
     "static-only",
     "static-dynamic",
     "trace-off",
@@ -113,13 +112,10 @@ RTTHREAD_RV64 = tuple(
 )
 RTTHREAD_PORTS = (
     Lane("rtthread", "mps2-an385", "4.0.5"),
-    Lane("rtthread", "mps2-an385", "4.0.5", "fault"),
     Lane("rtthread", "microbit", "4.0.5"),
     Lane("rtthread", "mps2-an505", "4.0.5"),
-    Lane("rtthread", "mps2-an505", "4.0.5", "fault"),
     Lane("rtthread", "mps2-an505", "4.0.5", "fpu"),
     Lane("rtthread", "mps2-an386", "4.0.5", "fpu"),
-    Lane("rtthread", "mps2-an386", "4.0.5", "fault"),
     Lane("rtthread", "rv32", "4.0.5"),
 )
 FREERTOS_CONFIG = tuple(
@@ -145,16 +141,9 @@ FREERTOS_PORTS = (
     Lane("freertos", "mps2-an521", "11.3.1", "smp"),
     Lane("freertos", "mps2-an521", "11.3.1", "mpu"),
     Lane("freertos", "mps2-an386", "11.3.1", "fpu"),
-    Lane("freertos", "mps2-an386", "11.3.1", "fault"),
-    Lane("freertos", "mps2-an386", "11.3.1", "sched"),
     Lane("freertos", "mps2-an505", "11.3.1", "full"),
-    Lane("freertos", "mps2-an505", "11.3.1", "fault"),
-    Lane("freertos", "mps2-an505", "11.3.1", "sched"),
     Lane("freertos", "qemu-virt-rv64", "11.1.0", "rv64"),
     Lane("freertos", "microbit", "11.1.0", "full"),
-    Lane("freertos", "microbit", "11.1.0", "sched"),
-    Lane("freertos", "mps2-an385", "10.3.1", "fault"),
-    Lane("freertos", "microbit", "11.1.0", "fault"),
     Lane("freertos", "qemu-virt-rv32", "11.1.0", "base"),
     Lane("freertos", "mps2-an521", "11.1.0", "snapshot"),
 )

@@ -27,5 +27,6 @@
 
 /* Deterministic HardFault fixture lives in board/mps2-an386/fault.c. */
 #define GDR_BOARD_HAS_FAULT_FIXTURE 1
+#define GDR_BOARD_HAS_SCHED_FIXTURE 1
 
 #endif

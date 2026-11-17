@@ -158,14 +158,10 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 | `test_commands.py` | Every `rtt` list and detail command (`threads`/`thread`, `semaphores`, `mutexes`, `events`, `mailboxes`, `msgqueues`, `mempools`, `timers`, `objects`, `system`, `heap`, `heap dump`, `check`, `watch`/`unwatch`), waiter chains (`count@names`), mailbox slot addresses, timer `Src` provenance (`registry+active`), and proven saved-frame `PC`. |
 | `test_api.py` | `$gdr_json`, `$gdr_json_chunk`, `$gdr_dump`, `gdr api <verb>`, `gdr probe` evidence, and `gdr reset` / `--force` / `--allow-unverified` session lifecycle. |
 | `test_startup.py` | Separate paused-at-reset QEMU session verifying that snapshots taken before kernel initialization safely stop on `NULL` timer-list heads instead of fabricating wrapped object addresses, and recover once the scheduler starts. |
-| `test_backtrace.py` | Verified saved and current chains, independent unstarted roots, exit completeness, bounded output, structured missing-thread failures and unchanged halted state on the enabled lanes. |
+| `test_backtrace.py` | Saved/current chains (including `worker_fpu` FPU frames on AN386/AN505 `fpu`), unstarted roots, exit completeness, external IRQ & SysTick cross-stack unwinding, real Arm M-profile PendSV/first-start transitions, deterministic `synchronous-fault` hook frames, RISC-V M-mode traps, bounded output, structured refusals, and unchanged target state. |
 | `test_saved_context_fixture.py` | Basic Armv6-M/Armv7-M compiled save/restore instructions, independent port DWARF offsets, raw blocked/unstarted register frames and exit sentinel, and bounded MSP/heap/vector evidence. |
 | `test_armv8m_mainline_fixture.py` | Armv8-M Mainline compiled port evidence, independent 80-byte DWARF layout, raw saved/unstarted registers and Secure context header, real tick progress and raw-seed exit completeness. |
 | `test_rv32_fixture.py` | RV32 compiled port evidence, independent 128-byte DWARF layout, raw saved/unstarted registers, real tick progress and raw-seed exit completeness. |
-| `test_irq_backtrace.py` | Exact basic external IRQ frames (`24`/`25` on AN385/AN386/microbit, `19`/`20` on AN505, lazy extended FPU frames on AN386/AN505 `fpu`), nested handler/task transitions, hardware alignment padding, read-only queries and refusal of pending-switch ownership or incomplete MSP bounds. |
-| `test_systick_backtrace.py` | SysTick admitted as a proven periodic interrupt (same ownership, bounds and vector proof as external IRQs): one exact exception transition into the interrupted `tidle0` task with a complete `task-exit` chain. |
-| `test_scheduler_backtrace.py` | Real Arm M-profile (`microbit`, `mps2-an385`, `mps2-an386/fpu`, `mps2-an505/{base,fpu}`) transition breakpoints with raw TCB/register/stack oracles: first-thread startup, PendSV save/restore stages, `switch-return`, FPU save/restore selection, and refusal of ambiguous PCs or corrupted save/restore windows. |
-| `test_fault_backtrace.py` | Deterministic fault frames with a self-healing `rt_exception_hook` (stacked-PC advance, sticky-bit clear, PSP compensation for the libcpu push): precise UsageFault escalation, precise bus faults and escalated MemManage faults as `synchronous-fault` on M3/M4/M33 (M33 MPU-blocked loads surface as bus faults). |
 | `test_microbit_fixture.py` | Architecture-valid first PendSV return and initial PC/LR state; real TIMER2 tick progress, hardware prescaler/compare/shortcut configuration, IRQ10 vector and unused SysTick vector. |
 
 ---
@@ -182,9 +178,10 @@ and per-variant headers (`profiles/config/<variant>/FreeRTOSConfig.h`) into
 Verification spans three complementary execution arms:
 
 1. **Config-variant and version matrix on Armv7-M (`mps2-an385`)**:
-   - **14 config variants at `10.3.1`**: `base` (default backward-compatible
+   - **13 config variants at `10.3.1`**: `base` (default backward-compatible
      `pvContainer`, `heap_4`, trace on, no `pxEndOfStack`), `full`
-     (`pxEndOfStack`, runtime stats, queue sets), `static-only` (no heap),
+     (`pxEndOfStack`, runtime stats, queue sets, plus gated IRQ/scheduler/fault
+     fixtures), `static-only` (no heap),
      `static-dynamic`, `trace-off` (no `ucQueueType`, no stack prefill),
      `heap-1`, `heap-2`, `heap-3` (libc wrapper), `heap-5`, `registry-0`,
      `pend-callback` (`xTimerPendFunctionCall` queued on daemon), `streams`
@@ -205,15 +202,15 @@ Verification spans three complementary execution arms:
    - **64-bit RISC-V (`qemu-virt-rv64` / `11.1.0` / `rv64`)**: Verifies
      64-bit pointers, 64-bit `TickType_t` event-group control masks, and
      64-bit heap allocation-bitmask arithmetic.
-   - **Armv6-M (`microbit` / `11.1.0` / `full`, `fault`, `sched`)**: Builds the shared fixture
+   - **Armv6-M (`microbit` / `11.1.0` / `full`)**: Builds the shared fixture
      against `portable/GCC/ARM_CM0` with the expanded QEMU memory setup (see
      the [lane README](../ci/fixture/freertos/README.md#microbit-armv6-m));
      verifies the Thumb-1 context frame, EHABI/CFI selection, IRQ/SysTick handler
      unwinding, `fault-frame-imprecise` refusal, and Armv6-M scheduler transitions.
-   - **Armv7E-M (`mps2-an386` / `11.3.1` / `fpu`, `fault`, `sched`)**: Builds
+   - **Armv7E-M (`mps2-an386` / `11.3.1` / `fpu`)**: Builds
      `portable/GCC/ARM_CM4F` on Cortex-M4F; verifies extended FPU task/handler frames
      (`0xFFFFFFE1/E9/ED`), synchronous faults, SysTick, and CM4F scheduler stages.
-   - **Single-core Armv8-M Mainline (`mps2-an505` / `11.3.1` / `full`, `fault`, `sched`)**: Builds
+   - **Single-core Armv8-M Mainline (`mps2-an505` / `11.3.1` / `full`)**: Builds
      single-core `ARM_CM33_NTZ/non_secure` with single-Secure-state QEMU execution;
      verifies external IRQ `19`/`20`, SysTick, synchronous faults, and CM33 scheduler transitions.
    - **32-bit RISC-V (`qemu-virt-rv32` / `11.1.0` / `base`)**: Builds
@@ -238,10 +235,7 @@ Verification spans three complementary execution arms:
 | `test_smp.py` | Dual-core `pxCurrentTCBs[0..1]` running-task resolution, `CPU` placement, core-affinity masks (`gdr_bound`), and preemption-disable state (`gdr_preempt`). |
 | `test_snapshot.py` | File-only negative testing for `frt check` and inline `Check[...]` failure/mismatch/corrupt verdicts on `freertos.elf` and `snapshot_heap.elf`. |
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
-| `test_backtrace.py` | Ordered saved-context chains, canonical ISA/method/bounds, proven exit completeness versus partial RISC-V first-task chains, independent entry/lookup-symbol checks, missing-stack-bound failures, no false unstarted classification, bounded depth, and missing-task failures. |
-| `test_irq_backtrace.py` | Real microbit nRF51 (`ARM_CM0`), AN385/AN386 CMSDK (`24`/`25`), and AN505 CMSDK (`19`/`20`) timer IRQs plus SysTick: task-to-handler and nested-handler transitions, exact stacked PCs, handler CFI calls, alignment padding, linker-owned MSP bounds, independent exception budgets and read-only queries. |
-| `test_scheduler_backtrace.py` | Real `ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, and `ARM_CM33_NTZ` transition breakpoints with raw TCB/register/stack oracles: cooperative yield, SysTick preemption, nested timer IRQ scheduling, first SVC startup, exact-stage ownership and explicit refusal of unproven stops. |
-| `test_fault_backtrace.py` | Deterministic fault frames with per-board self-healing `HardFault`/`MemManage` handlers (stacked-PC advance, sticky-bit clear): precise UsageFault escalation, precise bus faults and direct MemManage faults as `synchronous-fault` on M3/M4/M33, `fault-frame-imprecise` refusal on M0. |
+| `test_backtrace.py` | Saved-context and live chains across all ports, proven exit completeness versus partial RISC-V first-task chains, external IRQ & SysTick cross-stack unwinding (including extended FPU frames on `mps2-an386`), real M-profile PendSV/SVC transition stages with raw oracles, deterministic synchronous faults (`synchronous-fault` on M3/M4/M33, `fault-frame-imprecise` on M0), bounded depth, explicit refusals, and unchanged halted target state. |
 
 ### Exception unwind acceptance
 
@@ -252,15 +246,16 @@ test rejection behavior, not live port support.
 | Layer | Acceptance requirements | Evidence |
 | --- | --- | --- |
 | Architecture | ISA-specific EXC_RETURN/IPSR widths and exception tables; shared eight-word frame register layout; Armv6-M mandatory 8-byte entry alignment versus Armv7-M CCR.STKALIGN; exact stacked PC, padding, bounds and independent budgets. | `core/unwind_arm.py`, `tests/unit/core/test_unwind_armv6m.py`, `test_unwind_armv7m.py` and shared driver tests. |
-| RTOS port | Proven task ownership and stack spans, target-specific capacity/vector evidence, ISA hook selection and fail-before-unwind refusals; actual IRQ, nested handler and handler C-call chains; raw frame oracles and unchanged target state. | `tests/unit/freertos/test_backtrace_armv6m.py`, `test_backtrace_gdb.py` and `tests/integration/freertos/test_irq_backtrace.py`. |
+| RTOS port | Proven task ownership and stack spans, target-specific capacity/vector evidence, ISA hook selection and fail-before-unwind refusals; actual IRQ, nested handler and handler C-call chains; raw frame oracles and unchanged target state. | `tests/unit/freertos/test_backtrace_armv6m.py`, `test_backtrace_gdb.py` and `tests/integration/freertos/test_backtrace.py`. |
 
-The live IRQ tests select `freertos/microbit/11.1.0/full` or
-`freertos/mps2-an385/10.3.1/full`. Their oracle reads GDB MSP/PSP, xPSR,
-CONTROL, raw hardware frames, task bounds and linker symbols independently
-of GDR's transition result. Register, task/IRQ-stack hashes, current TCB and
-tick snapshots must remain unchanged across a query. Both lanes exercise
-single IRQs, nesting, ordinary handler calls, four-byte alignment padding,
-vector-entry proof, missing MSP bounds and separate exception budgets.
+The live IRQ tests select `freertos/microbit/11.1.0/full`, `mps2-an385/full`,
+`mps2-an386/11.3.1/fpu`, or `mps2-an505/11.3.1/full` (gated by `gdr_irq_gate`).
+Their oracle reads GDB MSP/PSP, xPSR, CONTROL, raw hardware frames, task bounds
+and linker symbols independently of GDR's transition result. Register,
+task/IRQ-stack hashes, current TCB and tick snapshots must remain unchanged
+across a query. Both lanes exercise single IRQs, nesting, ordinary handler calls,
+four-byte alignment padding, vector-entry proof, missing MSP bounds and separate
+exception budgets.
 
 Armv6-M port tests require Cortex-M0 CPUID (`0x410CC200`), fixed-zero vectors and explicit
 linker capacity; the live read oracle rejects ICTR, VTOR and CCR accesses.
@@ -276,15 +271,15 @@ the [microbit](../ci/fixture/freertos/README.md#microbit-armv6-m) and
 
 ```bash
 uv run pytest tests/unit/core/test_unwind_armv6m.py tests/unit/core/test_unwind_armv7m.py tests/unit/freertos/test_backtrace_armv6m.py tests/unit/freertos/test_backtrace_gdb.py
-python3 ci/test.py run freertos microbit 11.1.0 full -- tests/integration/freertos/test_irq_backtrace.py
-python3 ci/test.py run freertos mps2-an385 10.3.1 full -- tests/integration/freertos/test_irq_backtrace.py
+python3 ci/test.py run freertos microbit 11.1.0 full -- tests/integration/freertos/test_backtrace.py
+python3 ci/test.py run freertos mps2-an385 11.1.0 full -- tests/integration/freertos/test_backtrace.py
 ```
 
 ### Scheduler unwind acceptance
 
-The scheduler tests run across `freertos/mps2-an385/10.3.1/sched`,
-`freertos/microbit/11.1.0/sched`, `freertos/mps2-an386/11.3.1/sched`, and
-`freertos/mps2-an505/11.3.1/sched`. Tests
+The scheduler tests run across `freertos/mps2-an385/full`,
+`freertos/microbit/11.1.0/full`, `freertos/mps2-an386/11.3.1/fpu`, and
+`freertos/mps2-an505/11.3.1/full` (gated by `gdr_sched_gate`). Tests
 check compiled instruction bytes and raw TCBs, saved core registers, hardware
 frames, PSP/MSP and xPSR independently of GDR's stage decision. Breakpoints
 observe SysTick before PendSV, the current-TCB store before/after execution,

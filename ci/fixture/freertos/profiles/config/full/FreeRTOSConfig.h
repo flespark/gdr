@@ -20,6 +20,8 @@
 /* The full mps2-an385 cell drives real CMSDK timer IRQs for the multi-stack
  * backtrace tests; the board header decides whether the hardware exists. */
 #define GDR_FIXTURE_IRQ_TESTS 1
+#define GDR_FIXTURE_SCHED_TESTS 1
+#define GDR_FIXTURE_FAULT_TESTS 1
 
 #define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() gdr_runtime_timer_init()
 #define portGET_RUN_TIME_COUNTER_VALUE() gdr_runtime_timer_value()

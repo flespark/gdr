@@ -12,8 +12,7 @@ are described in [testing](../../../docs/testing.md).
 | Live kernel-direct | `build.sh` | Clean `FreeRTOS-Kernel` tag, shared application, board and config headers. |
 | File-only `snapshot` | `build.sh` | Kernel headers and `profiles/config/snapshot/` data-only sources. |
 | Isolated `eh-frame` | `../../bare/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
-| M-profile IRQ / fault fixtures | `build.sh` | Board-specific `irq.c` / `fault.c` under `profiles/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) and linker-reserved `.irq_stack`. |
-| M-profile scheduler fixture | `build.sh` | Board-specific `sched.c` under `profiles/board/<target>/`, `config/sched/` and linker-reserved `.irq_stack`; excludes `irq.c` and `fault.c`. |
+| M-profile IRQ / sched / fault fixtures | `build.sh` | Board-specific `irq.c`, `sched.c` and `fault.c` under `profiles/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) plus linker-reserved `.irq_stack`, all linked into `full` (and `fpu` on `mps2-an386`) under explicit runtime gate symbols. |
 
 The shared runner supplies explicit source, build, compiler and install
 paths. `build.sh` rejects a modified or mismatched tag checkout and never
@@ -27,10 +26,10 @@ preparation.
 
 | Target | ISA | Releases | Variants | Port / board source | Unwind coverage |
 | --- | --- | --- | --- | --- | --- |
-| `microbit` | Armv6-M | `11.1.0` | `full`, `sched`, `fault` | `portable/GCC/ARM_CM0`, `profiles/board/microbit/` | `sched` (PendSV/SVC stages), `irq` (single, nested, 4B `STKALIGN`), `fault` (`fault-frame-imprecise` on M0 `udf`), saved/live Thumb-1 + EHABI |
-| `mps2-an385` | Armv7-M | `10.3.1`, `10.4.6`, `10.5.1`, `11.1.0` | `10.3.1`: config matrix (`base`, `full`, `sched`, `fault`, `tick16`, heap/static/stream); `10.4.6–10.5.1`: `base`; `11.1.0`: `base`, `full`, `tick16`, `streams` | `portable/GCC/ARM_CM3`, `profiles/board/mps2-an385/` | `sched` (cooperative/tick/nested-IRQ PendSV & `vTaskSwitchContext`), `irq` (single, nested, 4B `STKALIGN`, SysTick `xTaskIncrementTick`), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`), EHABI `.ARM.exidx` |
-| `mps2-an386` | Armv7E-M | `11.3.1` | `fpu`, `sched`, `fault` | `portable/GCC/ARM_CM4F`, `profiles/board/mps2-an386/` | `sched` (CM4F basic/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
-| `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full`, `sched`, `fault` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an505/` | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
+| `microbit` | Armv6-M | `11.1.0` | `full` | `portable/GCC/ARM_CM0`, `profiles/board/microbit/` | `sched` (PendSV/SVC stages), `irq` (single, nested, 4B `STKALIGN`), `fault` (`fault-frame-imprecise` on M0 `udf`), saved/live Thumb-1 + EHABI |
+| `mps2-an385` | Armv7-M | `10.3.1`, `10.4.6`, `10.5.1`, `11.1.0` | `10.3.1`: config matrix (`base`, `full`, `tick16`, heap/static/stream); `10.4.6–10.5.1`: `base`; `11.1.0`: `base`, `full`, `tick16`, `streams` | `portable/GCC/ARM_CM3`, `profiles/board/mps2-an385/` | `sched` (cooperative/tick/nested-IRQ PendSV & `vTaskSwitchContext`), `irq` (single, nested, 4B `STKALIGN`, SysTick `xTaskIncrementTick`), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`), EHABI `.ARM.exidx` |
+| `mps2-an386` | Armv7E-M | `11.3.1` | `fpu` | `portable/GCC/ARM_CM4F`, `profiles/board/mps2-an386/` | `sched` (CM4F basic/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
+| `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an505/` | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
 | `mps2-an521` | Armv8-M Mainline | `11.3.1`, `11.1.0` | `11.3.1`: `smp`, `mpu`; `11.1.0`: `snapshot` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an521/` | Saved/live task unwind on `smp` (with `smp-no-context` cross-core refusal) and `mpu` (`mpu-pool`); `snapshot` file-only negative ELF; SMP/MPU handler cross-stack unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
 | `qemu-virt-rv32` | RV32 | `11.1.0` | `base` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` -> task cross-stack (`vTaskSwitchContext` fails closed); no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
@@ -67,8 +66,6 @@ contents. Their reuse and validation follow the shared
 
 ```bash
 python3 ci/test.py run freertos microbit 11.1.0 full
-python3 ci/test.py run freertos microbit 11.1.0 sched
-python3 ci/test.py run freertos microbit 11.1.0 fault
 ```
 
 ### RTOS config
@@ -86,7 +83,7 @@ and TIMER1 (`0x40009000`, IRQ9, priority `0x40`) drive external interrupts.
 
 ### Build option
 
-Built with `arm-none-eabi-*`, `-mcpu=cortex-m0 -mthumb -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`, `-Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num`, and `-nostartfiles`. Links `board/microbit/irq.c` for `full`, `fault.c` for `fault`, and `sched.c` for `sched`.
+Built with `arm-none-eabi-*`, `-mcpu=cortex-m0 -mthumb -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`, `-Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num`, and `-nostartfiles`. Links `board/microbit/irq.c`, `sched.c`, and `fault.c` into `full`.
 
 ### QEMU boot
 
@@ -95,16 +92,15 @@ GDB uses `arm` and waits for semihosting `"GDR FreeRTOS fixture ready."`.
 
 ### Unwind testcase
 
-- **Scheduled & saved**: Verifies Cortex-M0 saved-context slot layout (`EXC_RETURN` at top, PC at +60, xPSR at +64), Thumb-1 C CFI chains, and `sched` PendSV/SVC ownership across `ARM_CM0`.
-- **IRQ (`full`)**: `gdr_irq_task` runs `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED` (TIMER1 preempting TIMER0 across MSP), and `GDR_IRQ_SCENARIO_ALIGN` (4-byte SP misalignment exercising `STKALIGN` padding).
-- **Fault (`fault`)**: `gdr_fault_trigger` executes `udf #0` (`gdr_fault_udf_leaf`); M0 lacks fault status registers (`CFSR`), so GDR stops cleanly with `fault-frame-imprecise` while the handler advances stacked PC to keep the session healthy. Acceptance and limits live in [testing](../../../docs/testing.md#exception-unwind-acceptance) and [errata](../../../docs/errata.md#task-backtraces).
+- **Scheduled & saved**: Verifies Cortex-M0 saved-context slot layout (`EXC_RETURN` at top, PC at +60, xPSR at +64), Thumb-1 C CFI chains, and `gdr_sched_gate`-controlled PendSV/SVC ownership across `ARM_CM0`.
+- **IRQ (`gdr_irq_gate`)**: `gdr_irq_task` runs `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED` (TIMER1 preempting TIMER0 across MSP), and `GDR_IRQ_SCENARIO_ALIGN` (4-byte SP misalignment exercising `STKALIGN` padding).
+- **Fault (`gdr_fault_gate`)**: `gdr_fault_trigger` executes `udf #0` (`gdr_fault_udf_leaf`); M0 lacks fault status registers (`CFSR`), so GDR stops cleanly with `fault-frame-imprecise` while the handler advances stacked PC to keep the session healthy. Acceptance and limits live in [testing](../../../docs/testing.md#exception-unwind-acceptance) and [errata](../../../docs/errata.md#task-backtraces).
 
 ## `mps2-an385` (Armv7-M)
 
 ```bash
 python3 ci/test.py run freertos mps2-an385 10.3.1 base
-python3 ci/test.py run freertos mps2-an385 10.3.1 sched
-python3 ci/test.py run freertos mps2-an385 10.3.1 fault
+python3 ci/test.py run freertos mps2-an385 10.3.1 full
 python3 ci/test.py run freertos mps2-an385 11.1.0 full
 ```
 
@@ -126,10 +122,10 @@ V11.1.0 requires even syscall priority (sub-priority guard), so
 ### Build option
 
 Built with `arm-none-eabi-*`, `-mcpu=cortex-m3 -mthumb -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`.
-Links `irq.c` on `full`, `fault.c` on `fault`, and `sched.c` on `sched`. On
-`11.1.0 full`, `-Wl,--no-merge-exidx-entries` preserves distinct `.ARM.exidx`
-entries for adjacent kernel functions with identical unwind opcodes so EHABI
-coverage can be asserted directly against compiler tables.
+Links `irq.c`, `sched.c`, and `fault.c` into `full`. With `--no-merge-exidx-entries`,
+the linker preserves distinct `.ARM.exidx` entries for adjacent kernel functions
+with identical unwind opcodes so EHABI coverage can be asserted directly against
+compiler tables.
 
 Carries both the `10.3.1` (`V10.3.1-kernel-only`) config matrix and the
 `10.4.6` / `10.5.1` / `11.1.0` version sweep (`base`, `full`, `tick16`, `streams`).
@@ -141,16 +137,14 @@ GDB uses `arm` and waits for `"GDR FreeRTOS fixture ready."`.
 
 ### Unwind testcase
 
-- **Scheduled (`sched`, `10.3.1`)**: `gdr_sched_gate` selects cooperative yield, tick preemption (`vTaskSwitchContext`), and nested CMSDK Timer0/Timer1 IRQ scheduling; `gdr_sched_first` tests the initial SVC restore path on a reset session.
-- **IRQ (`full`, `10.3.1`)**: `gdr_irq` cycles `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, C callee chains inside handlers, and SysTick (`xTaskIncrementTick`) cross-stack unwinding across MSP/PSP.
-- **Fault (`fault`, `10.3.1`)**: `gdr_fault` cycles `GDR_FAULT_SCENARIO_UNDEFINSTR` (`FORCED` + `UFSR.UNDEFINSTR` escalated to HardFault), `GDR_FAULT_SCENARIO_BUS` (`0x50000000` precise BusFault `PRECISERR` + `BFARVALID`), and `GDR_FAULT_SCENARIO_MEMMANAGE` (MPU-blocked load `DACCVIOL` + `MMARVALID` + `MMFAR`) at global `gdr_fault_*_stop` labels. Each handler advances stacked PC (MemManage resumes at stacked LR) so the halted session remains healthy; `IACCVIOL` stays unit-only because branching into an execute-never region does not raise a recoverable direct fault on QEMU MPS2.
+- **Scheduled (`gdr_sched_gate`)**: `gdr_sched_gate` selects cooperative yield, tick preemption (`vTaskSwitchContext`), and nested CMSDK Timer0/Timer1 IRQ scheduling; `gdr_sched_first` tests the initial SVC restore path on a reset session.
+- **IRQ (`gdr_irq_gate`)**: `gdr_irq` cycles `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, C callee chains inside handlers, and SysTick (`xTaskIncrementTick`) cross-stack unwinding across MSP/PSP.
+- **Fault (`gdr_fault_gate`)**: `gdr_fault` cycles `GDR_FAULT_SCENARIO_UNDEFINSTR` (`FORCED` + `UFSR.UNDEFINSTR` escalated to HardFault), `GDR_FAULT_SCENARIO_BUS` (`0x50000000` precise BusFault `PRECISERR` + `BFARVALID`), and `GDR_FAULT_SCENARIO_MEMMANAGE` (MPU-blocked load `DACCVIOL` + `MMARVALID` + `MMFAR`) at global `gdr_fault_*_stop` labels. Each handler advances stacked PC (MemManage resumes at stacked LR) so the halted session remains healthy; `IACCVIOL` stays unit-only because branching into an execute-never region does not raise a recoverable direct fault on QEMU MPS2.
 
 ## `mps2-an386` (Armv7E-M)
 
 ```bash
 python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
-python3 ci/test.py run freertos mps2-an386 11.3.1 sched
-python3 ci/test.py run freertos mps2-an386 11.3.1 fault
 ```
 
 ### RTOS config
@@ -158,14 +152,14 @@ python3 ci/test.py run freertos mps2-an386 11.3.1 fault
 Links `V11.3.1` `portable/GCC/ARM_CM4F` with `profiles/board/mps2-an386/`
 (single Cortex-M4 with FPU: `MVFR0` nonzero, `CPACR` writable; `configCPU_CLOCK_HZ=25000000`,
 `configPRIO_BITS=8`, 4 MiB flash at `0x0`, 4 MiB RAM at `0x20000000`, top 16 KiB
-`.irq_stack`, CMSDK Timer0/1). Variant `fpu` enables `configENABLE_FPU 1` and
-adds `gdr_fpu_task` executing VFP instructions before blocking; AN505/AN521
-models lack FPU hardware so FPU coverage lives here.
+`.irq_stack`, CMSDK Timer0/1). Variant `fpu` enables `configENABLE_FPU 1`, links
+`irq.c`, `sched.c`, and `fault.c`, and adds `gdr_fpu_task` executing VFP
+instructions before blocking; AN505/AN521 models lack FPU hardware so FPU
+coverage lives here.
 
 ### Build option
 
-Built with `arm-none-eabi-*`, `-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`
-(the CM4F port requires hard-float `__ARM_FP__`, while `fault` keeps `configENABLE_FPU 0` so `FPCA` stays clear). Links `irq.c` on `fpu` and `fault`, `fault.c` on `fault`, and `sched.c` on `sched`.
+Built with `arm-none-eabi-*`, `-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`.
 
 ### QEMU boot
 
@@ -174,16 +168,14 @@ GDB uses `arm`.
 
 ### Unwind testcase
 
-- **Scheduled & FPU (`sched`, `fpu`)**: `sched` verifies CM4F basic/FPU switch profiles; `fpu` verifies extended saved frames (`s16-s31` / `EXC_RETURN`).
-- **IRQ (`fpu`)**: `gdr_irq` runs `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, and `GDR_IRQ_SCENARIO_FP` (`FPCA` lazy stacking across MSP).
-- **Fault (`fault`)**: `gdr_fault` cycles `GDR_FAULT_SCENARIO_UNDEFINSTR`, `GDR_FAULT_SCENARIO_BUS`, and `GDR_FAULT_SCENARIO_MEMMANAGE` (`DACCVIOL`), exercising both precise HardFault escalation and direct MemManage cross-stack unwinding.
+- **Scheduled & FPU (`gdr_sched_gate`)**: Verifies CM4F basic/FPU switch profiles alongside extended saved FPU frames (`s16-s31` / `EXC_RETURN`).
+- **IRQ (`gdr_irq_gate`)**: `gdr_irq` runs `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, and `GDR_IRQ_SCENARIO_FP` (`FPCA` lazy stacking across MSP).
+- **Fault (`gdr_fault_gate`)**: `gdr_fault` cycles `GDR_FAULT_SCENARIO_UNDEFINSTR`, `GDR_FAULT_SCENARIO_BUS`, and `GDR_FAULT_SCENARIO_MEMMANAGE` (`DACCVIOL`), exercising both precise HardFault escalation and direct MemManage cross-stack unwinding.
 
 ## `mps2-an505` (Armv8-M Mainline)
 
 ```bash
 python3 ci/test.py run freertos mps2-an505 11.3.1 full
-python3 ci/test.py run freertos mps2-an505 11.3.1 sched
-python3 ci/test.py run freertos mps2-an505 11.3.1 fault
 ```
 
 ### RTOS config
@@ -199,7 +191,7 @@ Timer1 (`0x50001000`, IRQ4 / exception 20).
 ### Build option
 
 Built with `arm-none-eabi-*`, `-mcpu=cortex-m33 -mthumb -mfloat-abi=soft -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`.
-Links `irq.c` on `full`, `fault.c` on `fault`, and `sched.c` on `sched`.
+Links `irq.c`, `sched.c`, and `fault.c` into `full`.
 
 ### QEMU boot
 
@@ -208,9 +200,9 @@ GDB uses `arm`.
 
 ### Unwind testcase
 
-- **Scheduled (`sched`)**: `ARM_CM33` PendSV/SVC transition stages and `vTaskSwitchContext` ownership in single Secure state (dual-world TZ switching is unsupported).
-- **IRQ (`full`)**: `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, and SysTick cross-stack unwind using exceptions 19/20.
-- **Fault (`fault`)**: `GDR_FAULT_SCENARIO_UNDEFINSTR` and `GDR_FAULT_SCENARIO_BUS` (`0xA0000000` precise BusFault); MemManage `DACCVIOL` is omitted on AN505 (verified on AN385/AN386).
+- **Scheduled (`gdr_sched_gate`)**: `ARM_CM33` PendSV/SVC transition stages and `vTaskSwitchContext` ownership in single Secure state (dual-world TZ switching is unsupported).
+- **IRQ (`gdr_irq_gate`)**: `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, and SysTick cross-stack unwind using exceptions 19/20.
+- **Fault (`gdr_fault_gate`)**: `GDR_FAULT_SCENARIO_UNDEFINSTR` and `GDR_FAULT_SCENARIO_BUS` (`0xA0000000` precise BusFault); MemManage `DACCVIOL` is omitted on AN505 (verified on AN385/AN386).
 
 ## `mps2-an521` (Armv8-M Mainline)
 

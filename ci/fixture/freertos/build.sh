@@ -179,9 +179,7 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
-    # The AN386 CM4F port requires hard-float codegen (__ARM_FP__); FPU task
-    # context stays governed by configENABLE_FPU, so the integer fault lane
-    # builds hard-float without ever setting FPCA.
+    # The AN386 CM4F port requires hard-float codegen (__ARM_FP__).
     if [[ "$TARGET" == "mps2-an386" ]]; then
         cflags+=(-mfloat-abi=hard -mfpu=fpv4-sp-d16)
     fi
@@ -192,7 +190,7 @@ compile_fixture() {
     # does not discard it as an orphan.
     cflags+=(-funwind-tables)
     local -a link_flags=(-Wl,--gc-sections -Wl,--undefined=gdr_freertos_version_num)
-    if [[ "$TARGET" == "mps2-an385" && "$VERSION" == "11.1.0" && "$VARIANT" == "full" ]]; then
+    if [[ "$TARGET" == "mps2-an385" && "$VARIANT" == "full" ]]; then
         # NOTE: merged entries hide function-start evidence from the EHABI
         # fixture; preserve it independently from CFI.
         link_flags+=(-Wl,--no-merge-exidx-entries)
@@ -242,20 +240,9 @@ compile_fixture() {
     if [[ -n "$heap" ]]; then
         sources+=("$heap")
     fi
-    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "full" ]]; then
-        sources+=("$board_dir/irq.c")
-    fi
-    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "fault" ]]; then
-        sources+=("$board_dir/fault.c")
-    fi
-    if [[ "$TARGET" == "mps2-an386" && "$VARIANT" =~ ^(fpu|fault)$ ]]; then
-        sources+=("$board_dir/irq.c")
-    fi
-    if [[ "$TARGET" == "mps2-an386" && "$VARIANT" == "fault" ]]; then
-        sources+=("$board_dir/fault.c")
-    fi
-    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "mps2-an386" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "sched" ]]; then
-        sources+=("$board_dir/sched.c")
+    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "full" ]] ||
+       [[ "$TARGET" == "mps2-an386" && "$VARIANT" == "fpu" ]]; then
+        sources+=("$board_dir/irq.c" "$board_dir/sched.c" "$board_dir/fault.c")
     fi
 
     # NOTE: --specs=nano.specs/nosys.specs are ARM multilib specs; the

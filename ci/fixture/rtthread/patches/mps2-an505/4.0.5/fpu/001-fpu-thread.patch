@@ -13,7 +13,7 @@ diff --git a/bsp/gdr-mps2-an505/rtconfig.py b/bsp/gdr-mps2-an505/rtconfig.py
 diff --git a/bsp/gdr-mps2-an505/main.c b/bsp/gdr-mps2-an505/main.c
 --- a/bsp/gdr-mps2-an505/main.c
 +++ b/bsp/gdr-mps2-an505/main.c
-@@ -42,6 +42,7 @@
+@@ -43,6 +43,7 @@
  DECLARE_THREAD(worker9);
  DECLARE_THREAD(worker10);
  DECLARE_THREAD(worker11);
@@ -21,7 +21,7 @@ diff --git a/bsp/gdr-mps2-an505/main.c b/bsp/gdr-mps2-an505/main.c
  DECLARE_THREAD(gdr_unstarted);
  
  static void test_timer_timeout(void *parameter)
-@@ -153,6 +154,21 @@
+@@ -154,6 +155,21 @@
      while (1) rt_thread_mdelay(100);
  }
  
@@ -43,7 +43,7 @@ diff --git a/bsp/gdr-mps2-an505/main.c b/bsp/gdr-mps2-an505/main.c
  static void gdr_unstarted_entry(void *parameter)
  {
      (void)parameter;
-@@ -210,6 +226,7 @@
+@@ -211,6 +227,7 @@
      INIT_THREAD(worker9, 28);
      INIT_THREAD(worker10, 29);
      INIT_THREAD(worker11, 30);
@@ -51,14 +51,14 @@ diff --git a/bsp/gdr-mps2-an505/main.c b/bsp/gdr-mps2-an505/main.c
      INIT_THREAD(gdr_unstarted, 30);
      START_THREAD(locker);
      START_THREAD(worker1);
-@@ -223,6 +240,7 @@
+@@ -224,6 +241,7 @@
      START_THREAD(worker9);
      START_THREAD(worker10);
      START_THREAD(worker11);
 +    START_THREAD(worker_fpu);
      gdr_irq_fixture_start();
+     gdr_fault_fixture_start();
      rt_thread_mdelay(20);
-     rt_kprintf("GDR test fixture ready.\n");
      return 0;
 diff --git a/bsp/gdr-mps2-an505/board.c b/bsp/gdr-mps2-an505/board.c
 --- a/bsp/gdr-mps2-an505/board.c

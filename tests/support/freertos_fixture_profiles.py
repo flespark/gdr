@@ -14,8 +14,6 @@ from dataclasses import dataclass
 _SUPPORTED_VARIANTS = (
     "base",
     "full",
-    "sched",
-    "fault",
     "static-only",
     "static-dynamic",
     "trace-off",
@@ -146,12 +144,12 @@ def get_freertos_test_profile(
         mini_list_item=True if v10_5 or (major, minor, patch) >= (10, 3, 0) else None,
         high_water_source=(
             "pxEndOfStack"
-            if variant in {"full", "sched", "fault", "smp", "mpu", "fpu", "rv64"}
+            if variant in {"full", "smp", "mpu", "fpu", "rv64"}
             or target == "qemu-virt-rv32"
             else "scan"
         ),
-        runtime_stats=variant in {"full", "sched", "fault"},
-        queue_sets=variant in {"full", "sched", "fault"},
+        runtime_stats=variant == "full",
+        queue_sets=variant == "full",
         registry_size=0 if variant == "registry-0" else 8,
         # Reason: the core count is a fixture fact written here independently
         # (never backfilled from freertos.layout's detect_config()); it is the

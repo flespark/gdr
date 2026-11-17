@@ -251,8 +251,8 @@ does not raise the specified direct fault on the QEMU MPS2 model and a fixture
 must never contain a path that can wedge the shared halted session. Live fault
 evidence covers the Armv7-M/Armv7E-M and single-core Armv8-M Mainline lanes of
 both kernels (UsageFault escalation, precise bus, escalated or direct MemManage) and
-the Armv6-M `fault-frame-imprecise` refusal on FreeRTOS `microbit/11.1.0/fault`;
-there is no RT-Thread Armv6-M fault lane. Armv7-M/Armv7E-M/Armv8-M Mainline non-secure FPU extended frames
+the Armv6-M `fault-frame-imprecise` refusal on FreeRTOS `microbit/11.1.0/full`;
+there is no RT-Thread Armv6-M fault fixture. Armv7-M/Armv7E-M/Armv8-M Mainline non-secure FPU extended frames
 (`0xFFFFFFE1/E9/ED`) decode the `0x68`-byte frame when FPCCR is readable,
 including lazy `LSPACT=1` (only integer registers are consumed), and stop at
 `exception-fp-state-unavailable` otherwise; Armv6-M has no FPU and still

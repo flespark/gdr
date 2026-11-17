@@ -106,7 +106,7 @@ __attribute__((noinline, used)) static void gdr_sched_irq_hi_task(void *argument
     }
 }
 
-void Timer1_Handler(void)
+void gdr_sched_timer1_isr(void)
 {
     gdr_sched_timer_stop(gdr_sched_timer1);
     BaseType_t woken = pdFALSE;
@@ -116,14 +116,15 @@ void Timer1_Handler(void)
     portYIELD_FROM_ISR(woken);
 }
 
-void Timer0_Handler(void)
+void gdr_sched_timer0_begin(void)
 {
     gdr_sched_timer_stop(gdr_sched_timer0);
     gdr_sched_timer1_done = 0;
     gdr_sched_timer_arm(gdr_sched_timer1, 2500U);
-    for (volatile uint32_t spin = 0;
-         !gdr_sched_timer1_done && spin < 2000000U; spin++) {
-    }
+}
+
+void gdr_sched_timer0_end(void)
+{
     gdr_sched_timer_stop(gdr_sched_timer1);
 }
 
@@ -163,6 +164,8 @@ __attribute__((noinline, used)) static void gdr_sched_task(void *argument)
         }
         gdr_sched_done = gate;
         gdr_sched_gate = 0;
+        gdr_sched_phase = 0;
+        gdr_sched_irq_requested = 0;
         gdr_sched_cycle_done();
     }
 }

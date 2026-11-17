@@ -24,17 +24,11 @@ SPEC = load_integration_spec()
 
 
 def pytest_ignore_collect(collection_path: Path) -> bool | None:
-    """Keep metadata-only fixtures separate from scheduler-profile modules."""
+    """Keep isolated eh-frame fixtures separate from RTOS suites."""
     if (
         SPEC.variant == "eh-frame"
         and collection_path.name.startswith("test_")
         and collection_path.name != "test_eh_frame.py"
-    ):
-        return True
-    if (
-        SPEC.rtos == "freertos"
-        and SPEC.variant != "sched"
-        and collection_path.name == "test_scheduler_backtrace.py"
     ):
         return True
     return None
