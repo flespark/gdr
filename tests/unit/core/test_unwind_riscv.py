@@ -162,6 +162,10 @@ def test_mcause_decode_and_guard():
         == "scheduler-transition-unproven"
     )
     assert (
+        riscv_exception_guard(MCAUSE_EXC_ECALL_M, 0x80001000, xlen=32, allow_ecall=True)
+        is None
+    )
+    assert (
         riscv_exception_guard(2, 0x80001000, xlen=32, allow_sync=False)
         == "exception-frame-type-unproven"
     )

@@ -73,6 +73,9 @@ from core.unwind_riscv import (
     RiscvSnapshot as _RiscvSnapshot,
 )
 from core.unwind_riscv import (
+    decode_riscv_mcause as _decode_riscv_mcause,
+)
+from core.unwind_riscv import (
     prepare_riscv_handler_unwind,
     resolve_riscv_irq_stack_bounds_detail,
 )
@@ -91,7 +94,11 @@ from freertos.navigation import (
     saved_context_bounds,
     task_state,
 )
-from freertos.scheduler_seed import build_stage_seed
+from freertos.riscv_scheduler_switch import (
+    build_riscv_profile as build_riscv_scheduler_profile,
+)
+from freertos.riscv_scheduler_switch import classify_riscv_stage
+from freertos.scheduler_seed import build_riscv_stage_seed, build_stage_seed
 from freertos.stack_frame_profile import analyze_riscv_trap_profile
 
 try:
@@ -258,6 +265,128 @@ _SCHEDULER_SYMBOLS = frozenset(
         "vTaskSwitchContext",
     )
 )
+
+_RISCV_SCHEDULER_SYMBOLS = frozenset(
+    (
+        "xPortStartFirstTask",
+        "freertos_risc_v_trap_handler",
+        "asynchronous_interrupt",
+        "synchronous_exception",
+        "handle_interrupt",
+        "handle_exception",
+        "processed_source",
+        "vTaskSwitchContext",
+    )
+)
+
+
+def _riscv_pc_in_scheduler_symbol(elf: ElfImage, pc: int) -> bool:
+    symbol = elf.function_containing(pc)
+    if symbol is not None and symbol.name in _RISCV_SCHEDULER_SYMBOLS:
+        return True
+    trap_span = analyze_riscv_trap_profile(elf)
+    if trap_span is not None and trap_span.entry <= pc < trap_span.exit_end:
+        return True
+    start_first = elf.symbol_address("xPortStartFirstTask")
+    if start_first is not None and start_first <= pc < start_first + 0x100:
+        return True
+    trap_entry = elf.symbol_address("freertos_risc_v_trap_handler")
+    return trap_entry is not None and trap_entry <= pc < trap_entry + 0x200
+
+
+def _riscv_scheduler_live_decision(
+    elf: ElfImage,
+    context,
+    task: FreeRtosTask,
+    low: int,
+    high: int,
+    *,
+    isa: str | None = "riscv32",
+) -> _SchedulerDecision | None:
+    """Classify a live RISC-V stop across verified scheduler and trap stages."""
+    xlen = 64 if isa == "riscv64" else 32
+    snapshot, snap_reason = _riscv_snapshot(xlen=xlen)
+    if snapshot is None:
+        if snap_reason == "exception-registers-unavailable":
+            live, _ = _live_seed_detail("riscv", isa)
+            if live is not None and _riscv_pc_in_scheduler_symbol(elf, live.pc):
+                return _SchedulerDecision(
+                    reason="exception-registers-unavailable",
+                    message="the live RISC-V exception CSRs are not readable",
+                )
+        return None
+    profile, profile_reason = build_riscv_scheduler_profile(elf)
+    if profile is None:
+        if _riscv_pc_in_scheduler_symbol(elf, snapshot.pc):
+            return _SchedulerDecision(
+                reason=profile_reason,
+                message=(
+                    "the compiled RISC-V scheduler/trap code does not match a "
+                    "verified transition profile"
+                ),
+            )
+        return None
+    stage = classify_riscv_stage(profile, snapshot.pc)
+    if stage is None:
+        return None
+    if isinstance(stage, str):
+        return _SchedulerDecision(
+            reason=stage,
+            message="the stop is inside a transition function but not a proven stage",
+        )
+    is_interrupt, _cause_code = _decode_riscv_mcause(snapshot.mcause, xlen)
+    if stage.name in ("trap-entry", "trap-dispatch") and is_interrupt:
+        return None
+    running = _scheduler_running()
+    if running is None:
+        return _SchedulerDecision(
+            reason="scheduler-state-unavailable",
+            message="xSchedulerRunning is not readable at a scheduler transition",
+        )
+    if not running:
+        return _SchedulerDecision(
+            reason="scheduler-not-running",
+            message="a scheduler transition is visible but the scheduler is stopped",
+        )
+    current = read_int(eval_identifier("pxCurrentTCB"))
+    if current is None:
+        return _SchedulerDecision(
+            reason="scheduler-current-tcb-unavailable",
+            message="pxCurrentTCB is not readable at a scheduler transition",
+        )
+    isr_bounds = _riscv_isr_stack_bounds(elf)
+    irq_span = (isr_bounds[0], isr_bounds[1]) if isr_bounds is not None else None
+    endian = arch_or_default()[1]
+
+    def _is_entry(address: int) -> bool:
+        symbol = elf.function_containing(address)
+        return symbol is not None and symbol.start == address
+
+    outcome = build_riscv_stage_seed(
+        profile,
+        stage,
+        snapshot=snapshot,
+        read=read_bytes,
+        context=context,
+        endian=endian,
+        task_tcb=task.address,
+        task_top=task.top_of_stack,
+        task_low=low,
+        task_high=high,
+        current_tcb=current,
+        exit_pc=_exit_pc(),
+        is_entry=_is_entry,
+        irq_bounds=irq_span,
+    )
+    if isinstance(outcome, str):
+        return _SchedulerDecision(
+            reason=outcome,
+            message=(
+                "the RISC-V scheduler stage is visible but its registers, stack, "
+                "TCB or CSRs do not form one task's consistent seed"
+            ),
+        )
+    return _SchedulerDecision(seed=outcome.seed, message=outcome.evidence)
 
 
 def _scheduler_live_decision(
@@ -469,15 +598,40 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
             abi=selection.abi,
         )
     metadata = _unwind_metadata(adapter)
-    if (
-        selection.family == "arm"
-        and selection.isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
-        and metadata is not None
-    ):
-        snapshot, _reason = _arm_snapshot()
-        if snapshot is not None:
-            symbol = metadata.elf.function_containing(snapshot.pc & ~1)
-            if symbol is not None and symbol.name in _SCHEDULER_SYMBOLS:
+    if metadata is not None:
+        if selection.family == "arm" and selection.isa in (
+            "armv6-m",
+            "armv7-m",
+            "armv7e-m",
+            "armv8-m.mainline",
+        ):
+            snapshot, _reason = _arm_snapshot()
+            if snapshot is not None:
+                symbol = metadata.elf.function_containing(snapshot.pc & ~1)
+                if symbol is not None and symbol.name in _SCHEDULER_SYMBOLS:
+                    return BacktraceReport(
+                        task="<current>",
+                        address=0,
+                        architecture=architecture,
+                        method="none",
+                        source="current",
+                        complete=False,
+                        stop_reason="scheduler-not-running",
+                        truncated=False,
+                        max_depth=max_depth,
+                        bounds="unknown",
+                        frames=[],
+                        messages=[
+                            "a scheduler transition is halted before xSchedulerRunning"
+                        ],
+                        abi=selection.abi,
+                    )
+        elif selection.family == "riscv" and selection.isa in ("riscv32", "riscv64"):
+            xlen = 64 if selection.isa == "riscv64" else 32
+            rv_snapshot, _reason = _riscv_snapshot(xlen=xlen)
+            if rv_snapshot is not None and _riscv_pc_in_scheduler_symbol(
+                metadata.elf, rv_snapshot.pc
+            ):
                 return BacktraceReport(
                     task="<current>",
                     address=0,
@@ -655,6 +809,26 @@ def _backtrace_task_value(
                     )
                 seed = decision.seed
                 scheduler_note = decision.message
+        elif (
+            arch == "riscv"
+            and selection.isa in ("riscv32", "riscv64")
+            and metadata is not None
+        ):
+            decision = _riscv_scheduler_live_decision(
+                metadata.elf,
+                context,
+                task,
+                low,
+                high,
+                isa=selection.isa,
+            )
+            if decision is not None:
+                if decision.seed is None:
+                    return _stop(
+                        decision.reason or "scheduler-owner-unproven", decision.message
+                    )
+                seed = decision.seed
+                scheduler_note = decision.message
         if seed is None:
             seed, live_reason = _live_seed_detail(arch, selection.isa)
         if seed is None:
@@ -792,76 +966,80 @@ def _backtrace_task_value(
         task_segment = _task_segment(task, low, high)
         segments = [task_segment]
         current_segment = task_segment.ident
-        elf_image = metadata.elf if metadata is not None else None
-        span = analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
-        isr_bounds = _riscv_isr_stack_bounds(elf_image)
-        in_isr_stack = (
-            isr_bounds is not None and isr_bounds[0] <= seed.sp <= isr_bounds[1]
-        )
-        in_trap_span = span is not None and (
-            seed.pc == span.entry
-            or span.entry <= seed.pc < span.exit_end
-            or span.refused_reason(seed.pc) is not None
-        )
-        if in_isr_stack or in_trap_span:
-            if span is None:
-                return _stop(
-                    "exception-model-unverified",
-                    "the compiled RISC-V trap handler could not be verified from ELF",
-                )
-            xlen = 64 if selection.isa == "riscv64" else 32
-            snap, snap_reason = _riscv_snapshot(xlen=xlen)
-            if snap is None:
-                return _stop(
-                    snap_reason,
-                    "the live RISC-V exception CSRs are not readable",
-                )
-            running_flag = _scheduler_running()
-            if running_flag is False:
-                return _stop(
-                    "scheduler-not-running",
-                    "a RISC-V trap handler is active before the scheduler is started",
-                )
-            current_tcb = read_int(eval_identifier("pxCurrentTCB"))
-            if current_tcb is None:
-                return _stop(
-                    "scheduler-current-tcb-unavailable",
-                    "pxCurrentTCB is not readable while unwinding a RISC-V trap frame",
-                )
-            word = xlen // 8
-            endian = arch_or_default()[1]
-
-            def _resolve_frt_trap_frame(_ctx) -> int | str:
-                raw_top = read_bytes(current_tcb, word)
-                if raw_top is None or len(raw_top) != word:
-                    return "exception-frame-unreadable"
-                return int.from_bytes(
-                    raw_top, "little" if endian == "little" else "big"
-                )
-
-            setup = prepare_riscv_handler_unwind(
-                snap,
-                root_pc=_exit_pc(),
-                span=span,
-                task_segment=task_segment,
-                irq_stack_bounds=lambda: isr_bounds,
-                nest_count=None,
-                endian=endian,
-                task_frame_resolver=_resolve_frt_trap_frame,
+        if scheduler_note is None:
+            elf_image = metadata.elf if metadata is not None else None
+            span = (
+                analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
             )
-            if isinstance(setup, tuple):
-                return _stop(setup[0], setup[1])
-            if current_tcb != task.address:
-                return _stop(
-                    "exception-task-context-conflict",
-                    "pxCurrentTCB does not match the requested task",
+            isr_bounds = _riscv_isr_stack_bounds(elf_image)
+            in_isr_stack = (
+                isr_bounds is not None and isr_bounds[0] <= seed.sp <= isr_bounds[1]
+            )
+            in_trap_span = span is not None and (
+                seed.pc == span.entry
+                or span.entry <= seed.pc < span.exit_end
+                or span.refused_reason(seed.pc) is not None
+            )
+            if in_isr_stack or in_trap_span:
+                if span is None:
+                    return _stop(
+                        "exception-model-unverified",
+                        "the compiled RISC-V trap handler could not be verified from ELF",
+                    )
+                xlen = 64 if selection.isa == "riscv64" else 32
+                snap, snap_reason = _riscv_snapshot(xlen=xlen)
+                if snap is None:
+                    return _stop(
+                        snap_reason,
+                        "the live RISC-V exception CSRs are not readable",
+                    )
+                running_flag = _scheduler_running()
+                if running_flag is False:
+                    return _stop(
+                        "scheduler-not-running",
+                        "a RISC-V trap handler is active before the scheduler is started",
+                    )
+                current_tcb = read_int(eval_identifier("pxCurrentTCB"))
+                if current_tcb is None:
+                    return _stop(
+                        "scheduler-current-tcb-unavailable",
+                        "pxCurrentTCB is not readable while unwinding a RISC-V trap frame",
+                    )
+                word = xlen // 8
+                endian = arch_or_default()[1]
+
+                def _resolve_frt_trap_frame(_ctx) -> int | str:
+                    raw_top = read_bytes(current_tcb, word)
+                    if raw_top is None or len(raw_top) != word:
+                        return "exception-frame-unreadable"
+                    return int.from_bytes(
+                        raw_top, "little" if endian == "little" else "big"
+                    )
+
+                setup = prepare_riscv_handler_unwind(
+                    snap,
+                    root_pc=_exit_pc(),
+                    span=span,
+                    task_segment=task_segment,
+                    irq_stack_bounds=lambda: isr_bounds,
+                    nest_count=None,
+                    endian=endian,
+                    task_frame_resolver=_resolve_frt_trap_frame,
+                    allow_sync=False,
                 )
-            seed = setup.seed
-            segments.append(setup.exception_segment)
-            current_segment = setup.exception_segment.ident
-            exception_detector = setup.exception_detector
-            exception_hook = setup.exception_hook
-            exception_guard = setup.exception_guard
+                if isinstance(setup, tuple):
+                    return _stop(setup[0], setup[1])
+                if current_tcb != task.address:
+                    return _stop(
+                        "exception-task-context-conflict",
+                        "pxCurrentTCB does not match the requested task",
+                    )
+                seed = setup.seed
+                segments.append(setup.exception_segment)
+                current_segment = setup.exception_segment.ident
+                exception_detector = setup.exception_detector
+                exception_hook = setup.exception_hook
+                exception_guard = setup.exception_guard
 
     exit_pc = _exit_pc()
     if seed.source != "unstarted" and exit_pc is not None:

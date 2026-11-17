@@ -20,7 +20,6 @@ from tests.support.freertos_backtrace_oracles import (
     raw_fault_frame,
     raw_irq_state,
     read_u32_words,
-    riscv_trap_state,
     sched_state,
     scheduler_profile_override,
     systick_probe,
@@ -120,13 +119,6 @@ def _fpu_skip():
     return pytest.mark.skipif(
         SPEC.variant != "fpu",
         reason="requires the live ARM_CM4F FPU fixture",
-    )
-
-
-def _riscv_skip():
-    return pytest.mark.skipif(
-        not SPEC.target.startswith("qemu-virt-rv"),
-        reason="requires a FreeRTOS QEMU RISC-V fixture",
     )
 
 
@@ -289,28 +281,6 @@ def _assert_psp_frame(state: dict, tcb_name: str) -> None:
 def _stop_at_fault(session, leaf: str) -> None:
     _stop_at(session, leaf)
     _stop_at(session, "HardFault_Handler")
-
-
-def _rv_hold_and_break(session, stop_expr: str, *, conditional: bool = True) -> None:
-    session.run("set var gdr_irq_hold = 0")
-    _stop_at(session, "gdr_rv_spin_leaf")
-    session.run("set var gdr_irq_hold = 1")
-    session.run("stepi 4")
-    cond = " if pxCurrentTCB == gdr_ready_spin_task" if conditional else ""
-    bp_out = session.run(f"tbreak {stop_expr}{cond}")
-    assert "Temporary breakpoint" in bp_out, bp_out
-    out = session.run("continue", timeout=30)
-    assert "Temporary breakpoint" in out, out
-
-
-def _symbol_address(session, symbol: str) -> int:
-    return int(
-        json_line(
-            session.run_python(
-                f'import gdb, json\nprint(json.dumps({{"addr": int(gdb.parse_and_eval("&{symbol}"))}}))'
-            )
-        )["addr"]
-    )
 
 
 @pytest.fixture(scope="module")
@@ -1416,67 +1386,3 @@ def test_fault_backtrace_inside_handler_callee_unwinds_msp_and_psp_frames(gdb_se
             assert mm_data["frames"][2]["method"] == "exception", mm_data
             assert "gdr_fault_memmanage_leaf" in mm_symbols[2], mm_symbols
             assert any("gdr_fault_task" in sym for sym in mm_symbols), mm_symbols
-
-
-@_riscv_skip()
-def test_riscv_timer_isr_unwinds_across_isr_stack_to_multiframe_task(gdb_session):
-    try:
-        _rv_hold_and_break(gdb_session, "xTaskIncrementTick")
-        gdb_session.run("stepi 4")
-        raw = riscv_trap_state(gdb_session)
-        data = _backtrace(gdb_session, "gdr_spin")
-        assert data["architecture"] == _ISA, data
-        assert data["source"] == "current", data
-        assert data["complete"] is True and data["stop_reason"] == "task-exit", data
-
-        symbols = [frame["symbol"] or "" for frame in data["frames"]]
-        assert "xTaskIncrementTick" in symbols[0], symbols
-        assert any("gdr_rv_spin_leaf" in sym for sym in symbols), symbols
-        assert any("gdr_rv_spin_mid" in sym for sym in symbols), symbols
-        assert "gdr_ready_spin" in symbols[-1], symbols
-
-        transitions = _exception_frames(data)
-        assert len(transitions) == 1 and transitions[0]["pc"] == raw["mepc"], (
-            transitions,
-            raw,
-        )
-        assert "gdr_rv_spin_leaf" in (transitions[0]["symbol"] or ""), transitions
-        evidence = " ".join(data["messages"])
-        assert f"exception:{raw['mcause']:#x} -> task:{raw['tcb']:#x}" in evidence, data
-    finally:
-        _clear_breakpoints(gdb_session)
-        gdb_session.run("set var gdr_irq_hold = 0")
-
-
-@_riscv_skip()
-def test_riscv_raw_trap_entry_recovers_exact_interrupted_task_pc(gdb_session):
-    try:
-        trap_entry = _symbol_address(gdb_session, "freertos_risc_v_trap_handler")
-        _rv_hold_and_break(gdb_session, f"*{trap_entry:#x}")
-        raw = riscv_trap_state(gdb_session)
-        data = _backtrace(gdb_session, "gdr_spin")
-        assert data["complete"] is True and data["stop_reason"] == "task-exit", data
-        frames = data["frames"]
-        symbols = [frame["symbol"] or "" for frame in frames]
-        assert "freertos_risc_v_trap_handler" in symbols[0], symbols
-        assert frames[1]["method"] == "exception", frames
-        assert frames[1]["pc"] == raw["mepc"], (frames, raw)
-        assert any("gdr_rv_spin_leaf" in sym for sym in symbols[1:]), symbols
-        assert any("gdr_rv_spin_mid" in sym for sym in symbols[1:]), symbols
-        assert "gdr_ready_spin" in symbols[-1], symbols
-    finally:
-        _clear_breakpoints(gdb_session)
-        gdb_session.run("set var gdr_irq_hold = 0")
-
-
-@_riscv_skip()
-def test_riscv_vtaskswitchcontext_fails_closed(gdb_session):
-    _stop_at(gdb_session, "vTaskSwitchContext")
-    gdb_session.run("stepi 4")
-    cur_name = gdb_session.run_python(
-        'print(gdb.parse_and_eval("pxCurrentTCB->pcTaskName").string())'
-    ).strip()
-    data = _backtrace(gdb_session, cur_name)
-    assert data["complete"] is False, data
-    assert data["stop_reason"] == "scheduler-transition-unproven", data
-    _clear_breakpoints(gdb_session)

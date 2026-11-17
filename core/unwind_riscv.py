@@ -63,8 +63,9 @@ def riscv_exception_guard(
     *,
     xlen: int = 32,
     allow_sync: bool = True,
+    allow_ecall: bool = False,
 ) -> str | None:
-    """Refuse scheduler ecalls and unsupported/reserved RISC-V trap causes."""
+    """Refuse scheduler ecalls (unless proven) and unsupported RISC-V trap causes."""
     del pc
     is_interrupt, code = decode_riscv_mcause(exception_number, xlen)
     if is_interrupt:
@@ -72,7 +73,7 @@ def riscv_exception_guard(
             return None
         return "exception-number-unverified"
     if code == MCAUSE_EXC_ECALL_M:
-        return "scheduler-transition-unproven"
+        return None if allow_ecall else "scheduler-transition-unproven"
     if not allow_sync:
         return "exception-frame-type-unproven"
     if code > 63:
@@ -427,6 +428,7 @@ def prepare_riscv_handler_unwind(
     endian: str,
     task_frame_resolver: Callable[[ExceptionTransitionContext], int | str],
     allow_sync: bool = True,
+    allow_ecall: bool = False,
     require_machine_mpp: bool = True,
 ) -> RiscvTrapSetup | tuple[str, str]:
     """Validate RISC-V live trap state, CSRs and stack bounds before unwinding."""
@@ -463,6 +465,7 @@ def prepare_riscv_handler_unwind(
         pc,
         xlen=snapshot.xlen,
         allow_sync=allow_sync,
+        allow_ecall=allow_ecall,
     )
     if guard_reason is not None:
         return (
@@ -525,7 +528,11 @@ def prepare_riscv_handler_unwind(
 
     def guard(exc_no: int, trap_pc: int) -> str | None:
         return riscv_exception_guard(
-            exc_no, trap_pc, xlen=snapshot.xlen, allow_sync=allow_sync
+            exc_no,
+            trap_pc,
+            xlen=snapshot.xlen,
+            allow_sync=allow_sync,
+            allow_ecall=allow_ecall,
         )
 
     hook = riscv_trap_transition_factory(

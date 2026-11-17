@@ -198,11 +198,11 @@ def test_freertos_riscv_isr_unwinds_to_task_stack(monkeypatch):
     assert report.frames[2].segment == "task:0x80010000"
 
 
-def test_freertos_riscv_refuses_vtaskswitchcontext_and_ecall(monkeypatch):
+def test_freertos_riscv_refuses_unverified_vtaskswitchcontext_and_ecall(monkeypatch):
     adapter, _ = _setup_frt_session(monkeypatch, seed_pc=0x80002810, ra=0x800010C4)
     report_direct = bridge.backtrace(adapter, "spin")
     assert not report_direct.complete
-    assert report_direct.stop_reason == "scheduler-transition-unproven"
+    assert report_direct.stop_reason == "scheduler-profile-unsupported-image"
 
     adapter, _ = _setup_frt_session(monkeypatch, seed_pc=0x80002010, ra=0x800010C4)
     report_callee = bridge.backtrace(adapter, "spin")

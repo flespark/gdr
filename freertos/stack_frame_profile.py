@@ -222,26 +222,19 @@ def analyze_riscv_trap_profile(elf: ElfImage) -> RiscvTrapSpan | None:
     except (EvidenceError, StopIteration, ValueError, TypeError):
         return None
 
-    trap_pcs = sorted(trap)
-    second_pc = trap_pcs[1] if len(trap_pcs) > 1 else trap_start + 4
     mret_pc = max(restore)
     exit_end = mret_pc + 4
-    refused: list[tuple[int, int, str]] = [
-        (second_pc, idle_pc, "exception-frame-incomplete"),
-        (proc_pc, exit_end, "scheduler-transition-unproven"),
-    ]
+    exc_pc = elf.symbol_address("handle_exception")
+    call_end = exc_pc if exc_pc is not None and idle_pc < exc_pc < proc_pc else proc_pc
+    refused: list[tuple[int, int, str]] = []
+    app_exc_pc = elf.symbol_address("application_exception_handler")
+    if app_exc_pc is not None and idle_pc < app_exc_pc < proc_pc:
+        refused.append((app_exc_pc, proc_pc, "exception-frame-type-unproven"))
     switch_sym = next(
         (sym for sym in elf.symbols if sym.name == "vTaskSwitchContext"),
         None,
     )
     if switch_sym is not None and switch_sym.size > 0:
-        refused.append(
-            (
-                switch_sym.start,
-                switch_sym.start + switch_sym.size,
-                "scheduler-transition-unproven",
-            )
-        )
         all_dispatch = {**async_code, **sync_code, **dispatch}
         dispatch_pcs = sorted(all_dispatch)
         for index, pc in enumerate(dispatch_pcs):
@@ -264,13 +257,13 @@ def analyze_riscv_trap_profile(elf: ElfImage) -> RiscvTrapSpan | None:
         entry=trap_start,
         save_complete=idle_pc,
         call_start=idle_pc,
-        call_end=proc_pc,
+        call_end=call_end,
         exit_end=exit_end,
         layout=layout,
         refused_spans=tuple(refused),
         evidence=(
             f"trap=freertos_risc_v_trap_handler@{trap_start:#x}",
-            f"dispatch={idle_pc:#x}..{proc_pc:#x}",
+            f"dispatch={idle_pc:#x}..{call_end:#x}",
         ),
     )
 
