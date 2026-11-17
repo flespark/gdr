@@ -89,6 +89,9 @@ target-version = "py310"
 # duplicate every finding and report cross-path type mismatches.
 exclude = ["vscode/resources/gdr"]
 
+[tool.mdformat]
+wrap = 88
+
 [tool.ruff.lint]
 # PEP8 + common-sense rules. E/W = pycodestyle, F = pyflakes, I = isort,
 # UP = pyupgrade, B = bugbear, SIM = simplify, ARG = unused arguments,
