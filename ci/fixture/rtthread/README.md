@@ -18,8 +18,8 @@ cleans an existing working tree.
 | `mps2-an386` | Armv7E-M | `4.0.5` | `fpu` | `bsp/gdr-mps2-an386` (patch) | `sched` (CM4F integer+FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
 | `mps2-an505` | Armv8-M Mainline | `4.0.5` | default, `fpu` | `bsp/gdr-mps2-an505` (patch) | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick; FP lazy stacking in `fpu`), `fault` (`UNDEFINSTR`, precise `BusFault`; MPU load surfaces as BusFault on QEMU AN505); TZ dual-world and nonzero `SPLIM` unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
-| `rv32` | RV32 | `4.0.5` | default | `bsp/gdr-rv32` (patch) | Saved/live CFI (`ilp32`), M-mode `trap_entry` -> `handle_trap` -> `rt_tick_increase` cross-stack (with E310 `mepc` CSR fallback and epilogue switch fail-closed); no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
-| `rv64` | RV64 | `4.0.4, 4.0.5, 4.1.0, 4.1.1` | default | `bsp/qemu-riscv-virt64` (`4.0.4–4.1.0`), `bsp/qemu-virt64-riscv` (`4.1.1`) | Saved/live CFI (`lp64`), M-mode `trap_entry` -> `handle_trap` cross-stack; no vendor IRQ/fault extensions |
+| `rv32` | RV32 | `4.0.5` | default | `bsp/gdr-rv32` (patch) | Saved/live CFI (`ilp32`), M-mode `trap_entry` cross-stack (E310 `deferred-mepc`; nested `>1` fails `nested-trap-epc-unproven`), `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` epilogue switches, and `spurious_interrupt` / `exit` stages; no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
+| `rv64` | RV64 | `4.0.4, 4.0.5, 4.1.0, 4.1.1` | default | `bsp/qemu-riscv-virt64` (`4.0.4–4.1.0`), `bsp/qemu-virt64-riscv` (`4.1.1`) | Saved/live CFI (`lp64`), M-mode `trap_entry` (`stacked-epc`), `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` epilogue switches, and `rt_hw_context_switch_exit` stages; no vendor IRQ/fault extensions |
 
 Patch series live under `patches/<target>/<version>/`. A patch must apply
 cleanly to its own BSP and toolchain; do not share patches between the
@@ -77,7 +77,7 @@ through the `gdr_bt_live_middle` -> `gdr_bt_live_leaf` (`gdr_bt_live_stop`)
 chain (4.0.4+), unstarted-thread entry (`gdr_unstarted`), `rt_thread_exit`
 stop sentinel, and omitted-target live unwind (`rt bt`). Acceptance and runtime
 limits live in [testing](../../../docs/testing.md#rt-thread-suite-organization-and-capability-coverage)
-and [errata](../../../docs/errata.md#task-backtraces).
+and [boundaries](../../../docs/boundary.md#rt-thread-backtrace-matrix).
 
 ## `microbit` (Armv6-M)
 
@@ -261,7 +261,7 @@ in board init, wraps `VSTMDBEQ`/`VLDMIAEQ` in `IT eq`, and adds `worker_fpu`.
   13-word (52-byte) software block (`r4-r11`, TrustZone/LR metadata).
   QEMU AN505 surfaces MPU-blocked loads as precise BusFault rather than MemManage
   `DACCVIOL` (live `DACCVIOL` proof remains on AN385/AN386; see
-  [errata](../../../docs/errata.md#task-backtraces)).
+  [boundaries](../../../docs/boundary.md#rt-thread-backtrace-matrix)).
 
 ## `rv32` (RV32)
 
@@ -293,11 +293,13 @@ Built via SCons with `riscv-none-elf-*`,
 
 Covers 32-bit pointer width, saved/live `ilp32` CFI, `gdr_unstarted`, live
 3-function worker chain (`gdr_bt_live_middle` -> `gdr_bt_live_leaf` with
-`gdr_irq_hold` spin gate), and M-mode CLINT `trap_entry` -> `handle_trap` ->
-`rt_tick_increase` cross-stack unwind (including E310 `mepc` CSR fallback and
-fail-closed refusal in the `trap_entry` epilogue switch region). Vendor IRQ/fault
-extensions (XuanTie, Nuclei ECLIC, WCH PFIC) are not supported or built. Trap
-unwinding scope lives in [errata](../../../docs/errata.md#task-backtraces).
+`gdr_irq_hold` spin gate), M-mode CLINT `trap_entry` -> `handle_trap` ->
+`rt_tick_increase` cross-stack unwind, `rt_hw_context_switch_to`,
+`rt_hw_context_switch`, `trap_entry` epilogue switch windows, `spurious_interrupt` /
+`rt_hw_context_switch_exit`, and fail-closed `nested-trap-epc-unproven` under E310
+nesting. Vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) are not
+supported or built. Trap unwinding scope lives in
+[boundaries](../../../docs/boundary.md#rt-thread-backtrace-matrix).
 
 ## `rv64` (RV64)
 
@@ -326,6 +328,7 @@ in shared containers) for `rv64gc` / `lp64`, `-g3 -gdwarf-4`, publishing both
 
 Covers 64-bit pointer width, saved/live `lp64` CFI, IPC blocking/unstarted
 threads, `gdr_bt_live_middle` -> `gdr_bt_live_leaf` (`gdr_irq_hold` spin gate),
-and M-mode CLINT `trap_entry` -> `handle_trap` -> `rt_tick_increase` cross-stack
-unwind (epilogue switch region fails closed). Vendor IRQ/fault extensions are
+M-mode CLINT `trap_entry` -> `handle_trap` -> `rt_tick_increase` cross-stack unwind,
+and `rt_hw_context_switch_to` / `rt_hw_context_switch` / `trap_entry` epilogue /
+`rt_hw_context_switch_exit` scheduler stages. Vendor IRQ/fault extensions are
 unsupported.

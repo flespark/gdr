@@ -3,7 +3,7 @@
 This fixture isolates `.eh_frame` from RTOS saved-context decoding. Coverage
 and CI placement live in [testing](../../../../docs/testing.md#isolated-eh_frame-variant);
 runtime rules and limitations live in [architecture](../../../../docs/architecture.md)
-and [errata](../../../../docs/errata.md#task-backtraces).
+and [boundaries](../../../../docs/boundary.md#task-backtraces).
 
 ## Tools and build
 

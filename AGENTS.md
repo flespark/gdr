@@ -183,9 +183,9 @@ that owns the fact:
 | `README.md` / `README.zh-CN.md` | users | install, load, command index, output-decode notes | kernel internals, fixtures/CI, design rationale | each note ≤2 lines, mirror both languages |
 | `AGENTS.md` | contributors/agents | file map (one line per file), setup/commands, CI lane table, conventions | per-module prose (point to architecture.md), lane internals (point to ci/fixture/*/README.md) | one line per file |
 | `docs/architecture.md` | design readers | layering, module contracts, runtime flows, core mechanisms, RTOS capability comparison | VSCode panel/DOM detail, trial-and-error history, fixture build details | module-table cells ≤1-3 sentences |
-| `docs/decisions.md` | design readers | architecture decisions and why they exist | mechanisms (→ architecture.md), limits (→ errata.md) | one decision per section, no change narration |
+| `docs/decisions.md` | design readers | architecture decisions and why they exist | mechanisms (→ architecture.md), limits (→ boundary.md) | one decision per section, no change narration |
 | `docs/testing.md` | contributors | closed-loop harness, QEMU profiles, version/variant matrices | fixture build steps (→ ci/fixture/*/README.md) | link lane READMEs, never copy |
-| `docs/errata.md` | design readers | known limits and kernel differences by adapter | development rules (→ AGENTS.md) | one fact per bold item |
+| `docs/boundary.md` | design readers | functional boundaries, support RTOS version / ISA, and limits by scope/adapter | development rules (→ AGENTS.md), CI/test history | sections and matrices by scope/adapter |
 | `docs/gdb_python_reference.md` | developers | offline GDB Python API reference for bridge/stack work | project-specific claims | reference only, never edit by hand |
 | `CHANGELOG.md` | users | user-visible behaviour changes | fixture/CI/lane/variant internals, implementation narrative, test-fix process notes | one line per change, ≤3 lines each |
 | `ci/README.md` | contributors | integration CLI, shared cache, containers and orchestration layering | RTOS build mechanics | command-oriented |

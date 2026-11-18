@@ -32,8 +32,8 @@ preparation.
 | `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an505/` | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
 | `mps2-an521` | Armv8-M Mainline | `11.3.1`, `11.1.0` | `11.3.1`: `smp`, `mpu`; `11.1.0`: `snapshot` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an521/` | Saved/live task unwind on `smp` (with `smp-no-context` cross-core refusal) and `mpu` (`mpu-pool`); `snapshot` file-only negative ELF; SMP/MPU handler cross-stack unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
-| `qemu-virt-rv32` | RV32 | `11.1.0` | `base` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` -> task cross-stack (`vTaskSwitchContext` fails closed); no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
-| `qemu-virt-rv64` | RV64 | `11.1.0` | `rv64` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv64/` | Saved/live CFI (`lp64`, 64-bit tick), M-mode `freertos_risc_v_trap_handler` cross-stack (`vTaskSwitchContext` fails closed); no vendor IRQ/fault extensions |
+| `qemu-virt-rv32` | RV32 | `11.1.0` | `base` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` IRQs, `ecall` yield, `xPortStartFirstTask`, trap prologue, `vTaskSwitchContext`, `processed_source` restore stages (non-`ecall` sync faults fail closed); no vendor IRQ/fault extensions |
+| `qemu-virt-rv64` | RV64 | `11.1.0` | `rv64` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv64/` | Saved/live CFI (`lp64`, 64-bit tick), M-mode `freertos_risc_v_trap_handler` IRQs, `ecall` yield, `xPortStartFirstTask`, trap prologue, `vTaskSwitchContext`, `processed_source` restore stages (non-`ecall` sync faults fail closed); no vendor IRQ/fault extensions |
 
 ## Container tools and cache
 
@@ -94,7 +94,7 @@ GDB uses `arm` and waits for semihosting `"GDR FreeRTOS fixture ready."`.
 
 - **Scheduled & saved**: Verifies Cortex-M0 saved-context slot layout (`EXC_RETURN` at top, PC at +60, xPSR at +64), Thumb-1 C CFI chains, and `gdr_sched_gate`-controlled PendSV/SVC ownership across `ARM_CM0`.
 - **IRQ (`gdr_irq_gate`)**: `gdr_irq_task` runs `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED` (TIMER1 preempting TIMER0 across MSP), and `GDR_IRQ_SCENARIO_ALIGN` (4-byte SP misalignment exercising `STKALIGN` padding).
-- **Fault (`gdr_fault_gate`)**: `gdr_fault_trigger` executes `udf #0` (`gdr_fault_udf_leaf`); M0 lacks fault status registers (`CFSR`), so GDR stops cleanly with `fault-frame-imprecise` while the handler advances stacked PC to keep the session healthy. Acceptance and limits live in [testing](../../../docs/testing.md#exception-unwind-acceptance) and [errata](../../../docs/errata.md#task-backtraces).
+- **Fault (`gdr_fault_gate`)**: `gdr_fault_trigger` executes `udf #0` (`gdr_fault_udf_leaf`); M0 lacks fault status registers (`CFSR`), so GDR stops cleanly with `fault-frame-imprecise` while the handler advances stacked PC to keep the session healthy. Acceptance and limits live in [testing](../../../docs/testing.md#exception-unwind-acceptance) and [boundaries](../../../docs/boundary.md#freertos-backtrace-matrix).
 
 ## `mps2-an385` (Armv7-M)
 
@@ -258,7 +258,7 @@ GDB loads `freertos.elf` (`riscv:rv32`).
 
 ### Unwind testcase
 
-Covers 32-bit pointer width (`ilp32`), saved-context and live C CFI chains (matching RV64's first saved PC slot layout with 4-byte words), and M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` -> multi-frame task cross-stack unwinding (`vTaskSwitchContext` stops fail closed). Vendor RISC-V IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) are unsupported.
+Covers 32-bit pointer width (`ilp32`), saved-context and live C CFI chains (matching RV64's first saved PC slot layout with 4-byte words), M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` -> multi-frame task cross-stack unwinding, `xPortStartFirstTask`, trap prologue, `ecall` yield, `vTaskSwitchContext` before/after writeback, `processed_source` restore stages, and fail-closed non-`ecall` sync faults. Vendor RISC-V IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) are unsupported.
 
 ## `qemu-virt-rv64` (RV64)
 
@@ -286,10 +286,7 @@ GDB loads `freertos.elf` (`riscv:rv64`).
 
 ### Unwind testcase
 
-Covers 64-bit pointer/tick width (`lp64`), non-first task exit sentinel (`0`),
-live CFI chains, and M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` ->
-multi-frame task cross-stack unwinding (`vTaskSwitchContext` fails closed).
-Vendor RISC-V IRQ/fault extensions are unsupported.
+Covers 64-bit pointer/tick width (`lp64`), non-first task exit sentinel (`0`), live CFI chains, M-mode `freertos_risc_v_trap_handler` -> `xTaskIncrementTick` -> multi-frame task cross-stack unwinding, `xPortStartFirstTask`, trap prologue, `ecall` yield, `vTaskSwitchContext`, `processed_source` restore stages, and fail-closed sync-fault refusal. Vendor RISC-V IRQ/fault extensions are unsupported.
 
 ## Shared config variants
 

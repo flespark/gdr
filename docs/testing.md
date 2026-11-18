@@ -158,7 +158,7 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 | `test_commands.py` | Every `rtt` list and detail command (`threads`/`thread`, `semaphores`, `mutexes`, `events`, `mailboxes`, `msgqueues`, `mempools`, `timers`, `objects`, `system`, `heap`, `heap dump`, `check`, `watch`/`unwatch`), waiter chains (`count@names`), mailbox slot addresses, timer `Src` provenance (`registry+active`), and proven saved-frame `PC`. |
 | `test_api.py` | `$gdr_json`, `$gdr_json_chunk`, `$gdr_dump`, `gdr api <verb>`, `gdr probe` evidence, and `gdr reset` / `--force` / `--allow-unverified` session lifecycle. |
 | `test_startup.py` | Separate paused-at-reset QEMU session verifying that snapshots taken before kernel initialization safely stop on `NULL` timer-list heads instead of fabricating wrapped object addresses, and recover once the scheduler starts. |
-| `test_backtrace.py` | Saved/current chains (including `worker_fpu` FPU frames on AN386/AN505 `fpu`), unstarted roots, exit completeness, external IRQ & SysTick cross-stack unwinding, real Arm M-profile PendSV/first-start transitions, deterministic `synchronous-fault` hook frames, RISC-V M-mode traps, bounded output, structured refusals, and unchanged target state. |
+| `test_backtrace.py` | Saved/current chains (including `worker_fpu` FPU frames on AN386/AN505 `fpu`), unstarted roots, exit completeness, external IRQ & SysTick cross-stack unwinding, real Arm M-profile and RISC-V (`rv32`/`rv64`) scheduler/trap transition stages (including `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` prologue/epilogue switches, `rt_hw_context_switch_exit`/`spurious_interrupt`, and E310 `nested-trap-epc-unproven`), deterministic `synchronous-fault` hook frames, bounded output, structured refusals, and unchanged target state. |
 | `test_saved_context_fixture.py` | Basic Armv6-M/Armv7-M compiled save/restore instructions, independent port DWARF offsets, raw blocked/unstarted register frames and exit sentinel, and bounded MSP/heap/vector evidence. |
 | `test_armv8m_mainline_fixture.py` | Armv8-M Mainline compiled port evidence, independent 80-byte DWARF layout, raw saved/unstarted registers and Secure context header, real tick progress and raw-seed exit completeness. |
 | `test_rv32_fixture.py` | RV32 compiled port evidence, independent 128-byte DWARF layout, raw saved/unstarted registers, real tick progress and raw-seed exit completeness. |
@@ -213,9 +213,11 @@ Verification spans three complementary execution arms:
    - **Single-core Armv8-M Mainline (`mps2-an505` / `11.3.1` / `full`)**: Builds
      single-core `ARM_CM33_NTZ/non_secure` with single-Secure-state QEMU execution;
      verifies external IRQ `19`/`20`, SysTick, synchronous faults, and CM33 scheduler transitions.
-   - **32-bit RISC-V (`qemu-virt-rv32` / `11.1.0` / `base`)**: Builds
-     `rv32imac_zicsr` with 4-byte words; verifies RV32 saved-context offsets,
-     pointer width and CFI unwinding.
+   - **RISC-V (`qemu-virt-rv32` / `11.1.0` / `base`, `qemu-virt-rv64` / `11.1.0` / `rv64`)**:
+     Builds `rv32imac_zicsr` (`ilp32`) and `rv64imac_zicsr` (`lp64`, 64-bit ticks);
+     verifies saved/live CFI unwinding, M-mode IRQ traps, synchronous `ecall` yield,
+     `xPortStartFirstTask` first-start stages, `vTaskSwitchContext` before/after TCB
+     writeback, `processed_source` restore stages, and fail-closed non-`ecall` sync faults.
 3. **File-only static snapshot for corruption negatives (`mps2-an521/11.1.0/snapshot`)**:
    - Loaded via `StaticElfSession` (`tests/support/freertos_elf_harness.py`)
      using GDB `file` only (no QEMU). Pre-initialized `.data` structures in
@@ -235,7 +237,7 @@ Verification spans three complementary execution arms:
 | `test_smp.py` | Dual-core `pxCurrentTCBs[0..1]` running-task resolution, `CPU` placement, core-affinity masks (`gdr_bound`), and preemption-disable state (`gdr_preempt`). |
 | `test_snapshot.py` | File-only negative testing for `frt check` and inline `Check[...]` failure/mismatch/corrupt verdicts on `freertos.elf` and `snapshot_heap.elf`. |
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
-| `test_backtrace.py` | Saved-context and live chains across all ports, proven exit completeness versus partial RISC-V first-task chains, external IRQ & SysTick cross-stack unwinding (including extended FPU frames on `mps2-an386`), real M-profile PendSV/SVC transition stages with raw oracles, deterministic synchronous faults (`synchronous-fault` on M3/M4/M33, `fault-frame-imprecise` on M0), bounded depth, explicit refusals, and unchanged halted target state. |
+| `test_backtrace.py` & `test_riscv_backtrace.py` | Saved-context and live chains across all ports, proven exit completeness versus partial RISC-V first-task chains, external IRQ & SysTick cross-stack unwinding (including extended FPU frames on `mps2-an386`), real M-profile PendSV/SVC and RISC-V `xPortStartFirstTask`/`ecall`/trap-prologue/`vTaskSwitchContext`/`processed_source` transition stages with raw oracles, deterministic synchronous faults (`synchronous-fault` on M3/M4/M33, `fault-frame-imprecise` on M0, `exception-frame-type-unproven` on non-`ecall` RISC-V), bounded depth, explicit refusals, and unchanged halted target state. |
 
 ### Exception unwind acceptance
 
@@ -277,9 +279,10 @@ python3 ci/test.py run freertos mps2-an385 11.1.0 full -- tests/integration/free
 
 ### Scheduler unwind acceptance
 
-The scheduler tests run across `freertos/mps2-an385/full`,
-`freertos/microbit/11.1.0/full`, `freertos/mps2-an386/11.3.1/fpu`, and
-`freertos/mps2-an505/11.3.1/full` (gated by `gdr_sched_gate`). Tests
+The scheduler tests run across Arm M-profile (`freertos/mps2-an385/full`,
+`freertos/microbit/11.1.0/full`, `freertos/mps2-an386/11.3.1/fpu`,
+`freertos/mps2-an505/11.3.1/full`) and RISC-V (`freertos/qemu-virt-rv32/11.1.0/base`,
+`freertos/qemu-virt-rv64/11.1.0/rv64`, `rtthread/rv32/4.0.5`, `rtthread/rv64/4.0.5`). Tests
 check compiled instruction bytes and raw TCBs, saved core registers, hardware
 frames, PSP/MSP and xPSR independently of GDR's stage decision. Breakpoints
 observe SysTick before PendSV, the current-TCB store before/after execution,
@@ -288,7 +291,7 @@ before scheduling, and the first SVC path. Refusal tests cover unmatched
 profiles and unproven stops. Unit/synthetic mutations and offline ELF
 perturbations test rejection but do not establish additional live support.
 Build facts live in the [scheduler fixture guide](../ci/fixture/freertos/README.md#mps2-an385-armv7-m);
-the supported stages and exclusions live in [errata](errata.md#task-backtraces).
+the supported stages and exclusions live in [boundaries](boundary.md#task-backtraces) ([FreeRTOS](boundary.md#freertos-backtrace-matrix), [RT-Thread](boundary.md#rt-thread-backtrace-matrix)).
 
 ## Isolated `.eh_frame` variant
 

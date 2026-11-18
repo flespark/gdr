@@ -2,7 +2,7 @@
 
 The architecture decisions behind GDR's layering. Each entry states the rule
 and why it exists; the mechanisms themselves are described in
-`architecture.md`, and current limitations in `errata.md`.
+`architecture.md`, and current limitations in `boundary.md`.
 
 ## Explicit initialization, never auto-detection
 

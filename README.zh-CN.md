@@ -21,8 +21,8 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
 
 | RTOS | 版本 | 状态 |
 |------------|-------------------------------|----------------------------------------------------------------------------------------------------------------------------|
-| RT-Thread  | 3.1.x、4.0.x、4.1.x           | 已实现；Arm M/A-profile 和 RV32/RV64；[已验证的版本、端口与限制](docs/errata.md#task-backtraces) |
-| FreeRTOS   | V10.3.0–V11.3.x               | 已实现；已在 Armv7-M（`mps2-an385`）、Armv8-M Mainline SMP/MPU（`mps2-an521`）、Armv6-M（`microbit`）与 RISC-V（`virt` RV32/RV64）验证 |
+| RT-Thread  | 3.1.x、4.0.x、4.1.x           | 已实现；Arm M/A-profile 和 RV32/RV64；[已验证的版本、端口与限制](docs/boundary.md#rt-thread) |
+| FreeRTOS   | V10.3.0–V11.3.x               | 已实现；Armv6-M/v7-M/v7E-M/v8-M Mainline（SMP/MPU）与 RV32/RV64；[已验证的版本、端口与限制](docs/boundary.md#freertos) |
 
 ## 快速开始
 

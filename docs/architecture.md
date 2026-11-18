@@ -11,7 +11,7 @@ firmware in GDB by:
 
 Non-goals: replacing GDB expressions, wrapping QEMU monitor commands, or
 duplicating what GDB already displays well. Design rationale lives in
-`decisions.md`, verification in `testing.md`, and known limits in `errata.md`.
+`decisions.md`, verification in `testing.md`, and known limits in `boundary.md`.
 
 ## Layering
 
@@ -63,9 +63,10 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** `RtConfig`, symbol-presence probing, `build_layouts(config)`, version policy and probe evidence. |
 | `navigation.py` | Registry/current-thread/tick symbols, type codes, timer traversal, halted system-heap snapshot. Returns raw `gdb.Value`. |
 | `stackpc.py` | Last PC from the version-specific frame, retaining the Cortex-A9 path. Verified RV64 uses the selected saved-context profile. |
-| `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing orchestration for integer Arm M/A-profile and RV32/RV64 contexts. Arm M-profile handler contexts use shared segment/exception validation; proven scheduler transitions select owner-consistent seeds per stage. Verified configurations and extension limits live in [errata](errata.md#task-backtraces). |
-| `arm_scheduler_switch.py` / `scheduler_seed.py` | Pure compiled Arm M-profile (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state `armv8m-integer`/`fpu`) transition profiles, stage classification, and owner-consistent seed selection. |
-| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and stage classification (`virt64` `stacked-epc`, `e310` `deferred-mepc`). |
+| `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing orchestration for integer Arm M/A-profile and RV32/RV64 contexts. Arm M-profile handler contexts use shared segment/exception validation; proven scheduler transitions select owner-consistent seeds per stage. Verified configurations and extension limits live in [RT-Thread boundaries](boundary.md#rt-thread-backtrace-matrix). |
+| `arm_scheduler_switch.py` | Pure compiled Arm M-profile (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state `armv8m-integer`/`fpu`) scheduler transition profiles (`rt_hw_context_switch`, `PendSV_Handler`, `rt_hw_context_switch_to`) and stage classification. |
+| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and stage classification (`rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry`, `rt_hw_context_switch_exit`, `spurious_interrupt`; distinguishing `virt64` `stacked-epc` from `e310` `deferred-mepc`). |
+| `scheduler_seed.py` | Owner-consistent seeds from classified Arm M-profile and RISC-V scheduler/trap stages. |
 | `stack_frame_profile.py` | ISA selection and decoded Arm/RISC-V save/restore/initial-context evidence (register bitmaps, SP switch, LWP header) without fixed instruction-stream fingerprints; unverified profiles remain gated. |
 | `adapter.py` | Intermediate models, value conversion, task/object tables, detail dispatch, system summaries. |
 | `views.py` | Column contracts, typed detail-table navigation cells, heap views and verdicts. |
@@ -82,7 +83,7 @@ duplicating what GDB already displays well. Design rationale lives in
 | `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic handler-frame transitions use ISA-specific validation and verified port evidence. |
 | `arm_scheduler_switch.py` | Pure compiled Arm M-profile (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, `ARM_CM33_NTZ`) transition profiles and instruction-relative stage classification; GDB-facing collection remains in `backtrace_gdb.py`. |
 | `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and CFG-partitioned stage classification (`xPortStartFirstTask`, `freertos_risc_v_trap_handler`, `vTaskSwitchContext`). |
-| `scheduler_seed.py` | Owner-consistent seeds from classified stages under basic/FPU software-block and hardware-frame geometry. |
+| `scheduler_seed.py` | Owner-consistent seeds from classified Arm M-profile (basic/FPU) and RISC-V scheduler/trap stages. |
 | `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled RISC-V save-layout evidence for verified profile selection. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |
@@ -121,106 +122,35 @@ Task stack backtraces resolve the task, decode its TCB/port context, parse
 the loaded ELF's unwind sections and walk bounded frames:
 
 ```text
-rtt/frt backtrace <task> / gdr api backtrace -> adapter
-  -> saved/live seed registers + task stack bounds
-  -> for a gated Armv6-M/Armv7-M handler seed: linker-owned MSP span + PSP + xPSR
-  -> core.unwind_meta (ELF sections and symbols)
-  -> core.unwind_cfi / core.unwind_ehabi (unwind metadata)
-  -> core.unwind (metadata selection, optional frame pointer, segment/bounds/depth proof)
-  -> evidence-gated exception transition -> exact stacked PC and restored context
-  -> frames + method + complete/stop_reason
+rtt/frt backtrace <task> / gdr api backtrace -> active adapter (backtrace_gdb.py)
+  -> saved task profile (backtrace.py + stack_frame_profile.py)
+     or live/handler/scheduler seed (scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
+  -> core.unwind_meta (ELF sections, sized symbols, code bytes)
+  -> core.unwind_cfi / core.unwind_ehabi / core.unwind_leaf (step recovery + optional FP)
+  -> core.unwind (typed segments, PC - 1 normalization, exception hooks, budgets)
+  -> frames + method + complete/stop_reason + messages
 ```
 
-CFI register recovery removes unavailable values and carries their failure
-reasons into subsequent steps; an undefined or unreadable register cannot
-serve as a later CFA base or register-copy source. Known FDE ranges retain
-CIE/rule errors. Parse failures with undecodable coverage prohibit
-frame-pointer fallback unless an independent metadata rule covers the PC;
-clean uncovered PCs retain the bounded fallback.
-
-Clean uncovered PCs first admit an instruction leaf only when ELF function
-types bound a complete, supported straight-line SP/LR-preserving return path.
-The scan uses ELF code, not target stack searches or function-name whitelists.
-Clobbered registers and the caller's unknown LR are unavailable to later rows;
-normal PC, segment, progress and depth guards apply. The `leaf` method and
-messages retain the instruction proof rather than presenting it as CFI.
-
-`DW_CFA_def_cfa_expression` computes CFA; `DW_CFA_expression` computes a
-register-save address, while `DW_CFA_val_expression` computes the register
-value without a second dereference. The pure evaluator uses target-width
-integers and independent bytecode, step, stack and read budgets; branch
-targets must be instruction boundaries and reads must fit the target address
-space and current stack bounds. Expression failures stop the walk rather
-than enabling frame-pointer fallback. Non-PC-relative encoded pointers
-require explicit text/data/function bases or an indirect reader; missing
-context is rejected rather than inferred from a section address.
-
-Exception transitions carry typed stack segments with identity, owner, bounds
-and source. Ordinary unwind steps stay within their current segment and retain
-the progress and bounds checks; only an architecture hook may cross segments
-after validating the return value and frame. Armv6-M and Armv7-M decoders own
-their EXC_RETURN candidates/whitelists and IPSR field widths/tables, then pass
-the selected stack mode, exception classifier and IPSR mask to the shared
-eight-word hardware-frame reader. That reader restores r0-r3, r12, LR, PC,
-SP and the stacked xPSR alignment padding while enforcing segment bounds and
-exception read budgets. Armv6-M has a six-bit IPSR and supports exception
-numbers through 47; exception entry always aligns SP to eight bytes and stacked
-xPSR[9] records whether the original SP needed four bytes of padding. Armv7-M
-has a nine-bit IPSR and exception numbers through 511; CCR.STKALIGN controls
-whether entry realigns SP and whether stacked xPSR[9] restores padding. A frame
-with IPSR bits above the selected ISA's field width is rejected.
-The FreeRTOS adapter requires linker-owned MSP bounds, readable live
-PSP/MSP/xPSR and running-scheduler ownership; missing evidence refuses the seed.
-Proven vector entries require a candidate EXC_RETURN and both transition
-hooks. Saved task contexts require stacked IPSR zero. ISA-specific classifiers
-reject invalid exception numbers; adapter policy separately refuses unverified
-system exceptions and fault contexts. Scheduler contexts require the separate
-compiled-stage proof described below. Armv7-M reads ICTR for its external
-interrupt capacity and VTOR for vector entries. The Armv6-M port gate requires
-Cortex-M0 CPUID (`0x410CC200`), fixed-zero vector symbols and an explicit
-1..32 IRQ-count linker fact; it reads vectors directly and never reads ICTR, VTOR or
-CCR. Both paths apply capacity/exception guards to live and restored frames.
-Crossed exception PCs are exact resume PCs, not ordinary
-return addresses subject to `PC - 1`. Segment and transition records remain
-internal; JSON schema 3 uses the existing `method`, `stop_reason` and
-`messages` fields for the transition result/evidence.
-
-Independent architecture and RTOS-port acceptance requirements live in
-[testing](testing.md#exception-unwind-acceptance). Verified lanes and
-exception-mode limits live in [errata](errata.md#task-backtraces).
-
-Scheduler seeds require a matching compiled ARM_CM3 profile. The pure decoder
-retains instruction direction, load/store, writeback, register operands and
-branch targets. The three naked port assembly functions are verified
-instruction-by-instruction, with any legal non-zero PendSV BASEPRI mask
-accepted and trailing `$d` literal pools excluded. `vTaskSwitchContext` is
-proven by bounded forward register provenance over its pure-code spans: exactly
-one `str rt, [rn, #0]` must store the owner of a ready-list item through a
-register that certainly holds `&pxCurrentTCB`. Multiple stores, unknown
-sources, an entry store, inline data gaps or an unreadable stream fail closed.
-The fingerprint carries normalized semantic tokens and the store's structural
-signature, never link addresses or line-number immediates. Exact instruction
-addresses denote stops before execution; unknown PCs inside a transition
-function are refused.
-Stage-specific TCB, register, saved-buffer and PSP checks choose the old or
-new task context without joining registers from different tasks. Hardware
-seed paths share frame-base, stacked ALIGN, CCR.STKALIGN and restored-SP
-validation; a separate software-prebuilt-frame rule applies to first SVC.
-First-start seeds also require initial-register/exit-sentinel evidence and
-an exact sized ELF function entry. Supported stages and exclusions live in
-[errata](errata.md#task-backtraces); live verification lives in
-[testing](testing.md#freertos-suite-organization-and-capability-coverage).
-
-Each CFI row carries its CIE return-address column and signal-frame flag;
-the architecture selects SP independently. Virtual return columns require
-an explicit recovery rule and are not propagated as machine registers.
-An undefined return column ends a partial chain, not a proven task root.
-Frames retain the normalized resume PC; ordinary caller metadata, symbols
-and source locations use `PC - 1`, while the seed, signal-CIE caller and
-independently proven task root use the exact PC. This lookup adjustment does
-not decode instruction lengths. Hardware exception transitions are decoded
-only by their separately gated architecture path; the JSON contract is
-unchanged.
+Every task backtrace requires explicit stack bounds and typed segments carrying
+identity, owner, bounds and source: saved tasks decode only verified port
+layouts, while live handler or scheduler stops select owner-consistent seeds
+only after validating architecture state (`core.unwind_arm` / `core.unwind_riscv`)
+and compiled instruction-level transition profiles (`arm_scheduler_switch.py` /
+`riscv_scheduler_switch.py`), refusing mixed-task state or unverified stops.
+`core.unwind` steps frames via `.debug_frame`/`.eh_frame` (including on-demand
+`.eh_frame_hdr` search and bounded integer `DW_CFA_*` expressions) or sized
+`EXIDX` tables, strips unavailable registers instead of reusing stale bases,
+admits `leaf` steps only on clean metadata gaps with a proven straight-line
+return, and prohibits frame-pointer fallback whenever metadata or expressions
+fail—never scanning stacks for return addresses, invoking inferior calls, or
+writing target memory. Ordinary frames normalize caller metadata lookups with
+`PC - 1` while seeds, signal CIE frames, crossed exception PCs, and proven
+task roots retain exact PCs; segment boundaries reject arbitrary jumps so only
+evidence-gated architecture hooks cross between handler and task stacks under
+independent depth and read budgets, failing closed via structured `stop_reason`
+and `messages` outputs (see
+[testing](testing.md#exception-unwind-acceptance) and
+[boundaries](boundary.md#task-backtraces)).
 
 Native inspection stays separate:
 
@@ -280,15 +210,15 @@ for reads a client retries after the next stop, `internal` otherwise).
 
 ## Adapter capability comparison
 
-Boundary details behind each row live in `errata.md`.
+Boundary details behind each row live in `boundary.md`.
 
 | Debugging dimension | RT-Thread (`rtt`) | FreeRTOS (`frt`) |
 | --- | --- | --- |
-| **Versions and architectures** | `3.1.0–3.1.5`, `4.0.0–4.1.1` (Arm M/A-profile 32-bit, RISC-V 32/64-bit; verified version/port combinations in [errata](errata.md#task-backtraces)) | `10.3.0–11.3.x` (Armv6-M, Armv7-M, Armv8-M Mainline SMP and MPU 32-bit; RISC-V 32/64-bit) |
+| **Versions and architectures** | `3.1.0–3.1.5`, `4.0.0–4.1.1` (Arm M/A-profile 32-bit, RISC-V 32/64-bit; verified version/port combinations in [boundaries](boundary.md#rt-thread)) | `10.3.0–11.3.x` (Armv6-M, Armv7-M, Armv8-M Mainline SMP and MPU 32-bit; RISC-V 32/64-bit) |
 | **Object discovery** | Kernel global object registry plus the active timer lists | Six-channel evidence merge (MPU pool, registry, active lists, symbols, waiter hosts, user addresses) with `Src` provenance and a `Queue_t` discriminator (`?` when inferred) |
 | **Task basics** | TCB keeps `Entry`; `Stack`/`Used`/`HighWater` always derivable; `Error` and `RemainingTick`; SMP `CPU`/`Bind` | No retained `Entry`; `Stack`/`Used`/`HighWater` need `pxEndOfStack`; `Runtime`, `WakeTick`/`BlockedOn`, `Notify[n]`; SMP `CPU`/`Affinity` |
 | **Last PC (`stackpc.py`)** | Slot keyed by version and pointer width; entry/call/code proof | Slot keyed by port evidence (build attributes and port symbols); code symbol plus Arm M-profile Thumb-bit proof |
-| **Task backtrace (`backtrace`)** | Compiled port evidence selects integer saved contexts; EHABI/CFI and instruction-proven leaves recover bounded saved/current chains. Unstarted roots require the retained entry and initial fill; configuration and IRQ acceptance are listed in [errata](errata.md#task-backtraces). | Armv6-M, Armv7-M, Armv8-M Mainline SMP+MPU, RV32 and RV64 verified on integer-only port configurations; EHABI preferred, DWARF CFI and validated frame-pointer fallback; SMP task on another core reports `smp-no-context` |
+| **Task backtrace (`backtrace`)** | Compiled port evidence selects integer saved contexts; EHABI/CFI and instruction-proven leaves recover bounded saved/current chains. Unstarted roots require the retained entry and initial fill; configuration and IRQ acceptance are listed in [boundaries](boundary.md#rt-thread-backtrace-matrix). | Armv6-M, Armv7-M, Armv8-M Mainline SMP+MPU, RV32 and RV64 verified on integer-only port configurations; EHABI preferred, DWARF CFI and validated frame-pointer fallback; SMP task on another core reports `smp-no-context` |
 | **IPC and sync objects** | Semaphores, mutexes, events, mailboxes (with slot addresses), message queues, memory pools; unified `FIFO`/`PRIO` policy | Queue family (queues with FIFO item addresses and set membership, binary/counting semaphores, recursive mutexes), event groups with per-waiter conditions, stream/message/batch buffers |
 | **Software timers** | Hard/soft and one-shot/periodic modes; registry vs active-list `Src` evidence | Current/overflow epoch handling, symbolic IDs, daemon command-queue decode |
 | **Heap (`heap` / `heap dump`)** | `small_mem`, `memheap`, `slab`; per-thread owner colours with `MEMTRACE`; walk-vs-counter accounting | `heap_1..5` (heap_3 wraps malloc); no owner field so no per-task attribution; protector canary decode; free-list/linear cross-check |
