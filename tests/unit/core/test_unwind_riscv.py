@@ -20,6 +20,7 @@ from core.unwind_riscv import (
     prepare_riscv_handler_unwind,
     resolve_riscv_irq_stack_bounds_detail,
     riscv_exception_guard,
+    riscv_fault_precision,
     riscv_live_seed_detail,
     riscv_snapshot,
     riscv_trap_transition_factory,
@@ -171,6 +172,28 @@ def test_mcause_decode_and_guard():
     )
     assert riscv_exception_guard(64, 0x80001000, xlen=32) == "exception-number-invalid"
     assert riscv_exception_guard(2, 0x80001000, xlen=32) is None
+    for code in (0, 1, 2, 4, 5, 6, 7):
+        assert riscv_exception_guard(code, 0x80001000, xlen=32) is None
+    for unmodeled in (3, 8, 9, 10, 12, 13, 15, 24):
+        assert (
+            riscv_exception_guard(unmodeled, 0x80001000, xlen=32)
+            == "exception-frame-type-unproven"
+        )
+
+    assert riscv_fault_precision(0x80000007, 32, mepc=0x80001020) is None
+    assert riscv_fault_precision(MCAUSE_EXC_ECALL_M, 32, mepc=0x80001020) is None
+    assert riscv_fault_precision(24, 32, mepc=0x80001020) is None
+    ill = riscv_fault_precision(2, 32, mepc=0x80001020, mtval=0x1234)
+    assert ill is not None
+    assert ill.precise is True
+    assert ill.fault == "Exception:IllegalInstruction"
+    assert "mcause=0x2" in ill.evidence
+    assert "mepc=0x80001020" in ill.evidence
+    assert "mtval=0x1234" in ill.evidence
+    load_fault = riscv_fault_precision(5, 64, mepc=0x80001020, mtval=None)
+    assert load_fault is not None
+    assert load_fault.fault == "Exception:LoadAccessFault"
+    assert "mtval=" not in load_fault.evidence
 
 
 def test_riscv_snapshot_and_live_seed_mask_signed_gdb_ints():
@@ -182,7 +205,14 @@ def test_riscv_snapshot_and_live_seed_mask_signed_gdb_ints():
     assert snap.mcause == 0x80000007
     assert snap.mepc == 0x80001020
     assert snap.mtvec == 0x80001000
+    assert snap.mtval is None
     assert snap.registers[2] == 0x8001FFE0
+
+    snap_mtval, reason_mtval = riscv_snapshot(
+        xlen=32, gdb_module=_fake_gdb({**regs, "mtval": 0xDEAD0001})
+    )
+    assert reason_mtval == "ok"
+    assert snap_mtval is not None and snap_mtval.mtval == 0xDEAD0001
 
     seed_no_csr, reason = riscv_live_seed_detail(
         "riscv32", gdb_module=_fake_gdb(regs, fail_on={"mcause"})
@@ -627,3 +657,86 @@ def test_transition_factory_edge_failures():
         task_frame_resolver=lambda _c: 0x80000100,
     )
     assert hook_oob(ctx) == "exception-frame-outside-bounds"
+
+
+def test_prepare_riscv_handler_unwind_attaches_fault_only_on_sync_faults():
+    span = _span_with_layout(epc_offset=0, sync_addend=4)
+    task_seg = StackSegment(
+        ident="task:1",
+        owner="spin",
+        low=0x80010000,
+        high=0x80012000,
+        source="task-recorded",
+        stack="process",
+        kind="task",
+    )
+    snap_irq = RiscvSnapshot(
+        xlen=32,
+        pc=0x80002010,
+        sp=0x8001FFE0,
+        mstatus=MSTATUS_MPP_MACHINE,
+        mcause=0x80000007,
+        mepc=0x80003010,
+        mtvec=0x80001000,
+        registers={1: 0x800010C0, 2: 0x8001FFE0, 8: 0x80011E00},
+    )
+    setup_irq = prepare_riscv_handler_unwind(
+        snap_irq,
+        root_pc=0x80004000,
+        span=span,
+        task_segment=task_seg,
+        irq_stack_bounds=lambda: (0x8001F000, 0x80020000, "symbol:irq"),
+        nest_count=1,
+        endian="little",
+        task_frame_resolver=lambda _c: 0x80011E00,
+    )
+    assert not isinstance(setup_irq, tuple)
+    assert setup_irq.fault is None
+
+    snap_fault = RiscvSnapshot(
+        xlen=32,
+        pc=0x80002010,
+        sp=0x8001FFE0,
+        mstatus=MSTATUS_MPP_MACHINE,
+        mcause=2,
+        mepc=0x80003010,
+        mtvec=0x80001000,
+        registers={1: 0x800010C0, 2: 0x8001FFE0, 8: 0x80011E00},
+        mtval=0x1337,
+    )
+    setup_fault = prepare_riscv_handler_unwind(
+        snap_fault,
+        root_pc=0x80004000,
+        span=span,
+        task_segment=task_seg,
+        irq_stack_bounds=lambda: (0x8001F000, 0x80020000, "symbol:irq"),
+        nest_count=1,
+        endian="little",
+        task_frame_resolver=lambda _c: 0x80011E00,
+    )
+    assert not isinstance(setup_fault, tuple)
+    assert setup_fault.fault is not None
+    assert setup_fault.fault.fault == "Exception:IllegalInstruction"
+    assert "mtval=0x1337" in setup_fault.fault.evidence
+
+    snap_bad = RiscvSnapshot(
+        xlen=32,
+        pc=0x80002010,
+        sp=0x8001FFE0,
+        mstatus=MSTATUS_MPP_MACHINE,
+        mcause=24,
+        mepc=0x80003010,
+        mtvec=0x80001000,
+        registers={1: 0x800010C0, 2: 0x8001FFE0, 8: 0x80011E00},
+    )
+    refused = prepare_riscv_handler_unwind(
+        snap_bad,
+        root_pc=0x80004000,
+        span=span,
+        task_segment=task_seg,
+        irq_stack_bounds=lambda: (0x8001F000, 0x80020000, "symbol:irq"),
+        nest_count=1,
+        endian="little",
+        task_frame_resolver=lambda _c: 0x80011E00,
+    )
+    assert isinstance(refused, tuple) and refused[0] == "exception-frame-type-unproven"

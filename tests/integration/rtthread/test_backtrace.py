@@ -1179,6 +1179,54 @@ print(json.dumps({"mepc": int(frame.read_register("mepc")) & mask}))
         assert any("gdr_bt_live_leaf" in sym for sym in symbols[1:]), symbols
         assert any("gdr_bt_live_middle" in sym for sym in symbols[1:]), symbols
         assert "thread_exit" in symbols[-1], symbols
+
+        sync_check = _json_line(
+            gdb_session.run_python(
+                """
+import dataclasses, json
+from core.adapter import active
+import rtthread.backtrace_gdb as bt
+
+orig = bt._riscv_snapshot
+def forced(cause):
+    def _wrap(*, xlen=32):
+        snap, reason = orig(xlen=xlen)
+        if snap is None:
+            return None, reason
+        return dataclasses.replace(snap, mcause=cause, mtval=0x1234), "ok"
+    return _wrap
+
+bt._riscv_snapshot = forced(2)
+try:
+    rep = bt.backtrace(active(), "worker3")
+finally:
+    bt._riscv_snapshot = orig
+
+bt._riscv_snapshot = forced(24)
+try:
+    bad = bt.backtrace(active(), "worker3")
+finally:
+    bt._riscv_snapshot = orig
+
+print(json.dumps({
+    "complete": rep.complete,
+    "stop_reason": rep.stop_reason,
+    "frame1_pc": rep.frames[1].pc if len(rep.frames) > 1 else None,
+    "frame1_method": rep.frames[1].method if len(rep.frames) > 1 else None,
+    "messages": rep.messages,
+    "bad_complete": bad.complete,
+    "bad_reason": bad.stop_reason,
+}))
+"""
+            )
+        )
+        assert sync_check["complete"] is True, sync_check
+        assert sync_check["stop_reason"] == "synchronous-fault", sync_check
+        assert sync_check["frame1_method"] == "exception", sync_check
+        assert sync_check["frame1_pc"] == raw["mepc"], (sync_check, raw)
+        assert any("Exception:IllegalInstruction" in m for m in sync_check["messages"])
+        assert sync_check["bad_complete"] is False, sync_check
+        assert sync_check["bad_reason"] == "exception-frame-type-unproven", sync_check
     finally:
         _clear_breakpoints(gdb_session)
         gdb_session.run("set var gdr_irq_hold = 0")

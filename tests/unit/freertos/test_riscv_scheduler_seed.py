@@ -826,12 +826,35 @@ def test_gdb_bridge_current_pc_tracks_old_and_new_tasks_across_riscv_switch(
     ]
     assert "stage=switch-after-update" in " ".join(rep_after.messages)
 
-    # 3. Non-ecall sync exception inside application_exception_handler fails closed.
+    # 3. Precise sync fault inside trap-sync-dispatch succeeds; unmodeled mcause fails closed.
+    state["current"] = _OLD_TCB
+    mem.write_frame(
+        _OLD_TOP, epc=_TASK_LEAF_PC + 8, ra=_TASK_ENTRY_PC + 12, fill=0xA5A5A5A5
+    )
+    app_exc_pc = next(
+        pc for pc, st in profile.stages.items() if st.name == "trap-sync-dispatch"
+    )
+    state["snap"] = _snap(
+        profile,
+        app_exc_pc,
+        sp=_ISR_SP,
+        mcause=2,
+        mepc=_TASK_LEAF_PC + 4,
+    )
+    rep_sync = bridge.backtrace(adapter)
+    assert rep_sync.complete and rep_sync.stop_reason == "synchronous-fault"
+    assert [f.pc for f in rep_sync.frames] == [
+        _TASK_LEAF_PC + 4,
+        _TASK_ENTRY_PC + 12,
+        _EXIT_PC,
+    ]
+    assert any("Exception:IllegalInstruction" in m for m in rep_sync.messages)
+
     state["snap"] = _snap(
         profile,
         _APP_EXC_ADDR + 4,
         sp=_ISR_SP,
-        mcause=2,
+        mcause=24,
         mepc=_TASK_LEAF_PC + 8,
     )
     rep_fault = bridge.backtrace(adapter)
@@ -965,3 +988,92 @@ def test_riscv_prologue_saving_live_reg_subset_and_popped_strict_top():
         )
         == "scheduler-first-start-entry-unproven"
     )
+
+
+def test_riscv_sync_fault_stages_recover_mepc_and_attach_fault():
+    elf = _build_rv_elf(32)
+    profile, _ = build_riscv_profile(elf)
+    assert profile is not None
+    mem = _Mem(4)
+    fault_pc = _TASK_LEAF_PC + 8
+    mem.write_frame(_OLD_TOP, epc=fault_pc + 4, ra=_TASK_ENTRY_PC + 12, fill=0xA5A5A5A5)
+
+    def _is_entry(addr: int) -> bool:
+        sym = elf.function_containing(addr)
+        return sym is not None and sym.start == addr
+
+    sync_stage_pcs = [
+        ("trap-entry", profile.trap_start, _OLD_TOP + profile.frame_bytes),
+        ("trap-prologue-saving", profile.trap_start + 4, _OLD_TOP),
+        ("trap-prologue-tcb-written", profile.sync_epc_store_pc, _OLD_TOP),
+        ("trap-prologue-epc-saved", profile.sync_epc_store_pc + 4, _OLD_TOP),
+        (
+            "trap-sync-dispatch",
+            next(
+                pc
+                for pc, st in profile.stages.items()
+                if st.name == "trap-sync-dispatch"
+            ),
+            _ISR_SP,
+        ),
+        (
+            "trap-sync-unhandled",
+            next(
+                pc
+                for pc, st in profile.stages.items()
+                if st.name == "trap-sync-unhandled"
+            ),
+            _ISR_SP,
+        ),
+    ]
+    for stage_name, stage_pc, live_sp in sync_stage_pcs:
+        st = classify_riscv_stage(profile, stage_pc)
+        assert not isinstance(st, str) and st is not None
+        assert st.name == stage_name
+        snap = _snap(profile, stage_pc, sp=live_sp, mcause=2, mepc=fault_pc)
+        res = build_riscv_stage_seed(
+            profile,
+            st,
+            snapshot=snap,
+            read=mem.read,
+            context=RISCV32_INTEGER,
+            endian="little",
+            task_tcb=_OLD_TCB,
+            task_top=_OLD_TOP,
+            task_low=_OLD_LOW,
+            task_high=_OLD_HIGH,
+            current_tcb=_OLD_TCB,
+            exit_pc=_EXIT_PC,
+            is_entry=_is_entry,
+            irq_bounds=(_ISR_LOW, _ISR_HIGH),
+        )
+        assert isinstance(res, SchedulerSeed), (stage_name, res)
+        assert res.seed.pc == fault_pc, stage_name
+        assert (
+            res.fault is not None and res.fault.fault == "Exception:IllegalInstruction"
+        )
+
+    # Unmodeled sync causes (ebreak=3, reserved=24) still fail closed.
+    sync_disp_pc = sync_stage_pcs[4][1]
+    sync_disp = classify_riscv_stage(profile, sync_disp_pc)
+    assert not isinstance(sync_disp, str) and sync_disp is not None
+    for bad_mcause in (3, 24):
+        bad_res = build_riscv_stage_seed(
+            profile,
+            sync_disp,
+            snapshot=_snap(
+                profile, sync_disp_pc, sp=_ISR_SP, mcause=bad_mcause, mepc=fault_pc
+            ),
+            read=mem.read,
+            context=RISCV32_INTEGER,
+            endian="little",
+            task_tcb=_OLD_TCB,
+            task_top=_OLD_TOP,
+            task_low=_OLD_LOW,
+            task_high=_OLD_HIGH,
+            current_tcb=_OLD_TCB,
+            exit_pc=_EXIT_PC,
+            is_entry=_is_entry,
+            irq_bounds=(_ISR_LOW, _ISR_HIGH),
+        )
+        assert bad_res == "exception-frame-type-unproven"

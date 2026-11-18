@@ -1035,9 +1035,11 @@ def _backtrace_thread(
             source="none",
         )
     scheduler_note: str | None = None
+    fault = None
     is_current = current is not None and value_address(current) == thread.address
     if scheduler_decision is not None:
         seed = scheduler_decision.seed
+        fault = scheduler_decision.fault
         scheduler_note = (
             f"scheduler stage {scheduler_decision.stage} "
             f"({scheduler_decision.owner}): {scheduler_decision.evidence}"
@@ -1178,7 +1180,6 @@ def _backtrace_thread(
     current_segment = None
     detector = hook = guard = None
     stkalign = True
-    fault = None
     if seed.exception_number:
         if seed.process_sp is None or not low <= seed.process_sp <= high:
             return _stop_report(
@@ -1351,6 +1352,7 @@ def _backtrace_thread(
                         setup[1],
                     )
                 seed = setup.seed
+                fault = setup.fault
                 segments = (task_segment, setup.exception_segment)
                 current_segment = setup.exception_segment.ident
                 detector, hook, guard = (

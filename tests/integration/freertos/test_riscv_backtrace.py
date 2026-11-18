@@ -28,6 +28,7 @@ _ISA_BY_TARGET = {
     "qemu-virt-rv64": "riscv64",
 }
 _ISA = _ISA_BY_TARGET.get(SPEC.target, "")
+_XLEN = 64 if _ISA == "riscv64" else 32
 _RV_PROFILE_CACHE: RiscvSchedulerProfile | None = None
 
 pytestmark = pytest.mark.skipif(
@@ -407,25 +408,87 @@ from core.adapter import active
 import freertos.backtrace_gdb as bt
 
 original = bt._riscv_snapshot
+def forced_cause(cause):
+    def _wrap(*, xlen=32):
+        snap, reason = original(xlen=xlen)
+        if snap is None:
+            return None, reason
+        return dataclasses.replace(snap, mcause=cause), "ok"
+    return _wrap
+
+bt._riscv_snapshot = forced_cause(2)
+try:
+    snap, _ = original(xlen={_XLEN})
+    report = bt.backtrace(active(), {fault_task!r})
+finally:
+    bt._riscv_snapshot = original
+
+bt._riscv_snapshot = forced_cause(24)
+try:
+    refused = bt.backtrace(active(), {fault_task!r})
+finally:
+    bt._riscv_snapshot = original
+
+print(json.dumps({{
+    "complete": report.complete,
+    "stop_reason": report.stop_reason,
+    "mepc": snap.mepc if snap else None,
+    "pcs": [f.pc for f in report.frames],
+    "messages": report.messages,
+    "refused_complete": refused.complete,
+    "refused_reason": refused.stop_reason,
+}}))
+"""
+            )
+        )
+        assert sync_fault["complete"] is True, sync_fault
+        assert sync_fault["stop_reason"] == "synchronous-fault", sync_fault
+        assert sync_fault["pcs"][0] == sync_fault["mepc"], sync_fault
+        assert any("Exception:IllegalInstruction" in m for m in sync_fault["messages"])
+        assert sync_fault["refused_complete"] is False, sync_fault
+        assert sync_fault["refused_reason"] == "exception-frame-type-unproven", (
+            sync_fault
+        )
+
+        _stop_at(
+            gdb_session,
+            f"*{prof.trap_start:#x} if pxCurrentTCB == gdr_ready_spin_task",
+        )
+        trap_sync = json_line(
+            gdb_session.run_python(
+                f"""
+import dataclasses, json
+from core.adapter import active
+import freertos.backtrace_gdb as bt
+
+original = bt._riscv_snapshot
 def forced_illegal(*, xlen=32):
     snap, reason = original(xlen=xlen)
     if snap is None:
         return None, reason
-    return dataclasses.replace(snap, mcause=2), "ok"
+    return dataclasses.replace(snap, mcause=2, mtval=0xDEADBEEF), "ok"
 
 bt._riscv_snapshot = forced_illegal
 try:
+    snap, _ = original(xlen={_XLEN})
     report = bt.backtrace(active(), {fault_task!r})
 finally:
     bt._riscv_snapshot = original
-print(json.dumps({{"complete": report.complete, "stop_reason": report.stop_reason}}))
+print(json.dumps({{
+    "complete": report.complete,
+    "stop_reason": report.stop_reason,
+    "mepc": snap.mepc if snap else None,
+    "frames": [{{"pc": f.pc, "method": f.method}} for f in report.frames],
+    "messages": report.messages,
+}}))
 """
             )
         )
-        assert sync_fault == {
-            "complete": False,
-            "stop_reason": "exception-frame-type-unproven",
-        }, sync_fault
+        assert trap_sync["complete"] is True, trap_sync
+        assert trap_sync["stop_reason"] == "synchronous-fault", trap_sync
+        assert trap_sync["frames"][1]["method"] == "exception", trap_sync
+        assert trap_sync["frames"][1]["pc"] == trap_sync["mepc"], trap_sync
+        assert any("Exception:IllegalInstruction" in m for m in trap_sync["messages"])
     finally:
         _clear_breakpoints(gdb_session)
         gdb_session.run("set var gdr_irq_hold = 0")

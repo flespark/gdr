@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .cpus import RISCV_CONVENTION
+from .unwind_arm import FaultPrecision
 from .unwind_meta import ElfImage
 from .unwind_segments import (
     ExceptionDetector,
@@ -44,6 +45,16 @@ _RISCV_LIVE_REGISTERS: dict[int, str] = dict(RISCV_CONVENTION.live_registers)
 # Wait — supervisor/hypervisor-only interrupt numbers are outside standard M-mode ports.
 _VALID_MMODE_INTERRUPT_CODES = frozenset((3, 7, 11))
 
+_RISCV_SYNC_FAULT_NAMES: dict[int, str] = {
+    0: "InstAddrMisaligned",
+    1: "InstAccessFault",
+    2: "IllegalInstruction",
+    4: "LoadAddrMisaligned",
+    5: "LoadAccessFault",
+    6: "StoreAddrMisaligned",
+    7: "StoreAccessFault",
+}
+
 
 def u_xlen_mask(xlen: int) -> int:
     """Return the bitmask for an XLEN-wide unsigned integer register."""
@@ -55,6 +66,33 @@ def decode_riscv_mcause(mcause: int, xlen: int) -> tuple[bool, int]:
     value = mcause & u_xlen_mask(xlen)
     interrupt_bit = 1 << (xlen - 1)
     return bool(value & interrupt_bit), value & (interrupt_bit - 1)
+
+
+def riscv_fault_precision(
+    mcause: int,
+    xlen: int,
+    *,
+    mepc: int | None = None,
+    mtval: int | None = None,
+) -> FaultPrecision | None:
+    """Return precise synchronous fault diagnostics for modeled RISC-V fault codes."""
+    is_interrupt, code = decode_riscv_mcause(mcause, xlen)
+    if is_interrupt or code == MCAUSE_EXC_ECALL_M:
+        return None
+    name = _RISCV_SYNC_FAULT_NAMES.get(code)
+    if name is None:
+        return None
+    mask = u_xlen_mask(xlen)
+    parts = [f"mcause={mcause & mask:#x}"]
+    if mepc is not None:
+        parts.append(f"mepc={mepc & mask:#x}")
+    if mtval is not None:
+        parts.append(f"mtval={mtval & mask:#x}")
+    return FaultPrecision(
+        precise=True,
+        fault=f"Exception:{name}",
+        evidence=" ".join(parts),
+    )
 
 
 def riscv_exception_guard(
@@ -78,6 +116,8 @@ def riscv_exception_guard(
         return "exception-frame-type-unproven"
     if code > 63:
         return "exception-number-invalid"
+    if code not in _RISCV_SYNC_FAULT_NAMES:
+        return "exception-frame-type-unproven"
     return None
 
 
@@ -93,6 +133,7 @@ class RiscvSnapshot:
     mepc: int
     mtvec: int
     registers: dict[int, int]
+    mtval: int | None = None
 
 
 def riscv_snapshot(
@@ -127,7 +168,15 @@ def riscv_snapshot(
         mtvec = int(frame.read_register("mtvec")) & mask
     except (active_gdb.error, AttributeError, RuntimeError, TypeError):
         return None, "exception-registers-unavailable"
-    return RiscvSnapshot(xlen, pc, sp, mstatus, mcause, mepc, mtvec, registers), "ok"
+    mtval: int | None
+    try:
+        mtval = int(frame.read_register("mtval")) & mask
+    except (active_gdb.error, AttributeError, RuntimeError, TypeError):
+        mtval = None
+    return (
+        RiscvSnapshot(xlen, pc, sp, mstatus, mcause, mepc, mtvec, registers, mtval),
+        "ok",
+    )
 
 
 def riscv_live_seed_detail(
@@ -237,6 +286,7 @@ class RiscvTrapSetup:
     exception_detector: ExceptionDetector
     exception_hook: ExceptionHook
     exception_guard: TransitionGuard
+    fault: FaultPrecision | None = None
 
 
 def resolve_riscv_irq_stack_bounds_detail(
@@ -551,4 +601,10 @@ def prepare_riscv_handler_unwind(
         exception_detector=span.detect_pc,
         exception_hook=hook,
         exception_guard=guard,
+        fault=riscv_fault_precision(
+            snapshot.mcause,
+            snapshot.xlen,
+            mepc=snapshot.mepc,
+            mtval=snapshot.mtval,
+        ),
     )

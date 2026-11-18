@@ -111,7 +111,7 @@ def _setup_frt_session(
     )
     frame_addr = 0x80011E00
     trap_words = [0] * 31
-    trap_words[0] = 0x80003010  # epc inside spin_leaf
+    trap_words[0] = 0x80003010 if (mcause & 0x80000000) else 0x80003014
     trap_words[1] = 0x80003999
     trap_words[30] = MSTATUS_MPP_MACHINE | 0x80
     mem: dict[int, bytes] = {}
@@ -198,6 +198,26 @@ def test_freertos_riscv_isr_unwinds_to_task_stack(monkeypatch):
     assert report.frames[2].segment == "task:0x80010000"
 
 
+def test_freertos_riscv_precise_sync_fault_and_unmodeled_refusal(monkeypatch):
+    adapter, _ = _setup_frt_session(monkeypatch, seed_pc=0x80002010, mcause=2)
+    report = bridge.backtrace(adapter, "spin")
+    assert report.complete is True
+    assert report.stop_reason == "synchronous-fault"
+    assert [f.pc for f in report.frames] == [0x80002010, 0x80003010, 0x80004000]
+    assert report.frames[1].method == "exception"
+    assert any("Exception:IllegalInstruction" in msg for msg in report.messages)
+
+    adapter_bad, _ = _setup_frt_session(monkeypatch, seed_pc=0x80002010, mcause=24)
+    refused = bridge.backtrace(adapter_bad, "spin")
+    assert refused.complete is False
+    assert refused.stop_reason == "exception-frame-type-unproven"
+
+    adapter_ebreak, _ = _setup_frt_session(monkeypatch, seed_pc=0x80002010, mcause=3)
+    refused_ebreak = bridge.backtrace(adapter_ebreak, "spin")
+    assert refused_ebreak.complete is False
+    assert refused_ebreak.stop_reason == "exception-frame-type-unproven"
+
+
 def test_freertos_riscv_refuses_unverified_vtaskswitchcontext_and_ecall(monkeypatch):
     adapter, _ = _setup_frt_session(monkeypatch, seed_pc=0x80002810, ra=0x800010C4)
     report_direct = bridge.backtrace(adapter, "spin")
@@ -251,3 +271,7 @@ def test_cached_freertos_riscv_elfs_produce_verified_trap_span(elf_path):
     assert span.call_start < span.call_end < span.exit_end
     assert span.layout.epc_offset == 0
     assert span.layout.epc_sync_addend == 4
+    app_exc_pc = elf.symbol_address("application_exception_handler")
+    if app_exc_pc is not None:
+        assert span.call_start <= app_exc_pc < span.call_end
+        assert span.refused_reason(app_exc_pc) is None

@@ -224,12 +224,8 @@ def analyze_riscv_trap_profile(elf: ElfImage) -> RiscvTrapSpan | None:
 
     mret_pc = max(restore)
     exit_end = mret_pc + 4
-    exc_pc = elf.symbol_address("handle_exception")
-    call_end = exc_pc if exc_pc is not None and idle_pc < exc_pc < proc_pc else proc_pc
+    call_end = proc_pc
     refused: list[tuple[int, int, str]] = []
-    app_exc_pc = elf.symbol_address("application_exception_handler")
-    if app_exc_pc is not None and idle_pc < app_exc_pc < proc_pc:
-        refused.append((app_exc_pc, proc_pc, "exception-frame-type-unproven"))
     switch_sym = next(
         (sym for sym in elf.symbols if sym.name == "vTaskSwitchContext"),
         None,
@@ -243,7 +239,12 @@ def analyze_riscv_trap_profile(elf: ElfImage) -> RiscvTrapSpan | None:
                 ret_pc = (
                     dispatch_pcs[index + 1] if index + 1 < len(dispatch_pcs) else pc + 4
                 )
-                refused.append((ret_pc, ret_pc + 4, "scheduler-transition-unproven"))
+                ret_end = (
+                    min(dispatch_pcs[index + 2], proc_pc)
+                    if index + 2 < len(dispatch_pcs)
+                    else min(ret_pc + 4, proc_pc)
+                )
+                refused.append((ret_pc, ret_end, "scheduler-transition-unproven"))
 
     layout = RiscvTrapFrameLayout(
         frame_bytes=31 * word,

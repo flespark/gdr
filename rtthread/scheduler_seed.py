@@ -20,10 +20,13 @@ from core.stack_frame_parser import (
     decode_profile_slots,
 )
 from core.unwind import Endian, Reader, SeedFrame, read_slot
+from core.unwind_arm import FaultPrecision
 from core.unwind_riscv import (
     MSTATUS_MPP_MACHINE,
     MSTATUS_MPP_MASK,
     RiscvSnapshot,
+    riscv_exception_guard,
+    riscv_fault_precision,
     u_xlen_mask,
 )
 
@@ -72,6 +75,7 @@ class SchedulerSeed:
     stage: str
     owner: str
     evidence: str
+    fault: FaultPrecision | None = None
 
 
 def _in_bounds(low: int, high: int, start: int, end: int) -> bool:
@@ -1146,6 +1150,18 @@ def build_riscv_stage_seed(
         nest_err = _riscv_check_nest(profile, stage_name, nest_count)
         if nest_err is not None:
             return nest_err
+        guard_err = riscv_exception_guard(
+            snapshot.mcause,
+            snapshot.pc,
+            xlen=snapshot.xlen,
+            allow_sync=True,
+            allow_ecall=False,
+        )
+        if guard_err is not None:
+            return guard_err
+        fault = riscv_fault_precision(
+            snapshot.mcause, snapshot.xlen, mepc=snapshot.mepc, mtval=snapshot.mtval
+        )
         target_ptr = thread_addr + sp_offset
         if flag_value != 0:
             if (
@@ -1164,7 +1180,7 @@ def build_riscv_stage_seed(
                     source="current",
                     root_pc=(thread_entry & ~1) if thread_entry else None,
                 )
-                return SchedulerSeed(seed, stage_name, "old", evidence)
+                return SchedulerSeed(seed, stage_name, "old", evidence, fault=fault)
             return saved("new" if target_ptr == to_ptr else "other")
         if current_addr is None:
             return "scheduler-owner-inconsistent"
@@ -1187,6 +1203,7 @@ def build_riscv_stage_seed(
             stage_name,
             "old",
             evidence,
+            fault=fault,
         )
 
     if stage.name in ("switch-to-entry", "switch-to-sp-loaded"):
@@ -1280,6 +1297,18 @@ def build_riscv_stage_seed(
             return read_res
         if snapshot.mepc <= 0 or (snapshot.mepc & 1):
             return "exception-context-unproven"
+        guard_err = riscv_exception_guard(
+            snapshot.mcause,
+            snapshot.pc,
+            xlen=snapshot.xlen,
+            allow_sync=True,
+            allow_ecall=False,
+        )
+        if guard_err is not None:
+            return guard_err
+        fault = riscv_fault_precision(
+            snapshot.mcause, snapshot.xlen, mepc=snapshot.mepc, mtval=snapshot.mtval
+        )
         caller_sp = (frame_base + profile.frame_bytes) & mask
         read_res[2] = caller_sp
         return SchedulerSeed(
@@ -1293,6 +1322,7 @@ def build_riscv_stage_seed(
             stage.name,
             "old",
             evidence,
+            fault=fault,
         )
 
     if stage.name in (

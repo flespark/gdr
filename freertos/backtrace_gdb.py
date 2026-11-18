@@ -43,6 +43,13 @@ from core.unwind_arm import (
     ArmSnapshot as _ArmSnapshot,
 )
 from core.unwind_arm import (
+    FaultPrecision,
+    prepare_arm_handler_unwind,
+    resolve_arm_irq_stack_bounds,
+    resolve_arm_irq_stack_bounds_detail,
+    resolve_armv6m_vector_limit,
+)
+from core.unwind_arm import (
     arm_capacity_exception_guard as _capacity_exception_guard,
 )
 from core.unwind_arm import (
@@ -63,12 +70,6 @@ from core.unwind_arm import (
 from core.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
 )
-from core.unwind_arm import (
-    prepare_arm_handler_unwind,
-    resolve_arm_irq_stack_bounds,
-    resolve_arm_irq_stack_bounds_detail,
-    resolve_armv6m_vector_limit,
-)
 from core.unwind_riscv import (
     RiscvSnapshot as _RiscvSnapshot,
 )
@@ -78,6 +79,7 @@ from core.unwind_riscv import (
 from core.unwind_riscv import (
     prepare_riscv_handler_unwind,
     resolve_riscv_irq_stack_bounds_detail,
+    riscv_fault_precision,
 )
 from core.unwind_riscv import (
     riscv_snapshot as _core_riscv_snapshot,
@@ -253,6 +255,7 @@ class _SchedulerDecision:
     seed: SeedFrame | None = None
     reason: str | None = None
     message: str = ""
+    fault: FaultPrecision | None = None
 
 
 _SCHEDULER_SYMBOLS = frozenset(
@@ -337,6 +340,18 @@ def _riscv_scheduler_live_decision(
     is_interrupt, _cause_code = _decode_riscv_mcause(snapshot.mcause, xlen)
     if stage.name in ("trap-entry", "trap-dispatch") and is_interrupt:
         return None
+    if (
+        stage.name in ("trap-entry", "trap-sync-unhandled")
+        and not is_interrupt
+        and riscv_fault_precision(
+            snapshot.mcause,
+            xlen,
+            mepc=snapshot.mepc,
+            mtval=snapshot.mtval,
+        )
+        is not None
+    ):
+        return None
     running = _scheduler_running()
     if running is None:
         return _SchedulerDecision(
@@ -386,7 +401,11 @@ def _riscv_scheduler_live_decision(
                 "TCB or CSRs do not form one task's consistent seed"
             ),
         )
-    return _SchedulerDecision(seed=outcome.seed, message=outcome.evidence)
+    return _SchedulerDecision(
+        seed=outcome.seed,
+        message=outcome.evidence,
+        fault=outcome.fault,
+    )
 
 
 def _scheduler_live_decision(
@@ -522,7 +541,11 @@ def _scheduler_live_decision(
                 "or saved context do not form one task's consistent seed"
             ),
         )
-    return _SchedulerDecision(seed=outcome.seed, message=outcome.evidence)
+    return _SchedulerDecision(
+        seed=outcome.seed,
+        message=outcome.evidence,
+        fault=outcome.fault,
+    )
 
 
 def _selected_core() -> int:
@@ -742,6 +765,7 @@ def _backtrace_task_value(
     messages: list[str] = []
     metadata = _unwind_metadata(adapter)
     scheduler_note: str | None = None
+    fault: FaultPrecision | None = None
 
     def _stop(stop_reason: str, message: str) -> BacktraceReport:
         return BacktraceReport(
@@ -809,6 +833,7 @@ def _backtrace_task_value(
                     )
                 seed = decision.seed
                 scheduler_note = decision.message
+                fault = decision.fault
         elif (
             arch == "riscv"
             and selection.isa in ("riscv32", "riscv64")
@@ -829,6 +854,7 @@ def _backtrace_task_value(
                     )
                 seed = decision.seed
                 scheduler_note = decision.message
+                fault = decision.fault
         if seed is None:
             seed, live_reason = _live_seed_detail(arch, selection.isa)
         if seed is None:
@@ -904,7 +930,6 @@ def _backtrace_task_value(
     exception_hook = None
     exception_guard = None
     stkalign = True
-    fault = None
     handler_mode = arch == "arm" and bool(seed.exception_number)
     if arch == "arm":
         task_segment = _task_segment(task, low, high)
@@ -1025,7 +1050,7 @@ def _backtrace_task_value(
                     nest_count=None,
                     endian=endian,
                     task_frame_resolver=_resolve_frt_trap_frame,
-                    allow_sync=False,
+                    allow_sync=True,
                 )
                 if isinstance(setup, tuple):
                     return _stop(setup[0], setup[1])
@@ -1035,6 +1060,7 @@ def _backtrace_task_value(
                         "pxCurrentTCB does not match the requested task",
                     )
                 seed = setup.seed
+                fault = setup.fault
                 segments.append(setup.exception_segment)
                 current_segment = setup.exception_segment.ident
                 exception_detector = setup.exception_detector

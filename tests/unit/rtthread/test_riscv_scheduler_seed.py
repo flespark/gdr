@@ -987,3 +987,78 @@ def test_rtthread_riscv_bridge_routes_current_and_pending_trap_owner(monkeypatch
     rep_boot = bridge.backtrace(adapter)
     assert not rep_boot.complete
     assert rep_boot.stop_reason == "scheduler-current-tcb-unavailable"
+
+
+def test_rtthread_riscv_sync_fault_in_trap_prologue_saving_attaches_fault():
+    elf = _build_rtt_elf(xlen=32, epc_mode="deferred-mepc")
+    profile, _ = build_riscv_profile(elf)
+    assert profile is not None
+    sel = _selection(32)
+    assert sel.context is not None
+    mem = _Mem(4)
+    saving_sp = _OLD_SP - profile.frame_bytes
+    mem.write_frame(
+        saving_sp,
+        epc=_OLD_LEAF + 8,
+        ra=_OLD_ENTRY + 12,
+        fill=sel.context.fill_word,
+    )
+    st = classify_riscv_stage(profile, profile.trap_start + 8)
+    assert not isinstance(st, str) and st is not None
+    assert st.name == "trap-prologue-saving"
+
+    out = build_riscv_stage_seed(
+        profile,
+        sel,
+        st,
+        flag_value=0,
+        from_ptr=_OLD_ADDR + _SP_OFFSET,
+        to_ptr=_NEW_ADDR + _SP_OFFSET,
+        sp_offset=_SP_OFFSET,
+        thread_addr=_OLD_ADDR,
+        thread_sp=_OLD_SP,
+        thread_entry=_OLD_ENTRY,
+        current_addr=_OLD_ADDR,
+        low=_OLD_LOW,
+        high=_OLD_HIGH,
+        endian="little",
+        read=mem.read,
+        snapshot=_snap(
+            profile,
+            profile.trap_start + 8,
+            sp=saving_sp,
+            mcause=2,
+            regs={8: saving_sp},
+        ),
+        nest_count=0,
+    )
+    assert isinstance(out, SchedulerSeed)
+    assert out.seed.pc == _OLD_LEAF + 8
+    assert out.fault is not None and out.fault.fault == "Exception:IllegalInstruction"
+
+    bad = build_riscv_stage_seed(
+        profile,
+        sel,
+        st,
+        flag_value=0,
+        from_ptr=_OLD_ADDR + _SP_OFFSET,
+        to_ptr=_NEW_ADDR + _SP_OFFSET,
+        sp_offset=_SP_OFFSET,
+        thread_addr=_OLD_ADDR,
+        thread_sp=_OLD_SP,
+        thread_entry=_OLD_ENTRY,
+        current_addr=_OLD_ADDR,
+        low=_OLD_LOW,
+        high=_OLD_HIGH,
+        endian="little",
+        read=mem.read,
+        snapshot=_snap(
+            profile,
+            profile.trap_start + 8,
+            sp=saving_sp,
+            mcause=24,
+            regs={8: saving_sp},
+        ),
+        nest_count=0,
+    )
+    assert bad == "exception-frame-type-unproven"

@@ -10,7 +10,7 @@ task's recorded stack span.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from core.cpus import RISCV_CONVENTION
 from core.stack_frame_parser import SavedStackContext
@@ -20,6 +20,7 @@ from core.unwind_arm import (
     EXC_RETURN_EXTENDED_THREAD_PROCESS,
     EXTENDED_EXC_RETURNS,
     ExceptionReturn,
+    FaultPrecision,
     decode_armv7m_exception_return,
 )
 from core.unwind_meta import Reader
@@ -32,6 +33,7 @@ from core.unwind_riscv import (
     RiscvSnapshot,
     decode_riscv_mcause,
     riscv_exception_guard,
+    riscv_fault_precision,
     u_xlen_mask,
 )
 
@@ -57,6 +59,7 @@ class SchedulerSeed:
     stage: str
     owner: str
     evidence: str
+    fault: FaultPrecision | None = None
 
 
 def _in_bounds(low: int, high: int, address: int, size: int) -> bool:
@@ -1027,10 +1030,22 @@ def _riscv_trap_csrs_ok(
     if guard_reason is not None:
         return guard_reason
     is_interrupt, cause_code = decode_riscv_mcause(snapshot.mcause, snapshot.xlen)
-    if not is_interrupt and cause_code != MCAUSE_EXC_ECALL_M:
+    if (
+        stage.name
+        in (
+            "switch-before-update",
+            "switch-after-update",
+            "restore-sp-loaded",
+            "restore-sp-popped",
+        )
+        and not is_interrupt
+        and cause_code != MCAUSE_EXC_ECALL_M
+    ):
         return "exception-frame-type-unproven"
-    if stage.name == "trap-sync-unhandled":
-        return "exception-frame-type-unproven"
+    if stage.name == "trap-sync-unhandled" and (
+        is_interrupt or cause_code == MCAUSE_EXC_ECALL_M
+    ):
+        return "exception-context-unproven"
     if stage.name == "trap-dispatch" and not is_interrupt:
         return "exception-context-unproven"
     if stage.name == "trap-sync-dispatch" and is_interrupt:
@@ -1142,6 +1157,12 @@ def build_riscv_stage_seed(
     if isinstance(csr_state, str):
         return csr_state
     is_interrupt, cause_code = csr_state
+    fault = riscv_fault_precision(
+        snapshot.mcause,
+        snapshot.xlen,
+        mepc=snapshot.mepc,
+        mtval=snapshot.mtval,
+    )
     resume_pc = _riscv_resume_pc(
         snapshot, is_interrupt=is_interrupt, cause_code=cause_code, mask=mask
     )
@@ -1158,6 +1179,7 @@ def build_riscv_stage_seed(
             stage.name,
             stage.owner,
             evidence,
+            fault=fault,
         )
 
     if stage.name == "trap-prologue-saving":
@@ -1190,6 +1212,7 @@ def build_riscv_stage_seed(
             stage.name,
             stage.owner,
             evidence,
+            fault=fault,
         )
 
     if stage.name == "trap-prologue-tcb-written":
@@ -1217,7 +1240,14 @@ def build_riscv_stage_seed(
             stage.name,
             stage.owner,
             evidence,
+            fault=fault,
         )
+
+    expected_stacked_pc = (
+        (resume_pc + 4) & mask & ~1
+        if not is_interrupt and cause_code != MCAUSE_EXC_ECALL_M
+        else resume_pc
+    )
 
     if stage.name == "trap-prologue-epc-saved":
         seed, reason = _riscv_decode_task_frame(
@@ -1233,11 +1263,17 @@ def build_riscv_stage_seed(
         )
         if seed is None:
             return reason
-        if (seed.pc & ~1) != resume_pc:
+        if (seed.pc & ~1) != expected_stacked_pc:
             return "exception-context-unproven"
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        if seed.pc != resume_pc:
+            seed = replace(seed, pc=resume_pc)
+        return SchedulerSeed(seed, stage.name, stage.owner, evidence, fault=fault)
 
-    if stage.name in ("trap-sync-dispatch", "switch-before-update"):
+    if stage.name in (
+        "trap-sync-dispatch",
+        "trap-sync-unhandled",
+        "switch-before-update",
+    ):
         if irq_bounds is None:
             return "exception-stack-bounds-unavailable"
         if not irq_bounds[0] <= snapshot.sp <= irq_bounds[1]:
@@ -1255,9 +1291,11 @@ def build_riscv_stage_seed(
         )
         if seed is None:
             return reason
-        if (seed.pc & ~1) != resume_pc:
+        if (seed.pc & ~1) != expected_stacked_pc:
             return "exception-context-unproven"
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        if seed.pc != resume_pc:
+            seed = replace(seed, pc=resume_pc)
+        return SchedulerSeed(seed, stage.name, stage.owner, evidence, fault=fault)
 
     if stage.name == "switch-after-update":
         if irq_bounds is None:

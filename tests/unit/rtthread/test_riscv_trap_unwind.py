@@ -61,6 +61,7 @@ def _setup_rtt_session(
     switch_flag: int = 0,
     is_current: bool = True,
     from_thread: int = 0,
+    mcause: int | None = None,
 ):
     word = xlen // 8
     isa = "riscv64" if xlen == 64 else "riscv32"
@@ -150,7 +151,7 @@ def _setup_rtt_session(
         pc=seed_pc,
         sp=0x8001FFE0,
         mstatus=MSTATUS_MPP_MACHINE,
-        mcause=(1 << (xlen - 1)) | 7,
+        mcause=((1 << (xlen - 1)) | 7) if mcause is None else mcause,
         mepc=0x80003010,
         mtvec=0x80001000,
         registers={1: ra, 2: 0x8001FFE0, 8: frame_addr},
@@ -270,6 +271,20 @@ def test_rtthread_riscv_refuses_switch_flag_and_from_thread(monkeypatch):
     report_from = bridge.backtrace(adapter_from, "bt")
     assert not report_from.complete
     assert report_from.stop_reason == "scheduler-profile-unsupported-image"
+
+
+def test_rtthread_riscv_precise_sync_fault_and_unmodeled_refusal(monkeypatch):
+    adapter, _ = _setup_rtt_session(monkeypatch, xlen=64, epc_offset=0, mcause=5)
+    report = bridge.backtrace(adapter, "bt")
+    assert report.complete is True
+    assert report.stop_reason == "synchronous-fault"
+    assert [f.pc for f in report.frames] == [0x80002010, 0x80003010, 0x80004000]
+    assert any("Exception:LoadAccessFault" in msg for msg in report.messages)
+
+    adapter_bad, _ = _setup_rtt_session(monkeypatch, xlen=64, epc_offset=0, mcause=24)
+    refused = bridge.backtrace(adapter_bad, "bt")
+    assert refused.complete is False
+    assert refused.stop_reason == "exception-frame-type-unproven"
 
 
 @pytest.mark.parametrize(
