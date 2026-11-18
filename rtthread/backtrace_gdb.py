@@ -7,7 +7,7 @@ registers through GDB and converts the bounded result to the adapter model.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from core.adapter import (
     BacktraceReport,
@@ -40,6 +40,7 @@ from core.unwind import (
 from core.unwind import live_seed_detail as _core_live_seed_detail
 from core.unwind_arm import (
     ArmSnapshot,
+    FaultPrecision,
     arm_ccr_stkalign,
     arm_exception_guard,
     arm_external_exception_limit,
@@ -666,11 +667,87 @@ def _scheduler_decision(
     return outcome
 
 
+@dataclass(frozen=True)
+class _TargetContext:
+    """Validated target bounds and metadata shared across thread unwind steps."""
+
+    thread: object
+    target: str
+    selection: StackContextSelection
+    low: int
+    high: int
+    current: object | None
+    is_current: bool
+    metadata: UnwindMetadata | None
+    max_depth: int
+
+    @property
+    def architecture(self) -> str:
+        return self.selection.isa or "unknown"
+
+    def stop(
+        self, reason: str, message: str, *, source: str = "current"
+    ) -> BacktraceReport:
+        return _stop_report(
+            self.thread,
+            self.architecture,
+            self.selection.abi,
+            self.max_depth,
+            reason,
+            message,
+            source=source,
+            target=self.target,
+        )
+
+
+@dataclass(frozen=True)
+class _HandlerSetup:
+    """Resolved cross-stack unwind hooks and segments for one stop."""
+
+    seed: SeedFrame
+    fault: FaultPrecision | None
+    segments: tuple[StackSegment, ...] | None
+    current_segment: str | None
+    detector: object | None = None
+    hook: object | None = None
+    guard: object | None = None
+    stkalign: bool = True
+    metadata: UnwindMetadata | None = None
+
+
+def _selected_core() -> int:
+    if gdb is not None:
+        try:
+            thread = gdb.selected_thread()
+            if thread is not None and int(thread.num) >= 1:
+                return int(thread.num) - 1
+        except (gdb.error, AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+    return 0
+
+
+def _exit_pc() -> int | None:
+    for exit_name in ("rt_thread_exit", "_thread_exit"):
+        exit_value = eval_identifier(exit_name)
+        if exit_value is not None:
+            return value_address(exit_value)
+    return None
+
+
 def _stop_report(
-    thread, architecture, abi, max_depth, reason, message, *, source="current"
+    thread,
+    architecture,
+    abi,
+    max_depth,
+    reason,
+    message,
+    *,
+    source="current",
+    bounds="recorded",
+    target="",
 ):
     return BacktraceReport(
-        task=thread.name,
+        task=thread.name or target,
         address=thread.address,
         architecture=architecture,
         method="none",
@@ -679,7 +756,7 @@ def _stop_report(
         stop_reason=reason,
         truncated=False,
         max_depth=max_depth,
-        bounds="recorded",
+        bounds=bounds,
         frames=[],
         messages=[message],
         abi=abi,
@@ -944,6 +1021,325 @@ def backtrace(
     return _backtrace_thread(adapter, value, target, max_depth)
 
 
+def _resolve_live_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
+    thread = ctx.thread
+    selected = _selected_core()
+    if thread.oncpu is not None and thread.oncpu != selected:
+        return ctx.stop(
+            "smp-no-context",
+            f"thread runs on core {thread.oncpu}; the selected core "
+            f"{selected} has no saved context for it",
+            source="current",
+        )
+    if ctx.architecture == "armv8-m.mainline":
+        seed, live_reason = _live_seed_detail(
+            ctx.selection.family,
+            ctx.architecture,
+            thread.entry or None,
+            ctx.low,
+            ctx.high,
+        )
+    else:
+        seed, live_reason = _live_seed_detail(
+            ctx.selection.family, ctx.architecture, thread.entry or None
+        )
+    if seed is None:
+        return ctx.stop(
+            live_reason,
+            "the selected core's registers are not readable",
+            source="current",
+        )
+    return seed
+
+
+def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
+    thread = ctx.thread
+    context = ctx.selection.context
+    if thread.oncpu is not None:
+        return ctx.stop(
+            "smp-no-context",
+            f"thread is running on core {thread.oncpu} and has no saved context",
+            source="saved",
+        )
+    exit_value = eval_identifier("rt_thread_exit")
+    exit_pc = value_address(exit_value) if exit_value is not None else None
+    if ctx.selection.alt_context is not None and ctx.architecture in (
+        "armv7e-m",
+        "armv8-m.mainline",
+    ):
+        decode_pair = (
+            decode_armv7em_saved_context
+            if ctx.architecture == "armv7e-m"
+            else decode_armv8m_mainline_saved_context
+        )
+        seed, reason = decode_pair(
+            thread.sp,
+            read_bytes,
+            basic=context,
+            fpu=ctx.selection.alt_context,
+            endian=arch_or_default()[1],
+            entry=thread.entry or None,
+            stack_low=ctx.low,
+            stack_high=ctx.high,
+        )
+    else:
+        seed, reason = decode_backtrace_context(
+            context,
+            thread.sp,
+            read_bytes,
+            endian=arch_or_default()[1],
+            entry=thread.entry or None,
+            stack_low=ctx.low,
+            stack_high=ctx.high,
+        )
+    if seed is None:
+        return ctx.stop(
+            reason,
+            "the saved context is not readable or not proven"
+            + (f" (exit {exit_pc:#x})" if exit_pc else ""),
+            source="saved",
+        )
+    return seed
+
+
+def _resolve_target_seed(
+    ctx: _TargetContext,
+) -> (
+    tuple[SeedFrame, object | None, str | None, FaultPrecision | None] | BacktraceReport
+):
+    scheduler_decision = _scheduler_decision(
+        architecture=ctx.architecture,
+        selection=ctx.selection,
+        elf=ctx.metadata.elf if ctx.metadata is not None else None,
+        thread=ctx.thread,
+        current=ctx.current,
+        low=ctx.low,
+        high=ctx.high,
+    )
+    if isinstance(scheduler_decision, tuple):
+        return ctx.stop(scheduler_decision[0], scheduler_decision[1], source="none")
+    if scheduler_decision is not None:
+        scheduler_note = (
+            f"scheduler stage {scheduler_decision.stage} "
+            f"({scheduler_decision.owner}): {scheduler_decision.evidence}"
+        )
+        return (
+            scheduler_decision.seed,
+            scheduler_decision,
+            scheduler_note,
+            scheduler_decision.fault,
+        )
+    seed_or_err = (
+        _resolve_live_seed(ctx) if ctx.is_current else _resolve_saved_seed(ctx)
+    )
+    if isinstance(seed_or_err, BacktraceReport):
+        return seed_or_err
+    return seed_or_err, None, None, None
+
+
+def _prepare_arm_handler(
+    ctx: _TargetContext, seed: SeedFrame
+) -> _HandlerSetup | BacktraceReport:
+    thread = ctx.thread
+    if seed.process_sp is None or not ctx.low <= seed.process_sp <= ctx.high:
+        return ctx.stop(
+            "exception-task-context-conflict",
+            "the live PSP does not belong to the requested thread",
+        )
+    elf = ctx.metadata.elf if ctx.metadata is not None else None
+    setup = prepare_arm_handler_unwind(
+        seed,
+        ctx.architecture,
+        scheduler_running=lambda: ctx.current is not None,
+        irq_stack_bounds=lambda: resolve_arm_irq_stack_bounds_detail(
+            symbol_lookup=linker_symbol_address,
+            read=read_bytes,
+            isa=ctx.architecture,
+            elf=elf,
+            live_msp=seed.sp,
+            task_bounds=(ctx.low, ctx.high),
+        ),
+        capacity_reader=(
+            lambda: resolve_armv6m_vector_limit(
+                symbol_lookup=linker_symbol_address, read=read_bytes, elf=elf
+            )
+        )
+        if ctx.architecture == "armv6-m"
+        else (lambda: arm_external_exception_limit(read=read_bytes)),
+        stkalign_reader=lambda: arm_ccr_stkalign(read=read_bytes),
+        vector_entry_reader=(
+            lambda number: armv6m_vector_entry(number, read=read_bytes)
+        )
+        if ctx.architecture == "armv6-m"
+        else (lambda number: armv7m_vector_entry(number, read=read_bytes)),
+        guard_fn=_systick_aware_guard,
+        capacity_guard_factory=_systick_capacity_guard,
+        read=read_bytes,
+    )
+    if isinstance(setup, tuple):
+        return ctx.stop(*setup)
+    task_segment = StackSegment(
+        ident=f"task:{thread.address:#x}",
+        owner=thread.name,
+        low=ctx.low,
+        high=ctx.high,
+        source="task-recorded",
+        stack="process",
+        kind="task",
+    )
+    new_meta, hook = _apply_hardfault_trampoline(
+        setup.seed, ctx.metadata, setup.exception_segment.ident, setup.exception_hook
+    )
+    return _HandlerSetup(
+        seed=setup.seed,
+        fault=setup.fault,
+        segments=(task_segment, setup.exception_segment),
+        current_segment=setup.exception_segment.ident,
+        detector=setup.exception_detector,
+        hook=hook,
+        guard=setup.exception_guard,
+        stkalign=setup.stkalign,
+        metadata=new_meta,
+    )
+
+
+def _prepare_riscv_handler(
+    ctx: _TargetContext,
+    seed: SeedFrame,
+    fault: FaultPrecision | None,
+    *,
+    scheduler_decision,
+    exit_pc: int | None,
+) -> _HandlerSetup | BacktraceReport:
+    thread = ctx.thread
+    elf_image = ctx.metadata.elf if ctx.metadata is not None else None
+    switch_flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
+    pending_trap_owner = (
+        scheduler_decision is not None
+        and scheduler_decision.owner == "old"
+        and scheduler_decision.stage
+        in ("trap-entry", "trap-dispatch", "pending-before-trap-epilogue")
+    )
+    if (ctx.is_current and scheduler_decision is None) or pending_trap_owner:
+        span = analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
+        hart_id = max(0, thread.oncpu or 0)
+        irq_bounds = _riscv_irq_stack_bounds(elf_image, hart_id=hart_id)
+        nest_count = read_int(eval_identifier("rt_interrupt_nest"))
+        in_isr_stack = (
+            irq_bounds is not None and irq_bounds[0] <= seed.sp <= irq_bounds[1]
+        )
+        in_trap_span = span is not None and (
+            seed.pc == span.entry
+            or span.entry <= seed.pc < span.exit_end
+            or span.refused_reason(seed.pc) is not None
+        )
+        if in_isr_stack or in_trap_span or bool(nest_count):
+            if switch_flag and not pending_trap_owner:
+                return ctx.stop(
+                    "scheduler-transition-unproven",
+                    "rt_thread_switch_interrupt_flag is active during RISC-V trap",
+                )
+            if span is None:
+                return ctx.stop(
+                    "exception-model-unverified",
+                    "the compiled RISC-V trap_entry could not be verified from ELF",
+                )
+            xlen = 64 if ctx.architecture == "riscv64" else 32
+            snap, snap_reason = _riscv_snapshot(xlen=xlen)
+            if snap is None:
+                return ctx.stop(
+                    snap_reason, "live RISC-V exception CSRs are not readable"
+                )
+            if span.layout.epc_offset is None and nest_count is None:
+                return ctx.stop(
+                    "exception-context-unproven",
+                    "rt_interrupt_nest is unreadable with deferred mepc storage",
+                )
+            task_segment = StackSegment(
+                ident=f"task:{thread.address:#x}",
+                owner=thread.name,
+                low=ctx.low,
+                high=ctx.high,
+                source="task-recorded",
+                stack="process",
+                kind="task",
+            )
+            mask = u_xlen_mask(xlen)
+            endian = arch_or_default()[1]
+
+            def _resolve_rtt_trap_frame(
+                context: ExceptionTransitionContext,
+            ) -> int | str:
+                s0 = context.registers.get(8)
+                return "exception-frame-missing" if s0 is None else (s0 & mask)
+
+            setup = prepare_riscv_handler_unwind(
+                snap,
+                root_pc=exit_pc if exit_pc is not None else (thread.entry or None),
+                root_reason="task-exit" if exit_pc is not None else "task-entry",
+                span=span,
+                task_segment=task_segment,
+                irq_stack_bounds=lambda: irq_bounds,
+                nest_count=nest_count,
+                endian=endian,
+                task_frame_resolver=_resolve_rtt_trap_frame,
+            )
+            if isinstance(setup, tuple):
+                return ctx.stop(*setup)
+            return _HandlerSetup(
+                seed=setup.seed,
+                fault=setup.fault,
+                segments=(task_segment, setup.exception_segment),
+                current_segment=setup.exception_segment.ident,
+                detector=setup.exception_detector,
+                hook=setup.exception_hook,
+                guard=setup.exception_guard,
+                metadata=ctx.metadata,
+            )
+    elif switch_flag and scheduler_decision is None:
+        sp_offset = member_offset("struct rt_thread", ("sp",))
+        from_thread = read_int(eval_identifier("rt_interrupt_from_thread"))
+        if sp_offset is not None and from_thread == thread.address + sp_offset:
+            return ctx.stop(
+                "scheduler-transition-unproven",
+                "thread has a pending RISC-V interrupt context switch",
+            )
+    return _HandlerSetup(
+        seed=seed,
+        fault=fault,
+        segments=None,
+        current_segment=None,
+        metadata=ctx.metadata,
+    )
+
+
+def _prepare_handler_setup(
+    ctx: _TargetContext,
+    seed: SeedFrame,
+    fault: FaultPrecision | None,
+    *,
+    scheduler_decision,
+    exit_pc: int | None,
+) -> _HandlerSetup | BacktraceReport:
+    if seed.exception_number:
+        return _prepare_arm_handler(ctx, seed)
+    if ctx.selection.family == "riscv":
+        return _prepare_riscv_handler(
+            ctx,
+            seed,
+            fault,
+            scheduler_decision=scheduler_decision,
+            exit_pc=exit_pc,
+        )
+    return _HandlerSetup(
+        seed=seed,
+        fault=fault,
+        segments=None,
+        current_segment=None,
+        metadata=ctx.metadata,
+    )
+
+
 def _backtrace_thread(
     adapter, value, target: str, max_depth: int = 32
 ) -> BacktraceReport:
@@ -951,44 +1347,37 @@ def _backtrace_thread(
     thread = value_to_thread(value, adapter.layout, collect_stack_metrics=False)
     context = selection.context
     architecture = selection.isa or "unknown"
-    arch = selection.family
     if context is None or not context.verified:
-        return BacktraceReport(
-            task=thread.name or target,
-            address=thread.address,
-            architecture=architecture,
-            method="none",
+        return _stop_report(
+            thread,
+            architecture,
+            selection.abi,
+            max_depth,
+            selection.reason,
+            "no verified libcpu save profile matches the image evidence",
             source="none",
-            complete=False,
-            stop_reason=selection.reason,
-            truncated=False,
-            max_depth=max_depth,
             bounds="unknown",
-            frames=[],
-            messages=["no verified libcpu save profile matches the image evidence"],
-            abi=selection.abi,
+            target=target,
         )
     low = thread.stack_addr if thread.stack_addr else None
     high = low + thread.stack_size if low is not None and thread.stack_size else None
     if low is None or high is None:
-        return BacktraceReport(
-            task=thread.name or target,
-            address=thread.address,
-            architecture=architecture,
-            method="none",
+        return _stop_report(
+            thread,
+            architecture,
+            selection.abi,
+            max_depth,
+            "stack-bounds-unavailable",
+            "the thread records no usable stack address and size",
             source="none",
-            complete=False,
-            stop_reason="stack-bounds-unavailable",
-            truncated=False,
-            max_depth=max_depth,
             bounds="unknown",
-            frames=[],
-            messages=["the thread records no usable stack address and size"],
-            abi=selection.abi,
+            target=target,
         )
-    grows_up = thread.stack_grows_up
-    if grows_up is None:
-        grows_up = _stack_growth(low, high)
+    grows_up = (
+        _stack_growth(low, high)
+        if thread.stack_grows_up is None
+        else thread.stack_grows_up
+    )
     if grows_up is not False:
         reason = (
             "unsupported-stack-direction" if grows_up else "stack-direction-unavailable"
@@ -998,395 +1387,55 @@ def _backtrace_thread(
             if grows_up
             else "stack growth direction cannot be proven from configuration or fill sentinels"
         )
-        return BacktraceReport(
-            task=thread.name or target,
-            address=thread.address,
-            architecture=architecture,
-            method="none",
-            source="none",
-            complete=False,
-            stop_reason=reason,
-            truncated=False,
-            max_depth=max_depth,
-            bounds="recorded",
-            frames=[],
-            messages=[message],
-            abi=selection.abi,
-        )
-    current = get_current_thread()
-    metadata = _unwind_metadata(adapter)
-    scheduler_decision = _scheduler_decision(
-        architecture=architecture,
-        selection=selection,
-        elf=metadata.elf if metadata is not None else None,
-        thread=thread,
-        current=current,
-        low=low,
-        high=high,
-    )
-    if isinstance(scheduler_decision, tuple):
         return _stop_report(
             thread,
             architecture,
             selection.abi,
             max_depth,
-            scheduler_decision[0],
-            scheduler_decision[1],
+            reason,
+            message,
             source="none",
+            target=target,
         )
-    scheduler_note: str | None = None
-    fault = None
-    is_current = current is not None and value_address(current) == thread.address
-    if scheduler_decision is not None:
-        seed = scheduler_decision.seed
-        fault = scheduler_decision.fault
-        scheduler_note = (
-            f"scheduler stage {scheduler_decision.stage} "
-            f"({scheduler_decision.owner}): {scheduler_decision.evidence}"
-        )
-    elif is_current:
-        selected = 0
-        if gdb is not None:
-            try:
-                selected = gdb.selected_thread().num - 1
-            except (gdb.error, AttributeError, RuntimeError):
-                selected = 0
-        if thread.oncpu is not None and thread.oncpu != selected:
-            return BacktraceReport(
-                task=thread.name or target,
-                address=thread.address,
-                architecture=architecture,
-                method="none",
-                source="current",
-                complete=False,
-                stop_reason="smp-no-context",
-                truncated=False,
-                max_depth=max_depth,
-                bounds="recorded",
-                frames=[],
-                messages=[
-                    f"thread runs on core {thread.oncpu}; the selected core "
-                    f"{selected} has no saved context for it"
-                ],
-                abi=selection.abi,
-            )
-        if architecture == "armv8-m.mainline":
-            seed, live_reason = _live_seed_detail(
-                arch, architecture, thread.entry or None, low, high
-            )
-        else:
-            seed, live_reason = _live_seed_detail(
-                arch, architecture, thread.entry or None
-            )
-        if seed is None:
-            return BacktraceReport(
-                task=thread.name or target,
-                address=thread.address,
-                architecture=architecture,
-                method="none",
-                source="current",
-                complete=False,
-                stop_reason=live_reason,
-                truncated=False,
-                max_depth=max_depth,
-                bounds="recorded",
-                frames=[],
-                messages=["the selected core's registers are not readable"],
-                abi=selection.abi,
-            )
-    else:
-        if thread.oncpu is not None:
-            return BacktraceReport(
-                task=thread.name or target,
-                address=thread.address,
-                architecture=architecture,
-                method="none",
-                source="saved",
-                complete=False,
-                stop_reason="smp-no-context",
-                truncated=False,
-                max_depth=max_depth,
-                bounds="recorded",
-                frames=[],
-                messages=[
-                    f"thread is running on core {thread.oncpu} and has no saved context"
-                ],
-                abi=selection.abi,
-            )
-        exit_pc = None
-        exit_value = eval_identifier("rt_thread_exit")
-        if exit_value is not None:
-            exit_pc = value_address(exit_value)
-        if selection.alt_context is not None and architecture in (
-            "armv7e-m",
-            "armv8-m.mainline",
-        ):
-            decode_pair = (
-                decode_armv7em_saved_context
-                if architecture == "armv7e-m"
-                else decode_armv8m_mainline_saved_context
-            )
-            seed, reason = decode_pair(
-                thread.sp,
-                read_bytes,
-                basic=context,
-                fpu=selection.alt_context,
-                endian=arch_or_default()[1],
-                entry=thread.entry or None,
-                stack_low=low,
-                stack_high=high,
-            )
-        else:
-            seed, reason = decode_backtrace_context(
-                context,
-                thread.sp,
-                read_bytes,
-                endian=arch_or_default()[1],
-                entry=thread.entry or None,
-                stack_low=low,
-                stack_high=high,
-            )
-        if seed is None:
-            return BacktraceReport(
-                task=thread.name or target,
-                address=thread.address,
-                architecture=architecture,
-                method="none",
-                source="saved",
-                complete=False,
-                stop_reason=reason,
-                truncated=False,
-                max_depth=max_depth,
-                bounds="recorded",
-                frames=[],
-                messages=[
-                    "the saved context is not readable or not proven"
-                    + (f" (exit {exit_pc:#x})" if exit_pc else "")
-                ],
-                abi=selection.abi,
-            )
-    exit_value = None
-    for exit_name in ("rt_thread_exit", "_thread_exit"):
-        exit_value = eval_identifier(exit_name)
-        if exit_value is not None:
-            break
-    if seed.source != "unstarted" and exit_value is not None:
-        seed = replace(
-            seed,
-            root_pc=value_address(exit_value),
-            root_reason="task-exit",
-        )
-    segments = None
-    current_segment = None
-    detector = hook = guard = None
-    stkalign = True
-    if seed.exception_number:
-        if seed.process_sp is None or not low <= seed.process_sp <= high:
-            return _stop_report(
-                thread,
-                architecture,
-                selection.abi,
-                max_depth,
-                "exception-task-context-conflict",
-                "the live PSP does not belong to the requested thread",
-            )
-        elf = metadata.elf if metadata is not None else None
-        setup = prepare_arm_handler_unwind(
-            seed,
-            architecture,
-            scheduler_running=lambda: current is not None,
-            irq_stack_bounds=lambda: resolve_arm_irq_stack_bounds_detail(
-                symbol_lookup=linker_symbol_address,
-                read=read_bytes,
-                isa=architecture,
-                elf=elf,
-                live_msp=seed.sp,
-                task_bounds=(low, high),
-            ),
-            capacity_reader=(
-                lambda: resolve_armv6m_vector_limit(
-                    symbol_lookup=linker_symbol_address, read=read_bytes, elf=elf
-                )
-            )
-            if architecture == "armv6-m"
-            else (lambda: arm_external_exception_limit(read=read_bytes)),
-            stkalign_reader=lambda: arm_ccr_stkalign(read=read_bytes),
-            vector_entry_reader=(
-                lambda number: armv6m_vector_entry(number, read=read_bytes)
-            )
-            if architecture == "armv6-m"
-            else (lambda number: armv7m_vector_entry(number, read=read_bytes)),
-            guard_fn=_systick_aware_guard,
-            capacity_guard_factory=_systick_capacity_guard,
-            read=read_bytes,
-        )
-        if isinstance(setup, tuple):
-            return _stop_report(thread, architecture, selection.abi, max_depth, *setup)
-        seed = setup.seed
-        fault = setup.fault
-        task_segment = StackSegment(
-            ident=f"task:{thread.address:#x}",
-            owner=thread.name,
-            low=low,
-            high=high,
-            source="task-recorded",
-            stack="process",
-            kind="task",
-        )
-        segments = (task_segment, setup.exception_segment)
-        current_segment = setup.exception_segment.ident
-        detector, hook, guard = (
-            setup.exception_detector,
-            setup.exception_hook,
-            setup.exception_guard,
-        )
-        metadata, hook = _apply_hardfault_trampoline(
-            seed, metadata, setup.exception_segment.ident, hook
-        )
-        stkalign = setup.stkalign
-    elif arch == "riscv":
-        elf_image = metadata.elf if metadata is not None else None
-        switch_flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
-        pending_trap_owner = (
-            scheduler_decision is not None
-            and scheduler_decision.owner == "old"
-            and scheduler_decision.stage
-            in ("trap-entry", "trap-dispatch", "pending-before-trap-epilogue")
-        )
-        if (is_current and scheduler_decision is None) or pending_trap_owner:
-            span = (
-                analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
-            )
-            hart_id = max(0, thread.oncpu or 0)
-            irq_bounds = _riscv_irq_stack_bounds(elf_image, hart_id=hart_id)
-            nest_count = read_int(eval_identifier("rt_interrupt_nest"))
-            in_isr_stack = (
-                irq_bounds is not None and irq_bounds[0] <= seed.sp <= irq_bounds[1]
-            )
-            in_trap_span = span is not None and (
-                seed.pc == span.entry
-                or span.entry <= seed.pc < span.exit_end
-                or span.refused_reason(seed.pc) is not None
-            )
-            if in_isr_stack or in_trap_span or bool(nest_count):
-                if switch_flag and not pending_trap_owner:
-                    return _stop_report(
-                        thread,
-                        architecture,
-                        selection.abi,
-                        max_depth,
-                        "scheduler-transition-unproven",
-                        "rt_thread_switch_interrupt_flag is active during RISC-V trap",
-                    )
-                if span is None:
-                    return _stop_report(
-                        thread,
-                        architecture,
-                        selection.abi,
-                        max_depth,
-                        "exception-model-unverified",
-                        "the compiled RISC-V trap_entry could not be verified from ELF",
-                    )
-                xlen = 64 if architecture == "riscv64" else 32
-                snap, snap_reason = _riscv_snapshot(xlen=xlen)
-                if snap is None:
-                    return _stop_report(
-                        thread,
-                        architecture,
-                        selection.abi,
-                        max_depth,
-                        snap_reason,
-                        "live RISC-V exception CSRs are not readable",
-                    )
-                if span.layout.epc_offset is None and nest_count is None:
-                    return _stop_report(
-                        thread,
-                        architecture,
-                        selection.abi,
-                        max_depth,
-                        "exception-context-unproven",
-                        "rt_interrupt_nest is unreadable with deferred mepc storage",
-                    )
-                task_segment = StackSegment(
-                    ident=f"task:{thread.address:#x}",
-                    owner=thread.name,
-                    low=low,
-                    high=high,
-                    source="task-recorded",
-                    stack="process",
-                    kind="task",
-                )
-                mask = u_xlen_mask(xlen)
-                endian = arch_or_default()[1]
-
-                def _resolve_rtt_trap_frame(
-                    context: ExceptionTransitionContext,
-                ) -> int | str:
-                    s0 = context.registers.get(8)
-                    if s0 is None:
-                        return "exception-frame-missing"
-                    return s0 & mask
-
-                setup = prepare_riscv_handler_unwind(
-                    snap,
-                    root_pc=(
-                        value_address(exit_value)
-                        if exit_value is not None
-                        else (thread.entry or None)
-                    ),
-                    root_reason="task-exit" if exit_value is not None else "task-entry",
-                    span=span,
-                    task_segment=task_segment,
-                    irq_stack_bounds=lambda: irq_bounds,
-                    nest_count=nest_count,
-                    endian=endian,
-                    task_frame_resolver=_resolve_rtt_trap_frame,
-                )
-                if isinstance(setup, tuple):
-                    return _stop_report(
-                        thread,
-                        architecture,
-                        selection.abi,
-                        max_depth,
-                        setup[0],
-                        setup[1],
-                    )
-                seed = setup.seed
-                fault = setup.fault
-                segments = (task_segment, setup.exception_segment)
-                current_segment = setup.exception_segment.ident
-                detector, hook, guard = (
-                    setup.exception_detector,
-                    setup.exception_hook,
-                    setup.exception_guard,
-                )
-        elif switch_flag and scheduler_decision is None:
-            sp_offset = member_offset("struct rt_thread", ("sp",))
-            from_thread = read_int(eval_identifier("rt_interrupt_from_thread"))
-            if sp_offset is not None and from_thread == thread.address + sp_offset:
-                return _stop_report(
-                    thread,
-                    architecture,
-                    selection.abi,
-                    max_depth,
-                    "scheduler-transition-unproven",
-                    "thread has a pending RISC-V interrupt context switch",
-                )
-    metadata = _apply_switch_return_cfi(metadata, scheduler_decision)
+    current = get_current_thread()
+    ctx = _TargetContext(
+        thread=thread,
+        target=target,
+        selection=selection,
+        low=low,
+        high=high,
+        current=current,
+        is_current=current is not None and value_address(current) == thread.address,
+        metadata=_unwind_metadata(adapter),
+        max_depth=max_depth,
+    )
+    resolved = _resolve_target_seed(ctx)
+    if isinstance(resolved, BacktraceReport):
+        return resolved
+    seed, scheduler_decision, scheduler_note, fault = resolved
+    exit_pc = _exit_pc()
+    if seed.source != "unstarted" and exit_pc is not None:
+        seed = replace(seed, root_pc=exit_pc, root_reason="task-exit")
+    handler = _prepare_handler_setup(
+        ctx, seed, fault, scheduler_decision=scheduler_decision, exit_pc=exit_pc
+    )
+    if isinstance(handler, BacktraceReport):
+        return handler
+    meta = _apply_switch_return_cfi(handler.metadata, scheduler_decision)
     result = unwind_chain(
-        seed,
-        metadata,
+        handler.seed,
+        meta,
         read=read_bytes,
         max_depth=max_depth,
         stack_low=low,
         stack_high=high,
         allow_frame_pointer=architecture != "armv7-a",
-        segments=segments,
-        current_segment=current_segment,
-        exception_detector=detector,
-        exception_hook=hook,
-        exception_guard=guard,
-        stkalign=stkalign,
+        segments=handler.segments,
+        current_segment=handler.current_segment,
+        exception_detector=handler.detector,
+        exception_hook=handler.hook,
+        exception_guard=handler.guard,
+        stkalign=handler.stkalign,
     )
     initial_messages = [scheduler_note] if scheduler_note is not None else []
     return build_backtrace_report(
@@ -1394,13 +1443,13 @@ def _backtrace_thread(
         address=thread.address,
         architecture=architecture,
         abi=selection.abi,
-        source=seed.source,
+        source=handler.seed.source,
         bounds="recorded",
         max_depth=max_depth,
         result=result,
-        metadata=metadata,
+        metadata=meta,
         symbol_lookup=lookup_symbol_at,
         source_lookup=source_location_at,
         initial_messages=initial_messages,
-        fault=fault,
+        fault=handler.fault,
     )

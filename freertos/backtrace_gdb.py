@@ -712,6 +712,398 @@ def backtrace(
     return _backtrace_task_value(adapter, value, target, max_depth)
 
 
+@dataclass(frozen=True)
+class _TargetContext:
+    """Validated target bounds and metadata shared across task unwind steps."""
+
+    adapter: object
+    value: object
+    task: FreeRtosTask
+    target: str
+    selection: object
+    low: int
+    high: int
+    bounds: str
+    current_core: int | None
+    metadata: UnwindMetadata | None
+    max_depth: int
+
+    @property
+    def architecture(self) -> str:
+        return self.selection.isa or "unknown"
+
+    def stop(
+        self, reason: str, message: str, *, source: str | None = None
+    ) -> BacktraceReport:
+        resolved_source = (
+            ("current" if self.current_core is not None else "saved")
+            if source is None
+            else source
+        )
+        return _stop_report(
+            self.task,
+            self.architecture,
+            self.selection.abi,
+            self.max_depth,
+            reason,
+            message,
+            source=resolved_source,
+            bounds=self.bounds,
+            target=self.target,
+        )
+
+
+@dataclass(frozen=True)
+class _HandlerSetup:
+    """Resolved cross-stack unwind hooks and segments for one stop."""
+
+    seed: SeedFrame
+    fault: FaultPrecision | None
+    segments: tuple[StackSegment, ...] | None
+    current_segment: str | None
+    detector: object | None = None
+    hook: object | None = None
+    guard: object | None = None
+    stkalign: bool = True
+    metadata: UnwindMetadata | None = None
+
+
+def _stop_report(
+    task,
+    architecture: str,
+    abi: str | None,
+    max_depth: int,
+    reason: str,
+    message: str,
+    *,
+    source: str = "current",
+    bounds: str = "recorded",
+    target: str = "",
+) -> BacktraceReport:
+    return BacktraceReport(
+        task=task.name or target,
+        address=task.address,
+        architecture=architecture,
+        method="none",
+        source=source,
+        complete=False,
+        stop_reason=reason,
+        truncated=False,
+        max_depth=max_depth,
+        bounds=bounds,
+        frames=[],
+        messages=[message],
+        abi=abi,
+    )
+
+
+def _resolve_live_seed(
+    ctx: _TargetContext,
+) -> tuple[SeedFrame, str | None, FaultPrecision | None] | BacktraceReport:
+    selected = None
+    if gdb is not None:
+        try:
+            selected = gdb.selected_thread().num - 1
+        except (gdb.error, AttributeError, RuntimeError):
+            selected = None
+    if selected is not None and selected != ctx.current_core:
+        return ctx.stop(
+            "smp-no-context",
+            f"task runs on core {ctx.current_core}; the selected core "
+            f"{selected} has no saved context for it",
+            source="current",
+        )
+    seed = None
+    scheduler_note: str | None = None
+    fault: FaultPrecision | None = None
+    decision = None
+    if (
+        ctx.selection.family == "arm"
+        and ctx.architecture in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
+        and ctx.metadata is not None
+    ):
+        decision = _scheduler_live_decision(
+            ctx.metadata.elf,
+            ctx.selection.context,
+            ctx.task,
+            ctx.low,
+            ctx.high,
+            fpu_context=ctx.selection.alt_context,
+            isa=ctx.architecture,
+        )
+    elif (
+        ctx.selection.family == "riscv"
+        and ctx.architecture in ("riscv32", "riscv64")
+        and ctx.metadata is not None
+    ):
+        decision = _riscv_scheduler_live_decision(
+            ctx.metadata.elf,
+            ctx.selection.context,
+            ctx.task,
+            ctx.low,
+            ctx.high,
+            isa=ctx.architecture,
+        )
+    if decision is not None:
+        if decision.seed is None:
+            return ctx.stop(
+                decision.reason or "scheduler-owner-unproven",
+                decision.message,
+                source="current",
+            )
+        seed = decision.seed
+        scheduler_note = decision.message
+        fault = decision.fault
+    if seed is None:
+        seed, live_reason = _live_seed_detail(ctx.selection.family, ctx.architecture)
+    else:
+        live_reason = "ok"
+    if seed is None:
+        return ctx.stop(
+            live_reason,
+            "the selected core's registers are not readable or not "
+            "consistent with the exception mode",
+            source="current",
+        )
+    return seed, scheduler_note, fault
+
+
+def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
+    context = ctx.selection.context
+    context_low, context_high = (
+        saved_context_bounds(ctx.value, ctx.adapter.layout)
+        if context.context_in_tcb
+        else (None, None)
+    )
+    if ctx.selection.alt_context is not None:
+        seed, reason = decode_cm4f_saved_context(
+            ctx.task.top_of_stack,
+            read_bytes,
+            basic=context,
+            fpu=ctx.selection.alt_context,
+            endian=arch_or_default()[1],
+            stack_low=ctx.low,
+            stack_high=ctx.high,
+            exit_pc=_exit_pc(),
+        )
+    else:
+        seed, reason = decode_backtrace_context(
+            context,
+            ctx.task.top_of_stack,
+            read_bytes,
+            endian=arch_or_default()[1],
+            stack_low=ctx.low,
+            stack_high=ctx.high,
+            context_low=context_low,
+            context_high=context_high,
+            exit_pc=_exit_pc(),
+        )
+    if seed is None:
+        return ctx.stop(
+            reason,
+            "the saved context is not readable or not proven",
+            source="saved",
+        )
+    return seed
+
+
+def _resolve_target_seed(
+    ctx: _TargetContext,
+) -> tuple[SeedFrame, str | None, FaultPrecision | None] | BacktraceReport:
+    if ctx.current_core is not None:
+        return _resolve_live_seed(ctx)
+    saved = _resolve_saved_seed(ctx)
+    if isinstance(saved, BacktraceReport):
+        return saved
+    return saved, None, None
+
+
+def _prepare_arm_handler(
+    ctx: _TargetContext, seed: SeedFrame, fault: FaultPrecision | None
+) -> _HandlerSetup | BacktraceReport:
+    task_segment = _task_segment(ctx.task, ctx.low, ctx.high)
+    if not seed.exception_number:
+        return _HandlerSetup(
+            seed=seed,
+            fault=fault,
+            segments=(task_segment,),
+            current_segment=task_segment.ident,
+            metadata=ctx.metadata,
+        )
+    elf_image = ctx.metadata.elf if ctx.metadata is not None else None
+    bounds_reader = (
+        (
+            lambda: resolve_arm_irq_stack_bounds_detail(
+                symbol_lookup=linker_symbol_address,
+                read=read_bytes,
+                isa=ctx.architecture,
+                elf=elf_image,
+                live_msp=seed.sp,
+                task_bounds=(ctx.low, ctx.high),
+            )
+        )
+        if _irq_stack_bounds is _DEFAULT_IRQ_STACK_BOUNDS
+        else _irq_stack_bounds
+    )
+    armv6m_limit_reader = (
+        (lambda: _armv6m_port_limit(elf=elf_image))
+        if _armv6m_port_limit is _DEFAULT_ARMV6M_PORT_LIMIT
+        else _armv6m_port_limit
+    )
+    setup = prepare_arm_handler_unwind(
+        seed,
+        ctx.architecture,
+        scheduler_running=_scheduler_running,
+        irq_stack_bounds=bounds_reader,
+        irq_stack_source="linker:__gdr_irq_stack_low..__gdr_irq_stack_top",
+        capacity_reader=(
+            armv6m_limit_reader
+            if ctx.architecture == "armv6-m"
+            else _external_exception_limit
+        ),
+        stkalign_reader=_ccr_stkalign,
+        vector_entry_reader=(
+            _armv6m_vector_entry if ctx.architecture == "armv6-m" else _vector_entry
+        ),
+        guard_fn=_exception_guard,
+        capacity_guard_factory=_capacity_exception_guard,
+        read=read_bytes,
+    )
+    if isinstance(setup, tuple):
+        return ctx.stop(setup[0], setup[1])
+    return _HandlerSetup(
+        seed=setup.seed,
+        fault=setup.fault,
+        segments=(task_segment, setup.exception_segment),
+        current_segment=setup.exception_segment.ident,
+        detector=setup.exception_detector,
+        hook=setup.exception_hook,
+        guard=setup.exception_guard,
+        stkalign=setup.stkalign,
+        metadata=ctx.metadata,
+    )
+
+
+def _prepare_riscv_handler(
+    ctx: _TargetContext,
+    seed: SeedFrame,
+    fault: FaultPrecision | None,
+    *,
+    scheduler_note: str | None,
+) -> _HandlerSetup | BacktraceReport:
+    if ctx.current_core is None:
+        return _HandlerSetup(
+            seed=seed,
+            fault=fault,
+            segments=None,
+            current_segment=None,
+            metadata=ctx.metadata,
+        )
+    task_segment = _task_segment(ctx.task, ctx.low, ctx.high)
+    default_setup = _HandlerSetup(
+        seed=seed,
+        fault=fault,
+        segments=(task_segment,),
+        current_segment=task_segment.ident,
+        metadata=ctx.metadata,
+    )
+    if scheduler_note is not None:
+        return default_setup
+    elf_image = ctx.metadata.elf if ctx.metadata is not None else None
+    span = analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
+    isr_bounds = _riscv_isr_stack_bounds(elf_image)
+    in_isr_stack = isr_bounds is not None and isr_bounds[0] <= seed.sp <= isr_bounds[1]
+    in_trap_span = span is not None and (
+        seed.pc == span.entry
+        or span.entry <= seed.pc < span.exit_end
+        or span.refused_reason(seed.pc) is not None
+    )
+    if not (in_isr_stack or in_trap_span):
+        return default_setup
+    if span is None:
+        return ctx.stop(
+            "exception-model-unverified",
+            "the compiled RISC-V trap handler could not be verified from ELF",
+        )
+    xlen = 64 if ctx.architecture == "riscv64" else 32
+    snap, snap_reason = _riscv_snapshot(xlen=xlen)
+    if snap is None:
+        return ctx.stop(snap_reason, "the live RISC-V exception CSRs are not readable")
+    if _scheduler_running() is False:
+        return ctx.stop(
+            "scheduler-not-running",
+            "a RISC-V trap handler is active before the scheduler is started",
+        )
+    current_tcb = read_int(eval_identifier("pxCurrentTCB"))
+    if current_tcb is None:
+        return ctx.stop(
+            "scheduler-current-tcb-unavailable",
+            "pxCurrentTCB is not readable while unwinding a RISC-V trap frame",
+        )
+    word = xlen // 8
+    endian = arch_or_default()[1]
+
+    def _resolve_frt_trap_frame(_ctx) -> int | str:
+        raw_top = read_bytes(current_tcb, word)
+        if raw_top is None or len(raw_top) != word:
+            return "exception-frame-unreadable"
+        return int.from_bytes(raw_top, "little" if endian == "little" else "big")
+
+    setup = prepare_riscv_handler_unwind(
+        snap,
+        root_pc=_exit_pc(),
+        span=span,
+        task_segment=task_segment,
+        irq_stack_bounds=lambda: isr_bounds,
+        nest_count=None,
+        endian=endian,
+        task_frame_resolver=_resolve_frt_trap_frame,
+        allow_sync=True,
+    )
+    if isinstance(setup, tuple):
+        return ctx.stop(setup[0], setup[1])
+    if snap.mcause == 11:
+        return ctx.stop(
+            "scheduler-transition-unproven",
+            "ECALL scheduler transition fell outside proven switch stages",
+        )
+    if current_tcb != ctx.task.address:
+        return ctx.stop(
+            "exception-task-context-conflict",
+            "pxCurrentTCB does not match the requested task",
+        )
+    return _HandlerSetup(
+        seed=setup.seed,
+        fault=setup.fault,
+        segments=(task_segment, setup.exception_segment),
+        current_segment=setup.exception_segment.ident,
+        detector=setup.exception_detector,
+        hook=setup.exception_hook,
+        guard=setup.exception_guard,
+        metadata=ctx.metadata,
+    )
+
+
+def _prepare_handler_setup(
+    ctx: _TargetContext,
+    seed: SeedFrame,
+    fault: FaultPrecision | None,
+    *,
+    scheduler_note: str | None,
+) -> _HandlerSetup | BacktraceReport:
+    if ctx.selection.family == "arm":
+        return _prepare_arm_handler(ctx, seed, fault)
+    if ctx.selection.family == "riscv":
+        return _prepare_riscv_handler(ctx, seed, fault, scheduler_note=scheduler_note)
+    return _HandlerSetup(
+        seed=seed,
+        fault=fault,
+        segments=None,
+        current_segment=None,
+        metadata=ctx.metadata,
+    )
+
+
 def _backtrace_task_value(
     adapter, value, target: str, max_depth: int = 32
 ) -> BacktraceReport:
@@ -721,371 +1113,78 @@ def _backtrace_task_value(
         value, _state, core, adapter.layout, collect_stack_metrics=False
     )
     context = selection.context
-    if context is None or not context.verified:
-        return BacktraceReport(
-            task=task.name or target,
-            address=task.address,
-            architecture=selection.isa or "unknown",
-            method="none",
-            source="none",
-            complete=False,
-            stop_reason=selection.reason,
-            truncated=False,
-            max_depth=max_depth,
-            bounds="unknown",
-            frames=[],
-            messages=[
-                "no verified save profile matches the image/configuration evidence"
-            ],
-            abi=selection.abi,
-        )
-    arch = selection.family
     architecture = selection.isa or "unknown"
+    if context is None or not context.verified:
+        return _stop_report(
+            task,
+            architecture,
+            selection.abi,
+            max_depth,
+            selection.reason,
+            "no verified save profile matches the image/configuration evidence",
+            source="none",
+            bounds="unknown",
+            target=target,
+        )
     low, high, bounds = _task_bounds(task)
     if low is None or high is None:
-        return BacktraceReport(
-            task=task.name or target,
-            address=task.address,
-            architecture=architecture,
-            method="none",
+        return _stop_report(
+            task,
+            architecture,
+            selection.abi,
+            max_depth,
+            "stack-bounds-unavailable",
+            "the task records no usable stack span; enable configRECORD_STACK_HIGH_ADDRESS",
             source="none",
-            complete=False,
-            stop_reason="stack-bounds-unavailable",
-            truncated=False,
-            max_depth=max_depth,
             bounds=bounds,
-            frames=[],
-            messages=[
-                "the task records no usable stack span; enable configRECORD_STACK_HIGH_ADDRESS"
-            ],
-            abi=selection.abi,
+            target=target,
         )
-    running = {address: core for core, address in current_tasks(adapter.layout)}
-    current_core = running.get(task.address)
-    messages: list[str] = []
-    metadata = _unwind_metadata(adapter)
-    scheduler_note: str | None = None
-    fault: FaultPrecision | None = None
-
-    def _stop(stop_reason: str, message: str) -> BacktraceReport:
-        return BacktraceReport(
-            task=task.name or target,
-            address=task.address,
-            architecture=architecture,
-            method="none",
-            source="current" if current_core is not None else "saved",
-            complete=False,
-            stop_reason=stop_reason,
-            truncated=False,
-            max_depth=max_depth,
-            bounds=bounds,
-            frames=[],
-            messages=[message],
-            abi=selection.abi,
-        )
-
-    if current_core is not None:
-        selected = None
-        if gdb is not None:
-            try:
-                selected = gdb.selected_thread().num - 1
-            except (gdb.error, AttributeError, RuntimeError):
-                selected = None
-        if selected is not None and selected != current_core:
-            return BacktraceReport(
-                task=task.name or target,
-                address=task.address,
-                architecture=architecture,
-                method="none",
-                source="current",
-                complete=False,
-                stop_reason="smp-no-context",
-                truncated=False,
-                max_depth=max_depth,
-                bounds=bounds,
-                frames=[],
-                messages=[
-                    f"task runs on core {current_core}; the selected core "
-                    f"{selected} has no saved context for it"
-                ],
-                abi=selection.abi,
-            )
-        seed = None
-        live_reason = "live-registers-unavailable"
-        if (
-            arch == "arm"
-            and selection.isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
-            and metadata is not None
-        ):
-            decision = _scheduler_live_decision(
-                metadata.elf,
-                context,
-                task,
-                low,
-                high,
-                fpu_context=selection.alt_context,
-                isa=selection.isa,
-            )
-            if decision is not None:
-                if decision.seed is None:
-                    return _stop(
-                        decision.reason or "scheduler-owner-unproven", decision.message
-                    )
-                seed = decision.seed
-                scheduler_note = decision.message
-                fault = decision.fault
-        elif (
-            arch == "riscv"
-            and selection.isa in ("riscv32", "riscv64")
-            and metadata is not None
-        ):
-            decision = _riscv_scheduler_live_decision(
-                metadata.elf,
-                context,
-                task,
-                low,
-                high,
-                isa=selection.isa,
-            )
-            if decision is not None:
-                if decision.seed is None:
-                    return _stop(
-                        decision.reason or "scheduler-owner-unproven", decision.message
-                    )
-                seed = decision.seed
-                scheduler_note = decision.message
-                fault = decision.fault
-        if seed is None:
-            seed, live_reason = _live_seed_detail(arch, selection.isa)
-        if seed is None:
-            return BacktraceReport(
-                task=task.name or target,
-                address=task.address,
-                architecture=architecture,
-                method="none",
-                source="current",
-                complete=False,
-                stop_reason=live_reason,
-                truncated=False,
-                max_depth=max_depth,
-                bounds=bounds,
-                frames=[],
-                messages=[
-                    "the selected core's registers are not readable or not "
-                    "consistent with the exception mode"
-                ],
-                abi=selection.abi,
-            )
-        if scheduler_note is not None:
-            messages.append(f"scheduler seed {scheduler_note}")
-    else:
-        context_low, context_high = (
-            saved_context_bounds(value, adapter.layout)
-            if context.context_in_tcb
-            else (None, None)
-        )
-        if selection.alt_context is not None:
-            seed, reason = decode_cm4f_saved_context(
-                task.top_of_stack,
-                read_bytes,
-                basic=context,
-                fpu=selection.alt_context,
-                endian=arch_or_default()[1],
-                stack_low=low,
-                stack_high=high,
-                exit_pc=_exit_pc(),
-            )
-        else:
-            seed, reason = decode_backtrace_context(
-                context,
-                task.top_of_stack,
-                read_bytes,
-                endian=arch_or_default()[1],
-                stack_low=low,
-                stack_high=high,
-                context_low=context_low,
-                context_high=context_high,
-                exit_pc=_exit_pc(),
-            )
-        if seed is None:
-            return BacktraceReport(
-                task=task.name or target,
-                address=task.address,
-                architecture=architecture,
-                method="none",
-                source="saved",
-                complete=False,
-                stop_reason=reason,
-                truncated=False,
-                max_depth=max_depth,
-                bounds=bounds,
-                frames=[],
-                messages=["the saved context is not readable or not proven"],
-                abi=selection.abi,
-            )
-
-    segments: list[StackSegment] | None = None
-    current_segment: str | None = None
-    exception_detector = None
-    exception_hook = None
-    exception_guard = None
-    stkalign = True
-    handler_mode = arch == "arm" and bool(seed.exception_number)
-    if arch == "arm":
-        task_segment = _task_segment(task, low, high)
-        segments = [task_segment]
-        current_segment = task_segment.ident
-        if handler_mode:
-            elf_image = metadata.elf if metadata is not None else None
-            bounds_reader = (
-                (
-                    lambda: resolve_arm_irq_stack_bounds_detail(
-                        symbol_lookup=linker_symbol_address,
-                        read=read_bytes,
-                        isa=selection.isa,
-                        elf=elf_image,
-                        live_msp=seed.sp,
-                        task_bounds=(low, high),
-                    )
-                )
-                if _irq_stack_bounds is _DEFAULT_IRQ_STACK_BOUNDS
-                else _irq_stack_bounds
-            )
-            armv6m_limit_reader = (
-                (lambda: _armv6m_port_limit(elf=elf_image))
-                if _armv6m_port_limit is _DEFAULT_ARMV6M_PORT_LIMIT
-                else _armv6m_port_limit
-            )
-            setup = prepare_arm_handler_unwind(
-                seed,
-                selection.isa,
-                scheduler_running=_scheduler_running,
-                irq_stack_bounds=bounds_reader,
-                irq_stack_source="linker:__gdr_irq_stack_low..__gdr_irq_stack_top",
-                capacity_reader=(
-                    armv6m_limit_reader
-                    if selection.isa == "armv6-m"
-                    else _external_exception_limit
-                ),
-                stkalign_reader=_ccr_stkalign,
-                vector_entry_reader=(
-                    _armv6m_vector_entry
-                    if selection.isa == "armv6-m"
-                    else _vector_entry
-                ),
-                guard_fn=_exception_guard,
-                capacity_guard_factory=_capacity_exception_guard,
-                read=read_bytes,
-            )
-            if isinstance(setup, tuple):
-                return _stop(setup[0], setup[1])
-            seed = setup.seed
-            fault = setup.fault
-            stkalign = setup.stkalign
-            segments.append(setup.exception_segment)
-            current_segment = setup.exception_segment.ident
-            exception_detector = setup.exception_detector
-            exception_hook = setup.exception_hook
-            exception_guard = setup.exception_guard
-    elif arch == "riscv" and current_core is not None:
-        task_segment = _task_segment(task, low, high)
-        segments = [task_segment]
-        current_segment = task_segment.ident
-        if scheduler_note is None:
-            elf_image = metadata.elf if metadata is not None else None
-            span = (
-                analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
-            )
-            isr_bounds = _riscv_isr_stack_bounds(elf_image)
-            in_isr_stack = (
-                isr_bounds is not None and isr_bounds[0] <= seed.sp <= isr_bounds[1]
-            )
-            in_trap_span = span is not None and (
-                seed.pc == span.entry
-                or span.entry <= seed.pc < span.exit_end
-                or span.refused_reason(seed.pc) is not None
-            )
-            if in_isr_stack or in_trap_span:
-                if span is None:
-                    return _stop(
-                        "exception-model-unverified",
-                        "the compiled RISC-V trap handler could not be verified from ELF",
-                    )
-                xlen = 64 if selection.isa == "riscv64" else 32
-                snap, snap_reason = _riscv_snapshot(xlen=xlen)
-                if snap is None:
-                    return _stop(
-                        snap_reason,
-                        "the live RISC-V exception CSRs are not readable",
-                    )
-                running_flag = _scheduler_running()
-                if running_flag is False:
-                    return _stop(
-                        "scheduler-not-running",
-                        "a RISC-V trap handler is active before the scheduler is started",
-                    )
-                current_tcb = read_int(eval_identifier("pxCurrentTCB"))
-                if current_tcb is None:
-                    return _stop(
-                        "scheduler-current-tcb-unavailable",
-                        "pxCurrentTCB is not readable while unwinding a RISC-V trap frame",
-                    )
-                word = xlen // 8
-                endian = arch_or_default()[1]
-
-                def _resolve_frt_trap_frame(_ctx) -> int | str:
-                    raw_top = read_bytes(current_tcb, word)
-                    if raw_top is None or len(raw_top) != word:
-                        return "exception-frame-unreadable"
-                    return int.from_bytes(
-                        raw_top, "little" if endian == "little" else "big"
-                    )
-
-                setup = prepare_riscv_handler_unwind(
-                    snap,
-                    root_pc=_exit_pc(),
-                    span=span,
-                    task_segment=task_segment,
-                    irq_stack_bounds=lambda: isr_bounds,
-                    nest_count=None,
-                    endian=endian,
-                    task_frame_resolver=_resolve_frt_trap_frame,
-                    allow_sync=True,
-                )
-                if isinstance(setup, tuple):
-                    return _stop(setup[0], setup[1])
-                if current_tcb != task.address:
-                    return _stop(
-                        "exception-task-context-conflict",
-                        "pxCurrentTCB does not match the requested task",
-                    )
-                seed = setup.seed
-                fault = setup.fault
-                segments.append(setup.exception_segment)
-                current_segment = setup.exception_segment.ident
-                exception_detector = setup.exception_detector
-                exception_hook = setup.exception_hook
-                exception_guard = setup.exception_guard
-
+    current_core = {
+        address: core for core, address in current_tasks(adapter.layout)
+    }.get(task.address)
+    ctx = _TargetContext(
+        adapter=adapter,
+        value=value,
+        task=task,
+        target=target,
+        selection=selection,
+        low=low,
+        high=high,
+        bounds=bounds,
+        current_core=current_core,
+        metadata=_unwind_metadata(adapter),
+        max_depth=max_depth,
+    )
+    resolved = _resolve_target_seed(ctx)
+    if isinstance(resolved, BacktraceReport):
+        return resolved
+    seed, scheduler_note, fault = resolved
+    handler = _prepare_handler_setup(ctx, seed, fault, scheduler_note=scheduler_note)
+    if isinstance(handler, BacktraceReport):
+        return handler
+    seed = handler.seed
     exit_pc = _exit_pc()
     if seed.source != "unstarted" and exit_pc is not None:
         seed = replace(seed, root_pc=exit_pc, root_reason="task-exit")
-    if metadata is None:
+    messages = (
+        [f"scheduler seed {scheduler_note}"] if scheduler_note is not None else []
+    )
+    if handler.metadata is None:
         messages.append("no ELF unwind metadata could be read")
     result = unwind_chain(
         seed,
-        metadata,
+        handler.metadata,
         read=read_bytes,
         max_depth=max_depth,
         stack_low=low,
         stack_high=high,
         allow_frame_pointer=True,
-        segments=tuple(segments) if segments is not None else None,
-        current_segment=current_segment,
-        exception_detector=exception_detector,
-        exception_hook=exception_hook,
-        exception_guard=exception_guard,
-        stkalign=stkalign,
+        segments=handler.segments,
+        current_segment=handler.current_segment,
+        exception_detector=handler.detector,
+        exception_hook=handler.hook,
+        exception_guard=handler.guard,
+        stkalign=handler.stkalign,
     )
     return build_backtrace_report(
         task=task.name or target,
@@ -1096,9 +1195,9 @@ def _backtrace_task_value(
         bounds=bounds,
         max_depth=max_depth,
         result=result,
-        metadata=metadata,
+        metadata=handler.metadata,
         symbol_lookup=lookup_symbol_at,
         source_lookup=source_location_at,
         initial_messages=messages,
-        fault=fault,
+        fault=handler.fault,
     )
