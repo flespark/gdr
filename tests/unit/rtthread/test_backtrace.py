@@ -505,3 +505,76 @@ def test_armv8m_mainline_secure_or_foreign_header_is_refused():
         stack_low=0x2000,
         stack_high=0x4000,
     ) == (None, "unsupported-extension-context")
+
+
+@pytest.mark.parametrize(
+    "psplim,expected_ok",
+    [
+        (0x2000, True),
+        (0x3010, True),
+        (0x3050, True),
+        (0x2004, False),
+        (0x1FF8, False),
+        (0x3058, False),
+    ],
+)
+def test_armv8m_integer_psplim_bounds_and_alignment(psplim, expected_ok):
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_context(memory, top)
+    memory.word(top + 8, psplim)
+    seed, reason = decode_saved_context(
+        ARMV8M_MAINLINE_INTEGER,
+        top,
+        memory,
+        endian="little",
+        stack_low=0x2000,
+        stack_high=0x4000,
+    )
+    if expected_ok:
+        assert reason == "ok" and seed is not None and seed.sp == top + 80
+    else:
+        assert seed is None and reason == "unsupported-extension-context"
+
+
+@pytest.mark.parametrize(
+    "psplim,expected_ok",
+    [
+        (0x2000, True),
+        (0x30D8, True),
+        (0x2004, False),
+        (0x1FF8, False),
+        (0x30E0, False),
+    ],
+)
+def test_armv8m_fpu_psplim_bounds_and_alignment(psplim, expected_ok):
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_mainline_fpu_context(memory, top)
+    memory.word(top + 8, psplim)
+    seed, reason = decode_armv8m_mainline_saved_context(
+        top,
+        memory,
+        basic=ARMV8M_MAINLINE_INTEGER,
+        fpu=ARMV8M_MAINLINE_FPU,
+        endian="little",
+        stack_low=0x2000,
+        stack_high=0x4000,
+    )
+    if expected_ok:
+        assert reason == "ok" and seed is not None and seed.sp == top + 216
+    else:
+        assert seed is None and reason == "unsupported-extension-context"
+
+
+def test_armv8m_nonzero_psplim_without_stack_low_refuses():
+    memory = _Memory()
+    top = 0x3000
+    _armv8m_context(memory, top)
+    memory.word(top + 8, 0x2000)
+    assert decode_saved_context(
+        ARMV8M_MAINLINE_INTEGER,
+        top,
+        memory,
+        endian="little",
+    ) == (None, "unsupported-extension-context")

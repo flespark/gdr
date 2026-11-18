@@ -833,3 +833,136 @@ def test_armv7em_soft_float_uses_22_insn_pendsv_and_integer_seeds():
     )
     assert isinstance(ret_res, SchedulerSeed)
     assert ret_res.seed.pc == 0x5020
+
+
+@pytest.mark.parametrize(
+    "fix",
+    [f for f in _FIXTURES if f.arch == "armv8-m.mainline"],
+    ids=lambda f: f.name,
+)
+def test_armv8m_scheduler_stages_admit_valid_nonzero_psplim_and_reject_invalid(
+    fix: _PortFixture,
+):
+    prof = build_profile(_elf_for(fix))
+    assert prof is not None
+    fpu_mode = fix.name.endswith("-fpu")
+    stack_base = 0x20004000
+    mem = bytearray(b"\x00" * 0x1000)
+    sp_offset = 16
+    old_tcb, new_tcb = 0x20000100, 0x20000200
+    old_low, old_high = stack_base, stack_base + 0x400
+    new_low, new_high = stack_base + 0x400, stack_base + 0x800
+    old_sp = old_high - (240 if fpu_mode else 120)
+    new_sp = new_high - (240 if fpu_mode else 120)
+    old_hw, old_regs = _build_saved_frame(
+        mem, stack_base, top=old_sp, fix=fix, fpu=fpu_mode, pc=0x4020, lr=0x4004
+    )
+    new_hw, new_regs = _build_saved_frame(
+        mem, stack_base, top=new_sp, fix=fix, fpu=fpu_mode, pc=0x5020, lr=0x5004
+    )
+    _write_u32(mem, stack_base, old_sp + 8, old_low)
+    _write_u32(mem, stack_base, new_sp + 8, new_low)
+    read = _memory_reader(mem, stack_base, tz_addr=fix.tz, tz=0)
+
+    def resolve(tcb, t_sp, low, high, *, flag, pc, psp, regs, psplim):
+        return build_stage_seed(
+            prof,
+            fix.selection,
+            flag_value=flag,
+            from_ptr=old_tcb + sp_offset,
+            to_ptr=new_tcb + sp_offset,
+            sp_offset=sp_offset,
+            thread_addr=tcb,
+            thread_sp=t_sp,
+            thread_entry=0x5000,
+            current_addr=new_tcb,
+            low=low,
+            high=high,
+            endian="little",
+            stkalign=True,
+            read=read,
+            live_pc=pc,
+            live_sp=0x20001800,
+            live_psp=psp,
+            live_exc=14,
+            live_regs=regs,
+            live_psplim=psplim,
+            live_control=6 if fpu_mode else 2,
+        )
+
+    exc_ret = 0xFFFFFFED if fpu_mode else 0xFFFFFFFD
+    save_regs = {
+        **old_regs,
+        0: old_tcb + sp_offset,
+        1: old_sp,
+        2: 0,
+        3: exc_ret,
+        4: old_low,
+        5: 2,
+    }
+    save_ok = resolve(
+        old_tcb,
+        old_sp,
+        old_low,
+        old_high,
+        flag=0,
+        pc=prof.pendsv_save_written,
+        psp=old_hw,
+        regs=save_regs,
+        psplim=0,
+    )
+    assert isinstance(save_ok, SchedulerSeed) and save_ok.seed.pc == 0x4020
+
+    save_bad = resolve(
+        old_tcb,
+        old_sp,
+        old_low,
+        old_high,
+        flag=0,
+        pc=prof.pendsv_save_written,
+        psp=old_hw,
+        regs={**save_regs, 4: old_low + 8},
+        psplim=0,
+    )
+    assert save_bad == "scheduler-save-window-inconsistent"
+
+    restored_ok = resolve(
+        new_tcb,
+        new_sp,
+        new_low,
+        new_high,
+        flag=0,
+        pc=prof.pendsv_restored_pending_psp,
+        psp=old_hw,
+        regs={**new_regs, 1: new_hw, 14: exc_ret},
+        psplim=new_low,
+    )
+    assert isinstance(restored_ok, SchedulerSeed) and restored_ok.seed.pc == 0x5020
+
+    for bad_psplim in (0, new_low - 8, new_low + 4, new_sp + 0x100):
+        bad_restored = resolve(
+            new_tcb,
+            new_sp,
+            new_low,
+            new_high,
+            flag=0,
+            pc=prof.pendsv_restored_pending_psp,
+            psp=old_hw,
+            regs={**new_regs, 1: new_hw, 14: exc_ret},
+            psplim=bad_psplim,
+        )
+        assert bad_restored == "unsupported-extension-context"
+
+    _write_u32(mem, stack_base, new_sp + 8, new_low - 8)
+    bad_saved_hdr = resolve(
+        new_tcb,
+        new_sp,
+        new_low,
+        new_high,
+        flag=0,
+        pc=prof.pendsv_switch_to,
+        psp=old_hw,
+        regs={**new_regs, 14: exc_ret},
+        psplim=new_low - 8,
+    )
+    assert bad_saved_hdr == "unsupported-extension-context"

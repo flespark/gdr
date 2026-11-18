@@ -458,6 +458,48 @@ def test_armv8m_current_seed_requires_integer_single_security_context(
     assert (result is not None) == (reason == "ok")
 
 
+@pytest.mark.parametrize(
+    "exc,sp,psp,psplim,reason",
+    [
+        (0, 0x2080, 0x2080, 0x2000, "ok"),
+        (0, 0x2080, 0x2080, 0x2080, "ok"),
+        (0, 0x2080, 0x2080, 0x2004, "unsupported-extension-context"),
+        (0, 0x2080, 0x2080, 0x1FF8, "unsupported-extension-context"),
+        (0, 0x2080, 0x2080, 0x2088, "unsupported-extension-context"),
+        (19, 0x3000, 0x2080, 0x2000, "ok"),
+        (19, 0x3000, 0x2080, 0x2088, "unsupported-extension-context"),
+        (19, 0x3000, 0x2080, 0x2004, "unsupported-extension-context"),
+    ],
+)
+def test_armv8m_current_seed_admits_in_bounds_aligned_psplim(
+    monkeypatch, exc, sp, psp, psplim, reason
+):
+    seed = SeedFrame(
+        0x1000,
+        sp,
+        {13: sp},
+        source="current",
+        exception_number=exc,
+        process_sp=psp,
+    )
+    monkeypatch.setattr(
+        bridge, "_core_live_seed_detail", lambda *_args, **_kwargs: (seed, "ok")
+    )
+    frame = SimpleNamespace(
+        read_register=lambda name: {"control": 2, "psplim": psplim}[name]
+    )
+    monkeypatch.setattr(
+        bridge, "gdb", SimpleNamespace(newest_frame=lambda: frame, error=RuntimeError)
+    )
+    monkeypatch.setattr(bridge, "eval_identifier", lambda name: name)
+    monkeypatch.setattr(bridge, "read_int", lambda _value: 0)
+    result, actual = bridge._live_seed_detail(
+        "arm", "armv8-m.mainline", None, 0x2000, 0x2400
+    )
+    assert actual == reason
+    assert (result is not None) == (reason == "ok")
+
+
 def test_armv8m_missing_extension_registers_refuse_the_live_seed(monkeypatch):
     seed = SeedFrame(0x1000, 0x2080, {13: 0x2080}, source="current", process_sp=0x2080)
     monkeypatch.setattr(

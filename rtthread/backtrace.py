@@ -207,6 +207,19 @@ def decode_armv7em_saved_context(
     )
 
 
+def _armv8m_psplim_valid(
+    psplim: int | None, *, stack_low: int | None, sp: int | None
+) -> bool:
+    """Return whether an Armv8-M Mainline PSPLIM value is disabled or within stack bounds."""
+    if psplim is None or psplim < 0 or (psplim & 0x7) != 0:
+        return False
+    if psplim == 0:
+        return True
+    if stack_low is None or sp is None:
+        return False
+    return stack_low <= psplim <= sp
+
+
 def decode_armv8m_mainline_saved_context(
     top: int,
     read: Reader,
@@ -232,13 +245,20 @@ def decode_armv8m_mainline_saved_context(
     )
     if None in header:
         return None, "saved-context-unreadable"
-    if header[0] != 0 or header[2] != 0 or header[3] is None or header[3] & 1:
-        return None, "unsupported-extension-context"
     if header[1] == ARMV8M_MAINLINE_EXTENDED_EXC_RETURN:
         context = fpu
     elif header[1] == ARMV8M_MAINLINE_BASIC_EXC_RETURN:
         context = basic
     else:
+        return None, "unsupported-extension-context"
+    if (
+        header[0] != 0
+        or not _armv8m_psplim_valid(
+            header[2], stack_low=stack_low, sp=top + context.sp_offset
+        )
+        or header[3] is None
+        or header[3] & 1
+    ):
         return None, "unsupported-extension-context"
     return decode_saved_context(
         context,
@@ -279,6 +299,7 @@ def decode_saved_context(
         want = 1 if context.profile_id == ARMV7EM_FPU.profile_id else 0
         if flag != want:
             return None, "unsupported-extension-context"
+    psplim: int | None = None
     if context.profile_id in (
         ARMV8M_MAINLINE_INTEGER.profile_id,
         ARMV8M_MAINLINE_FPU.profile_id,
@@ -291,7 +312,15 @@ def decode_saved_context(
         )
         if None in header:
             return None, "saved-context-unreadable"
-        if header[0] != 0 or header[2] != 0 or header[3] is None or header[3] & 1:
+        psplim = header[2]
+        if (
+            header[0] != 0
+            or not _armv8m_psplim_valid(
+                psplim, stack_low=stack_low, sp=sp + context.sp_offset
+            )
+            or header[3] is None
+            or header[3] & 1
+        ):
             return None, "unsupported-extension-context"
         want = (
             ARMV8M_MAINLINE_EXTENDED_EXC_RETURN
@@ -318,6 +347,10 @@ def decode_saved_context(
     registers = decoded.registers
     code_pc = decoded.code_pc
     caller_sp = decoded.sp
+    if psplim is not None and not _armv8m_psplim_valid(
+        psplim, stack_low=stack_low, sp=caller_sp
+    ):
+        return None, "unsupported-extension-context"
     unstarted = False
     if entry:
         core = [registers.get(register, 0) for register in range(4, 12)]

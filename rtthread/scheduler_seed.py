@@ -32,6 +32,7 @@ from .backtrace import (
     ARMV7EM_EXC_RETURN_SLOT,
     ARMV8M_MAINLINE_BASIC_EXC_RETURN,
     ARMV8M_MAINLINE_EXTENDED_EXC_RETURN,
+    _armv8m_psplim_valid,
     decode_armv7em_saved_context,
     decode_armv8m_mainline_saved_context,
     decode_saved_context,
@@ -119,17 +120,23 @@ def _select_effective_context(
     )
     if None in header:
         return None, None, "saved-context-unreadable"
-    if header[0] != 0 or header[2] != 0 or header[3] is None or header[3] & 1:
-        return None, None, "unsupported-extension-context"
     exc_return = header[1]
-    if exc_return == ARMV8M_MAINLINE_BASIC_EXC_RETURN:
-        return selection.context, exc_return, "ok"
+    ctx = (
+        selection.context
+        if exc_return == ARMV8M_MAINLINE_BASIC_EXC_RETURN
+        else selection.alt_context
+        if exc_return == ARMV8M_MAINLINE_EXTENDED_EXC_RETURN
+        else None
+    )
     if (
-        exc_return == ARMV8M_MAINLINE_EXTENDED_EXC_RETURN
-        and selection.alt_context is not None
+        ctx is None
+        or header[0] != 0
+        or not _armv8m_psplim_valid(header[2], stack_low=low, sp=top + ctx.sp_offset)
+        or header[3] is None
+        or header[3] & 1
     ):
-        return selection.alt_context, exc_return, "ok"
-    return None, None, "unsupported-extension-context"
+        return None, None, "unsupported-extension-context"
+    return ctx, exc_return, "ok"
 
 
 def _saved_core_matches(
@@ -175,13 +182,19 @@ def _save_written_core_matches(
             return False
         check_regs: tuple[int, ...] = tuple(range(5, 12))
     elif profile.isa == "armv8-m.mainline":
+        saved_psplim = read_slot(
+            read, top + 8, context.pointer_size, endian, stack_low=low, stack_high=high
+        )
         saved_ctrl = read_slot(
             read, top + 12, context.pointer_size, endian, stack_low=low, stack_high=high
         )
         if (
             registers.get(2) != 0
             or registers.get(3) != sw_meta
-            or registers.get(4) != 0
+            or not _armv8m_psplim_valid(
+                saved_psplim, stack_low=low, sp=top + context.sp_offset
+            )
+            or registers.get(4) != saved_psplim
             or saved_ctrl is None
             or (saved_ctrl & ~0x6) != 0
             or registers.get(5) != saved_ctrl
@@ -332,6 +345,10 @@ def _check_restored_state(
     live_regs: Mapping[int, int],
     live_psplim: int | None,
     live_control: int | None,
+    *,
+    expected_psplim: int | None = None,
+    stack_low: int | None = None,
+    expected_sp: int | None = None,
 ) -> str | None:
     if profile.isa == "armv7e-m" and profile.fpu:
         if live_regs.get(3) != sw_meta:
@@ -347,7 +364,12 @@ def _check_restored_state(
         # NOTE: In Handler mode ARMv8-M reads CONTROL.SPSEL (bit 1) as 0; allow
         # bit 1 (SPSEL) and bit 2 (FPCA) while rejecting nPRIV (bit 0) or
         # extension bits outside 0..2.
-        if live_psplim != 0 or live_control is None or (live_control & ~0x6) != 0:
+        if (
+            not _armv8m_psplim_valid(live_psplim, stack_low=stack_low, sp=expected_sp)
+            or (expected_psplim is not None and live_psplim != expected_psplim)
+            or live_control is None
+            or (live_control & ~0x6) != 0
+        ):
             return "unsupported-extension-context"
         if live_regs.get(14) != sw_meta:
             return "scheduler-exc-return-inconsistent"
@@ -602,8 +624,22 @@ def _resolve_new_thread(
         endian=endian,
     ):
         return "scheduler-restore-window-inconsistent"
+    expected_psplim = (
+        read_slot(read, thread_sp + 8, 4, endian, stack_low=low, stack_high=high)
+        if profile.isa == "armv8-m.mainline"
+        else None
+    )
     reg_reason = _check_restored_state(
-        profile, context, sw_meta, stage, live_regs, live_psplim, live_control
+        profile,
+        context,
+        sw_meta,
+        stage,
+        live_regs,
+        live_psplim,
+        live_control,
+        expected_psplim=expected_psplim,
+        stack_low=low,
+        expected_sp=thread_sp + context.sp_offset,
     )
     if reg_reason is not None:
         return reg_reason
@@ -1087,6 +1123,20 @@ def build_riscv_stage_seed(
         f" sp={snapshot.sp:#x} mcause={snapshot.mcause:#x} mepc={snapshot.mepc:#x}"
     )
 
+    def saved(owner: str, stage_key: str = stage_name) -> SchedulerSeed | str:
+        return _riscv_saved_seed(
+            context,
+            top=thread_sp,
+            read=read,
+            low=low,
+            high=high,
+            endian=endian,
+            entry=thread_entry,
+            stage=stage_key,
+            owner=owner,
+            evidence=evidence,
+        )
+
     if stage is None or stage.name in ("trap-entry", "trap-dispatch"):
         if stage is not None and stage.name == "trap-dispatch":
             if irq_bounds is None:
@@ -1115,34 +1165,11 @@ def build_riscv_stage_seed(
                     root_pc=(thread_entry & ~1) if thread_entry else None,
                 )
                 return SchedulerSeed(seed, stage_name, "old", evidence)
-            owner = "new" if target_ptr == to_ptr else "other"
-            return _riscv_saved_seed(
-                context,
-                top=thread_sp,
-                read=read,
-                low=low,
-                high=high,
-                endian=endian,
-                entry=thread_entry,
-                stage=stage_name,
-                owner=owner,
-                evidence=evidence,
-            )
+            return saved("new" if target_ptr == to_ptr else "other")
         if current_addr is None:
             return "scheduler-owner-inconsistent"
         if thread_addr != current_addr:
-            return _riscv_saved_seed(
-                context,
-                top=thread_sp,
-                read=read,
-                low=low,
-                high=high,
-                endian=endian,
-                entry=thread_entry,
-                stage=stage_name,
-                owner="other",
-                evidence=evidence,
-            )
+            return saved("other")
         if not _REQUIRED_RISCV_LIVE_REGS.issubset(snapshot.registers):
             return "live-registers-unavailable"
         if snapshot.mepc <= 0 or (snapshot.mepc & 1):
@@ -1168,18 +1195,7 @@ def build_riscv_stage_seed(
         if current_addr is None:
             return "scheduler-owner-inconsistent"
         if thread_addr != current_addr:
-            return _riscv_saved_seed(
-                context,
-                top=thread_sp,
-                read=read,
-                low=low,
-                high=high,
-                endian=endian,
-                entry=thread_entry,
-                stage=stage.name,
-                owner="other",
-                evidence=evidence,
-            )
+            return saved("other", stage.name)
         a0_val = snapshot.registers.get(10) if live_a0 is None else live_a0
         if (
             stage.name == "switch-to-entry"
@@ -1238,18 +1254,7 @@ def build_riscv_stage_seed(
         if nest_err is not None:
             return nest_err
         if thread_addr != current_addr:
-            return _riscv_saved_seed(
-                context,
-                top=thread_sp,
-                read=read,
-                low=low,
-                high=high,
-                endian=endian,
-                entry=thread_entry,
-                stage=stage.name,
-                owner="other",
-                evidence=evidence,
-            )
+            return saved("other", stage.name)
         if stage.pc <= profile.trap_mv_s0_pc:
             frame_base = snapshot.sp & mask
         else:
@@ -1315,18 +1320,7 @@ def build_riscv_stage_seed(
             if current_addr is None:
                 return "scheduler-owner-inconsistent"
             if thread_addr != current_addr:
-                seed, reason = _riscv_decode_saved(
-                    context,
-                    top=thread_sp,
-                    read=read,
-                    low=low,
-                    high=high,
-                    endian=endian,
-                    entry=thread_entry,
-                )
-                if seed is None:
-                    return reason
-                return SchedulerSeed(seed, stage.name, "other", evidence)
+                return saved("other", stage.name)
             epc_override = (
                 None if profile.epc_mode == "stacked-epc" else (snapshot.mepc & ~1)
             )
@@ -1379,19 +1373,7 @@ def build_riscv_stage_seed(
             if seed is None:
                 return reason
             return SchedulerSeed(seed, stage.name, "old", evidence)
-        seed, reason = _riscv_decode_saved(
-            context,
-            top=thread_sp,
-            read=read,
-            low=low,
-            high=high,
-            endian=endian,
-            entry=thread_entry,
-        )
-        if seed is None:
-            return reason
-        owner = "new" if target_ptr == to_ptr else "other"
-        return SchedulerSeed(seed, stage.name, owner, evidence)
+        return saved("new" if target_ptr == to_ptr else "other", stage.name)
 
     if stage.name in ("trap-epilogue-after-switch-load", "restore-window"):
         if stage.function == "spurious_interrupt":
@@ -1401,18 +1383,7 @@ def build_riscv_stage_seed(
         if current_addr is None:
             return "scheduler-owner-inconsistent"
         if thread_addr != current_addr:
-            return _riscv_saved_seed(
-                context,
-                top=thread_sp,
-                read=read,
-                low=low,
-                high=high,
-                endian=endian,
-                entry=thread_entry,
-                stage=stage.name,
-                owner="other",
-                evidence=evidence,
-            )
+            return saved("other", stage.name)
         if stage.name == "trap-epilogue-after-switch-load" and snapshot.sp != thread_sp:
             return "scheduler-saved-sp-inconsistent"
         epc_override = (
@@ -1446,18 +1417,7 @@ def build_riscv_stage_seed(
         if current_addr is None:
             return "scheduler-owner-inconsistent"
         if thread_addr != current_addr:
-            return _riscv_saved_seed(
-                context,
-                top=thread_sp,
-                read=read,
-                low=low,
-                high=high,
-                endian=endian,
-                entry=thread_entry,
-                stage=stage.name,
-                owner="other",
-                evidence=evidence,
-            )
+            return saved("other", stage.name)
         if (snapshot.mstatus & MSTATUS_MPP_MASK) != MSTATUS_MPP_MACHINE:
             return "unsupported-exception-model"
         if not _in_bounds(low, high, snapshot.sp, snapshot.sp):

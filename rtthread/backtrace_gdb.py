@@ -77,6 +77,7 @@ from rtthread.arm_scheduler_switch import (
     classify_stage as classify_scheduler_stage,
 )
 from rtthread.backtrace import (
+    _armv8m_psplim_valid,
     decode_armv7em_saved_context,
     decode_armv8m_mainline_saved_context,
 )
@@ -314,7 +315,11 @@ def _live_seed(arch: str, root_pc: int | None) -> SeedFrame | None:
 
 
 def _live_seed_detail(
-    arch: str, isa: str, root_pc: int | None
+    arch: str,
+    isa: str,
+    root_pc: int | None,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
 ) -> tuple[SeedFrame | None, str]:
     m_profile = isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
     seed, reason = _core_live_seed_detail(
@@ -345,7 +350,23 @@ def _live_seed_detail(
         tz = read_int(eval_identifier("rt_trustzone_current_context"))
         if tz is None:
             return None, "port-configuration-unavailable"
-        if tz != 0 or psplim != 0 or (not seed.exception_number and control != 2):
+        if (
+            tz != 0
+            or (psplim & 0x7) != 0
+            or (not seed.exception_number and control != 2)
+        ):
+            return None, "unsupported-extension-context"
+        if not seed.exception_number:
+            if not _armv8m_psplim_valid(psplim, stack_low=stack_low, sp=seed.sp):
+                return None, "unsupported-extension-context"
+        elif (
+            stack_low is None
+            or stack_high is None
+            or (
+                seed.process_sp is not None
+                and stack_low <= seed.process_sp <= stack_high
+            )
+        ) and not _armv8m_psplim_valid(psplim, stack_low=stack_low, sp=seed.process_sp):
             return None, "unsupported-extension-context"
     return seed, reason
 
@@ -1047,7 +1068,14 @@ def _backtrace_thread(
                 ],
                 abi=selection.abi,
             )
-        seed, live_reason = _live_seed_detail(arch, architecture, thread.entry or None)
+        if architecture == "armv8-m.mainline":
+            seed, live_reason = _live_seed_detail(
+                arch, architecture, thread.entry or None, low, high
+            )
+        else:
+            seed, live_reason = _live_seed_detail(
+                arch, architecture, thread.entry or None
+            )
         if seed is None:
             return BacktraceReport(
                 task=thread.name or target,
