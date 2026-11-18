@@ -707,3 +707,129 @@ def test_cached_rtthread_m_profile_elfs_build_scheduler_profile(path):
         classify_stage(profile, profile.pendsv_exception_return).name
         == "pendsv-exception-return"
     )
+
+
+def test_armv7em_soft_float_uses_22_insn_pendsv_and_integer_seeds():
+    soft_fix = _PortFixture(
+        name="armv7e-m-soft",
+        arch="armv7e-m",
+        blob=_CM3_SWITCH,
+        base=0x583E,
+        pendsv_off=0x20,
+        switch_to_off=0x5C,
+        flag=0x20005F04,
+        from_ptr=0x20005EFC,
+        to_ptr=0x20005F00,
+        tz=None,
+        selection=StackContextSelection(
+            "armv7e-m", "arm", ARMV7M_INTEGER, "ok", abi="aapcs32"
+        ),
+    )
+    prof = build_profile(_elf_for(soft_fix))
+    assert prof is not None
+    assert prof.port == "armv7-m"
+    assert prof.isa == "armv7e-m"
+    assert prof.fpu is False
+
+    stack_base = 0x20004000
+    mem = bytearray(b"\x00" * 0x1000)
+    sp_offset = 16
+    old_tcb = 0x20000100
+    new_tcb = 0x20000200
+    old_low, old_high = stack_base, stack_base + 0x400
+    new_low, new_high = stack_base + 0x400, stack_base + 0x800
+    cm3_fix = _FIXTURES[1]
+    old_hw, old_regs = _build_saved_frame(
+        mem,
+        stack_base,
+        top=old_high - 120,
+        fix=cm3_fix,
+        fpu=False,
+        pc=0x4020,
+        lr=0x4004,
+    )
+    new_sp = new_high - 120
+    new_hw, new_regs = _build_saved_frame(
+        mem,
+        stack_base,
+        top=new_sp,
+        fix=cm3_fix,
+        fpu=False,
+        pc=0x5020,
+        lr=0x5004,
+    )
+    read = _memory_reader(mem, stack_base)
+
+    def resolve(
+        thread_addr, thread_sp, entry, low, high, *, flag, from_ptr, pc, psp, exc, regs
+    ):
+        return build_stage_seed(
+            prof,
+            soft_fix.selection,
+            flag_value=flag,
+            from_ptr=from_ptr,
+            to_ptr=new_tcb + sp_offset,
+            sp_offset=sp_offset,
+            thread_addr=thread_addr,
+            thread_sp=thread_sp,
+            thread_entry=entry,
+            current_addr=new_tcb,
+            low=low,
+            high=high,
+            endian="little",
+            stkalign=True,
+            read=read,
+            live_pc=pc,
+            live_sp=0x20001000,
+            live_psp=psp,
+            live_exc=exc,
+            live_regs=regs,
+        )
+
+    save_res = resolve(
+        old_tcb,
+        old_high - 120,
+        0x4000,
+        old_low,
+        old_high,
+        flag=0,
+        from_ptr=old_tcb + sp_offset,
+        pc=prof.pendsv_save_written,
+        psp=old_hw,
+        exc=14,
+        regs={**old_regs, 0: old_tcb + sp_offset, 1: old_high - 120},
+    )
+    assert isinstance(save_res, SchedulerSeed)
+    assert save_res.seed.source == "saved-buffer" and save_res.seed.pc == 0x4020
+
+    restored_res = resolve(
+        new_tcb,
+        new_sp,
+        0x5000,
+        new_low,
+        new_high,
+        flag=0,
+        from_ptr=old_tcb + sp_offset,
+        pc=prof.pendsv_restored_pending_psp,
+        psp=old_hw,
+        exc=14,
+        regs={**new_regs, 1: new_hw},
+    )
+    assert isinstance(restored_res, SchedulerSeed)
+    assert restored_res.seed.source == "current" and restored_res.seed.pc == 0x5020
+
+    ret_res = resolve(
+        new_tcb,
+        new_sp,
+        0x5000,
+        new_low,
+        new_high,
+        flag=0,
+        from_ptr=old_tcb + sp_offset,
+        pc=prof.pendsv_exception_return,
+        psp=new_hw,
+        exc=14,
+        regs={**new_regs, 14: 0xFFFFFFFD},
+    )
+    assert isinstance(ret_res, SchedulerSeed)
+    assert ret_res.seed.pc == 0x5020

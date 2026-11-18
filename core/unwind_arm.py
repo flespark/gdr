@@ -735,7 +735,7 @@ def arm_exception_guard(
     if kind == "fault":
         return "exception-frame-type-unproven"
     if kind == "system":
-        return None if exception_number == 15 else "exception-number-unverified"
+        return None
     return None
 
 
@@ -1278,8 +1278,8 @@ def prepare_arm_handler_unwind(
     Fault seeds require a precise :func:`arm_fault_precision` verdict from
     target CFSR/HFSR reads; imprecise faults stop as
     ``fault-frame-imprecise``. Armv8-M Mainline only admits fault frames and
-    guard-approved SysTick ticks; other external IRQ/system/scheduler handler
-    modes stay ``unsupported``. Returns :class:`ArmHandlerSetup` when all
+    guard-approved external/system exceptions; scheduler handler modes stay
+    ``unsupported``. Returns :class:`ArmHandlerSetup` when all
     architectural and port invariants hold, or ``(stop_reason, message)``
     when the stop must be refused.
     """

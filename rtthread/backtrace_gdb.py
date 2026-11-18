@@ -110,15 +110,7 @@ except ImportError:
 def _systick_aware_guard(
     exception_number: int, pc: int, isa: str = "armv7-m"
 ) -> str | None:
-    """Admit SysTick as a proven periodic interrupt; other numbers keep core policy.
-
-    SysTick shares the ordinary handler proof (scheduler ownership, IRQ stack
-    bounds, vector entry): its handler is a simple tick increment with no
-    scheduling entanglement at entry. FreeRTOS keeps the core refusal because
-    its SysTick belongs to the scheduler.
-    """
-    if exception_number == 15:
-        return None
+    """Admit architecturally valid system exceptions alongside core policy."""
     return arm_exception_guard(exception_number, pc, isa)
 
 

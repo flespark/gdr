@@ -301,7 +301,7 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
     isa = cpu.isa
     if isa is None:
         return _selection_result(cpu, None, "unverified-port")
-    if isa == "armv7e-m" and cpu.abi == "aapcs32-vfp":
+    if isa == "armv7e-m":
         if _armv7em_fpu_verify_context(elf):
             return _selection_result(
                 cpu,
@@ -310,10 +310,11 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
                 (".ARM.attributes", "compiled libcpu FPU save/restore"),
                 alt_context=ARMV7EM_FPU,
             )
-        return _selection_result(
-            cpu, None, "unrecognizable-stack-frame-layout", ("aapcs32-vfp ABI",)
-        )
-    if isa in ("armv7-m", "armv7e-m") and cpu.abi == "aapcs32-vfp":
+        if cpu.abi == "aapcs32-vfp":
+            return _selection_result(
+                cpu, None, "unrecognizable-stack-frame-layout", ("aapcs32-vfp ABI",)
+            )
+    if isa == "armv7-m" and cpu.abi == "aapcs32-vfp":
         return _selection_result(
             cpu, None, "unsupported-extension-context", ("aapcs32-vfp ABI",)
         )
@@ -332,6 +333,7 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
     context = {
         "armv6-m": ARMV6M_INTEGER,
         "armv7-m": ARMV7M_INTEGER,
+        "armv7e-m": ARMV7M_INTEGER,
         "armv8-m.mainline": ARMV8M_MAINLINE_INTEGER,
         "armv7-a": ARMV7A_LWP_INTEGER,
     }.get(isa)
@@ -340,6 +342,7 @@ def _select_arm_context(elf: ElfImage, cpu: Cpu) -> StackContextSelection:
     matcher = {
         "armv6-m": _armv6m_verify_context,
         "armv7-m": _armv7m_verify_context,
+        "armv7e-m": _armv7m_verify_context,
         "armv8-m.mainline": _armv8m_mainline_verify_context,
         "armv7-a": _armv7a_verify_context,
     }[isa]

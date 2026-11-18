@@ -93,7 +93,9 @@ def _select_effective_context(
 ) -> tuple[SavedStackContext | None, int | None, str]:
     if selection.context is None:
         return None, None, "unsupported-port"
-    if profile.isa in ("armv6-m", "armv7-m"):
+    if profile.isa in ("armv6-m", "armv7-m") or (
+        profile.isa == "armv7e-m" and not profile.fpu
+    ):
         return selection.context, None, "ok"
     if profile.isa == "armv7e-m":
         flag = read_slot(
@@ -168,7 +170,7 @@ def _save_written_core_matches(
     high: int,
     endian: Endian,
 ) -> bool:
-    if profile.isa == "armv7e-m":
+    if profile.isa == "armv7e-m" and profile.fpu:
         if registers.get(4) != sw_meta:
             return False
         check_regs: tuple[int, ...] = tuple(range(5, 12))
@@ -331,7 +333,7 @@ def _check_restored_state(
     live_psplim: int | None,
     live_control: int | None,
 ) -> str | None:
-    if profile.isa == "armv7e-m":
+    if profile.isa == "armv7e-m" and profile.fpu:
         if live_regs.get(3) != sw_meta:
             return "scheduler-restore-window-inconsistent"
         if stage.name == "pendsv-exception-return":
@@ -421,7 +423,8 @@ def _resolve_old_thread(
         exc_lr = live_regs.get(14, 0)
         allowed_lr = (
             (_EXC_RETURN_THREAD_PSP, _EXC_RETURN_THREAD_PSP_FPU)
-            if profile.isa in ("armv7e-m", "armv8-m.mainline")
+            if (profile.isa == "armv7e-m" and profile.fpu)
+            or profile.isa == "armv8-m.mainline"
             else (_EXC_RETURN_THREAD_PSP,)
         )
         if exc_lr not in allowed_lr:

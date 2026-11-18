@@ -30,7 +30,7 @@ from freertos.backtrace import (
 from freertos.layout import FreeRtosConfig, build_layout
 
 
-def _elf(symbols=lambda _name: 0x1000):
+def _elf(symbols=lambda name: None if name == "vPortEnableVFP" else 0x1000):
     """Untyped ELF double; selection tests stub ``cpu_of`` above it."""
     return cast(Any, SimpleNamespace(symbol_address=symbols))
 
@@ -183,29 +183,33 @@ def test_live_invalid_ipsr_reaches_the_report_gate(monkeypatch, ipsr):
 
 
 @pytest.mark.parametrize("ipsr", [2, 12])
-def test_live_valid_but_unverified_exception_number_stops_before_unwind(
-    monkeypatch, ipsr
-):
+def test_live_system_exceptions_nmi_and_debugmon_are_admitted(monkeypatch, ipsr):
     adapter, task = _session(monkeypatch)
     monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [(0, task.address)])
     frame = _LiveFrame(sp=0x203FFFD0, xpsr=0x01000000 | ipsr, msp=0x203FFFD0)
     monkeypatch.setattr(bridge, "gdb", _live_gdb(frame))
-    monkeypatch.setattr(
-        bridge, "unwind_chain", lambda *_args, **_kwargs: pytest.fail("unsafe unwind")
-    )
+    monkeypatch.setattr(bridge, "_scheduler_running", lambda: True)
+    monkeypatch.setattr(bridge, "_irq_stack_bounds", lambda: (0x203FC000, 0x20400000))
+    monkeypatch.setattr(bridge, "_external_exception_limit", lambda: 47)
+    monkeypatch.setattr(bridge, "_ccr_stkalign", lambda: True)
+    monkeypatch.setattr(bridge, "_vector_entry", lambda _number: 0x1004)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda _pc: None)
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
     monkeypatch.setattr(
         bridge,
-        "_scheduler_running",
-        lambda: pytest.fail("unverified system exception read scheduler state"),
-    )
-    monkeypatch.setattr(
-        bridge,
-        "_vector_entry",
-        lambda _number: pytest.fail("unverified system exception read a vector"),
+        "unwind_chain",
+        lambda seed, _meta, **_kwargs: UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "no-unwind-info",
+            False,
+            False,
+            "current",
+            "seed",
+        ),
     )
     report = bridge.backtrace(adapter, "worker")
-    assert report.stop_reason == "exception-number-unverified"
-    assert report.frames == [] and report.source == "current"
+    assert report.stop_reason == "no-unwind-info"
+    assert report.source == "current" and len(report.frames) == 1
 
 
 def test_live_handler_seed_requires_profile_evidence(monkeypatch):
@@ -526,7 +530,7 @@ def test_arm_profile_requires_each_port_symbol(monkeypatch, missing):
         ports, "cpu_of", lambda _elf: Cpu("armv7-m", "arm", "ok", "aapcs32")
     )
     selected = ports.select_context(
-        _elf(lambda name: None if name == missing else 0x1000)
+        _elf(lambda name: None if name in (missing, "vPortEnableVFP") else 0x1000)
     )
     assert (
         selected.context is None
@@ -584,11 +588,40 @@ def test_cm4f_on_mainline_selects_the_live_pair(monkeypatch):
         lambda _elf: Cpu("armv8-m.mainline", "arm", "ok", abi="aapcs32-vfp"),
     )
     selected = ports.select_context(
-        _elf(lambda name: 0x1000 if name == "xPortSysTickHandler" else None),
+        _elf(
+            lambda name: (
+                0x1000 if name in ("vPortEnableVFP", "xPortSysTickHandler") else None
+            )
+        ),
         macros={},
     )
     assert selected.reason == "ok"
     assert selected.context is not None and selected.alt_context is not None
+
+
+@pytest.mark.parametrize("isa", ["armv7-m", "armv7e-m"])
+def test_softfp_cm4f_port_selects_the_live_pair(monkeypatch, isa):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu(isa, "arm", "ok", abi="aapcs32")
+    )
+    selected = ports.select_context(
+        _elf(lambda name: 0x1000 if name == "vPortEnableVFP" else None),
+        macros={},
+    )
+    assert selected.reason == "ok"
+    assert selected.context is ARMV7M_CM4F_BASIC
+    assert selected.alt_context is ARMV7M_CM4F_FPU
+    assert selected.evidence == ("aapcs32 ABI", "port symbols")
+
+
+def test_armv7em_soft_cm3_port_selects_integer_profile(monkeypatch):
+    monkeypatch.setattr(
+        ports, "cpu_of", lambda _elf: Cpu("armv7e-m", "arm", "ok", abi="aapcs32")
+    )
+    selected = ports.select_context(_elf(), macros={})
+    assert selected.reason == "ok"
+    assert selected.context is ARMV7M_INTEGER
+    assert selected.alt_context is None
 
 
 def test_mainline_vfp_without_cm4f_port_symbol_is_refused(monkeypatch):
@@ -966,14 +999,14 @@ def test_exception_guard_refuses_architecturally_invalid_numbers(ipsr):
     assert bridge._exception_guard(ipsr, 0x1000) == "exception-number-invalid"
 
 
-@pytest.mark.parametrize("ipsr", [2, 12])
-def test_exception_guard_classifies_valid_but_unverified_system_numbers(ipsr):
-    assert bridge._exception_guard(ipsr, 0x1000) == "exception-number-unverified"
-
-
-@pytest.mark.parametrize("ipsr", [15, 16, 24, 25, 511])
-def test_exception_guard_admits_systick_and_the_architectural_external_range(ipsr):
+@pytest.mark.parametrize("ipsr", [2, 12, 15, 16, 24, 25, 511])
+def test_exception_guard_admits_system_and_the_architectural_external_range(ipsr):
     assert bridge._exception_guard(ipsr, 0x1000) is None
+
+
+def test_exception_guard_refuses_debugmon_on_armv6m():
+    assert bridge._exception_guard(2, 0x1000, "armv6-m") is None
+    assert bridge._exception_guard(12, 0x1000, "armv6-m") == "exception-number-invalid"
 
 
 def test_exception_guard_preserves_scheduler_and_fault_refusals():

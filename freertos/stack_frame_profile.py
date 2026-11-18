@@ -468,13 +468,12 @@ def _select_arm_context(
     macros: Mapping[str, str] | None,
 ) -> StackContextSelection:
     """Select and verify the Arm profile from symbols and kernel configuration."""
-    if cpu.abi == "aapcs32-vfp" and cpu.isa in (
-        "armv7-m",
-        "armv7e-m",
-        "armv8-m.mainline",
-    ):
+    if cpu.isa in ("armv7-m", "armv7e-m", "armv8-m.mainline"):
         if (
-            _is_cm4f_port(elf, cpu)
+            cpu.abi in ("aapcs32", "aapcs32-vfp")
+            and not smp
+            and not mpu
+            and _is_cm4f_port(elf, cpu)
             and ARMV7M_CM4F_BASIC.verified
             and ARMV7M_CM4F_FPU.verified
         ):
@@ -482,12 +481,13 @@ def _select_arm_context(
                 cpu,
                 ARMV7M_CM4F_BASIC,
                 "ok",
-                ("aapcs32-vfp ABI", "port symbols"),
+                (f"{cpu.abi} ABI", "port symbols"),
                 alt_context=ARMV7M_CM4F_FPU,
             )
-        return _selection_result(
-            cpu, None, "unsupported-extension-context", ("aapcs32-vfp ABI",)
-        )
+        if cpu.abi == "aapcs32-vfp":
+            return _selection_result(
+                cpu, None, "unsupported-extension-context", ("aapcs32-vfp ABI",)
+            )
     context = _arm_profile(cpu.isa, smp=smp, mpu=mpu)
     if context is None or not context.verified:
         return _selection_result(cpu, None, "unverified-port")
@@ -513,20 +513,21 @@ def _select_arm_context(
 
 
 def _is_cm4f_port(elf: ElfImage, cpu: Cpu) -> bool:
-    """Whether the image links the CM4F port, from ABI and port symbols.
+    """Whether the image links the CM4F port, from compiled port symbols.
 
     The VFP ABI alone does not prove the FPU port: a shared config header
-    can enable FPU on a CM3 build that ignores it. ``vPortEnableVFP`` exists
-    only in the M-profile FPU port; on Armv8-M ``xPortSysTickHandler``
-    distinguishes the CM4F port from a CM33 port with FPU enabled, whose
-    save layout differs.
+    can enable FPU on a CM3 build that ignores it, and ``softfp`` builds
+    report ``aapcs32``. ``vPortEnableVFP`` exists only in the M-profile FPU
+    port; on Armv8-M ``xPortSysTickHandler`` together with ``vPortEnableVFP``
+    distinguishes the CM4F port from a CM33 port with FPU enabled (which uses
+    ``SysTick_Handler`` and ``prvSetupFPU``) and from ``ARM_CM3`` (which has
+    ``xPortSysTickHandler`` without ``vPortEnableVFP``).
     """
-    if cpu.abi != "aapcs32-vfp":
-        return False
     if cpu.isa in ("armv7-m", "armv7e-m"):
         return elf.symbol_address("vPortEnableVFP") is not None
     return cpu.isa == "armv8-m.mainline" and (
-        elf.symbol_address("xPortSysTickHandler") is not None
+        elf.symbol_address("vPortEnableVFP") is not None
+        and elf.symbol_address("xPortSysTickHandler") is not None
     )
 
 
@@ -534,7 +535,7 @@ def _arm_profile(isa: str | None, *, smp: bool, mpu: bool) -> SavedStackContext 
     """Return the Arm integer profile matching the ISA and context mode."""
     if isa == "armv6-m" and not smp and not mpu:
         return ARMV6M_INTEGER
-    if isa == "armv7-m" and not smp and not mpu:
+    if isa in ("armv7-m", "armv7e-m") and not smp and not mpu:
         return ARMV7M_INTEGER
     if isa == "armv8-m.mainline" and not smp and not mpu:
         return ARMV8M_MAINLINE_INTEGER

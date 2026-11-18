@@ -319,6 +319,44 @@ def test_vfp_armv7em_without_code_proof_is_refused(monkeypatch):
     assert selected.reason == "unrecognizable-stack-frame-layout"
 
 
+def test_soft_abi_armv7em_admits_integer_and_softfp_fpu(monkeypatch):
+    image, _data = _image("armv7-m")
+    soft_attrs = attributes_blob(
+        b"aeabi", ((5, "7E-M"), (6, 13), (7, "M"), (9, 2), (28, 0))
+    )
+    soft_image = replace(
+        image,
+        sections=(
+            image.sections[0],
+            replace(image.sections[1], data=soft_attrs),
+        ),
+    )
+    # Pure integer soft-ABI port (-mfloat-abi=soft): selects ARMV7M_INTEGER.
+    monkeypatch.setattr(
+        "rtthread.stack_frame_profile._armv7em_fpu_verify_context",
+        lambda _elf: False,
+    )
+    soft_selected = select_context(soft_image)
+    assert soft_selected.reason == "ok"
+    assert soft_selected.abi == "aapcs32"
+    assert soft_selected.context is not None
+    assert soft_selected.context.profile_id == "rtthread/armv7-m/integer"
+    assert soft_selected.alt_context is None
+
+    # Softfp port (-mfloat-abi=softfp): selects ARMV7EM_INTEGER + ARMV7EM_FPU.
+    monkeypatch.setattr(
+        "rtthread.stack_frame_profile._armv7em_fpu_verify_context",
+        lambda _elf: True,
+    )
+    softfp_selected = select_context(soft_image)
+    assert softfp_selected.reason == "ok"
+    assert softfp_selected.abi == "aapcs32"
+    assert softfp_selected.context is not None
+    assert softfp_selected.context.profile_id == "rtthread/armv7e-m/integer"
+    assert softfp_selected.alt_context is not None
+    assert softfp_selected.alt_context.profile_id == "rtthread/armv7e-m/fpu"
+
+
 @pytest.mark.skipif(not _CACHE_ELFS, reason="no cached RT-Thread firmware ELFs")
 @pytest.mark.parametrize(
     "path",

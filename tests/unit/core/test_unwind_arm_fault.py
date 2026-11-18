@@ -335,7 +335,7 @@ def test_dispatcher_routes_each_isa_to_its_own_table():
     assert dispatch("riscv", 24) == "invalid"
 
 
-def test_exception_guard_refuses_nested_fault_and_admits_systick_and_external_irq():
+def test_exception_guard_refuses_nested_fault_and_admits_system_and_external_irq():
     from core.unwind_arm import arm_exception_guard
 
     assert arm_exception_guard(3, 0x1000, "armv7-m") == "exception-frame-type-unproven"
@@ -343,6 +343,14 @@ def test_exception_guard_refuses_nested_fault_and_admits_systick_and_external_ir
         arm_exception_guard(7, 0x1000, "armv8-m.mainline")
         == "exception-frame-type-unproven"
     )
+    assert arm_exception_guard(2, 0x1000, "armv6-m") is None
+    assert arm_exception_guard(2, 0x1000, "armv7-m") is None
+    assert arm_exception_guard(2, 0x1000, "armv7e-m") is None
+    assert arm_exception_guard(2, 0x1000, "armv8-m.mainline") is None
+    assert arm_exception_guard(12, 0x1000, "armv6-m") == "exception-number-invalid"
+    assert arm_exception_guard(12, 0x1000, "armv7-m") is None
+    assert arm_exception_guard(12, 0x1000, "armv7e-m") is None
+    assert arm_exception_guard(12, 0x1000, "armv8-m.mainline") is None
     assert arm_exception_guard(15, 0x1000, "armv7-m") is None
     assert arm_exception_guard(15, 0x1000, "armv8-m.mainline") is None
     assert arm_exception_guard(24, 0x1000, "armv8-m.mainline") is None

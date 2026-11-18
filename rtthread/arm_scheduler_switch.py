@@ -346,6 +346,8 @@ def _match_armv7m(
     switch_return: int,
     pendsv_span: tuple[int, int],
     switch_to_span: tuple[int, int],
+    *,
+    isa: Isa = "armv7-m",
 ) -> SchedulerProfile | None:
     if len(p) != 22:
         return None
@@ -388,7 +390,7 @@ def _match_armv7m(
     )
     return SchedulerProfile(
         port="armv7-m",
-        isa="armv7-m",
+        isa=isa,
         fpu=False,
         switch_start=switch_span[0],
         switch_end=switch_span[1],
@@ -693,7 +695,11 @@ def build_profile(elf: ElfImage | None) -> SchedulerProfile | None:
     if cpu.isa == "armv7-m":
         return _match_armv7m(*args)
     if cpu.isa == "armv7e-m":
-        return _match_armv7em_fpu(*args)
+        if len(pendsv_insns) == 38:
+            return _match_armv7em_fpu(*args)
+        if len(pendsv_insns) == 22:
+            return _match_armv7m(*args, isa="armv7e-m")
+        return None
     if len(pendsv_insns) == 70:
         return _match_armv8m(*args, fpu=True)
     if len(pendsv_insns) == 64:

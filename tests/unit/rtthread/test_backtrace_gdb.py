@@ -318,7 +318,7 @@ def test_pending_arm_switch_cannot_select_a_task_seed(monkeypatch, pending, reas
     "exception,psp,reason",
     [
         (24, 0x2500, "exception-task-context-conflict"),
-        (2, 0x2080, "exception-number-unverified"),
+        (1, 0x2080, "exception-number-invalid"),
         (14, 0x2080, "scheduler-transition-unproven"),
     ],
 )
@@ -396,17 +396,22 @@ def test_arm_systick_tick_is_admitted_as_a_proven_periodic_interrupt(monkeypatch
 @pytest.mark.parametrize(
     "number,reason",
     [
+        (2, None),
+        (12, None),
         (15, None),
         (24, None),
         (11, "scheduler-transition-unproven"),
         (14, "scheduler-transition-unproven"),
         (3, "exception-frame-type-unproven"),
-        (2, "exception-number-unverified"),
         (1, "exception-number-invalid"),
     ],
 )
-def test_systick_aware_guard_admits_only_the_tick(number, reason):
+def test_systick_aware_guard_admits_system_and_external_exceptions(number, reason):
     assert bridge._systick_aware_guard(number, 0x1000) == reason
+    assert bridge._systick_aware_guard(12, 0x1000, "armv6-m") == (
+        "exception-number-invalid"
+    )
+    assert bridge._systick_aware_guard(2, 0x1000, "armv6-m") is None
 
 
 @pytest.mark.parametrize(
