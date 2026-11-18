@@ -1263,6 +1263,40 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
     )
     assert returned["pc"] != prof.svc_exception_return, returned
 
+    # First PendSV after gdr_sched_first suspends switches into an unstarted task.
+    _, output = _stop_at_addr(prof.pendsv_after_switch)
+    assert "breakpoint" in output.lower(), output
+    incoming_name = current_task_name(session)
+    assert incoming_name and incoming_name != "gdr_sched_first", incoming_name
+    data = _backtrace(session, incoming_name)
+    assert data["source"] == "unstarted", (incoming_name, data)
+    assert data["complete"] and data["stop_reason"] == "task-entry", (
+        incoming_name,
+        data,
+    )
+    entry_pc = data["frames"][0]["pc"]
+    assert "stage=pendsv-after-switch" in " ".join(data["messages"]), data
+
+    pendsv_stages: list[tuple[str, int]] = [
+        ("pendsv-saved-sp", prof.pendsv_saved_sp),
+        ("pendsv-restored-pending-psp", prof.pendsv_restored_pending_psp),
+    ]
+    if prof.pendsv_psp_written is not None:
+        pendsv_stages.append(("pendsv-psp-written", prof.pendsv_psp_written))
+    pendsv_stages.append(("pendsv-exception-return", prof.pendsv_exception_return))
+    for stage_name, addr in pendsv_stages:
+        _, output = _stop_at_addr(addr)
+        assert "breakpoint" in output.lower(), output
+        data = _backtrace(session, incoming_name)
+        assert data["source"] == "unstarted", (stage_name, incoming_name, data)
+        assert data["complete"] and data["stop_reason"] == "task-entry", (
+            stage_name,
+            incoming_name,
+            data,
+        )
+        assert data["frames"][0]["pc"] == entry_pc, (stage_name, data)
+        assert f"stage={stage_name}" in " ".join(data["messages"]), (stage_name, data)
+
 
 @_fault_skip(precise=True)
 def test_precise_usagefault_escalation_is_synchronous(gdb_session):

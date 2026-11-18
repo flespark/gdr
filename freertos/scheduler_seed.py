@@ -136,6 +136,10 @@ def _decode_frame(
     source: str,
     stkalign: bool,
     hardware_frame: bool,
+    check_initial: bool = False,
+    allow_unstarted: bool = False,
+    exit_pc: int | None = None,
+    is_entry: Callable[[int], bool] | None = None,
 ) -> tuple[SeedFrame | None, int | None, str]:
     """Decode a saved core block plus the hardware frame above it."""
     span = context.context_span
@@ -202,14 +206,34 @@ def _decode_frame(
     )
     if sp is None:
         return None, xpsr, reason
-    if (pc & ~1) == 0 or (hardware_frame and (pc & 1)):
+    if (pc & ~1) == 0:
         return None, xpsr, "scheduler-frame-pc-invalid"
     registers.update({13: sp, 14: lr, 15: pc & ~1})
-    return (
-        SeedFrame(pc=pc & ~1, sp=sp, regs=registers, source=source),
-        xpsr,
-        "ok",
-    )
+    candidate = SeedFrame(pc=pc & ~1, sp=sp, regs=registers, source=source)
+    if check_initial and _initial_pattern(
+        candidate,
+        frame_xpsr=xpsr,
+        exit_pc=exit_pc,
+        fill_word=context.fill_word,
+        initial_registers=context.initial_registers,
+    ):
+        if allow_unstarted and is_entry is not None and is_entry(candidate.pc):
+            return (
+                SeedFrame(
+                    pc=candidate.pc,
+                    sp=sp,
+                    regs=registers,
+                    source="unstarted",
+                    root_pc=candidate.pc,
+                    root_reason="task-entry",
+                ),
+                xpsr,
+                "ok",
+            )
+        return None, xpsr, "scheduler-unstarted-selection-unproven"
+    if hardware_frame and (pc & 1):
+        return None, xpsr, "scheduler-frame-pc-invalid"
+    return candidate, xpsr, "ok"
 
 
 def _saved_core_matches(
@@ -248,7 +272,7 @@ def _saved_seed(
     first_start: bool,
     is_entry: Callable[[int], bool] | None,
     stkalign: bool,
-    refuse_initial: bool = False,
+    allow_unstarted: bool = False,
 ) -> tuple[SeedFrame | None, str]:
     if context.status_offset is None:
         return None, "scheduler-frame-layout-unproven"
@@ -307,13 +331,25 @@ def _saved_seed(
             ),
             "ok",
         )
-    if refuse_initial and _initial_pattern(
+    if not first_start and _initial_pattern(
         seed,
         frame_xpsr=frame_xpsr,
         exit_pc=exit_pc,
         fill_word=context.fill_word,
         initial_registers=context.initial_registers,
     ):
+        if allow_unstarted and is_entry is not None and is_entry(seed.pc):
+            return (
+                SeedFrame(
+                    pc=seed.pc,
+                    sp=seed.sp,
+                    regs=seed.regs,
+                    source="unstarted",
+                    root_pc=seed.pc,
+                    root_reason="task-entry",
+                ),
+                "ok",
+            )
         return None, "scheduler-unstarted-selection-unproven"
     return seed, "ok"
 
@@ -708,7 +744,7 @@ def build_stage_seed(
             first_start=False,
             is_entry=is_entry,
             stkalign=stkalign,
-            refuse_initial=stage.owner == "new",
+            allow_unstarted=stage.owner == "new",
         )
         if seed is None:
             return reason
@@ -727,7 +763,7 @@ def build_stage_seed(
             core_regs=match_regs,
         ):
             return "scheduler-restore-window-inconsistent"
-        seed, frame_xpsr, reason = _decode_frame(
+        seed, _frame_xpsr, reason = _decode_frame(
             top=task_top,
             core=live_core,
             context=effective,
@@ -737,17 +773,13 @@ def build_stage_seed(
             source="current",
             stkalign=stkalign,
             hardware_frame=True,
+            check_initial=True,
+            allow_unstarted=stage.owner == "new",
+            exit_pc=exit_pc,
+            is_entry=is_entry,
         )
         if seed is None:
             return reason
-        if _initial_pattern(
-            seed,
-            frame_xpsr=frame_xpsr,
-            exit_pc=exit_pc,
-            fill_word=effective.fill_word,
-            initial_registers=effective.initial_registers,
-        ):
-            return "scheduler-unstarted-selection-unproven"
         return SchedulerSeed(seed, stage.name, stage.owner, evidence)
 
     if stage.seed == "live-frame-new":
@@ -769,7 +801,7 @@ def build_stage_seed(
             EXC_RETURN_EXTENDED_THREAD_PROCESS,
         ):
             return "scheduler-exception-return-unproven"
-        seed, frame_xpsr, reason = _decode_frame(
+        seed, _frame_xpsr, reason = _decode_frame(
             top=task_top,
             core=live_core,
             context=effective,
@@ -779,17 +811,13 @@ def build_stage_seed(
             source="current",
             stkalign=stkalign,
             hardware_frame=True,
+            check_initial=True,
+            allow_unstarted=stage.owner == "new",
+            exit_pc=exit_pc,
+            is_entry=is_entry,
         )
         if seed is None:
             return reason
-        if _initial_pattern(
-            seed,
-            frame_xpsr=frame_xpsr,
-            exit_pc=exit_pc,
-            fill_word=effective.fill_word,
-            initial_registers=effective.initial_registers,
-        ):
-            return "scheduler-unstarted-selection-unproven"
         return SchedulerSeed(seed, stage.name, stage.owner, evidence)
 
     if stage.seed == "first-start-saved":

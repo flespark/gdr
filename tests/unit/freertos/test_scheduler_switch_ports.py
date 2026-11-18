@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from core.unwind_meta import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
-from freertos.arm_scheduler_switch import build_profile, classify_stage
+from freertos.arm_scheduler_switch import SchedulerStage, build_profile, classify_stage
 from freertos.backtrace import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
@@ -387,6 +387,113 @@ def test_cm0_and_cm33_first_start_buffer_accepts_thumb_entry_and_cm0_partial_res
         fpu_context=ARMV7M_CM4F_FPU,
     )
     assert isinstance(refused, str)
+
+
+def test_cm0_and_cm33_pendsv_admit_unstarted_tasks_with_thumb_bit_pc():
+    cm0_prof, _ = build_profile(_cm0_image())
+    assert cm0_prof is not None
+    cm0_top = 0x20002004
+    cm0_mem = _Memory()
+    cm0_init = ARMV6M_INTEGER.initial_registers or ()
+    _write_basic_frame(
+        cm0_mem,
+        cm0_top,
+        core=cm0_init,
+        pc=ENTRY_PC | 1,
+        lr=EXIT_PC | 1,
+        exc=0xFFFFFFFD,
+    )
+    cm0_regs = {r: cm0_init[r - 4] for r in range(4, 12)}
+    cm0_regs.update({0: cm0_top + 36, 3: 0xFFFFFFFD, 13: 0x20004000, 14: 0xFFFFFFF9})
+    for stage_name, psp in (
+        ("pendsv-saved-sp", 0x20001800),
+        ("pendsv-restored-pending-psp", 0x20001800),
+        ("pendsv-exception-return", cm0_top + 36),
+    ):
+        stage = classify_stage(
+            cm0_prof, getattr(cm0_prof, stage_name.replace("-", "_"))
+        )
+        assert isinstance(stage, SchedulerStage)
+        seed = build_stage_seed(
+            cm0_prof,
+            stage,
+            read=cm0_mem.read,
+            context=ARMV6M_INTEGER,
+            task_tcb=TASK_TCB,
+            task_top=cm0_top,
+            task_low=TASK_LOW,
+            task_high=TASK_HIGH,
+            psp=psp,
+            msp=0x20004000,
+            registers={
+                **cm0_regs,
+                0: cm0_top if stage_name == "pendsv-saved-sp" else cm0_top + 36,
+            },
+            xpsr=0x0100000E,
+            stkalign=True,
+            current_tcb=TASK_TCB,
+            exit_pc=EXIT_PC,
+            is_entry=lambda pc: pc == ENTRY_PC,
+        )
+        assert not isinstance(seed, str), (stage_name, seed)
+        assert seed.seed.source == "unstarted"
+        assert seed.seed.pc == ENTRY_PC
+        assert seed.seed.root_pc == ENTRY_PC
+        assert seed.seed.root_reason == "task-entry"
+
+    cm33_prof, _ = build_profile(_cm33_image())
+    assert cm33_prof is not None
+    cm33_top = 0x20002100
+    cm33_entry = 0x10000000 + ENTRY_PC
+    cm33_mem = _Memory()
+    cm33_init = ARMV8M_MAINLINE_INTEGER.initial_registers or ()
+    cm33_mem[cm33_top] = 0x20001000
+    cm33_mem[cm33_top + 4] = 0xFFFFFFFD
+    _write_basic_frame(
+        cm33_mem,
+        cm33_top + 8,
+        core=cm33_init,
+        pc=cm33_entry | 1,
+        lr=EXIT_PC | 1,
+        exc=None,
+    )
+    cm33_regs = {r: cm33_init[r - 4] for r in range(4, 12)}
+    cm33_regs.update({3: 0xFFFFFFFD, 13: 0x20004000, 14: 0xFFFFFFB8})
+    for stage_name, psp in (
+        ("pendsv-saved-sp", 0x20001800),
+        ("pendsv-restored-pending-psp", 0x20001800),
+        ("pendsv-exception-return", cm33_top + 40),
+    ):
+        stage = classify_stage(
+            cm33_prof, getattr(cm33_prof, stage_name.replace("-", "_"))
+        )
+        assert isinstance(stage, SchedulerStage)
+        seed = build_stage_seed(
+            cm33_prof,
+            stage,
+            read=cm33_mem.read,
+            context=ARMV8M_MAINLINE_INTEGER,
+            task_tcb=TASK_TCB,
+            task_top=cm33_top,
+            task_low=TASK_LOW,
+            task_high=TASK_HIGH,
+            psp=psp,
+            msp=0x20004000,
+            registers={
+                **cm33_regs,
+                0: cm33_top if stage_name == "pendsv-saved-sp" else cm33_top + 40,
+            },
+            xpsr=0x0100000E,
+            stkalign=True,
+            current_tcb=TASK_TCB,
+            exit_pc=EXIT_PC,
+            is_entry=lambda pc: pc == cm33_entry,
+        )
+        assert not isinstance(seed, str), (stage_name, seed)
+        assert seed.seed.source == "unstarted"
+        assert seed.seed.pc == cm33_entry
+        assert seed.seed.root_pc == cm33_entry
+        assert seed.seed.root_reason == "task-entry"
 
 
 _CACHED_PORT_ELFS = tuple(

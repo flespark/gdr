@@ -360,17 +360,73 @@ def test_old_task_seed_before_and_after_the_save_boundary():
     assert refusal == "scheduler-saved-sp-inconsistent"
 
 
-def test_unstarted_context_selected_by_pendsv_is_refused():
+@pytest.mark.parametrize(
+    "stage_name,regs_override",
+    [
+        ("switch-after-update", {}),
+        ("pendsv-after-switch", {}),
+        ("pendsv-select", {1: TASK_TCB}),
+        ("pendsv-saved-sp", {0: TASK_TOP}),
+    ],
+)
+def test_unstarted_context_selected_by_pendsv_proves_entry_and_refuses_unproven(
+    stage_name, regs_override
+):
     profile = _profile()
     memory = _Memory()
     fill = (0xA5A5A5A5,) * 8
     _write_context(memory, TASK_TOP, core=fill, pc=ENTRY_PC)
+    regs = _registers(regs_override)
+    seed = _build(
+        profile,
+        _stage(profile, stage_name),
+        memory,
+        regs,
+        psp=TASK_LOW + 0x100,
+        xpsr=0x0100000E,
+    )
+    assert not isinstance(seed, str), seed
+    assert seed.seed.source == "unstarted"
+    assert seed.seed.pc == ENTRY_PC
+    assert seed.seed.root_pc == ENTRY_PC
+    assert seed.seed.root_reason == "task-entry"
+
+    for bad_entry in (None, lambda _addr: False):
+        refusal = _build(
+            profile,
+            _stage(profile, stage_name),
+            memory,
+            regs,
+            psp=TASK_LOW + 0x100,
+            xpsr=0x0100000E,
+            is_entry=bad_entry,
+        )
+        assert refusal == "scheduler-unstarted-selection-unproven"
+
+
+@pytest.mark.parametrize(
+    "stage_name,extra_regs",
+    [
+        ("switch-entry", {}),
+        ("switch-before-update", {}),
+        ("pendsv-writeback", {}),
+        ("pendsv-switch-call", {}),
+    ],
+)
+def test_outgoing_task_with_initial_pattern_is_still_refused(stage_name, extra_regs):
+    profile = _profile()
+    memory = _Memory()
+    fill = (0xA5A5A5A5,) * 8
+    _write_context(memory, TASK_TOP, core=fill, pc=ENTRY_PC)
+    regs = _registers(extra_regs)
+    if stage_name == "switch-entry":
+        regs[14] = profile.switch_return | 1
     refusal = _build(
         profile,
-        _stage(profile, "pendsv-saved-sp"),
+        _stage(profile, stage_name),
         memory,
-        _registers({0: TASK_TOP}),
-        psp=TASK_LOW + 0x100,
+        regs,
+        psp=TASK_TOP + 0x20,
         xpsr=0x0100000E,
     )
     assert refusal == "scheduler-unstarted-selection-unproven"
@@ -580,7 +636,7 @@ def test_every_first_start_stage_requires_entry_evidence(stage_name):
         "pendsv-exception-return",
     ],
 )
-def test_pendsv_never_claims_an_unstarted_selection(stage_name):
+def test_pendsv_restore_proves_unstarted_entry_and_refuses_unproven(stage_name):
     profile = _profile()
     memory = _Memory()
     fill = (0xA5A5A5A5,) * 8
@@ -594,7 +650,7 @@ def test_pendsv_never_claims_an_unstarted_selection(stage_name):
     else:
         psp = TASK_TOP + 0x20
         registers[14] = 0xFFFFFFFD
-    refusal = _build(
+    seed = _build(
         profile,
         _stage(profile, stage_name),
         memory,
@@ -602,7 +658,23 @@ def test_pendsv_never_claims_an_unstarted_selection(stage_name):
         psp=psp,
         xpsr=0x0100000E,
     )
-    assert refusal == "scheduler-unstarted-selection-unproven", refusal
+    assert not isinstance(seed, str), seed
+    assert seed.seed.source == "unstarted"
+    assert seed.seed.pc == ENTRY_PC
+    assert seed.seed.root_pc == ENTRY_PC
+    assert seed.seed.root_reason == "task-entry"
+
+    for bad_entry in (None, lambda _addr: False):
+        refusal = _build(
+            profile,
+            _stage(profile, stage_name),
+            memory,
+            registers,
+            psp=psp,
+            xpsr=0x0100000E,
+            is_entry=bad_entry,
+        )
+        assert refusal == "scheduler-unstarted-selection-unproven", refusal
 
 
 @pytest.mark.parametrize(
