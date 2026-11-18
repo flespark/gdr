@@ -50,8 +50,16 @@ pytestmark = pytest.mark.skipif(
 def _saved_skip():
     return pytest.mark.skipif(
         SPEC.target not in _ISA_BY_TARGET
-        or (SPEC.target == "cortex-a9" and SPEC.version not in {"4.0.4", "4.0.5"}),
+        or (SPEC.target == "cortex-a9" and SPEC.version.startswith("3.")),
         reason="requires an RT-Thread lane with a verified saved-context layout",
+    )
+
+
+def _bt_fixture_skip():
+    return pytest.mark.skipif(
+        SPEC.target not in _ISA_BY_TARGET
+        or (SPEC.target == "cortex-a9" and SPEC.version not in {"4.0.4", "4.0.5"}),
+        reason="requires an RT-Thread lane with the extended backtrace fixture",
     )
 
 
@@ -410,12 +418,14 @@ def test_blocked_thread_backtrace_reaches_the_entry(gdb_session):
     assert data["architecture"] == _ISA, data
     assert "port" not in data and "isa" not in data
     assert data["bounds"] == "recorded" and data["source"] == "saved", data
-    expected_method = {
-        "rv64": "cfi",
-        "rv32": "cfi",
-        "cortex-a9": "ehabi",
-    }.get(SPEC.target, "leaf")
-    assert data["method"] == expected_method, data
+    expected_methods = {
+        "rv64": {"cfi"},
+        "rv32": {"cfi"},
+        "cortex-a9": {"ehabi"}
+        if SPEC.version in {"4.0.4", "4.0.5"}
+        else {"ehabi", "cfi"},
+    }.get(SPEC.target, {"leaf"})
+    assert data["method"] in expected_methods, data
     functions = [frame["symbol"] or "" for frame in data["frames"]]
     assert any("rt_thread_mdelay" in function for function in functions), functions
     assert any("worker1_entry" in function for function in functions), functions
@@ -423,16 +433,20 @@ def test_blocked_thread_backtrace_reaches_the_entry(gdb_session):
     entry = next(i for i, name in enumerate(functions) if "worker1_entry" in name)
     assert delay < entry < len(functions) - 1, functions
     assert "thread_exit" in functions[-1], functions
+    exit_name = functions[-1].split("+", 1)[0].strip()
     root = _json_line(
         gdb_session.run_python(
-            "import json; print(json.dumps({'pc': int(gdb.lookup_static_symbol('_thread_exit').value().address)}))"
+            f"import gdb, json; sym = gdb.lookup_static_symbol({exit_name!r}) or gdb.lookup_global_symbol({exit_name!r}); print(json.dumps({{'pc': int(sym.value().address)}}))"
         )
     )
     assert data["frames"][-1]["pc"] == root["pc"], data
     assert [frame["index"] for frame in data["frames"]] == list(range(len(functions)))
     assert all(
         frame["method"]
-        in ({"cfi"} if SPEC.target in {"rv32", "rv64"} else {"ehabi", "leaf"})
+        in (
+            expected_methods
+            | ({"leaf"} if SPEC.target in {"rv32", "rv64"} else {"ehabi", "leaf"})
+        )
         for frame in data["frames"][1:]
     ), data
     if SPEC.target in _M_PROFILE_TARGETS:
@@ -466,7 +480,7 @@ def test_missing_thread_name_is_structured(gdb_session):
     assert not data["complete"]
 
 
-@_saved_skip()
+@_bt_fixture_skip()
 @pytest.mark.skipif(
     SPEC.target == "rv64", reason="requires the initial-context fixture"
 )
@@ -477,7 +491,7 @@ def test_initial_thread_has_an_independent_entry_root(gdb_session):
     assert "gdr_unstarted_entry" in data["frames"][0]["symbol"], data
 
 
-@_saved_skip()
+@_bt_fixture_skip()
 @pytest.mark.skipif(SPEC.target == "rv64", reason="requires the live-chain fixture")
 def test_current_thread_backtrace_preserves_the_halted_state(gdb_session):
     _stop_symbol(gdb_session, "gdr_bt_live_stop")
@@ -1539,3 +1553,204 @@ print(json.dumps({"complete": report.complete, "stop_reason": report.stop_reason
     finally:
         _clear_breakpoints(gdb_session)
         gdb_session.run("set var gdr_irq_hold = 0")
+
+
+@_riscv_skip()
+def test_riscv_synchronous_fault_unwinds_and_unknown_cause_fails_closed(gdb_session):
+    """RISC-V synchronous faults unwind across trap frames while unknown causes fail closed."""
+    xlen = 64 if SPEC.target == "rv64" else 32
+    try:
+        _rv_hold_and_break(gdb_session, "handle_trap")
+        gdb_session.run("stepi 2")
+        probe = _json_line(
+            gdb_session.run_python(
+                f"""
+import dataclasses, json
+from core.adapter import active
+import rtthread.backtrace_gdb as bt
+
+orig_snap = bt._riscv_snapshot
+def forced_cause(cause):
+    def _wrap(*, xlen=32):
+        snap, reason = orig_snap(xlen=xlen)
+        if snap is None:
+            return None, reason
+        return dataclasses.replace(snap, mcause=cause, mtval=0xDEADBEEF), "ok"
+    return _wrap
+
+real_snap, _ = orig_snap(xlen={xlen})
+bt._riscv_snapshot = forced_cause(2)
+try:
+    sync_rep = bt.backtrace(active(), "worker3")
+finally:
+    bt._riscv_snapshot = orig_snap
+
+bt._riscv_snapshot = forced_cause(24)
+try:
+    bad_rep = bt.backtrace(active(), "worker3")
+finally:
+    bt._riscv_snapshot = orig_snap
+
+print(json.dumps({{
+    "mepc": real_snap.mepc if real_snap is not None else None,
+    "complete": sync_rep.complete,
+    "stop_reason": sync_rep.stop_reason,
+    "methods": [f.method for f in sync_rep.frames],
+    "pcs": [f.pc for f in sync_rep.frames],
+    "symbols": [f.symbol or "" for f in sync_rep.frames],
+    "messages": sync_rep.messages,
+    "bad_complete": bad_rep.complete,
+    "bad_reason": bad_rep.stop_reason,
+}}))
+"""
+            )
+        )
+        assert probe["complete"] is True, probe
+        assert probe["stop_reason"] == "synchronous-fault", probe
+        assert "exception" in probe["methods"], probe
+        exc_idx = probe["methods"].index("exception")
+        assert probe["pcs"][exc_idx] == probe["mepc"], probe
+        assert any("Exception:IllegalInstruction" in m for m in probe["messages"]), (
+            probe
+        )
+        assert any("worker3_entry" in sym for sym in probe["symbols"]), probe
+        assert probe["bad_complete"] is False, probe
+        assert probe["bad_reason"] == "exception-frame-type-unproven", probe
+    finally:
+        _clear_breakpoints(gdb_session)
+        gdb_session.run("set var gdr_irq_hold = 0")
+
+
+@pytest.mark.skipif(
+    SPEC.target != "mps2-an505",
+    reason="requires RT-Thread Armv8-M Mainline PSPLIM fixture",
+)
+def test_armv8m_nonzero_psplim_admits_valid_and_refuses_invalid_bounds(gdb_session):
+    """Valid 8B-aligned PSPLIM passes saved and live unwinds; invalid bounds refuse."""
+    saved_probe = _json_line(
+        gdb_session.run_python(
+            """
+import gdb, json
+from core.adapter import active
+import rtthread.backtrace_gdb as bt
+
+thread = gdb.lookup_static_symbol("worker1_thread").value()
+sp = int(thread["sp"])
+low = int(thread["stack_addr"])
+inf = gdb.selected_inferior()
+orig_psplim_bytes = bytes(inf.read_memory(sp + 8, 4))
+valid_psplim = (low + 7) & ~7
+
+def _write_slot(val):
+    inf.write_memory(sp + 8, val.to_bytes(4, "little"))
+
+try:
+    _write_slot(valid_psplim)
+    ok_rep = bt.backtrace(active(), "worker1")
+    _write_slot(valid_psplim + 1)
+    unaligned_rep = bt.backtrace(active(), "worker1")
+    exc_ret = int.from_bytes(inf.read_memory(sp + 4, 4), "little")
+    caller_sp = sp + (216 if exc_ret == 0xFFFFFFED else 80)
+    _write_slot(caller_sp + 8)
+    above_rep = bt.backtrace(active(), "worker1")
+finally:
+    inf.write_memory(sp + 8, orig_psplim_bytes)
+
+print(json.dumps({
+    "ok_complete": ok_rep.complete,
+    "ok_stop": ok_rep.stop_reason,
+    "unaligned_reason": unaligned_rep.stop_reason,
+    "above_reason": above_rep.stop_reason,
+}))
+"""
+        )
+    )
+    assert saved_probe == {
+        "ok_complete": True,
+        "ok_stop": "task-exit",
+        "unaligned_reason": "unsupported-extension-context",
+        "above_reason": "unsupported-extension-context",
+    }, saved_probe
+
+    _stop_symbol(gdb_session, "gdr_bt_live_stop")
+    live_info = _json_line(
+        gdb_session.run_python(
+            """
+import gdb, json
+frame = gdb.newest_frame()
+print(json.dumps({
+    "psplim": int(frame.read_register("psplim")),
+    "control": int(frame.read_register("control")),
+    "tz": int(gdb.parse_and_eval("rt_trustzone_current_context")),
+}))
+"""
+        )
+    )
+    assert live_info["control"] == 2 and (live_info["psplim"] & 0x7) == 0, live_info
+    ok_live = _backtrace(gdb_session, "worker3")
+    assert ok_live["complete"] is True and ok_live["stop_reason"] == "task-exit", (
+        ok_live
+    )
+    try:
+        gdb_session.run("set var rt_trustzone_current_context = 1")
+        bad_live = _backtrace(gdb_session, "worker3")
+        assert bad_live["complete"] is False, bad_live
+        assert bad_live["stop_reason"] == "unsupported-extension-context", bad_live
+    finally:
+        gdb_session.run(f"set var rt_trustzone_current_context = {live_info['tz']}")
+
+
+@contextlib.contextmanager
+def _isolated_mprofile_session():
+    profile = replace(get_rtthread_qemu_profile(GDR_ROOT, SPEC), init_command=None)
+    check_tools(profile, SPEC.gdb)
+    if not has_embedded_python(SPEC.gdb):
+        pytest.skip("GDB has no embedded Python")
+    qemu = QemuSession(profile)
+    qemu.start(SPEC.boot_wait, paused=True)
+    session = GdbSession(SPEC.gdb, profile, qemu.gdb_port, GDR_ROOT)
+    try:
+        session.start()
+        session.run(f"gdr init rtthread {SPEC.version}", timeout=30)
+        yield session
+    finally:
+        session.stop()
+        qemu.stop()
+
+
+@_irq_skip()
+def test_mprofile_nmi_and_debug_monitor_cross_stack():
+    """Hardware NMI (IPSR=2) and DebugMonitor (IPSR=12) unwind across MSP->PSP."""
+    with _isolated_mprofile_session() as gdb:
+        _stop_symbol(gdb, "gdr_bt_live_stop")
+        pre = _json_line(
+            gdb.run_python(
+                'import gdb, json; print(json.dumps({"pc": int(gdb.newest_frame().read_register("pc")) & ~1}))'
+            )
+        )
+        gdb.run("tbreak Default_Handler")
+        gdb.run("set *(unsigned int *)0xE000ED04 = 0x80000000")
+        nmi_hit = gdb.run("continue", timeout=15)
+        assert "Temporary breakpoint" in nmi_hit, nmi_hit
+        ipsr_info = _json_line(
+            gdb.run_python(
+                'import gdb, json; x = int(gdb.newest_frame().read_register("xpsr")); print(json.dumps({"xpsr": x, "ipsr": x & 0x1FF}))'
+            )
+        )
+        assert ipsr_info["ipsr"] == 2, ipsr_info
+        nmi_bt = _backtrace(gdb, "worker3")
+        assert nmi_bt["complete"] is True and nmi_bt["stop_reason"] == "task-exit", (
+            nmi_bt
+        )
+        exc_nmi = next(f for f in nmi_bt["frames"] if f["method"] == "exception")
+        assert exc_nmi["pc"] == pre["pc"], (exc_nmi, pre)
+
+        if SPEC.target in {"mps2-an385", "mps2-an386", "mps2-an505"}:
+            dm_xpsr = (ipsr_info["xpsr"] & ~0x1FF) | 12
+            gdb.run(f"set $xpsr = {dm_xpsr:#x}")
+            dm_bt = _backtrace(gdb, "worker3")
+            assert dm_bt["complete"] is True and dm_bt["stop_reason"] == "task-exit", (
+                dm_bt
+            )
+            exc_dm = next(f for f in dm_bt["frames"] if f["method"] == "exception")
+            assert exc_dm["pc"] == pre["pc"], (exc_dm, pre)

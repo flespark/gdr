@@ -434,7 +434,11 @@ def test_omitted_target_backtrace_unwinds_current_halted_pc(gdb_session):
     )
     explicit_data = _backtrace(gdb_session, cur_name)
     assert current_data["task"] == cur_name
-    assert current_data["source"] == "current"
+    if _recorded_bounds():
+        assert current_data["source"] == "current"
+    else:
+        assert current_data["source"] == "none"
+        assert current_data["stop_reason"] == "stack-bounds-unavailable"
     assert current_data["frames"] == explicit_data["frames"]
     assert current_data["stop_reason"] == explicit_data["stop_reason"]
 
@@ -1267,6 +1271,19 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
     assert returned["pc"] != prof.svc_exception_return, returned
 
     # First PendSV after gdr_sched_first suspends switches into an unstarted task.
+    if prof.switch_after_update is not None:
+        _, output = _stop_at_addr(prof.switch_after_update)
+        assert "breakpoint" in output.lower(), output
+        incoming_name = current_task_name(session)
+        assert incoming_name and incoming_name != "gdr_sched_first", incoming_name
+        data = _backtrace(session, incoming_name)
+        assert data["source"] == "unstarted", (incoming_name, data)
+        assert data["complete"] and data["stop_reason"] == "task-entry", (
+            incoming_name,
+            data,
+        )
+        assert "stage=switch-after-update" in " ".join(data["messages"]), data
+
     _, output = _stop_at_addr(prof.pendsv_after_switch)
     assert "breakpoint" in output.lower(), output
     incoming_name = current_task_name(session)
@@ -1280,10 +1297,15 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
     entry_pc = data["frames"][0]["pc"]
     assert "stage=pendsv-after-switch" in " ".join(data["messages"]), data
 
-    pendsv_stages: list[tuple[str, int]] = [
-        ("pendsv-saved-sp", prof.pendsv_saved_sp),
-        ("pendsv-restored-pending-psp", prof.pendsv_restored_pending_psp),
-    ]
+    pendsv_stages: list[tuple[str, int]] = []
+    if prof.pendsv_select is not None:
+        pendsv_stages.append(("pendsv-select", prof.pendsv_select))
+    pendsv_stages.extend(
+        [
+            ("pendsv-saved-sp", prof.pendsv_saved_sp),
+            ("pendsv-restored-pending-psp", prof.pendsv_restored_pending_psp),
+        ]
+    )
     if prof.pendsv_psp_written is not None:
         pendsv_stages.append(("pendsv-psp-written", prof.pendsv_psp_written))
     pendsv_stages.append(("pendsv-exception-return", prof.pendsv_exception_return))
@@ -1423,3 +1445,149 @@ def test_fault_backtrace_inside_handler_callee_unwinds_msp_and_psp_frames(gdb_se
             assert mm_data["frames"][2]["method"] == "exception", mm_data
             assert "gdr_fault_memmanage_leaf" in mm_symbols[2], mm_symbols
             assert any("gdr_fault_task" in sym for sym in mm_symbols), mm_symbols
+
+
+@_irq_skip()
+def test_ehabi_only_isr_entry_leaf_fallback_and_elf_vector_fallback(gdb_session):
+    """At ISR entry, EXIDX-only metadata falls back to leaf+exception and ELF vectors."""
+    with _with_gate(gdb_session, "gdr_irq_gate"):
+        _stop_at(gdb_session, "Timer0_Handler if gdr_irq_scenario == 0")
+        raw = raw_irq_state(gdb_session, "psp", _ISA)
+        assert (raw["xpsr"] & 0x1FF) == _TIMER0_EXC, raw
+        probe = json_line(
+            gdb_session.run_python(
+                """
+import dataclasses, json
+from core.adapter import active
+import freertos.backtrace_gdb as bt
+
+orig_meta = bt._unwind_metadata
+def ehabi_only(adapter):
+    meta = orig_meta(adapter)
+    if meta is None:
+        return None
+    return dataclasses.replace(meta, cfi_tables=())
+
+bt._unwind_metadata = ehabi_only
+try:
+    exidx_rep = bt.backtrace(active(), "gdr_irq")
+finally:
+    bt._unwind_metadata = orig_meta
+
+orig_read = bt.read_bytes
+def mask_vector_mmio(address, size):
+    if address < 0x200 or 0xE000E000 <= address <= 0xE000EFFF:
+        if address in (0xE000E004, 0xE000ED08) or address < 0x200:
+            return None
+    return orig_read(address, size)
+
+bt.read_bytes = mask_vector_mmio
+try:
+    vec_rep = bt.backtrace(active(), "gdr_irq")
+finally:
+    bt.read_bytes = orig_read
+
+print(json.dumps({
+    "exidx_complete": exidx_rep.complete,
+    "exidx_stop": exidx_rep.stop_reason,
+    "exidx_methods": [f.method for f in exidx_rep.frames],
+    "exidx_symbols": [f.symbol or "" for f in exidx_rep.frames],
+    "exidx_pcs": [f.pc for f in exidx_rep.frames],
+    "vec_complete": vec_rep.complete,
+    "vec_stop": vec_rep.stop_reason,
+    "vec_bounds": vec_rep.bounds,
+    "vec_methods": [f.method for f in vec_rep.frames],
+    "vec_pcs": [f.pc for f in vec_rep.frames],
+}))
+"""
+            )
+        )
+        assert probe["exidx_complete"] is True, probe
+        assert probe["exidx_stop"] == "task-exit", probe
+        assert probe["exidx_methods"][:2] == ["seed", "exception"], probe
+        assert probe["exidx_pcs"][1] == raw["frame_pc"] & ~1, (probe, raw)
+        assert any("gdr_irq_task" in sym for sym in probe["exidx_symbols"]), probe
+        assert probe["vec_complete"] is True, probe
+        assert probe["vec_stop"] == "task-exit", probe
+        assert "exception" in probe["vec_methods"], probe
+        assert probe["vec_pcs"][probe["vec_methods"].index("exception")] == (
+            raw["frame_pc"] & ~1
+        ), (probe, raw)
+
+
+@contextlib.contextmanager
+def _isolated_mprofile_session():
+    profile = replace(get_freertos_qemu_profile(GDR_ROOT, SPEC), init_command=None)
+    check_tools(profile, SPEC.gdb)
+    if not has_embedded_python(SPEC.gdb):
+        pytest.skip("GDB has no embedded Python")
+    qemu = QemuSession(profile)
+    qemu.start(SPEC.boot_wait, paused=True)
+    session = GdbSession(SPEC.gdb, profile, qemu.gdb_port, GDR_ROOT)
+    try:
+        session.start()
+        session.run(f"gdr init freertos {SPEC.version}", timeout=30)
+        yield session
+    finally:
+        session.stop()
+        qemu.stop()
+
+
+@_irq_skip()
+def test_mprofile_nmi_and_debug_monitor_cross_stack():
+    """Hardware NMI (IPSR=2) and DebugMonitor (IPSR=12) unwind across MSP->PSP."""
+    with _isolated_mprofile_session() as gdb:
+        gdb.run("tbreak gdr_ready_spin")
+        hit = gdb.run("continue", timeout=30)
+        assert "Temporary breakpoint" in hit, hit
+        gdb.run("stepi 2")
+        pre = json_line(
+            gdb.run_python(
+                """
+import gdb, json
+frame = gdb.newest_frame()
+print(json.dumps({
+    "pc": int(frame.read_register("pc")) & ~1,
+    "psp": int(frame.read_register("psp")),
+}))
+"""
+            )
+        )
+        gdb.run("tbreak Default_Handler")
+        gdb.run("set *(unsigned int *)0xE000ED04 = 0x80000000")
+        nmi_hit = gdb.run("continue", timeout=15)
+        assert "Temporary breakpoint" in nmi_hit, nmi_hit
+        nmi_raw = json_line(
+            gdb.run_python(
+                """
+import gdb, json
+frame = gdb.newest_frame()
+xpsr = int(frame.read_register("xpsr"))
+print(json.dumps({"xpsr": xpsr, "ipsr": xpsr & 0x1FF}))
+"""
+            )
+        )
+        assert nmi_raw["ipsr"] == 2, nmi_raw
+        nmi_bt = _backtrace(gdb, "gdr_spin")
+        assert nmi_bt["complete"] is True and nmi_bt["stop_reason"] == "task-exit", (
+            nmi_bt
+        )
+        assert any(f["method"] == "exception" for f in nmi_bt["frames"]), nmi_bt
+        exc_frame = next(f for f in nmi_bt["frames"] if f["method"] == "exception")
+        assert exc_frame["pc"] == pre["pc"], (exc_frame, pre)
+        assert any("gdr_ready_spin" in (f["symbol"] or "") for f in nmi_bt["frames"]), (
+            nmi_bt
+        )
+
+        if _ISA in _PRECISE_ISAS:
+            dm_xpsr = (nmi_raw["xpsr"] & ~0x1FF) | 12
+            gdb.run(f"set $xpsr = {dm_xpsr:#x}")
+            dm_bt = _backtrace(gdb, "gdr_spin")
+            assert dm_bt["complete"] is True and dm_bt["stop_reason"] == "task-exit", (
+                dm_bt
+            )
+            exc_dm = next(f for f in dm_bt["frames"] if f["method"] == "exception")
+            assert exc_dm["pc"] == pre["pc"], (exc_dm, pre)
+            assert any(
+                "gdr_ready_spin" in (f["symbol"] or "") for f in dm_bt["frames"]
+            ), dm_bt
