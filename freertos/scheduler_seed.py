@@ -23,17 +23,16 @@ from core.unwind_arm import (
     FaultPrecision,
     decode_armv7m_exception_return,
 )
-from core.unwind_meta import Reader
+from core.unwind_meta import ElfImage, Reader
 from core.unwind_riscv import (
     MCAUSE_EXC_ECALL_M,
     MSTATUS_MPP_MACHINE,
     MSTATUS_MPP_MASK,
-    MTVEC_MODE_DIRECT,
-    MTVEC_MODE_MASK,
     RiscvSnapshot,
     decode_riscv_mcause,
     riscv_exception_guard,
     riscv_fault_precision,
+    riscv_mtvec_targets_entry,
     u_xlen_mask,
 )
 
@@ -1013,10 +1012,18 @@ def _riscv_trap_csrs_ok(
     profile: RiscvSchedulerProfile,
     stage: RiscvSchedulerStage,
     snapshot: RiscvSnapshot,
+    *,
+    elf: ElfImage | None = None,
+    read: Reader | None = None,
 ) -> tuple[bool, int] | str:
-    if (snapshot.mtvec & MTVEC_MODE_MASK) != MTVEC_MODE_DIRECT or (
-        snapshot.mtvec & ~MTVEC_MODE_MASK
-    ) != profile.trap_start:
+    if not riscv_mtvec_targets_entry(
+        snapshot.mtvec,
+        snapshot.mcause,
+        snapshot.xlen,
+        profile.trap_start,
+        elf=elf,
+        read=read,
+    ):
         return "exception-vector-unproven"
     if (snapshot.mstatus & MSTATUS_MPP_MASK) != MSTATUS_MPP_MACHINE:
         return "unsupported-exception-model"
@@ -1087,6 +1094,7 @@ def build_riscv_stage_seed(
     exit_pc: int | None,
     is_entry: Callable[[int], bool] | None,
     irq_bounds: tuple[int, int] | None = None,
+    elf: ElfImage | None = None,
 ) -> SchedulerSeed | str:
     """Build one owner-consistent RISC-V seed from a classified scheduler/trap stage."""
     if snapshot.xlen != profile.xlen or context.pointer_size != profile.word_size:
@@ -1153,7 +1161,7 @@ def build_riscv_stage_seed(
             evidence,
         )
 
-    csr_state = _riscv_trap_csrs_ok(profile, stage, snapshot)
+    csr_state = _riscv_trap_csrs_ok(profile, stage, snapshot, elf=elf, read=read)
     if isinstance(csr_state, str):
         return csr_state
     is_interrupt, cause_code = csr_state

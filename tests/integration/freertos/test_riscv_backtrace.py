@@ -14,7 +14,9 @@ from tests.support.freertos_backtrace_oracles import (
     current_task_name,
     envelope_data,
     json_line,
+    riscv_isr_yield_owner_probe,
     riscv_trap_state,
+    riscv_vectored_mtvec_probe,
 )
 from tests.support.freertos_qemu_profiles import get_freertos_qemu_profile
 from tests.support.gdb_process import has_embedded_python
@@ -141,6 +143,21 @@ def test_riscv_timer_isr_unwinds_across_isr_stack_to_multiframe_task(gdb_session
         assert "gdr_rv_spin_leaf" in (transitions[0]["symbol"] or ""), transitions
         evidence = " ".join(data["messages"])
         assert f"exception:{raw['mcause']:#x} -> task:{raw['tcb']:#x}" in evidence, data
+
+        assert riscv_isr_yield_owner_probe(gdb_session, raw["tcb"]) == {
+            "current_task": "gdr_spin",
+            "current_source": "current",
+            "current_complete": True,
+            "switched_source": "saved",
+            "switched_complete": True,
+        }
+        trap_entry = _symbol_address(gdb_session, "freertos_risc_v_trap_handler")
+        assert riscv_vectored_mtvec_probe(
+            gdb_session,
+            task="gdr_spin",
+            trap_entry=trap_entry,
+            xlen=_XLEN,
+        ) == {"complete": True, "stop_reason": "task-exit"}
     finally:
         _clear_breakpoints(gdb_session)
         gdb_session.run("set var gdr_irq_hold = 0")

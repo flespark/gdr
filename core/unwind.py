@@ -768,6 +768,8 @@ def unwind_chain(
         high = current.high if current is not None else stack_high
         attempts: list[str] = []
         has_metadata = False
+        ehabi_unexecuted_prologue = False
+        parse_failures: list[str] = []
         exact_caller_pc = False
         frame_evidence: tuple[str, ...] = ()
         new_regs: Any = regs
@@ -802,6 +804,7 @@ def unwind_chain(
                     and lookup_pc == symbol.start
                     and outcome[1] != sp
                 ):
+                    ehabi_unexecuted_prologue = True
                     attempts.append("ehabi-prologue-unexecuted")
                     outcome = None
                 elif isinstance(outcome, tuple):
@@ -818,7 +821,6 @@ def unwind_chain(
             step_method = "cfi"
         if outcome is None and metadata is not None:
             row = None
-            parse_failures: list[str] = []
             for table in metadata.cfi_tables:
                 row = table.row_for(lookup_pc)
                 if row is not None:
@@ -854,7 +856,11 @@ def unwind_chain(
             else:
                 has_metadata = has_metadata or bool(parse_failures)
                 attempts.extend(parse_failures or ["cfi-no-fde"])
-        if outcome is None and not has_metadata and metadata is not None:
+        if (
+            outcome is None
+            and (not has_metadata or (ehabi_unexecuted_prologue and not parse_failures))
+            and metadata is not None
+        ):
             exidx = metadata.elf.section(".ARM.exidx")
             if exidx is not None and len(exidx.data) % 8:
                 stop_reason = "ehabi-truncated-table"

@@ -71,15 +71,17 @@ from core.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
 )
 from core.unwind_riscv import (
+    MSTATUS_MPP_MACHINE,
+    MSTATUS_MPP_MASK,
+    prepare_riscv_handler_unwind,
+    resolve_riscv_irq_stack_bounds_detail,
+    riscv_fault_precision,
+)
+from core.unwind_riscv import (
     RiscvSnapshot as _RiscvSnapshot,
 )
 from core.unwind_riscv import (
     decode_riscv_mcause as _decode_riscv_mcause,
-)
-from core.unwind_riscv import (
-    prepare_riscv_handler_unwind,
-    resolve_riscv_irq_stack_bounds_detail,
-    riscv_fault_precision,
 )
 from core.unwind_riscv import (
     riscv_snapshot as _core_riscv_snapshot,
@@ -196,8 +198,13 @@ def _ccr_stkalign() -> bool | None:
     return _core_ccr_stkalign(read=read_bytes)
 
 
-def _external_exception_limit() -> int | None:
-    return _core_external_exception_limit(read=read_bytes)
+def _external_exception_limit(*, elf: ElfImage | None = None) -> int | None:
+    return _core_external_exception_limit(
+        read=read_bytes, elf=elf, symbol_lookup=linker_symbol_address
+    )
+
+
+_DEFAULT_EXTERNAL_EXCEPTION_LIMIT = _external_exception_limit
 
 
 def _armv6m_port_limit(*, elf: ElfImage | None = None) -> int | None:
@@ -218,12 +225,24 @@ def _armv6m_port_limit(*, elf: ElfImage | None = None) -> int | None:
 _DEFAULT_ARMV6M_PORT_LIMIT = _armv6m_port_limit
 
 
-def _armv6m_vector_entry(exception_number: int) -> int | None:
-    return _core_armv6m_vector_entry(exception_number, read=read_bytes)
+def _armv6m_vector_entry(
+    exception_number: int, *, elf: ElfImage | None = None
+) -> int | None:
+    return _core_armv6m_vector_entry(
+        exception_number, read=read_bytes, elf=elf, symbol_lookup=linker_symbol_address
+    )
 
 
-def _vector_entry(exception_number: int) -> int | None:
-    return _core_armv7m_vector_entry(exception_number, read=read_bytes)
+_DEFAULT_ARMV6M_VECTOR_ENTRY = _armv6m_vector_entry
+
+
+def _vector_entry(exception_number: int, *, elf: ElfImage | None = None) -> int | None:
+    return _core_armv7m_vector_entry(
+        exception_number, read=read_bytes, elf=elf, symbol_lookup=linker_symbol_address
+    )
+
+
+_DEFAULT_VECTOR_ENTRY = _vector_entry
 
 
 def _scheduler_running() -> bool | None:
@@ -232,6 +251,11 @@ def _scheduler_running() -> bool | None:
     if value is None:
         return None
     return value != 0
+
+
+def _current_tcb_address() -> int | None:
+    """Read ``pxCurrentTCB`` target address without mutating target state."""
+    return read_int(eval_identifier("pxCurrentTCB"))
 
 
 def _task_segment(task: FreeRtosTask, low: int, high: int) -> StackSegment:
@@ -363,7 +387,7 @@ def _riscv_scheduler_live_decision(
             reason="scheduler-not-running",
             message="a scheduler transition is visible but the scheduler is stopped",
         )
-    current = read_int(eval_identifier("pxCurrentTCB"))
+    current = _current_tcb_address()
     if current is None:
         return _SchedulerDecision(
             reason="scheduler-current-tcb-unavailable",
@@ -392,6 +416,7 @@ def _riscv_scheduler_live_decision(
         exit_pc=_exit_pc(),
         is_entry=_is_entry,
         irq_bounds=irq_span,
+        elf=elf,
     )
     if isinstance(outcome, str):
         return _SchedulerDecision(
@@ -503,7 +528,7 @@ def _scheduler_live_decision(
             reason="exception-alignment-unavailable",
             message="CCR.STKALIGN is not readable; the frame layout is unproven",
         )
-    current = read_int(eval_identifier("pxCurrentTCB"))
+    current = _current_tcb_address()
     if current is None:
         return _SchedulerDecision(
             reason="scheduler-current-tcb-unavailable",
@@ -571,6 +596,176 @@ def _task_value_by_address(adapter, address: int):
     return find_task(f"{address:#x}", adapter.layout)
 
 
+_RISCV_SWITCH_RESTORE_STAGES = frozenset(
+    (
+        "switch-before-update",
+        "switch-after-update",
+        "restore-sp-loaded",
+        "restore-sp-popped",
+        "start-first-entry",
+        "start-first-sp-loaded",
+        "start-first-sp-popped",
+    )
+)
+
+
+def _riscv_matches_interrupted_frame(
+    task: FreeRtosTask,
+    snap: _RiscvSnapshot,
+    context,
+    *,
+    endian: str,
+    expected_epc: int,
+) -> bool:
+    low, high, _bounds = _task_bounds(task)
+    word = snap.xlen // 8
+    frame_size = 31 * word
+    if (
+        low is None
+        or high is None
+        or task.top_of_stack <= 0
+        or task.top_of_stack % word != 0
+        or not low <= task.top_of_stack <= high - frame_size
+    ):
+        return False
+    mask = (1 << snap.xlen) - 1
+    byteorder = "little" if endian == "little" else "big"
+    raw = read_bytes(task.top_of_stack, frame_size)
+    if raw is None or len(raw) != frame_size:
+        return False
+    stored_epc = int.from_bytes(raw[0:word], byteorder) & mask
+    if (stored_epc & ~1) != expected_epc:
+        return False
+    stored_mstatus = int.from_bytes(raw[30 * word : frame_size], byteorder) & mask
+    if (stored_mstatus & MSTATUS_MPP_MASK) != MSTATUS_MPP_MACHINE:
+        return False
+    seed, _reason = decode_backtrace_context(
+        context,
+        task.top_of_stack,
+        read_bytes,
+        endian=endian,
+        stack_low=low,
+        stack_high=high,
+        entry_pc=stored_epc,
+        exit_pc=_exit_pc(),
+    )
+    return seed is not None and seed.source != "unstarted"
+
+
+def _resolve_riscv_interrupted_task(
+    adapter,
+    snap: _RiscvSnapshot,
+    context,
+    *,
+    known_task: FreeRtosTask | None = None,
+) -> tuple[int, int] | str:
+    """Identify the unique task interrupted onto ``xISRStack`` cleanly.
+
+    After ``portYIELD_FROM_ISR()`` updates ``pxCurrentTCB`` while returning into
+    a peripheral ISR, ``pxCurrentTCB`` points to the new task whereas the old
+    task still holds ``0(pxTopOfStack) == mepc`` for the active interrupt.
+    """
+    is_interrupt, _cause = _decode_riscv_mcause(snap.mcause, snap.xlen)
+    mask = (1 << snap.xlen) - 1
+    expected_epc = (
+        (snap.mepc & mask & ~1) if is_interrupt else ((snap.mepc + 4) & mask & ~1)
+    )
+    if expected_epc <= 0:
+        return "exception-task-context-conflict"
+    endian = arch_or_default()[1]
+    current_tcb = _current_tcb_address()
+    matches: list[tuple[int, int]] = []
+    if current_tcb is not None:
+        cur_task: FreeRtosTask | None = None
+        if known_task is not None and known_task.address == current_tcb:
+            cur_task = known_task
+        else:
+            try:
+                current_val = _task_value_by_address(adapter, current_tcb)
+            except RuntimeError:
+                current_val = None
+            if current_val is not None:
+                cur_state, cur_core = task_state(current_val, adapter.layout)
+                cur_task = value_to_task(
+                    current_val,
+                    cur_state,
+                    cur_core,
+                    adapter.layout,
+                    collect_stack_metrics=False,
+                )
+        if cur_task is not None and _riscv_matches_interrupted_frame(
+            cur_task, snap, context, endian=endian, expected_epc=expected_epc
+        ):
+            matches.append((cur_task.address, cur_task.top_of_stack))
+
+    try:
+        candidates = list(iter_tasks(adapter.layout))
+    except RuntimeError:
+        candidates = []
+    for task_val, st, core in candidates:
+        cand = value_to_task(
+            task_val, st, core, adapter.layout, collect_stack_metrics=False
+        )
+        if cand.address == current_tcb:
+            continue
+        if _riscv_matches_interrupted_frame(
+            cand, snap, context, endian=endian, expected_epc=expected_epc
+        ):
+            matches.append((cand.address, cand.top_of_stack))
+            if len(matches) > 1:
+                return "exception-task-context-conflict"
+    return matches[0] if len(matches) == 1 else "exception-task-context-conflict"
+
+
+def _riscv_active_isr_owner(
+    adapter,
+    selection,
+    metadata: UnwindMetadata | None,
+    *,
+    known_task: FreeRtosTask | None = None,
+) -> tuple[int, int] | str | None:
+    if (
+        selection.family != "riscv"
+        or selection.isa not in ("riscv32", "riscv64")
+        or selection.context is None
+        or not selection.context.verified
+        or metadata is None
+    ):
+        return None
+    isr_bounds = _riscv_isr_stack_bounds(metadata.elf)
+    if isr_bounds is None:
+        return None
+    xlen = 64 if selection.isa == "riscv64" else 32
+    snap, _snap_reason = _riscv_snapshot(xlen=xlen)
+    if snap is None or not isr_bounds[0] <= snap.sp <= isr_bounds[1]:
+        return None
+    is_interrupt, _cause = _decode_riscv_mcause(snap.mcause, xlen)
+    if not is_interrupt:
+        return None
+    sym = metadata.elf.function_containing(snap.pc)
+    if sym is not None and sym.name in (
+        "vTaskSwitchContext",
+        "processed_source",
+        "xPortStartFirstTask",
+    ):
+        return None
+    profile, _ = build_riscv_scheduler_profile(metadata.elf)
+    if profile is not None:
+        stage = classify_riscv_stage(profile, snap.pc)
+        if (
+            not isinstance(stage, str)
+            and stage is not None
+            and (
+                stage.name in _RISCV_SWITCH_RESTORE_STAGES
+                or stage.name.startswith(("trap-prologue-", "trap-sync-"))
+            )
+        ):
+            return None
+    return _resolve_riscv_interrupted_task(
+        adapter, snap, selection.context, known_task=known_task
+    )
+
+
 def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
     selected = _selected_core()
     current_addr = next(
@@ -578,12 +773,14 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
         None,
     )
     if current_addr is not None:
-        value = _task_value_by_address(adapter, current_addr)
+        selection = adapter._context_selection()
+        owner = _riscv_active_isr_owner(adapter, selection, _unwind_metadata(adapter))
+        target_addr = owner[0] if isinstance(owner, tuple) else current_addr
+        value = _task_value_by_address(adapter, target_addr)
         if value is not None:
-            return _backtrace_task_value(
-                adapter, value, f"{current_addr:#x}", max_depth
-            )
-    selection = adapter._context_selection()
+            return _backtrace_task_value(adapter, value, f"{target_addr:#x}", max_depth)
+    else:
+        selection = adapter._context_selection()
     context = selection.context
     if context is None or not context.verified:
         return BacktraceReport(
@@ -727,6 +924,8 @@ class _TargetContext:
     current_core: int | None
     metadata: UnwindMetadata | None
     max_depth: int
+    live_owner: bool = False
+    trap_top_override: int | None = None
 
     @property
     def architecture(self) -> str:
@@ -736,7 +935,11 @@ class _TargetContext:
         self, reason: str, message: str, *, source: str | None = None
     ) -> BacktraceReport:
         resolved_source = (
-            ("current" if self.current_core is not None else "saved")
+            (
+                "current"
+                if (self.current_core is not None or self.live_owner)
+                else "saved"
+            )
             if source is None
             else source
         )
@@ -806,7 +1009,11 @@ def _resolve_live_seed(
             selected = gdb.selected_thread().num - 1
         except (gdb.error, AttributeError, RuntimeError):
             selected = None
-    if selected is not None and selected != ctx.current_core:
+    if (
+        selected is not None
+        and ctx.current_core is not None
+        and selected != ctx.current_core
+    ):
         return ctx.stop(
             "smp-no-context",
             f"task runs on core {ctx.current_core}; the selected core "
@@ -910,7 +1117,7 @@ def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
 def _resolve_target_seed(
     ctx: _TargetContext,
 ) -> tuple[SeedFrame, str | None, FaultPrecision | None] | BacktraceReport:
-    if ctx.current_core is not None:
+    if ctx.live_owner:
         return _resolve_live_seed(ctx)
     saved = _resolve_saved_seed(ctx)
     if isinstance(saved, BacktraceReport):
@@ -950,6 +1157,21 @@ def _prepare_arm_handler(
         if _armv6m_port_limit is _DEFAULT_ARMV6M_PORT_LIMIT
         else _armv6m_port_limit
     )
+    external_limit_reader = (
+        (lambda: _external_exception_limit(elf=elf_image))
+        if _external_exception_limit is _DEFAULT_EXTERNAL_EXCEPTION_LIMIT
+        else _external_exception_limit
+    )
+    armv6m_vector_reader = (
+        (lambda number: _armv6m_vector_entry(number, elf=elf_image))
+        if _armv6m_vector_entry is _DEFAULT_ARMV6M_VECTOR_ENTRY
+        else _armv6m_vector_entry
+    )
+    vector_reader = (
+        (lambda number: _vector_entry(number, elf=elf_image))
+        if _vector_entry is _DEFAULT_VECTOR_ENTRY
+        else _vector_entry
+    )
     setup = prepare_arm_handler_unwind(
         seed,
         ctx.architecture,
@@ -959,11 +1181,11 @@ def _prepare_arm_handler(
         capacity_reader=(
             armv6m_limit_reader
             if ctx.architecture == "armv6-m"
-            else _external_exception_limit
+            else external_limit_reader
         ),
         stkalign_reader=_ccr_stkalign,
         vector_entry_reader=(
-            _armv6m_vector_entry if ctx.architecture == "armv6-m" else _vector_entry
+            armv6m_vector_reader if ctx.architecture == "armv6-m" else vector_reader
         ),
         guard_fn=_exception_guard,
         capacity_guard_factory=_capacity_exception_guard,
@@ -991,7 +1213,7 @@ def _prepare_riscv_handler(
     *,
     scheduler_note: str | None,
 ) -> _HandlerSetup | BacktraceReport:
-    if ctx.current_core is None:
+    if not ctx.live_owner:
         return _HandlerSetup(
             seed=seed,
             fault=fault,
@@ -1034,7 +1256,11 @@ def _prepare_riscv_handler(
             "scheduler-not-running",
             "a RISC-V trap handler is active before the scheduler is started",
         )
-    current_tcb = read_int(eval_identifier("pxCurrentTCB"))
+    current_tcb = (
+        ctx.task.address
+        if ctx.trap_top_override is not None
+        else _current_tcb_address()
+    )
     if current_tcb is None:
         return ctx.stop(
             "scheduler-current-tcb-unavailable",
@@ -1044,6 +1270,8 @@ def _prepare_riscv_handler(
     endian = arch_or_default()[1]
 
     def _resolve_frt_trap_frame(_ctx) -> int | str:
+        if ctx.trap_top_override is not None:
+            return ctx.trap_top_override
         raw_top = read_bytes(current_tcb, word)
         if raw_top is None or len(raw_top) != word:
             return "exception-frame-unreadable"
@@ -1059,6 +1287,8 @@ def _prepare_riscv_handler(
         endian=endian,
         task_frame_resolver=_resolve_frt_trap_frame,
         allow_sync=True,
+        elf=elf_image,
+        read=read_bytes,
     )
     if isinstance(setup, tuple):
         return ctx.stop(setup[0], setup[1])
@@ -1142,6 +1372,31 @@ def _backtrace_task_value(
     current_core = {
         address: core for core, address in current_tasks(adapter.layout)
     }.get(task.address)
+    metadata = _unwind_metadata(adapter)
+    active_owner = _riscv_active_isr_owner(
+        adapter, selection, metadata, known_task=task
+    )
+    live_owner = current_core is not None
+    trap_top_override: int | None = None
+    if isinstance(active_owner, tuple):
+        owner_tcb, owner_top = active_owner
+        if task.address == owner_tcb:
+            live_owner = True
+            trap_top_override = owner_top
+        else:
+            live_owner = False
+    elif isinstance(active_owner, str) and current_core is not None:
+        return _stop_report(
+            task,
+            architecture,
+            selection.abi,
+            max_depth,
+            active_owner,
+            "the active RISC-V ISR frame does not match a unique interrupted task",
+            source="current",
+            bounds=bounds,
+            target=target,
+        )
     ctx = _TargetContext(
         adapter=adapter,
         value=value,
@@ -1152,8 +1407,10 @@ def _backtrace_task_value(
         high=high,
         bounds=bounds,
         current_core=current_core,
-        metadata=_unwind_metadata(adapter),
+        metadata=metadata,
         max_depth=max_depth,
+        live_owner=live_owner,
+        trap_top_override=trap_top_override,
     )
     resolved = _resolve_target_seed(ctx)
     if isinstance(resolved, BacktraceReport):

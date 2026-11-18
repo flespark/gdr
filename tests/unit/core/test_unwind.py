@@ -446,3 +446,95 @@ def test_ehabi_unsupported_opcode_is_a_reason():
 def test_prel31_sign_extension_is_signed():
     assert _prel31(0, 0x1000) == 0x1000
     assert _prel31(0x7FFFFFFF, 0x1000) == 0x1000 - 1
+
+
+def test_ehabi_unexecuted_prologue_at_isr_entry_falls_back_to_leaf_return():
+    from core.unwind_arm import (
+        armv7m_exception_return_candidate,
+        armv7m_exception_transition,
+    )
+    from core.unwind_meta import CodeSymbol
+    from core.unwind_segments import StackSegment
+    from tests.unit.core.oracle_support import attributes_blob
+
+    # ISR entry pushes in body -> .ARM.exidx has post-prologue pop (vsp delta 16),
+    # while halted at symbol.start before prologue executes (LR holds EXC_RETURN).
+    isr_start = 0x1100
+    task_resume = 0x1200
+    inline_word = 0x800300B0  # vsp += 16, finish
+    first_word = (isr_start - 0x2000) & 0x7FFFFFFF
+    second_word = (isr_start + 0x20 - 0x2008) & 0x7FFFFFFF
+    exidx_bytes = struct.pack("<IIII", first_word, inline_word, second_word, 1)
+    text_buf = bytearray(b"\x00\xbf" * 0x150)
+    text_buf[0x100:0x104] = b"\x00\xbf\x70\x47"  # isr_entry: nop; bx lr
+    text_buf[0x200:0x204] = b"\x00\xbf\x70\x47"  # task_fn: nop; bx lr
+    text_bytes = bytes(text_buf)
+    raw_elf = _elf(
+        is_64=False,
+        endian="little",
+        machine=40,
+        sections=[
+            (".text", 0x1000, text_bytes, 1, 0x6),
+            (".ARM.exidx", 0x2000, exidx_bytes, 0x70000001, 0x2),
+            (
+                ".ARM.attributes",
+                0,
+                attributes_blob(b"aeabi", ((6, 13), (7, "M"))),
+                0x70000003,
+                0,
+            ),
+        ],
+    )
+    elf = replace(
+        ElfImage.from_bytes(raw_elf),
+        symbols=(
+            CodeSymbol("isr_entry", isr_start, 0x20, True),
+            CodeSymbol("task_fn", task_resume, 0x40, True),
+        ),
+    )
+    ehabi = parse_ehabi(
+        exidx_bytes,
+        section_address=0x2000,
+        read_at=elf.read_at,
+        text_end=0x1300,
+        endian="little",
+    )
+    meta = UnwindMetadata(
+        elf=elf,
+        arch="arm",
+        cfi_tables=(),
+        ehabi=ehabi,
+        return_register=14,
+        frame_pointer_register=7,
+    )
+    task_seg = StackSegment("task:1", "t", 0x20000, 0x20400, "task", "process", "task")
+    irq_seg = StackSegment(
+        "exception:16", "exception:16", 0x30000, 0x30400, "irq", "main", "exception"
+    )
+    exc_frame = struct.pack("<8I", 0, 0, 0, 0, 0, 0x1201, task_resume, 0x01000000)
+    mem = _Memory({0x20100: exc_frame})
+    seed = SeedFrame(
+        pc=isr_start,
+        sp=0x30200,
+        regs={13: 0x30200, 14: 0xFFFFFFFD},
+        process_sp=0x20100,
+        root_pc=task_resume,
+        root_reason="task-entry",
+        exception_number=16,
+    )
+    result = unwind_chain(
+        seed,
+        meta,
+        read=mem,
+        stack_low=0x20000,
+        stack_high=0x20400,
+        segments=(task_seg, irq_seg),
+        current_segment=irq_seg.ident,
+        exception_detector=armv7m_exception_return_candidate,
+        exception_hook=armv7m_exception_transition,
+    )
+    assert result.complete is True
+    assert [f.pc for f in result.frames] == [isr_start, task_resume]
+    assert result.frames[0].method == "seed"
+    assert result.frames[1].method == "exception"
+    assert len(result.transitions) == 1

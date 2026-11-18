@@ -1165,13 +1165,23 @@ def _prepare_arm_handler(
             )
         )
         if ctx.architecture == "armv6-m"
-        else (lambda: arm_external_exception_limit(read=read_bytes)),
+        else (
+            lambda: arm_external_exception_limit(
+                read=read_bytes, elf=elf, symbol_lookup=linker_symbol_address
+            )
+        ),
         stkalign_reader=lambda: arm_ccr_stkalign(read=read_bytes),
         vector_entry_reader=(
-            lambda number: armv6m_vector_entry(number, read=read_bytes)
+            lambda number: armv6m_vector_entry(
+                number, read=read_bytes, elf=elf, symbol_lookup=linker_symbol_address
+            )
         )
         if ctx.architecture == "armv6-m"
-        else (lambda number: armv7m_vector_entry(number, read=read_bytes)),
+        else (
+            lambda number: armv7m_vector_entry(
+                number, read=read_bytes, elf=elf, symbol_lookup=linker_symbol_address
+            )
+        ),
         guard_fn=_systick_aware_guard,
         capacity_guard_factory=_systick_capacity_guard,
         read=read_bytes,
@@ -1283,6 +1293,8 @@ def _prepare_riscv_handler(
                 nest_count=nest_count,
                 endian=endian,
                 task_frame_resolver=_resolve_rtt_trap_frame,
+                elf=elf_image,
+                read=read_bytes,
             )
             if isinstance(setup, tuple):
                 return ctx.stop(*setup)

@@ -426,3 +426,91 @@ print(json.dumps({{
 """
         )
     )
+
+
+def encode_riscv_jal(pc: int, target: int, *, rd: int = 0) -> bytes:
+    """Encode one 32-bit RISC-V ``jal`` instruction jumping from ``pc`` to ``target``."""
+    offset = target - pc
+    word = (
+        (((offset >> 20) & 1) << 31)
+        | (((offset >> 1) & 0x3FF) << 21)
+        | (((offset >> 11) & 1) << 20)
+        | (((offset >> 12) & 0xFF) << 12)
+        | ((rd & 31) << 7)
+        | 111
+    ) & 0xFFFFFFFF
+    return struct.pack("<I", word)
+
+
+def riscv_isr_yield_owner_probe(session, active_tcb: int) -> dict:
+    """Verify interrupted-task resolution when ``pxCurrentTCB`` already switched in ISR."""
+    return json_line(
+        session.run_python(
+            f"""
+import json
+from core.adapter import active
+from freertos.adapter import iter_converted_tasks
+import freertos.backtrace_gdb as bt
+
+ad = active()
+other = next(t for t in iter_converted_tasks(ad.layout) if t.address != {active_tcb:#x})
+orig_tcb = bt._current_tcb_address
+orig_current = bt.current_tasks
+bt._current_tcb_address = lambda: other.address
+bt.current_tasks = lambda _layout: [(0, other.address)]
+try:
+    current_rep = bt.backtrace(ad)
+    switched_rep = bt.backtrace(ad, other.name)
+finally:
+    bt._current_tcb_address = orig_tcb
+    bt.current_tasks = orig_current
+
+print(json.dumps({{
+    "current_task": current_rep.task,
+    "current_source": current_rep.source,
+    "current_complete": current_rep.complete,
+    "switched_source": switched_rep.source,
+    "switched_complete": switched_rep.complete,
+}}))
+"""
+        )
+    )
+
+
+def riscv_vectored_mtvec_probe(
+    session,
+    *,
+    task: str,
+    trap_entry: int,
+    vec_base: int = 0x80040000,
+    cause_code: int = 7,
+    xlen: int = 32,
+) -> dict:
+    """Verify vectored ``mtvec`` unwinding via a synthetic ``jal`` vector slot."""
+    slot_pc = vec_base + 4 * cause_code
+    jal_bytes = encode_riscv_jal(slot_pc, trap_entry)
+    return json_line(
+        session.run_python(
+            f"""
+import dataclasses, json
+from core.adapter import active
+import freertos.backtrace_gdb as bt
+
+jal = bytes.fromhex({jal_bytes.hex()!r})
+orig_snap = bt._riscv_snapshot
+orig_read = bt.read_bytes
+def vectored_snap(*, xlen={xlen}):
+    snap, reason = orig_snap(xlen=xlen)
+    return (None, reason) if snap is None else (dataclasses.replace(snap, mtvec={vec_base:#x} | 1), "ok")
+bt._riscv_snapshot = vectored_snap
+bt.read_bytes = lambda addr, sz: jal[:sz] if addr == {slot_pc:#x} and sz <= 4 else orig_read(addr, sz)
+try:
+    rep = bt.backtrace(active(), {task!r})
+finally:
+    bt._riscv_snapshot = orig_snap
+    bt.read_bytes = orig_read
+
+print(json.dumps({{"complete": rep.complete, "stop_reason": rep.stop_reason}}))
+"""
+        )
+    )

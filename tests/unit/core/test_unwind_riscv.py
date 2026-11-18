@@ -22,6 +22,7 @@ from core.unwind_riscv import (
     riscv_exception_guard,
     riscv_fault_precision,
     riscv_live_seed_detail,
+    riscv_mtvec_targets_entry,
     riscv_snapshot,
     riscv_trap_transition_factory,
     u_xlen_mask,
@@ -740,3 +741,110 @@ def test_prepare_riscv_handler_unwind_attaches_fault_only_on_sync_faults():
         task_frame_resolver=lambda _c: 0x80011E00,
     )
     assert isinstance(refused, tuple) and refused[0] == "exception-frame-type-unproven"
+
+
+def test_riscv_mtvec_targets_entry_direct_and_vectored():
+    from core.unwind_riscv import MTVEC_MODE_VECTORED
+
+    def _jal(rd: int, pc: int, target: int) -> bytes:
+        offset = target - pc
+        word = (
+            (((offset >> 20) & 1) << 31)
+            | (((offset >> 1) & 0x3FF) << 21)
+            | (((offset >> 11) & 1) << 20)
+            | (((offset >> 12) & 0xFF) << 12)
+            | ((rd & 31) << 7)
+            | 111
+        )
+        return struct.pack("<I", word & 0xFFFFFFFF)
+
+    trap_entry = 0x80001000
+    vec_base = 0x80000800
+    # Vector slot 0 (sync/base) and slot 7 (machine timer IRQ) jump via `j trap_entry`.
+    slot7 = vec_base + 4 * 7
+    slot3 = vec_base + 4 * 3
+    vec_elf = ElfImage(
+        pointer_size=4,
+        endian="little",
+        machine=243,
+        sections=(ElfSection(".text", vec_base, b"\x00" * 0x100, 0x6, 4),),
+        symbols=(),
+    )
+    mem = _Memory(
+        {
+            vec_base: _jal(0, vec_base, trap_entry),
+            slot7: _jal(0, slot7, trap_entry),
+            slot3: _jal(1, slot3, trap_entry),  # jal x1 (wrong rd) is refused
+        }
+    )
+
+    assert riscv_mtvec_targets_entry(trap_entry, 0x80000007, 32, trap_entry) is True
+    assert (
+        riscv_mtvec_targets_entry(
+            vec_base | MTVEC_MODE_VECTORED,
+            0x80000007,
+            32,
+            trap_entry,
+            read=mem,
+        )
+        is True
+    )
+    assert (
+        riscv_mtvec_targets_entry(
+            vec_base | MTVEC_MODE_VECTORED,
+            2,
+            32,
+            trap_entry,
+            read=mem,
+        )
+        is True
+    )
+    assert (
+        riscv_mtvec_targets_entry(
+            vec_base | MTVEC_MODE_VECTORED,
+            0x80000003,
+            32,
+            trap_entry,
+            read=mem,
+        )
+        is False
+    )
+    assert (
+        riscv_mtvec_targets_entry(
+            vec_base | MTVEC_MODE_VECTORED,
+            0x80000007,
+            32,
+            trap_entry,
+            elf=vec_elf,
+            read=None,
+        )
+        is False
+    )
+
+    # prepare_riscv_handler_unwind admits vectored mtvec targeting span.entry
+    span = _span_with_layout(epc_offset=0, sync_addend=4)
+    task_seg = StackSegment(
+        "task:1", "spin", 0x80010000, 0x80012000, "t", "process", "task"
+    )
+    snap_vec = RiscvSnapshot(
+        xlen=32,
+        pc=0x80002010,
+        sp=0x8001FFE0,
+        mstatus=MSTATUS_MPP_MACHINE,
+        mcause=0x80000007,
+        mepc=0x80003010,
+        mtvec=vec_base | MTVEC_MODE_VECTORED,
+        registers={1: 0x800010C0, 2: 0x8001FFE0, 8: 0x80011E00},
+    )
+    ok_vec = prepare_riscv_handler_unwind(
+        snap_vec,
+        root_pc=0x80004000,
+        span=span,
+        task_segment=task_seg,
+        irq_stack_bounds=lambda: (0x8001F000, 0x80020000, "symbol:irq"),
+        nest_count=1,
+        endian="little",
+        task_frame_resolver=lambda _c: 0x80011E00,
+        read=mem,
+    )
+    assert not isinstance(ok_vec, tuple)

@@ -805,6 +805,89 @@ _STANDARD_VECTOR_SECTIONS = (
     ".vectors",
     ".vector_table",
 )
+_ARMV6M_CPUID_PART_MASKS = frozenset((0x410CC200, 0x410CC600))
+
+
+def _symbol_or_elf(
+    name: str, symbol_lookup: Callable[[str], int | None], elf: Any
+) -> int | None:
+    try:
+        value = symbol_lookup(name)
+    except RuntimeError:
+        value = None
+    if value is not None:
+        return value
+    if elf is not None and callable(getattr(elf, "symbol_address", None)):
+        return elf.symbol_address(name)
+    return None
+
+
+def _safe_mem_read(read: Reader, address: int, size: int) -> bytes | None:
+    try:
+        return read(address, size)
+    except RuntimeError:
+        return None
+
+
+def _elf_vector_section_bounds(
+    elf: Any,
+    symbol_lookup: Callable[[str], int | None] = linker_symbol_address,
+) -> tuple[int, int] | None:
+    if elf is None:
+        return None
+    if callable(getattr(elf, "section_bounds", None)):
+        for sec_name in _STANDARD_VECTOR_SECTIONS:
+            bounds = elf.section_bounds(sec_name)
+            if (
+                bounds is not None
+                and bounds[1] > bounds[0]
+                and (bounds[1] - bounds[0]) & 0x3 == 0
+            ):
+                return bounds
+    base = next(
+        (
+            v
+            for n in _STANDARD_VECTOR_BASE_SYMBOLS
+            if (v := _symbol_or_elf(n, symbol_lookup, elf)) is not None
+        ),
+        None,
+    )
+    end = next(
+        (
+            v
+            for n in _STANDARD_VECTOR_END_SYMBOLS
+            if (v := _symbol_or_elf(n, symbol_lookup, elf)) is not None
+        ),
+        None,
+    )
+    if base is not None and end is not None and end > base and (end - base) & 0x3 == 0:
+        return base, end
+    return None
+
+
+def _elf_vector_word(
+    elf: Any,
+    index: int,
+    symbol_lookup: Callable[[str], int | None] = linker_symbol_address,
+) -> int | None:
+    if elf is None or index < 0:
+        return None
+    bounds = _elf_vector_section_bounds(elf, symbol_lookup)
+    if bounds is None or 4 * (index + 1) > bounds[1] - bounds[0]:
+        return None
+    raw = (
+        elf.read_at(bounds[0] + 4 * index, 4)
+        if callable(getattr(elf, "read_at", None))
+        else None
+    )
+    if raw is None and callable(getattr(elf, "section_data", None)):
+        for sec_name in _STANDARD_VECTOR_SECTIONS:
+            if elf.section_bounds(sec_name) == bounds:
+                data = elf.section_data(sec_name)
+                if data is not None and 4 * (index + 1) <= len(data):
+                    raw = data[4 * index : 4 * (index + 1)]
+                break
+    return int.from_bytes(raw, "little") if raw is not None and len(raw) == 4 else None
 
 
 @dataclass(frozen=True)
@@ -936,82 +1019,101 @@ def arm_live_seed_detail(
     )
 
 
+def _read_le32(read: Reader, address: int) -> int | None:
+    raw = read(address, 4)
+    return int.from_bytes(raw, "little") if raw is not None and len(raw) == 4 else None
+
+
 def arm_ccr_stkalign(*, read: Reader = read_bytes) -> bool | None:
     """Read CCR.STKALIGN without writing target state."""
-    raw = read(SCB_CCR_ADDRESS, 4)
-    if raw is None or len(raw) != 4:
-        return None
-    return bool(int.from_bytes(raw, "little") & XPSR_ALIGN_BIT)
+    ccr = _read_le32(read, SCB_CCR_ADDRESS)
+    return bool(ccr & XPSR_ALIGN_BIT) if ccr is not None else None
 
 
-def arm_external_exception_limit(*, read: Reader = read_bytes) -> int | None:
-    """Read ICTR and return the highest implemented external IPSR, or ``None``."""
-    raw = read(SCB_ICTR_ADDRESS, 4)
-    if raw is None or len(raw) != 4:
+def arm_external_exception_limit(
+    *,
+    read: Reader = read_bytes,
+    elf: Any = None,
+    symbol_lookup: Callable[[str], int | None] = linker_symbol_address,
+) -> int | None:
+    """Read ICTR (or ELF vector section size fallback) and return max external IPSR."""
+    ictr = _read_le32(read, SCB_ICTR_ADDRESS)
+    if ictr is not None:
+        return armv7m_max_external_exception(ictr)
+    bounds = _elf_vector_section_bounds(elf, symbol_lookup)
+    if bounds is None:
         return None
-    return armv7m_max_external_exception(int.from_bytes(raw, "little"))
+    size = bounds[1] - bounds[0]
+    return (size // 4) - 1 if size & 0x3 == 0 and 17 * 4 <= size <= 512 * 4 else None
 
 
 def arm_cpuid(*, read: Reader = read_bytes) -> int | None:
     """Read SCB.CPUID without writing target state."""
-    raw = read(SCB_CPUID_ADDRESS, 4)
-    if raw is None or len(raw) != 4:
-        return None
-    return int.from_bytes(raw, "little")
+    return _read_le32(read, SCB_CPUID_ADDRESS)
 
 
 def armv6m_vector_entry(
-    exception_number: int, *, read: Reader = read_bytes
+    exception_number: int,
+    *,
+    read: Reader = read_bytes,
+    elf: Any = None,
+    symbol_lookup: Callable[[str], int | None] = linker_symbol_address,
 ) -> int | None:
-    """Read a vector from an Armv6-M fixed-zero vector map, never VTOR."""
+    """Read a vector from Armv6-M fixed-zero map, falling back to ELF vector section."""
     if not 0 < exception_number <= 47 or armv6m_exception_number_kind(
         exception_number
     ) in ("thread", "invalid"):
         return None
-    raw = read(4 * exception_number, 4)
-    if raw is None or len(raw) != 4:
-        return None
-    value = int.from_bytes(raw, "little")
-    return value & ~1 if value & 1 else None
+    value = _read_le32(read, 4 * exception_number)
+    if value is None:
+        value = _elf_vector_word(elf, exception_number, symbol_lookup)
+    return value & ~1 if value is not None and value & 1 else None
 
 
 def armv7m_vector_entry(
-    exception_number: int, *, read: Reader = read_bytes
+    exception_number: int,
+    *,
+    read: Reader = read_bytes,
+    elf: Any = None,
+    symbol_lookup: Callable[[str], int | None] = linker_symbol_address,
 ) -> int | None:
-    """Return the current VTOR-indexed vector target for one exception number."""
-    raw_vtor = read(SCB_VTOR_ADDRESS, 4)
-    if raw_vtor is None or len(raw_vtor) != 4 or exception_number <= 0:
+    """Return VTOR-indexed vector target, falling back to ELF vector section."""
+    if exception_number <= 0:
         return None
-    vtor = int.from_bytes(raw_vtor, "little")
-    raw_entry = read(vtor + 4 * exception_number, 4)
-    if raw_entry is None or len(raw_entry) != 4:
-        return None
-    entry = int.from_bytes(raw_entry, "little")
+    vtor = _read_le32(read, SCB_VTOR_ADDRESS)
+    if vtor is not None:
+        entry = _read_le32(read, vtor + 4 * exception_number)
+        if entry is not None:
+            return entry & ~1 if entry else None
+    entry = _elf_vector_word(elf, exception_number, symbol_lookup)
     return entry & ~1 if entry else None
 
 
 def arm_vector_initial_msp(
-    isa: str | None = "armv7-m", *, read: Reader = read_bytes
+    isa: str | None = "armv7-m",
+    *,
+    read: Reader = read_bytes,
+    elf: Any = None,
+    symbol_lookup: Callable[[str], int | None] = linker_symbol_address,
 ) -> int | None:
-    """Read word 0 (initial MSP) from the active Arm M-profile vector table."""
+    """Read word 0 (initial MSP) from active vector table or ELF fallback."""
+    vtor: int | None
     if isa == "armv6-m":
         vtor = 0
     elif isa in ("armv7-m", "armv7e-m", "armv8-m.mainline"):
-        raw_vtor = read(SCB_VTOR_ADDRESS, 4)
-        if raw_vtor is None or len(raw_vtor) != 4:
-            return None
-        vtor = int.from_bytes(raw_vtor, "little")
-        if vtor & 0x7F:
+        vtor = _read_le32(read, SCB_VTOR_ADDRESS)
+        if vtor is not None and vtor & 0x7F:
             return None
     else:
         return None
-    raw_msp = read(vtor, 4)
-    if raw_msp is None or len(raw_msp) != 4:
-        return None
-    initial_msp = int.from_bytes(raw_msp, "little")
-    if initial_msp <= 0 or initial_msp & 0x3:
-        return None
-    return initial_msp
+    initial_msp = _read_le32(read, vtor) if vtor is not None else None
+    if initial_msp is None:
+        initial_msp = _elf_vector_word(elf, 0, symbol_lookup)
+    return (
+        None
+        if initial_msp is None or initial_msp <= 0 or initial_msp & 0x3
+        else initial_msp
+    )
 
 
 def resolve_arm_irq_stack_bounds_detail(
@@ -1036,22 +1138,8 @@ def resolve_arm_irq_stack_bounds_detail(
        ``live_msp`` lower bound.
     """
 
-    def _safe_read(address: int, size: int) -> bytes | None:
-        try:
-            return read(address, size)
-        except RuntimeError:
-            return None
-
     def _lookup(name: str) -> int | None:
-        try:
-            value = symbol_lookup(name)
-        except RuntimeError:
-            value = None
-        if value is not None:
-            return value
-        if elf is not None and callable(getattr(elf, "symbol_address", None)):
-            return elf.symbol_address(name)
-        return None
+        return _symbol_or_elf(name, symbol_lookup, elf)
 
     gdr_low = _lookup("__gdr_irq_stack_low")
     gdr_high = _lookup("__gdr_irq_stack_top")
@@ -1101,7 +1189,12 @@ def resolve_arm_irq_stack_bounds_detail(
         high_addr: int | None = top_addr
         high_label = top_name
     else:
-        high_addr = arm_vector_initial_msp(isa or "armv7-m", read=_safe_read)
+        high_addr = arm_vector_initial_msp(
+            isa or "armv7-m",
+            read=lambda addr, size: _safe_mem_read(read, addr, size),
+            elf=elf,
+            symbol_lookup=_lookup,
+        )
         high_label = "vector[0]"
     if high_addr is None or high_addr <= 0 or high_addr & 0x3:
         return None
@@ -1161,25 +1254,11 @@ def resolve_armv6m_vector_limit(
        first executable function symbol immediately following the vector table.
     """
 
-    def _safe_read(address: int, size: int) -> bytes | None:
-        try:
-            return read(address, size)
-        except RuntimeError:
-            return None
-
     def _lookup(name: str) -> int | None:
-        try:
-            value = symbol_lookup(name)
-        except RuntimeError:
-            value = None
-        if value is not None:
-            return value
-        if elf is not None and callable(getattr(elf, "symbol_address", None)):
-            return elf.symbol_address(name)
-        return None
+        return _symbol_or_elf(name, symbol_lookup, elf)
 
-    cpuid = arm_cpuid(read=_safe_read)
-    if cpuid is None or cpuid & 0xFF0FFFF0 != 0x410CC200:
+    cpuid = arm_cpuid(read=lambda addr, size: _safe_mem_read(read, addr, size))
+    if cpuid is None or cpuid & 0xFF0FFFF0 not in _ARMV6M_CPUID_PART_MASKS:
         return None
 
     gdr_end = _lookup("__gdr_vector_table_end")

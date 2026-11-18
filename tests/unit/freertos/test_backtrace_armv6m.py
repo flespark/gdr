@@ -36,7 +36,7 @@ def _port(monkeypatch, *, version="11.1.0", cpuid=0x410CC200, **symbols):
     return reads
 
 
-@pytest.mark.parametrize("cpuid", [0x410CC200, 0x411CC201])
+@pytest.mark.parametrize("cpuid", [0x410CC200, 0x411CC201, 0x410CC600])
 @pytest.mark.parametrize("version", ["10.3.1", "11.1.0"])
 def test_m0_capacity_requires_fixed_zero_vectors_and_explicit_count(
     monkeypatch, cpuid, version
@@ -52,7 +52,6 @@ def test_m0_capacity_requires_fixed_zero_vectors_and_explicit_count(
         {"cpuid": None},
         {"cpuid": b"bad"},
         {"cpuid": 0x410FC231},
-        {"cpuid": 0x410CC600},
         {"g_pfnVectors": None},
         {"g_pfnVectors": 0x100},
         {"__gdr_vector_table_end": None},

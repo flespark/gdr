@@ -785,3 +785,50 @@ def test_unknown_current_segment_is_rejected_without_unwinding():
         current_segment="missing",
     )
     assert result.frames == () and result.stop_reason == "segment-unknown"
+
+
+def test_elf_vector_table_fallback_when_scb_unreadable():
+    from core.unwind_arm import (
+        arm_external_exception_limit,
+        arm_vector_initial_msp,
+        armv6m_vector_entry,
+        armv7m_vector_entry,
+        resolve_arm_irq_stack_bounds_detail,
+    )
+    from core.unwind_meta import ElfImage, ElfSection
+
+    words = [0] * 32
+    words[0] = 0x20004000  # initial MSP
+    words[24] = 0x08000301  # external IRQ #8 (IPSR 24)
+    words[25] = 0x08000401  # external IRQ #9 (IPSR 25)
+    vec_bytes = struct.pack("<32I", *words)
+    elf = ElfImage(
+        pointer_size=4,
+        endian="little",
+        machine=40,
+        sections=(ElfSection(".isr_vector", 0x00000000, vec_bytes, 0x2, 1),),
+        symbols=(),
+    )
+    no_scb = lambda _addr, _size: None  # noqa: E731
+
+    assert arm_external_exception_limit(read=no_scb, elf=elf) == 31
+    assert armv7m_vector_entry(25, read=no_scb, elf=elf) == 0x08000400
+    assert armv6m_vector_entry(24, read=no_scb, elf=elf) == 0x08000300
+    assert arm_vector_initial_msp("armv7-m", read=no_scb, elf=elf) == 0x20004000
+    assert resolve_arm_irq_stack_bounds_detail(
+        symbol_lookup=lambda _name: None,
+        read=no_scb,
+        isa="armv7-m",
+        elf=elf,
+        live_msp=0x20003FC0,
+    ) == (0x20003FC0, 0x20004000, "msp:live..vector[0]")
+
+    # Readable SCB still takes precedence without using ELF fallback.
+    def _corrupt_entry_read(addr: int, _size: int) -> bytes | None:
+        if addr == 0xE000ED08:
+            return struct.pack("<I", 0x20000000)
+        if addr == 0x20000000 + 25 * 4:
+            return struct.pack("<I", 0)
+        return None
+
+    assert armv7m_vector_entry(25, read=_corrupt_entry_read, elf=elf) is None

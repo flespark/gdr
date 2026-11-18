@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .cpus import RISCV_CONVENTION
+from .insn_riscv import EvidenceError, riscv_code_decoder
 from .unwind_arm import FaultPrecision
-from .unwind_meta import ElfImage
+from .unwind_meta import ElfImage, Reader
 from .unwind_segments import (
     ExceptionDetector,
     ExceptionHook,
@@ -66,6 +67,47 @@ def decode_riscv_mcause(mcause: int, xlen: int) -> tuple[bool, int]:
     value = mcause & u_xlen_mask(xlen)
     interrupt_bit = 1 << (xlen - 1)
     return bool(value & interrupt_bit), value & (interrupt_bit - 1)
+
+
+def riscv_mtvec_targets_entry(
+    mtvec: int,
+    mcause: int,
+    xlen: int,
+    entry: int,
+    *,
+    elf: ElfImage | None = None,
+    read: Reader | None = None,
+) -> bool:
+    """Verify that direct or vectored ``mtvec`` targets ``entry`` for ``mcause``."""
+    mask = u_xlen_mask(xlen)
+    target_entry = entry & mask
+    mtvec_mode = mtvec & MTVEC_MODE_MASK
+    mtvec_base = (mtvec & ~MTVEC_MODE_MASK) & mask
+    if mtvec_mode == MTVEC_MODE_DIRECT:
+        slot_pc = mtvec_base
+    elif mtvec_mode == MTVEC_MODE_VECTORED:
+        is_interrupt, cause_code = decode_riscv_mcause(mcause, xlen)
+        slot_pc = ((mtvec_base + 4 * cause_code) & mask) if is_interrupt else mtvec_base
+    else:
+        return False
+    if slot_pc == target_entry:
+        return True
+    raw = elf.read_at(slot_pc, 4) if elf is not None else None
+    if raw is None and read is not None:
+        raw = read(slot_pc, 4)
+    if raw is None or len(raw) != 4:
+        return False
+    word = int.from_bytes(raw, "little")
+    try:
+        insn = riscv_code_decoder(word, 4, slot_pc, xlen)
+    except EvidenceError:
+        return False
+    return (
+        len(insn) == 3
+        and insn[0] == "jal"
+        and insn[1] == 0
+        and (insn[2] & mask) == target_entry
+    )
 
 
 def riscv_fault_precision(
@@ -480,6 +522,8 @@ def prepare_riscv_handler_unwind(
     allow_sync: bool = True,
     allow_ecall: bool = False,
     require_machine_mpp: bool = True,
+    elf: ElfImage | None = None,
+    read: Reader | None = None,
 ) -> RiscvTrapSetup | tuple[str, str]:
     """Validate RISC-V live trap state, CSRs and stack bounds before unwinding."""
     from .unwind import SeedFrame
@@ -493,9 +537,14 @@ def prepare_riscv_handler_unwind(
             f"stopped inside non-unwindable trap transition region at {pc:#x}",
         )
 
-    mtvec_mode = snapshot.mtvec & MTVEC_MODE_MASK
-    mtvec_base = snapshot.mtvec & ~MTVEC_MODE_MASK
-    if mtvec_mode != MTVEC_MODE_DIRECT or mtvec_base != span.entry:
+    if not riscv_mtvec_targets_entry(
+        snapshot.mtvec,
+        snapshot.mcause,
+        snapshot.xlen,
+        span.entry,
+        elf=elf,
+        read=read,
+    ):
         return (
             "exception-vector-unproven",
             f"live mtvec ({snapshot.mtvec:#x}) does not target verified trap entry {span.entry:#x}",
