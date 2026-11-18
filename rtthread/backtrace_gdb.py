@@ -82,8 +82,18 @@ from rtthread.backtrace import (
 )
 from rtthread.backtrace import decode_saved_context as decode_backtrace_context
 from rtthread.layout import RT_THREAD_STACK_FILL
-from rtthread.navigation import find_thread, get_current_thread
-from rtthread.scheduler_seed import SchedulerSeed, build_stage_seed
+from rtthread.navigation import find_thread, get_current_thread, iter_threads
+from rtthread.riscv_scheduler_switch import (
+    build_riscv_profile as build_riscv_scheduler_profile,
+)
+from rtthread.riscv_scheduler_switch import (
+    classify_riscv_stage,
+)
+from rtthread.scheduler_seed import (
+    SchedulerSeed,
+    build_riscv_stage_seed,
+    build_stage_seed,
+)
 from rtthread.stack_frame_profile import (
     analyze_hardfault_trampoline,
     analyze_riscv_trap_profile,
@@ -358,6 +368,15 @@ _SCHEDULER_SYMBOLS = frozenset(
         "pendsv_exit",
     )
 )
+_RISCV_SCHEDULER_SYMBOLS = frozenset(
+    (
+        "rt_hw_context_switch_to",
+        "rt_hw_context_switch",
+        "rt_hw_context_switch_exit",
+        "trap_entry",
+        "spurious_interrupt",
+    )
+)
 
 
 def _arm_snapshot() -> tuple[ArmSnapshot | None, str]:
@@ -368,6 +387,30 @@ def _riscv_snapshot(*, xlen: int = 32) -> tuple[RiscvSnapshot | None, str]:
     return _core_riscv_snapshot(xlen=xlen, gdb_module=gdb)
 
 
+def _riscv_call_args(xlen: int) -> tuple[int | None, int | None]:
+    if gdb is None:
+        return None, None
+    mask = u_xlen_mask(xlen)
+    try:
+        frame = gdb.newest_frame()
+        return (
+            int(frame.read_register("a0")) & mask,
+            int(frame.read_register("a1")) & mask,
+        )
+    except (gdb.error, AttributeError, RuntimeError, TypeError):
+        return None, None
+
+
+def _riscv_pc_in_scheduler_symbol(elf: ElfImage | None, pc: int) -> bool:
+    if elf is None:
+        return False
+    sym = elf.function_containing(pc)
+    if sym is not None and sym.name in _RISCV_SCHEDULER_SYMBOLS:
+        return True
+    trap_span = analyze_riscv_trap_profile(elf)
+    return trap_span is not None and trap_span.entry <= pc < trap_span.exit_end
+
+
 def _riscv_irq_stack_bounds(
     elf: ElfImage | None, *, hart_id: int = 0
 ) -> tuple[int, int, str] | None:
@@ -376,6 +419,104 @@ def _riscv_irq_stack_bounds(
         elf=elf,
         hart_id=hart_id,
     )
+
+
+def _riscv_scheduler_decision(
+    *,
+    architecture: str,
+    selection: StackContextSelection,
+    elf: ElfImage | None,
+    thread,
+    current,
+    low: int,
+    high: int,
+) -> SchedulerSeed | tuple[str, str] | None:
+    """Resolve active RISC-V scheduler/trap transitions or fail closed."""
+    if elf is None:
+        return None
+    xlen = 64 if architecture == "riscv64" else 32
+    profile, profile_reason = build_riscv_scheduler_profile(elf)
+    flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
+    snapshot, snapshot_reason = _riscv_snapshot(xlen=xlen)
+    if snapshot is None:
+        if flag not in (None, 0):
+            return (
+                snapshot_reason,
+                "live RISC-V registers are unavailable while a context switch is pending",
+            )
+        if profile is not None and flag is None:
+            return (
+                "scheduler-state-unavailable",
+                "rt_thread_switch_interrupt_flag is not readable",
+            )
+        return None
+    if profile is None:
+        if (flag not in (None, 0)) or _riscv_pc_in_scheduler_symbol(elf, snapshot.pc):
+            return (
+                profile_reason,
+                "compiled RISC-V switch/trap code does not match a verified profile",
+            )
+        return None
+    if flag is None:
+        return (
+            "scheduler-state-unavailable",
+            "rt_thread_switch_interrupt_flag is not readable",
+        )
+    stage = classify_riscv_stage(profile, snapshot.pc)
+    if flag == 0 and stage is None:
+        return None
+    if isinstance(stage, str):
+        return stage, "the stop is inside a transition function but not a proven stage"
+    if (
+        flag == 0
+        and stage is not None
+        and stage.name in ("trap-entry", "trap-dispatch")
+        and current is not None
+        and value_address(current) == thread.address
+    ):
+        # NOTE: Un-switched trap entry and ISR dispatch unwind through
+        # prepare_riscv_handler_unwind so frames keep the ISR call chain.
+        return None
+
+    from_ptr = read_int(eval_identifier("rt_interrupt_from_thread"))
+    to_ptr = read_int(eval_identifier("rt_interrupt_to_thread"))
+    sp_offset = member_offset("struct rt_thread", ("sp",))
+    nest_count = read_int(eval_identifier("rt_interrupt_nest"))
+    irq_detail = _riscv_irq_stack_bounds(elf, hart_id=max(0, thread.oncpu or 0))
+    irq_bounds = (irq_detail[0], irq_detail[1]) if irq_detail is not None else None
+    live_a0 = snapshot.registers.get(10)
+    live_a1 = snapshot.registers.get(11)
+    if live_a0 is None or live_a1 is None:
+        arg0, arg1 = _riscv_call_args(xlen)
+        if live_a0 is None:
+            live_a0 = arg0
+        if live_a1 is None:
+            live_a1 = arg1
+    outcome = build_riscv_stage_seed(
+        profile,
+        selection,
+        stage,
+        flag_value=flag,
+        from_ptr=from_ptr,
+        to_ptr=to_ptr,
+        sp_offset=sp_offset,
+        thread_addr=thread.address,
+        thread_sp=thread.sp,
+        thread_entry=thread.entry or None,
+        current_addr=value_address(current) if current is not None else None,
+        low=low,
+        high=high,
+        endian=arch_or_default()[1],
+        read=read_bytes,
+        snapshot=snapshot,
+        nest_count=nest_count,
+        irq_bounds=irq_bounds,
+        live_a0=live_a0,
+        live_a1=live_a1,
+    )
+    if isinstance(outcome, str):
+        return outcome, f"the pending RISC-V switch state refused unwind ({outcome})"
+    return outcome
 
 
 def _read_armv8m_regs() -> tuple[int | None, int | None]:
@@ -398,7 +539,17 @@ def _scheduler_decision(
     low: int,
     high: int,
 ) -> SchedulerSeed | tuple[str, str] | None:
-    """Resolve active M-profile scheduler transition or fail closed."""
+    """Resolve active M-profile or RISC-V scheduler transitions or fail closed."""
+    if architecture in ("riscv32", "riscv64"):
+        return _riscv_scheduler_decision(
+            architecture=architecture,
+            selection=selection,
+            elf=elf,
+            thread=thread,
+            current=current,
+            low=low,
+            high=high,
+        )
     if architecture not in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline"):
         return None
     flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
@@ -580,6 +731,74 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
                         )
                         if outgoing is not None:
                             value = outgoing
+        elif selection.family == "riscv" and metadata is not None:
+            xlen = 64 if selection.isa == "riscv64" else 32
+            rv_profile, _reason = build_riscv_scheduler_profile(metadata.elf)
+            rv_snapshot, _snap_reason = _riscv_snapshot(xlen=xlen)
+            if rv_profile is not None and rv_snapshot is not None:
+                rv_stage = classify_riscv_stage(rv_profile, rv_snapshot.pc)
+                sp_offset = member_offset("struct rt_thread", ("sp",))
+                if (
+                    isinstance(rv_stage, object)
+                    and not isinstance(rv_stage, str)
+                    and rv_stage is not None
+                    and rv_stage.name
+                    in ("context-switch-entry", "context-switch-saving")
+                    and sp_offset is not None
+                ):
+                    live_a0 = rv_snapshot.registers.get(10)
+                    if live_a0 is None:
+                        live_a0, _ = _riscv_call_args(xlen)
+                    if (
+                        rv_stage.pc <= rv_profile.switch_a0_clobber_pc
+                        and live_a0 not in (None, 0)
+                    ):
+                        outgoing = find_thread(
+                            f"{live_a0 - sp_offset:#x}", adapter.layout
+                        )
+                        if outgoing is not None:
+                            value = outgoing
+                    else:
+                        for cand in iter_threads(adapter.layout):
+                            cand_info = value_to_thread(
+                                cand, adapter.layout, collect_stack_metrics=False
+                            )
+                            cand_low = cand_info.stack_addr
+                            cand_high = cand_low + cand_info.stack_size
+                            if cand_low and cand_low <= rv_snapshot.sp <= cand_high:
+                                value = cand
+                                break
+                elif (
+                    (rv_stage is None and flag == 1)
+                    or (
+                        not isinstance(rv_stage, str)
+                        and rv_stage is not None
+                        and (
+                            (
+                                rv_stage.name in ("trap-entry", "trap-dispatch")
+                                and flag == 1
+                            )
+                            or (
+                                rv_stage.name
+                                in (
+                                    "trap-epilogue-before-switch-store",
+                                    "trap-epilogue-before-switch-load",
+                                )
+                                and (
+                                    flag == 1
+                                    or rv_stage.pc > rv_profile.trap_clear_flag_pc
+                                )
+                            )
+                        )
+                    )
+                ) and sp_offset is not None:
+                    from_ptr = read_int(eval_identifier("rt_interrupt_from_thread"))
+                    if from_ptr not in (None, 0):
+                        outgoing = find_thread(
+                            f"{from_ptr - sp_offset:#x}", adapter.layout
+                        )
+                        if outgoing is not None:
+                            value = outgoing
         target_addr = value_address(value)
         target_label = (
             f"{target_addr:#x}"
@@ -650,6 +869,29 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
                     ],
                     abi=selection.abi,
                 )
+    elif selection.family == "riscv" and metadata is not None:
+        xlen = 64 if selection.isa == "riscv64" else 32
+        rv_snapshot, _reason = _riscv_snapshot(xlen=xlen)
+        if rv_snapshot is not None and _riscv_pc_in_scheduler_symbol(
+            metadata.elf, rv_snapshot.pc
+        ):
+            return BacktraceReport(
+                task="<current>",
+                address=0,
+                architecture=architecture,
+                method="none",
+                source="current",
+                complete=False,
+                stop_reason="scheduler-current-tcb-unavailable",
+                truncated=False,
+                max_depth=max_depth,
+                bounds="unknown",
+                frames=[],
+                messages=[
+                    "rt_current_thread is unavailable inside a RISC-V scheduler handler"
+                ],
+                abi=selection.abi,
+            )
     return live_boot_backtrace_report(
         architecture=architecture,
         abi=selection.abi,
@@ -984,7 +1226,13 @@ def _backtrace_thread(
     elif arch == "riscv":
         elf_image = metadata.elf if metadata is not None else None
         switch_flag = read_int(eval_identifier("rt_thread_switch_interrupt_flag"))
-        if is_current:
+        pending_trap_owner = (
+            scheduler_decision is not None
+            and scheduler_decision.owner == "old"
+            and scheduler_decision.stage
+            in ("trap-entry", "trap-dispatch", "pending-before-trap-epilogue")
+        )
+        if (is_current and scheduler_decision is None) or pending_trap_owner:
             span = (
                 analyze_riscv_trap_profile(elf_image) if elf_image is not None else None
             )
@@ -1000,7 +1248,7 @@ def _backtrace_thread(
                 or span.refused_reason(seed.pc) is not None
             )
             if in_isr_stack or in_trap_span or bool(nest_count):
-                if switch_flag:
+                if switch_flag and not pending_trap_owner:
                     return _stop_report(
                         thread,
                         architecture,
@@ -1090,7 +1338,7 @@ def _backtrace_thread(
                     setup.exception_hook,
                     setup.exception_guard,
                 )
-        elif switch_flag:
+        elif switch_flag and scheduler_decision is None:
             sp_offset = member_offset("struct rt_thread", ("sp",))
             from_thread = read_int(eval_identifier("rt_interrupt_from_thread"))
             if sp_offset is not None and from_thread == thread.address + sp_offset:

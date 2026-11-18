@@ -13,8 +13,19 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from core.stack_frame_parser import SavedStackContext, StackContextSelection
+from core.cpus import RISCV_CONVENTION
+from core.stack_frame_parser import (
+    SavedStackContext,
+    StackContextSelection,
+    decode_profile_slots,
+)
 from core.unwind import Endian, Reader, SeedFrame, read_slot
+from core.unwind_riscv import (
+    MSTATUS_MPP_MACHINE,
+    MSTATUS_MPP_MASK,
+    RiscvSnapshot,
+    u_xlen_mask,
+)
 
 from .arm_scheduler_switch import SchedulerProfile, SchedulerStage, classify_stage
 from .backtrace import (
@@ -24,6 +35,10 @@ from .backtrace import (
     decode_armv7em_saved_context,
     decode_armv8m_mainline_saved_context,
     decode_saved_context,
+)
+from .riscv_scheduler_switch import (
+    RiscvSchedulerProfile,
+    RiscvSchedulerStage,
 )
 
 _XPSR_T_BIT = 1 << 24
@@ -42,6 +57,10 @@ _HW_FRAME_SLOTS = (
 )
 _HW_BASIC_BYTES = 32
 _HW_FPU_BYTES = 104
+_REQUIRED_RISCV_LIVE_REGS = frozenset(
+    reg for reg, _name in RISCV_CONVENTION.live_registers
+)
+_RISCV_CALLEE_FILL_REGS = (5, 6, 7, 8, 9, *range(18, 28))
 
 
 @dataclass(frozen=True)
@@ -711,3 +730,760 @@ def build_stage_seed(
         live_psplim=live_psplim,
         live_control=live_control,
     )
+
+
+def _riscv_saved_seed(
+    context: SavedStackContext,
+    *,
+    top: int,
+    read: Reader,
+    low: int,
+    high: int,
+    endian: Endian,
+    entry: int | None,
+    stage: str,
+    owner: str,
+    evidence: str,
+) -> SchedulerSeed | str:
+    seed, reason = decode_saved_context(
+        context,
+        top,
+        read,
+        endian=endian,
+        entry=entry or None,
+        stack_low=low,
+        stack_high=high,
+    )
+    if seed is None:
+        return reason
+    return SchedulerSeed(seed, stage, owner, evidence)
+
+
+def _riscv_decode_saved(
+    context: SavedStackContext,
+    *,
+    top: int,
+    read: Reader,
+    low: int,
+    high: int,
+    endian: Endian,
+    entry: int | None,
+) -> tuple[SeedFrame | None, str]:
+    return decode_saved_context(
+        context,
+        top,
+        read,
+        endian=endian,
+        entry=entry or None,
+        stack_low=low,
+        stack_high=high,
+    )
+
+
+def _riscv_read_slots(
+    slots: tuple[tuple[int, int, int], ...],
+    *,
+    frame_base: int,
+    stage_pc: int | None,
+    word: int,
+    mask: int,
+    low: int,
+    high: int,
+    endian: Endian,
+    read: Reader,
+    live_regs: Mapping[int, int],
+) -> dict[int, int] | str:
+    regs: dict[int, int] = {}
+    for reg, offset, done_pc in slots:
+        if stage_pc is None or stage_pc >= done_pc:
+            val = read_slot(
+                read,
+                frame_base + offset,
+                word,
+                endian,
+                stack_low=low,
+                stack_high=high,
+            )
+            if val is None:
+                return "saved-context-unreadable"
+            regs[reg] = val & mask
+        elif reg in live_regs:
+            regs[reg] = live_regs[reg] & mask
+        elif reg in _REQUIRED_RISCV_LIVE_REGS:
+            return "live-registers-unavailable"
+    return regs
+
+
+def _riscv_restore_from_frame(
+    profile: RiscvSchedulerProfile,
+    context: SavedStackContext,
+    *,
+    frame_base: int,
+    read: Reader,
+    low: int,
+    high: int,
+    endian: Endian,
+    entry: int | None,
+    epc_override: int | None = None,
+) -> tuple[SeedFrame | None, str]:
+    mask = u_xlen_mask(profile.xlen)
+    if not _in_bounds(low, high, frame_base, frame_base + profile.frame_bytes):
+        return None, "scheduler-frame-outside-task-stack"
+    decoded, reason = decode_profile_slots(
+        context,
+        frame_base,
+        read,
+        endian=endian,
+        stack_low=low,
+        stack_high=high,
+    )
+    if decoded is None:
+        return None, reason
+    pc = epc_override if epc_override is not None else decoded.code_pc
+    if pc <= 0 or (pc & 1):
+        return None, "exception-context-unproven"
+    registers = decoded.registers
+    unstarted = bool(
+        entry
+        and (pc & ~1) == (entry & ~1)
+        and all(
+            registers.get(reg, 0) == context.fill_word
+            for reg in _RISCV_CALLEE_FILL_REGS
+        )
+    )
+    return (
+        SeedFrame(
+            pc=pc & ~1,
+            sp=(frame_base + profile.frame_bytes) & mask,
+            regs=registers,
+            source="unstarted" if unstarted else "saved",
+            root_pc=(pc & ~1) if unstarted else ((entry & ~1) if entry else None),
+        ),
+        "ok",
+    )
+
+
+def _riscv_check_nest(
+    profile: RiscvSchedulerProfile,
+    stage_name: str,
+    nest_count: int | None,
+) -> str | None:
+    if profile.epc_mode != "deferred-mepc":
+        return None
+    if nest_count is None:
+        return "exception-context-unproven"
+    limit = (
+        0
+        if stage_name in ("trap-entry", "trap-prologue-saving")
+        or stage_name.startswith(("trap-epilogue-", "restore-"))
+        else 1
+    )
+    if nest_count > limit:
+        return "nested-trap-epc-unproven"
+    return None
+
+
+def _riscv_resolve_context_switch(
+    profile: RiscvSchedulerProfile,
+    context: SavedStackContext,
+    stage: RiscvSchedulerStage,
+    *,
+    flag_value: int,
+    sp_offset: int,
+    thread_addr: int,
+    thread_sp: int,
+    thread_entry: int | None,
+    current_addr: int | None,
+    low: int,
+    high: int,
+    endian: Endian,
+    read: Reader,
+    snapshot: RiscvSnapshot,
+    live_a0: int | None,
+    live_a1: int | None,
+    evidence: str,
+) -> SchedulerSeed | str:
+    if flag_value != 0 or current_addr is None:
+        return (
+            "scheduler-transition-unproven"
+            if flag_value != 0
+            else "scheduler-owner-inconsistent"
+        )
+    mask = u_xlen_mask(profile.xlen)
+    if stage.name == "context-switch-sp-loaded":
+        if thread_addr == current_addr:
+            if snapshot.sp != thread_sp:
+                return "scheduler-saved-sp-inconsistent"
+            seed, reason = _riscv_decode_saved(
+                context,
+                top=thread_sp,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+            )
+            if seed is None:
+                return reason
+            return SchedulerSeed(seed, stage.name, "new", evidence)
+        seed, reason = _riscv_decode_saved(
+            context,
+            top=thread_sp,
+            read=read,
+            low=low,
+            high=high,
+            endian=endian,
+            entry=thread_entry,
+        )
+        if seed is None:
+            return reason
+        return SchedulerSeed(seed, stage.name, "other", evidence)
+
+    a0_val = snapshot.registers.get(10) if live_a0 is None else live_a0
+    a1_val = snapshot.registers.get(11) if live_a1 is None else live_a1
+    if a1_val is not None and a1_val != current_addr + sp_offset:
+        return "scheduler-owner-inconsistent"
+    if (
+        stage.pc <= profile.switch_a0_clobber_pc
+        and a0_val is not None
+        and a1_val is not None
+        and a0_val == a1_val
+    ):
+        return "scheduler-owner-inconsistent"
+
+    target_sp_ptr = thread_addr + sp_offset
+    need_bytes = 0 if stage.name == "context-switch-entry" else profile.frame_bytes
+    stack_ok = _in_bounds(low, high, snapshot.sp, snapshot.sp + need_bytes)
+    is_from = False
+    if stage.pc <= profile.switch_store_from_pc:
+        if a0_val is not None:
+            is_from = target_sp_ptr == a0_val
+        else:
+            is_from = stack_ok and thread_addr != current_addr
+    else:
+        is_from = stack_ok and thread_sp == snapshot.sp and thread_addr != current_addr
+        if (
+            is_from
+            and stage.pc <= profile.switch_a0_clobber_pc
+            and a0_val is not None
+            and target_sp_ptr != a0_val
+        ):
+            return "scheduler-owner-inconsistent"
+
+    if is_from:
+        if not stack_ok:
+            return "scheduler-frame-outside-task-stack"
+        if stage.pc > profile.switch_store_from_pc and thread_sp != snapshot.sp:
+            return "scheduler-saved-sp-inconsistent"
+        if stage.name == "context-switch-entry":
+            if not _REQUIRED_RISCV_LIVE_REGS.issubset(snapshot.registers):
+                return "live-registers-unavailable"
+            ret_pc = snapshot.registers[1] & ~1
+            if ret_pc <= 0:
+                return "scheduler-save-window-inconsistent"
+            regs = {reg: val & mask for reg, val in snapshot.registers.items()}
+            regs[2] = snapshot.sp & mask
+            seed = SeedFrame(
+                pc=ret_pc,
+                sp=regs[2],
+                regs=regs,
+                source="current",
+                root_pc=(thread_entry & ~1) if thread_entry else None,
+            )
+            return SchedulerSeed(seed, stage.name, "old", evidence)
+
+        read_res = _riscv_read_slots(
+            profile.switch_saved_slots,
+            frame_base=snapshot.sp,
+            stage_pc=stage.pc,
+            word=profile.word_size,
+            mask=mask,
+            low=low,
+            high=high,
+            endian=endian,
+            read=read,
+            live_regs=snapshot.registers,
+        )
+        if isinstance(read_res, str):
+            return read_res
+        ret_pc = read_res.get(1, 0) & ~1
+        if ret_pc <= 0:
+            return "scheduler-save-window-inconsistent"
+        caller_sp = (snapshot.sp + profile.frame_bytes) & mask
+        read_res[2] = caller_sp
+        seed = SeedFrame(
+            pc=ret_pc,
+            sp=caller_sp,
+            regs=read_res,
+            source="current",
+            root_pc=(thread_entry & ~1) if thread_entry else None,
+        )
+        return SchedulerSeed(seed, stage.name, "old", evidence)
+
+    seed, reason = _riscv_decode_saved(
+        context,
+        top=thread_sp,
+        read=read,
+        low=low,
+        high=high,
+        endian=endian,
+        entry=thread_entry,
+    )
+    if seed is None:
+        return reason
+    owner = "new" if thread_addr == current_addr else "other"
+    return SchedulerSeed(seed, stage.name, owner, evidence)
+
+
+def build_riscv_stage_seed(
+    profile: RiscvSchedulerProfile,
+    selection: StackContextSelection,
+    stage: RiscvSchedulerStage | None,
+    *,
+    flag_value: int | None,
+    from_ptr: int | None,
+    to_ptr: int | None,
+    sp_offset: int | None,
+    thread_addr: int,
+    thread_sp: int,
+    thread_entry: int | None,
+    current_addr: int | None,
+    low: int,
+    high: int,
+    endian: Endian,
+    read: Reader,
+    snapshot: RiscvSnapshot,
+    nest_count: int | None = None,
+    irq_bounds: tuple[int, int] | None = None,
+    live_a0: int | None = None,
+    live_a1: int | None = None,
+) -> SchedulerSeed | None | str:
+    """Resolve one RISC-V scheduler/trap transition seed or fail closed."""
+    context = selection.context
+    if (
+        context is None
+        or not context.verified
+        or snapshot.xlen != profile.xlen
+        or context.pointer_size != profile.word_size
+    ):
+        return "scheduler-profile-unsupported-image"
+    if flag_value is None or from_ptr is None or to_ptr is None or sp_offset is None:
+        return "scheduler-state-unavailable"
+    if flag_value == 0 and stage is None:
+        return None
+    if isinstance(stage, str):
+        return stage
+
+    mask = u_xlen_mask(profile.xlen)
+    word = profile.word_size
+    stage_name = stage.name if stage is not None else "pending-before-trap-epilogue"
+    evidence = (
+        f"stage={stage_name}"
+        f" seed={stage.seed if stage is not None else 'exception-isr'}"
+        f" pc={snapshot.pc:#x} profile={profile.profile_id}@{profile.fingerprint}"
+        f" sp={snapshot.sp:#x} mcause={snapshot.mcause:#x} mepc={snapshot.mepc:#x}"
+    )
+
+    if stage is None or stage.name in ("trap-entry", "trap-dispatch"):
+        if stage is not None and stage.name == "trap-dispatch":
+            if irq_bounds is None:
+                return "exception-stack-bounds-unavailable"
+            if not irq_bounds[0] <= snapshot.sp <= irq_bounds[1]:
+                return "exception-stack-outside-bounds"
+        nest_err = _riscv_check_nest(profile, stage_name, nest_count)
+        if nest_err is not None:
+            return nest_err
+        target_ptr = thread_addr + sp_offset
+        if flag_value != 0:
+            if (
+                from_ptr == 0
+                or to_ptr == 0
+                or from_ptr == to_ptr
+                or current_addr is None
+                or current_addr + sp_offset != to_ptr
+            ):
+                return "scheduler-owner-inconsistent"
+            if target_ptr == from_ptr:
+                seed = SeedFrame(
+                    pc=snapshot.pc,
+                    sp=snapshot.sp,
+                    regs=dict(snapshot.registers),
+                    source="current",
+                    root_pc=(thread_entry & ~1) if thread_entry else None,
+                )
+                return SchedulerSeed(seed, stage_name, "old", evidence)
+            owner = "new" if target_ptr == to_ptr else "other"
+            return _riscv_saved_seed(
+                context,
+                top=thread_sp,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                stage=stage_name,
+                owner=owner,
+                evidence=evidence,
+            )
+        if current_addr is None:
+            return "scheduler-owner-inconsistent"
+        if thread_addr != current_addr:
+            return _riscv_saved_seed(
+                context,
+                top=thread_sp,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                stage=stage_name,
+                owner="other",
+                evidence=evidence,
+            )
+        if not _REQUIRED_RISCV_LIVE_REGS.issubset(snapshot.registers):
+            return "live-registers-unavailable"
+        if snapshot.mepc <= 0 or (snapshot.mepc & 1):
+            return "exception-context-unproven"
+        regs = {reg: val & mask for reg, val in snapshot.registers.items()}
+        regs[2] = snapshot.sp & mask
+        return SchedulerSeed(
+            SeedFrame(
+                pc=snapshot.mepc & ~1,
+                sp=regs[2],
+                regs=regs,
+                source="current",
+                root_pc=(thread_entry & ~1) if thread_entry else None,
+            ),
+            stage_name,
+            "old",
+            evidence,
+        )
+
+    if stage.name in ("switch-to-entry", "switch-to-sp-loaded"):
+        if flag_value != 0:
+            return "scheduler-transition-unproven"
+        if current_addr is None:
+            return "scheduler-owner-inconsistent"
+        if thread_addr != current_addr:
+            return _riscv_saved_seed(
+                context,
+                top=thread_sp,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                stage=stage.name,
+                owner="other",
+                evidence=evidence,
+            )
+        a0_val = snapshot.registers.get(10) if live_a0 is None else live_a0
+        if (
+            stage.name == "switch-to-entry"
+            and a0_val is not None
+            and a0_val != thread_addr + sp_offset
+        ):
+            return "scheduler-owner-inconsistent"
+        if stage.name == "switch-to-sp-loaded" and snapshot.sp != thread_sp:
+            return "scheduler-saved-sp-inconsistent"
+        seed, reason = _riscv_decode_saved(
+            context,
+            top=thread_sp,
+            read=read,
+            low=low,
+            high=high,
+            endian=endian,
+            entry=thread_entry,
+        )
+        if seed is None:
+            return reason
+        if seed.source != "unstarted":
+            return "scheduler-first-start-context-unproven"
+        return SchedulerSeed(seed, stage.name, "new", evidence)
+
+    if stage.name in (
+        "context-switch-entry",
+        "context-switch-saving",
+        "context-switch-sp-loaded",
+    ):
+        return _riscv_resolve_context_switch(
+            profile,
+            context,
+            stage,
+            flag_value=flag_value,
+            sp_offset=sp_offset,
+            thread_addr=thread_addr,
+            thread_sp=thread_sp,
+            thread_entry=thread_entry,
+            current_addr=current_addr,
+            low=low,
+            high=high,
+            endian=endian,
+            read=read,
+            snapshot=snapshot,
+            live_a0=live_a0,
+            live_a1=live_a1,
+            evidence=evidence,
+        )
+
+    if stage.name == "trap-prologue-saving":
+        if flag_value != 0:
+            return "scheduler-transition-unproven"
+        if current_addr is None:
+            return "scheduler-owner-inconsistent"
+        nest_err = _riscv_check_nest(profile, stage.name, nest_count)
+        if nest_err is not None:
+            return nest_err
+        if thread_addr != current_addr:
+            return _riscv_saved_seed(
+                context,
+                top=thread_sp,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                stage=stage.name,
+                owner="other",
+                evidence=evidence,
+            )
+        if stage.pc <= profile.trap_mv_s0_pc:
+            frame_base = snapshot.sp & mask
+        else:
+            s0 = snapshot.registers.get(8)
+            if s0 is None:
+                return "live-registers-unavailable"
+            frame_base = s0 & mask
+        if not _in_bounds(low, high, frame_base, frame_base + profile.frame_bytes):
+            return "scheduler-frame-outside-task-stack"
+        read_res = _riscv_read_slots(
+            profile.trap_saved_slots,
+            frame_base=frame_base,
+            stage_pc=stage.pc,
+            word=word,
+            mask=mask,
+            low=low,
+            high=high,
+            endian=endian,
+            read=read,
+            live_regs=snapshot.registers,
+        )
+        if isinstance(read_res, str):
+            return read_res
+        if snapshot.mepc <= 0 or (snapshot.mepc & 1):
+            return "exception-context-unproven"
+        caller_sp = (frame_base + profile.frame_bytes) & mask
+        read_res[2] = caller_sp
+        return SchedulerSeed(
+            SeedFrame(
+                pc=snapshot.mepc & ~1,
+                sp=caller_sp,
+                regs=read_res,
+                source="current",
+                root_pc=(thread_entry & ~1) if thread_entry else None,
+            ),
+            stage.name,
+            "old",
+            evidence,
+        )
+
+    if stage.name in (
+        "trap-epilogue-before-switch-store",
+        "trap-epilogue-before-switch-load",
+    ):
+        nest_err = _riscv_check_nest(profile, stage.name, nest_count)
+        if nest_err is not None:
+            return nest_err
+        switch_active = stage.pc > profile.trap_clear_flag_pc or flag_value != 0
+        if stage.pc <= profile.trap_clear_flag_pc and flag_value == 0:
+            switch_active = False
+        if stage.pc > profile.trap_clear_flag_pc and flag_value != 0:
+            return "scheduler-transition-unproven"
+
+        if stage.pc == profile.trap_mv_sp_pc:
+            s0 = snapshot.registers.get(8)
+            if s0 is None:
+                return "live-registers-unavailable"
+            frame_base = s0 & mask
+        else:
+            frame_base = snapshot.sp & mask
+
+        if not switch_active:
+            if current_addr is None:
+                return "scheduler-owner-inconsistent"
+            if thread_addr != current_addr:
+                seed, reason = _riscv_decode_saved(
+                    context,
+                    top=thread_sp,
+                    read=read,
+                    low=low,
+                    high=high,
+                    endian=endian,
+                    entry=thread_entry,
+                )
+                if seed is None:
+                    return reason
+                return SchedulerSeed(seed, stage.name, "other", evidence)
+            epc_override = (
+                None if profile.epc_mode == "stacked-epc" else (snapshot.mepc & ~1)
+            )
+            seed, reason = _riscv_restore_from_frame(
+                profile,
+                context,
+                frame_base=frame_base,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                epc_override=epc_override,
+            )
+            if seed is None:
+                return reason
+            return SchedulerSeed(seed, stage.name, "old", evidence)
+
+        if (
+            from_ptr == 0
+            or to_ptr == 0
+            or from_ptr == to_ptr
+            or current_addr is None
+            or current_addr + sp_offset != to_ptr
+        ):
+            return "scheduler-owner-inconsistent"
+        target_ptr = thread_addr + sp_offset
+        if target_ptr == from_ptr:
+            if (
+                stage.name == "trap-epilogue-before-switch-load"
+                and thread_sp != frame_base
+            ):
+                return "scheduler-saved-sp-inconsistent"
+            use_stacked = profile.epc_mode == "stacked-epc" or (
+                profile.trap_epc_store_pc is not None
+                and stage.pc > profile.trap_epc_store_pc
+            )
+            epc_override = None if use_stacked else (snapshot.mepc & ~1)
+            seed, reason = _riscv_restore_from_frame(
+                profile,
+                context,
+                frame_base=frame_base,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                epc_override=epc_override,
+            )
+            if seed is None:
+                return reason
+            return SchedulerSeed(seed, stage.name, "old", evidence)
+        seed, reason = _riscv_decode_saved(
+            context,
+            top=thread_sp,
+            read=read,
+            low=low,
+            high=high,
+            endian=endian,
+            entry=thread_entry,
+        )
+        if seed is None:
+            return reason
+        owner = "new" if target_ptr == to_ptr else "other"
+        return SchedulerSeed(seed, stage.name, owner, evidence)
+
+    if stage.name in ("trap-epilogue-after-switch-load", "restore-window"):
+        if stage.function == "spurious_interrupt":
+            nest_err = _riscv_check_nest(profile, stage.name, nest_count)
+            if nest_err is not None:
+                return nest_err
+        if current_addr is None:
+            return "scheduler-owner-inconsistent"
+        if thread_addr != current_addr:
+            return _riscv_saved_seed(
+                context,
+                top=thread_sp,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                stage=stage.name,
+                owner="other",
+                evidence=evidence,
+            )
+        if stage.name == "trap-epilogue-after-switch-load" and snapshot.sp != thread_sp:
+            return "scheduler-saved-sp-inconsistent"
+        epc_override = (
+            snapshot.mepc & ~1
+            if (
+                stage.function == "spurious_interrupt"
+                and profile.epc_mode == "deferred-mepc"
+            )
+            else None
+        )
+        seed, reason = _riscv_restore_from_frame(
+            profile,
+            context,
+            frame_base=snapshot.sp & mask,
+            read=read,
+            low=low,
+            high=high,
+            endian=endian,
+            entry=thread_entry,
+            epc_override=epc_override,
+        )
+        if seed is None:
+            return reason
+        return SchedulerSeed(seed, stage.name, "new", evidence)
+
+    if stage.name == "restore-sp-popped":
+        if stage.function == "spurious_interrupt":
+            nest_err = _riscv_check_nest(profile, stage.name, nest_count)
+            if nest_err is not None:
+                return nest_err
+        if current_addr is None:
+            return "scheduler-owner-inconsistent"
+        if thread_addr != current_addr:
+            return _riscv_saved_seed(
+                context,
+                top=thread_sp,
+                read=read,
+                low=low,
+                high=high,
+                endian=endian,
+                entry=thread_entry,
+                stage=stage.name,
+                owner="other",
+                evidence=evidence,
+            )
+        if (snapshot.mstatus & MSTATUS_MPP_MASK) != MSTATUS_MPP_MACHINE:
+            return "unsupported-exception-model"
+        if not _in_bounds(low, high, snapshot.sp, snapshot.sp):
+            return "scheduler-psp-inconsistent"
+        if snapshot.mepc <= 0 or (snapshot.mepc & 1):
+            return "exception-context-unproven"
+        if not _REQUIRED_RISCV_LIVE_REGS.issubset(snapshot.registers):
+            return "live-registers-unavailable"
+        resume_pc = snapshot.mepc & ~1
+        regs = {reg: val & mask for reg, val in snapshot.registers.items()}
+        regs[2] = snapshot.sp & mask
+        unstarted = bool(
+            thread_entry
+            and resume_pc == (thread_entry & ~1)
+            and all(
+                regs.get(reg) == context.fill_word
+                for reg in _RISCV_CALLEE_FILL_REGS
+                if reg in regs
+            )
+        )
+        seed = SeedFrame(
+            pc=resume_pc,
+            sp=regs[2],
+            regs=regs,
+            source="unstarted" if unstarted else "current",
+            root_pc=resume_pc
+            if unstarted
+            else ((thread_entry & ~1) if thread_entry else None),
+        )
+        return SchedulerSeed(seed, stage.name, "new", evidence)
+
+    return "scheduler-transition-unproven"

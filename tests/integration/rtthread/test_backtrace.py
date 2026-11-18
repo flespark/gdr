@@ -13,6 +13,10 @@ import pytest
 from core.insn_thumb import decode_thumb
 from core.unwind_meta import ElfImage
 from rtthread.arm_scheduler_switch import SchedulerProfile, build_profile
+from rtthread.riscv_scheduler_switch import (
+    RiscvSchedulerProfile,
+    build_riscv_profile,
+)
 from tests.support.gdb_process import has_embedded_python
 from tests.support.loader import load_integration_spec
 from tests.support.qemu_harness import GdbSession, QemuSession, check_tools
@@ -35,6 +39,7 @@ _M_PROFILE_TARGETS = {"microbit", "mps2-an385", "mps2-an386", "mps2-an505"}
 _TIMER0_EXC, _TIMER1_EXC = (19, 20) if SPEC.target == "mps2-an505" else (24, 25)
 _EXPECTED_BFAR = 0xA0000000 if SPEC.target == "mps2-an505" else 0x50000000
 _PROFILE_CACHE: SchedulerProfile | None = None
+_RV_PROFILE_CACHE: RiscvSchedulerProfile | None = None
 
 pytestmark = pytest.mark.skipif(
     SPEC.rtos != "rtthread",
@@ -123,8 +128,13 @@ def _envelope(output: str) -> dict:
     return envelope["data"]
 
 
-def _backtrace(session, thread_name: str) -> dict:
-    return _envelope(session.run(f"gdr api backtrace {thread_name} --json", timeout=30))
+def _backtrace(session, thread_name: str | None = None) -> dict:
+    command = (
+        f"gdr api backtrace {thread_name} --json"
+        if thread_name is not None
+        else "gdr api backtrace --json"
+    )
+    return _envelope(session.run(command, timeout=30))
 
 
 def _clear_breakpoints(session) -> None:
@@ -135,6 +145,10 @@ def _stop_symbol(session, name: str) -> None:
     session.run(f"tbreak {name}")
     output = session.run("continue", timeout=30)
     assert "Temporary breakpoint" in output, output
+
+
+def _stop_at_address(session, address: int) -> None:
+    _stop_symbol(session, f"*{address:#x}")
 
 
 def _transitions(data: dict) -> list[dict]:
@@ -1170,28 +1184,309 @@ print(json.dumps({"mepc": int(frame.read_register("mepc")) & mask}))
         gdb_session.run("set var gdr_irq_hold = 0")
 
 
+def _rv_profile() -> RiscvSchedulerProfile:
+    global _RV_PROFILE_CACHE
+    if _RV_PROFILE_CACHE is None:
+        profile, reason = build_riscv_profile(ElfImage.from_path(SPEC.elf_path()))
+        assert profile is not None, reason
+        _RV_PROFILE_CACHE = profile
+    return _RV_PROFILE_CACHE
+
+
+def _rv_thread_name(session, expr: str, *, from_sp_ptr: bool = False) -> str:
+    body = (
+        f"off = member_offset('struct rt_thread', ('sp',))\nval = gdb.Value((int(gdb.parse_and_eval({expr!r})) & ((1 << (64 if gdb.lookup_type('rt_ubase_t').sizeof == 8 else 32)) - 1)) - off).cast(gdb.lookup_type('struct rt_thread').pointer())"
+        if from_sp_ptr
+        else f"val = gdb.parse_and_eval({expr!r})"
+    )
+    return session.run_python(
+        f"import gdb\nfrom core.layout import member_offset\n{body}\nprint(val['name'].string().rstrip('\\x00'))"
+    ).strip()
+
+
 @_riscv_skip()
-def test_riscv_trap_epilogue_switch_region_fails_closed(gdb_session):
-    epilogue_pc = int(
-        _json_line(
+def test_riscv_first_start_switch_to_stages():
+    profile = replace(get_rtthread_qemu_profile(GDR_ROOT, SPEC), init_command=None)
+    check_tools(profile, SPEC.gdb)
+    if not has_embedded_python(SPEC.gdb):
+        pytest.skip("GDB has no embedded Python")
+    prof = _rv_profile()
+    qemu = QemuSession(profile)
+    qemu.start(SPEC.boot_wait, paused=True)
+    session = GdbSession(SPEC.gdb, profile, qemu.gdb_port, GDR_ROOT)
+    try:
+        session.start()
+        session.run(f"gdr init rtthread {SPEC.version}", timeout=30)
+        _stop_at_address(session, prof.switch_to_start)
+        to_name = _rv_thread_name(session, "rt_current_thread")
+        for req in (None, to_name):
+            data = _backtrace(session, req)
+            _assert_completed_owner(
+                data, stage="switch-to-entry", sources={"unstarted"}
+            )
+            assert data["task"] == to_name, data
+            assert data["stop_reason"] == "task-entry", data
+
+        session.run("stepi 1")
+        _assert_completed_owner(
+            _backtrace(session), stage="switch-to-sp-loaded", sources={"unstarted"}
+        )
+
+        _stop_at_address(session, prof.exit_start)
+        _assert_completed_owner(
+            _backtrace(session), stage="restore-window", sources={"unstarted"}
+        )
+
+        _stop_at_address(session, prof.exit_mret_pc)
+        _assert_completed_owner(
+            _backtrace(session), stage="restore-sp-popped", sources={"unstarted"}
+        )
+    finally:
+        _clear_breakpoints(session)
+        session.stop()
+        qemu.stop()
+
+
+@_riscv_skip()
+def test_riscv_context_switch_and_restore_stages(gdb_session):
+    prof = _rv_profile()
+    gdb_session.run("set var gdr_irq_hold = 0")
+    try:
+        _stop_at_address(gdb_session, prof.switch_start)
+        owners = _json_line(
+            gdb_session.run_python(
+                """
+import gdb, json
+from core.layout import member_offset
+frame = gdb.newest_frame()
+mask = (1 << (64 if gdb.lookup_type('rt_ubase_t').sizeof == 8 else 32)) - 1
+off = member_offset("struct rt_thread", ("sp",))
+t = gdb.lookup_type("struct rt_thread").pointer()
+a0 = int(frame.read_register("a0")) & mask
+a1 = int(frame.read_register("a1")) & mask
+from_t = gdb.Value(a0 - off).cast(t)
+to_t = gdb.parse_and_eval("rt_current_thread")
+print(json.dumps({
+    "from_name": from_t["name"].string().rstrip("\\x00"),
+    "to_name": to_t["name"].string().rstrip("\\x00"),
+    "a1_match": (int(to_t) & mask) + off == a1,
+}))
+"""
+            )
+        )
+        assert owners["a1_match"] and owners["from_name"] != owners["to_name"], owners
+        from_name = owners["from_name"]
+        to_name = owners["to_name"]
+
+        for req in (None, from_name):
+            d = _backtrace(gdb_session, req)
+            _assert_completed_owner(
+                d, stage="context-switch-entry", sources={"current"}
+            )
+            assert d["task"] == from_name, d
+        to_entry = _backtrace(gdb_session, to_name)
+        _assert_completed_owner(
+            to_entry, stage="context-switch-entry", sources={"saved", "unstarted"}
+        )
+
+        # Stop inside rt_hw_context_switch after `csrr a0, mstatus` clobbers a0.
+        clobber_next = prof.switch_a0_clobber_pc + 4
+        _stop_at_address(gdb_session, clobber_next)
+        d_sav = _backtrace(gdb_session)
+        _assert_completed_owner(
+            d_sav, stage="context-switch-saving", sources={"current"}
+        )
+        assert d_sav["task"] == from_name, d_sav
+        _assert_completed_owner(
+            _backtrace(gdb_session, to_name),
+            stage="context-switch-saving",
+            sources={"saved", "unstarted"},
+        )
+
+        # After `LOAD sp, (a1)`, incoming thread owns live sp while outgoing is saved.
+        _stop_at_address(gdb_session, prof.switch_load_to_pc)
+        gdb_session.run("stepi 1")
+        d_loaded = _backtrace(gdb_session)
+        _assert_completed_owner(
+            d_loaded,
+            stage="context-switch-sp-loaded",
+            sources={"saved", "unstarted"},
+        )
+        assert d_loaded["task"] == to_name, d_loaded
+        _assert_completed_owner(
+            _backtrace(gdb_session, from_name),
+            stage="context-switch-sp-loaded",
+            sources={"saved"},
+        )
+
+        _stop_at_address(gdb_session, prof.exit_start)
+        _assert_completed_owner(
+            _backtrace(gdb_session),
+            stage="restore-window",
+            sources={"saved", "unstarted"},
+        )
+
+        _stop_at_address(gdb_session, prof.exit_mret_pc)
+        d_pop = _backtrace(gdb_session)
+        _assert_completed_owner(
+            d_pop, stage="restore-sp-popped", sources={"current", "unstarted"}
+        )
+        assert d_pop["task"] == to_name, d_pop
+    finally:
+        _clear_breakpoints(gdb_session)
+        gdb_session.run("set var gdr_irq_hold = 0")
+
+
+@_riscv_skip()
+def test_riscv_trap_prologue_and_epilogue_stages(gdb_session):
+    prof = _rv_profile()
+    try:
+        # 1. trap-prologue-saving before and after `mv s0, sp` + ISR stack switch.
+        _rv_hold_and_break(gdb_session, f"*{prof.trap_start:#x}")
+        gdb_session.run("stepi 2")
+        for req in (None, "worker3"):
+            d_pre = _backtrace(gdb_session, req)
+            _assert_completed_owner(
+                d_pre, stage="trap-prologue-saving", sources={"current"}
+            )
+            assert any(
+                "gdr_bt_live_leaf" in (f["symbol"] or "") for f in d_pre["frames"]
+            ), d_pre
+
+        _stop_at_address(gdb_session, prof.trap_call_start)
+        d_s0 = _backtrace(gdb_session)
+        # At trap_call_start stage transitions to trap-dispatch (crosses exception hook).
+        assert d_s0["complete"] is True and d_s0["task"] == "worker3", d_s0
+
+        # 2. trap-epilogue without switch + spurious_interrupt non-switch restore.
+        bp_no_sw = gdb_session.run(
+            f"tbreak *{prof.trap_mv_sp_pc:#x} if rt_current_thread == &worker3_thread && rt_thread_switch_interrupt_flag == 0"
+        )
+        assert "Temporary breakpoint" in bp_no_sw, bp_no_sw
+        assert "Temporary breakpoint" in gdb_session.run("continue", timeout=15)
+        d_nosw = _backtrace(gdb_session)
+        _assert_completed_owner(
+            d_nosw, stage="trap-epilogue-before-switch-store", sources={"saved"}
+        )
+        assert any(
+            "gdr_bt_live_leaf" in (f["symbol"] or "") for f in d_nosw["frames"]
+        ), d_nosw
+
+        if prof.epc_mode == "deferred-mepc" and prof.spurious_mret_pc is not None:
+            _stop_at_address(gdb_session, prof.spurious_start)
+            d_spur = _backtrace(gdb_session)
+            _assert_completed_owner(d_spur, stage="restore-window", sources={"saved"})
+            assert d_spur["task"] == "worker3", d_spur
+            _stop_at_address(gdb_session, prof.spurious_mret_pc)
+            d_smret = _backtrace(gdb_session)
+            _assert_completed_owner(
+                d_smret, stage="restore-sp-popped", sources={"current"}
+            )
+            assert d_smret["task"] == "worker3", d_smret
+
+        # 3. trap-epilogue WITH pending switch: flag=1 -> sw zero,flag -> store_from -> load_to.
+        gdb_session.run("set var gdr_irq_hold = 0")
+        bp_sw = gdb_session.run(
+            f"tbreak *{prof.trap_mv_sp_pc:#x} if rt_thread_switch_interrupt_flag != 0"
+        )
+        assert "Temporary breakpoint" in bp_sw, bp_sw
+        assert "Temporary breakpoint" in gdb_session.run("continue", timeout=20)
+        from_name = _rv_thread_name(
+            gdb_session, "rt_interrupt_from_thread", from_sp_ptr=True
+        )
+        to_name = _rv_thread_name(
+            gdb_session, "rt_interrupt_to_thread", from_sp_ptr=True
+        )
+        assert from_name and to_name and from_name != to_name, (from_name, to_name)
+
+        d_sw_before = _backtrace(gdb_session)
+        _assert_completed_owner(
+            d_sw_before, stage="trap-epilogue-before-switch-store", sources={"saved"}
+        )
+        assert d_sw_before["task"] == from_name, d_sw_before
+        _assert_completed_owner(
+            _backtrace(gdb_session, to_name),
+            stage="trap-epilogue-before-switch-store",
+            sources={"saved", "unstarted"},
+        )
+
+        # Past `sw zero, flag` and `store sp, (from_thread)` -> trap-epilogue-before-switch-load.
+        _stop_at_address(gdb_session, prof.trap_load_to_pc)
+        d_load = _backtrace(gdb_session)
+        _assert_completed_owner(
+            d_load, stage="trap-epilogue-before-switch-load", sources={"saved"}
+        )
+        assert d_load["task"] == from_name, d_load
+
+        # Step past `LOAD sp, (to_thread)`: incoming thread now owns live sp!
+        gdb_session.run("stepi 1")
+        d_after = _backtrace(gdb_session)
+        assert d_after["complete"] is True and d_after["task"] == to_name, d_after
+        assert any(
+            (
+                "scheduler stage trap-epilogue-after-switch-load " in m
+                or "scheduler stage restore-window " in m
+            )
+            for m in d_after["messages"]
+        ), d_after
+    finally:
+        _clear_breakpoints(gdb_session)
+        gdb_session.run("set var gdr_irq_hold = 0")
+
+
+@_riscv_skip()
+def test_riscv_trap_nested_e310_and_broken_profile_fail_closed(gdb_session):
+    prof = _rv_profile()
+    try:
+        _rv_hold_and_break(gdb_session, f"*{prof.trap_mv_sp_pc:#x}")
+        broken = _json_line(
             gdb_session.run_python(
                 """
 import json
-from core.unwind_meta import ElfImage
-from rtthread.stack_frame_profile import analyze_riscv_trap_profile
-elf = ElfImage.from_path(gdb.current_progspace().filename)
-span = analyze_riscv_trap_profile(elf)
-assert span is not None
-print(json.dumps({"pc": span.call_end}))
+from core.adapter import active
+import rtthread.backtrace_gdb as bt
+
+original = bt.build_riscv_scheduler_profile
+bt.build_riscv_scheduler_profile = lambda _elf: (None, "scheduler-profile-mismatch:test")
+try:
+    report = bt.backtrace(active(), "worker3")
+finally:
+    bt.build_riscv_scheduler_profile = original
+print(json.dumps({"complete": report.complete, "stop_reason": report.stop_reason}))
 """
             )
-        )["pc"]
-    )
-    try:
-        _rv_hold_and_break(gdb_session, f"*{epilogue_pc:#x}")
-        data = _backtrace(gdb_session, "worker3")
-        assert data["complete"] is False, data
-        assert data["stop_reason"] == "scheduler-transition-unproven", data
+        )
+        assert broken == {
+            "complete": False,
+            "stop_reason": "scheduler-profile-mismatch:test",
+        }, broken
+
+        if prof.epc_mode == "deferred-mepc":
+            nested = _json_line(
+                gdb_session.run_python(
+                    """
+import json
+from core.adapter import active
+import rtthread.backtrace_gdb as bt
+
+orig_eval = bt.eval_identifier
+orig_read = bt.read_int
+nest_token = object()
+bt.eval_identifier = lambda name: nest_token if name == "rt_interrupt_nest" else orig_eval(name)
+bt.read_int = lambda val: 1 if val is nest_token else orig_read(val)
+try:
+    report = bt.backtrace(active(), "worker3")
+finally:
+    bt.eval_identifier = orig_eval
+    bt.read_int = orig_read
+print(json.dumps({"complete": report.complete, "stop_reason": report.stop_reason}))
+"""
+                )
+            )
+            assert nested == {
+                "complete": False,
+                "stop_reason": "nested-trap-epc-unproven",
+            }, nested
     finally:
         _clear_breakpoints(gdb_session)
         gdb_session.run("set var gdr_irq_hold = 0")

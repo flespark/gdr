@@ -250,7 +250,7 @@ def test_rtthread_riscv_refuses_switch_flag_and_from_thread(monkeypatch):
     )
     report = bridge.backtrace(adapter, "bt")
     assert not report.complete
-    assert report.stop_reason == "scheduler-transition-unproven"
+    assert report.stop_reason == "scheduler-profile-unsupported-image"
 
     monkeypatch.setattr(bridge, "member_offset", lambda *_args: 12)
     sp_off = 12
@@ -269,7 +269,7 @@ def test_rtthread_riscv_refuses_switch_flag_and_from_thread(monkeypatch):
     )
     report_from = bridge.backtrace(adapter_from, "bt")
     assert not report_from.complete
-    assert report_from.stop_reason == "scheduler-transition-unproven"
+    assert report_from.stop_reason == "scheduler-profile-unsupported-image"
 
 
 @pytest.mark.parametrize(
