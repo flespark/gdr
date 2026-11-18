@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from typing import Any
 
 import pytest
 from elftools.elf.elffile import ELFFile
@@ -100,7 +101,7 @@ def test_allocated_nobits_bounds_match_pyelftools(source):
 def _pyelftools_symbols(
     elffile: ELFFile,
 ) -> tuple[dict[str, tuple[int, int]], set[tuple[str, int]], set[str]]:
-    symtab = elffile.get_section_by_name(".symtab")
+    symtab: Any = elffile.get_section_by_name(".symtab")
     if symtab is None:
         return {}, set(), set()
     sections = list(elffile.iter_sections())
@@ -139,7 +140,7 @@ def test_function_symbols_and_anchors_match_pyelftools(source):
 
 
 def _pyelftools_attributes(elffile: ELFFile) -> dict[int, int | str] | None:
-    section = elffile.get_section_by_name(".ARM.attributes")
+    section: Any = elffile.get_section_by_name(".ARM.attributes")
     struct = getattr(elffile.structs, "Elf_Arm_Attribute_Tag", None)
     vendor = b"aeabi"
     if section is None:
@@ -167,7 +168,7 @@ def _expected_isa(elffile: ELFFile, reference: dict[int, int | str]) -> str | No
     machine = elffile.header["e_machine"]
     if machine == "EM_ARM":
         arch, profile = reference.get(6), reference.get(7)
-        if profile == ord("M"):
+        if profile == ord("M") and isinstance(arch, int):
             return {
                 10: "armv7-m",
                 11: "armv6-m",

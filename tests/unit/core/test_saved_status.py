@@ -6,11 +6,19 @@ from dataclasses import replace
 
 import pytest
 
-from core.stack_frame_parser import decode_profile_slots
+from core.stack_frame_parser import StatusKind, decode_profile_slots
+from core.unwind_meta import Endian
 from tests.unit.core.test_saved_context import _profile
 
 
-def _decode(kind, status, *, pc=0x1000, endian="little", check=True):
+def _decode(
+    kind: StatusKind,
+    status: int,
+    *,
+    pc: int = 0x1000,
+    endian: Endian = "little",
+    check: bool = True,
+):
     context = _profile(status_kind=kind)
     words = (4, pc, 0x1101, status)
     blob = b"".join(word.to_bytes(4, endian) for word in words)

@@ -9,7 +9,7 @@ from pathlib import Path
 try:
     import tomllib
 except ImportError:  # Python 3.10
-    import tomli as tomllib
+    import tomli as tomllib  # type: ignore[import-not-found]
 
 _ROOT = Path(__file__).resolve().parents[3]
 _CORE_DIR = _ROOT / "core"

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -282,8 +284,8 @@ def test_prepare_handler_refuses_bad_csrs_bounds_and_regions():
 
     base_regs = {2: 0x8001FFE0, 8: 0x80011E00, 1: 0x80001048}
 
-    def _snap(**overrides):
-        defaults = dict(
+    def _snap(**overrides) -> RiscvSnapshot:
+        defaults: dict[str, Any] = dict(
             xlen=32,
             pc=0x80002000,
             sp=0x8001FFE0,
@@ -296,104 +298,41 @@ def test_prepare_handler_refuses_bad_csrs_bounds_and_regions():
         defaults.update(overrides)
         return RiscvSnapshot(**defaults)
 
-    assert (
-        prepare_riscv_handler_unwind(
-            _snap(pc=0x80001010),
-            root_pc=0x80001010,
-            span=span,
+    def _reject_reason(snap: RiscvSnapshot, target_span=span) -> str:
+        res = prepare_riscv_handler_unwind(
+            snap,
+            root_pc=snap.pc,
+            span=target_span,
             task_segment=task_seg,
             irq_stack_bounds=irq_bounds,
             nest_count=1,
             endian="little",
             task_frame_resolver=lambda _ctx: 0x80011E00,
-        )[0]
-        == "exception-frame-incomplete"
-    )
+        )
+        assert isinstance(res, tuple)
+        return res[0]
 
+    assert _reject_reason(_snap(pc=0x80001010)) == "exception-frame-incomplete"
+    assert _reject_reason(_snap(pc=0x80001054)) == "scheduler-transition-unproven"
+    assert _reject_reason(_snap(mtvec=0x80009001)) == "exception-vector-unproven"
+    assert _reject_reason(_snap(mstatus=0)) == "unsupported-exception-model"
+    assert _reject_reason(_snap(sp=0x80011E00)) == "exception-stack-outside-bounds"
     assert (
-        prepare_riscv_handler_unwind(
-            _snap(pc=0x80001054),
-            root_pc=0x80001054,
-            span=span,
-            task_segment=task_seg,
-            irq_stack_bounds=irq_bounds,
-            nest_count=1,
-            endian="little",
-            task_frame_resolver=lambda _ctx: 0x80011E00,
-        )[0]
-        == "scheduler-transition-unproven"
-    )
-
-    assert (
-        prepare_riscv_handler_unwind(
-            _snap(mtvec=0x80009001),
-            root_pc=0x80002000,
-            span=span,
-            task_segment=task_seg,
-            irq_stack_bounds=irq_bounds,
-            nest_count=1,
-            endian="little",
-            task_frame_resolver=lambda _ctx: 0x80011E00,
-        )[0]
-        == "exception-vector-unproven"
-    )
-
-    assert (
-        prepare_riscv_handler_unwind(
-            _snap(mstatus=0),
-            root_pc=0x80002000,
-            span=span,
-            task_segment=task_seg,
-            irq_stack_bounds=irq_bounds,
-            nest_count=1,
-            endian="little",
-            task_frame_resolver=lambda _ctx: 0x80011E00,
-        )[0]
-        == "unsupported-exception-model"
-    )
-
-    assert (
-        prepare_riscv_handler_unwind(
-            _snap(sp=0x80011E00),
-            root_pc=0x80002000,
-            span=span,
-            task_segment=task_seg,
-            irq_stack_bounds=irq_bounds,
-            nest_count=1,
-            endian="little",
-            task_frame_resolver=lambda _ctx: 0x80011E00,
-        )[0]
-        == "exception-stack-outside-bounds"
-    )
-
-    assert (
-        prepare_riscv_handler_unwind(
-            _snap(pc=span.entry, sp=0x8001FFE0),
-            root_pc=span.entry,
-            span=span,
-            task_segment=task_seg,
-            irq_stack_bounds=irq_bounds,
-            nest_count=1,
-            endian="little",
-            task_frame_resolver=lambda _ctx: 0x80011E00,
-        )[0]
+        _reject_reason(_snap(pc=span.entry, sp=0x8001FFE0))
         == "exception-task-context-conflict"
     )
-
     deferred_span = _span_with_layout(epc_offset=None)
-    assert (
-        prepare_riscv_handler_unwind(
-            _snap(),
-            root_pc=0x80002000,
-            span=deferred_span,
-            task_segment=task_seg,
-            irq_stack_bounds=irq_bounds,
-            nest_count=2,
-            endian="little",
-            task_frame_resolver=lambda _ctx: 0x80011E00,
-        )[0]
-        == "nested-trap-epc-unproven"
+    res_nested = prepare_riscv_handler_unwind(
+        _snap(),
+        root_pc=0x80002000,
+        span=deferred_span,
+        task_segment=task_seg,
+        irq_stack_bounds=irq_bounds,
+        nest_count=2,
+        endian="little",
+        task_frame_resolver=lambda _ctx: 0x80011E00,
     )
+    assert isinstance(res_nested, tuple) and res_nested[0] == "nested-trap-epc-unproven"
 
 
 def _make_riscv_cross_stack_env(
@@ -610,21 +549,14 @@ def test_transition_factory_edge_failures():
     )
     assert setup.exception_hook(ctx) == "unsupported-exception-model"
     assert (
-        setup.exception_hook(
-            SimpleNamespace(**{**ctx.__dict__, "remaining_exception_bytes": 16})
-        )
+        setup.exception_hook(replace(ctx, remaining_exception_bytes=16))
         == "exception-read-budget-exceeded"
     )
     assert (
-        setup.exception_hook(SimpleNamespace(**{**ctx.__dict__, "read": _Memory({})}))
+        setup.exception_hook(replace(ctx, read=_Memory({})))
         == "exception-frame-unreadable"
     )
-    assert (
-        setup.exception_hook(
-            SimpleNamespace(**{**ctx.__dict__, "current_segment": task_seg})
-        )
-        is None
-    )
+    assert setup.exception_hook(replace(ctx, current_segment=task_seg)) is None
     hook_missing_seg = riscv_trap_transition_factory(
         xlen=32,
         endian="little",
@@ -635,7 +567,7 @@ def test_transition_factory_edge_failures():
         task_frame_resolver=lambda _c: frame_addr,
     )
     assert (
-        hook_missing_seg(SimpleNamespace(**{**ctx.__dict__, "segments": {}}))
+        hook_missing_seg(replace(ctx, segments={}))
         == "exception-target-segment-missing"
     )
     hook_resolver_err = riscv_trap_transition_factory(

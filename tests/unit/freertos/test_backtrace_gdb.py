@@ -16,6 +16,7 @@ from core.unwind_arm import (
     armv7m_exception_return_candidate,
     armv7m_exception_transition,
 )
+from core.unwind_cfi import CfiTable
 from core.unwind_segments import StackSegment
 from freertos.adapter import FreeRtosTask
 from freertos.backtrace import (
@@ -1390,7 +1391,9 @@ def test_current_pc_backtrace_delegates_to_running_task_and_handles_boot(monkeyp
     meta = UnwindMetadata(
         elf=boot_elf,
         arch="arm",
-        cfi_tables=(SimpleNamespace(row_for=lambda _pc: boot_row, error=None),),
+        cfi_tables=(
+            cast(CfiTable, SimpleNamespace(row_for=lambda _pc: boot_row, error=None)),
+        ),
         ehabi=None,
         return_register=14,
         frame_pointer_register=7,

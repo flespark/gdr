@@ -7,6 +7,7 @@ from dataclasses import (
     dataclass,
     field,
 )
+from typing import Any, cast
 
 import pytest
 
@@ -132,7 +133,7 @@ def session():
     """Register one fake adapter and always leave the semantic session clear."""
     adapter = _ApiAdapter()
     adapter_api.reset()
-    adapter_api.register(adapter, rtos="rtthread", version="4.0.5")
+    adapter_api.register(cast(Any, adapter), rtos="rtthread", version="4.0.5")
     yield adapter
     adapter_api.reset()
 
@@ -815,7 +816,9 @@ def test_backtrace_verb_serializes_the_bounded_contract(session):
     assert "port" not in data and "isa" not in data
     assert data["stop_reason"] == "max-depth"
     assert data["truncated"] is True
-    assert data["frames"][0] == {
+    frames = data["frames"]
+    assert isinstance(frames, list)
+    assert frames[0] == {
         "index": 0,
         "pc": 0x1000,
         "symbol": "foo+4",
@@ -854,4 +857,4 @@ def test_backtrace_verb_accepts_omitted_target_for_current_pc(session):
     assert recorded == [(None, 32), (None, 4)]
 
     err_env = api.api_call("backtrace", "")
-    assert err_env["ok"] is False and err_env["error"]["code"] == "empty_name"
+    assert err_env["ok"] is False and _error(err_env)["code"] == "empty_name"

@@ -1,6 +1,7 @@
 """Saved-context construction contracts and validation gates."""
 
 from dataclasses import FrozenInstanceError, replace
+from typing import Any
 
 import pytest
 
@@ -10,21 +11,18 @@ from rtthread import backtrace as rtt
 
 
 def _profile(**changes):
-    return SavedStackContext(
-        **(
-            dict(
-                profile_id="test/integer",
-                pointer_size=4,
-                registers=((4, 0),),
-                pc_offset=4,
-                lr_offset=8,
-                status_offset=12,
-                sp_offset=16,
-                context_span=(0, 16),
-            )
-            | changes
-        )
+    defaults: dict[str, Any] = dict(
+        profile_id="test/integer",
+        pointer_size=4,
+        registers=((4, 0),),
+        pc_offset=4,
+        lr_offset=8,
+        status_offset=12,
+        sp_offset=16,
+        context_span=(0, 16),
     )
+    defaults.update(changes)
+    return SavedStackContext(**defaults)
 
 
 @pytest.mark.parametrize(
@@ -76,7 +74,7 @@ def test_explicit_slot_aliases_and_negative_buffer_offsets():
     )
     assert context.context_in_tcb and context.context_span == (-20, 0)
     with pytest.raises(FrozenInstanceError):
-        context.profile_id = "changed"
+        context.profile_id = "changed"  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(

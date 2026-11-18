@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import struct
 from bisect import bisect_right
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -96,7 +96,7 @@ class CfiRow:
     """One CFI row at a PC; ``error`` means the row is unsafe to use."""
 
     cfa: CfaRule = field(default_factory=CfaRule)
-    registers: Mapping[int, RegisterRule] = field(default_factory=dict)
+    registers: dict[int, RegisterRule] = field(default_factory=dict)
     error: str | None = None
     return_register: int | None = None
     signal_frame: bool = False
@@ -169,7 +169,7 @@ class CfiTable:
         self._fdes = ordered
         self._starts, self._prefix_max_end = _build_fdes_index(ordered)
         self._address_size = address_size
-        self._endian = endian
+        self._endian: Endian = endian
         self.error = error
         self._index = eh_frame_hdr
         self._eh_frame_data = eh_frame_data
@@ -884,7 +884,7 @@ def _decode_encoded_pointer(
     *,
     encoding: int,
     address_size: int,
-    endian: str,
+    endian: Endian,
     section_address: int,
     absolute_position: int | None = None,
     context: EncodedPointerContext | None = None,
@@ -1116,7 +1116,7 @@ def _run_cfi(
     code_alignment: int,
     data_alignment: int,
     address_size: int,
-    endian: str,
+    endian: Endian,
     cie_row: CfiRow | None,
     max_steps: int,
 ) -> CfiRow | str:

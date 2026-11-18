@@ -125,9 +125,12 @@ jobs:
         run: |
           uv run ruff check .
           uv run ruff format --check .
+      - name: Run pyright
+        # Same lockfile pyright as CNB validate; skip duplicating it below.
+        run: uv run pyright
       - name: Run repository hooks
         env:
-          SKIP: ruff,ruff-format
+          SKIP: ruff,ruff-format,pyright
         run: uv run pre-commit run --all-files
       - name: Run unit tests with coverage
         run: uv run pytest tests/unit -v --cov

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TypeVar
 
 from core.cpus import Cpu, cpu_of
 from core.insn_arm import ArmInstruction, decode_arm
@@ -454,7 +455,8 @@ _M_PROFILE_LOW = 0xF0
 _PSP_SYSM = 9
 
 _PortInstruction = ThumbInstruction | ArmInstruction
-_PortDecoder = Callable[[ElfImage, int, int], _PortInstruction | str]
+_InsnT = TypeVar("_InsnT", ThumbInstruction, ArmInstruction)
+_PortDecoder = Callable[[ElfImage, int, int], _InsnT | str]
 
 
 def _is_return(instruction: _PortInstruction) -> bool:
@@ -469,15 +471,15 @@ def _port_instructions(
     elf: ElfImage,
     name: str,
     end_name: str | None,
-    decoder: _PortDecoder,
+    decoder: _PortDecoder[_InsnT],
     *,
     stop_at_return: bool = False,
-) -> tuple[_PortInstruction, ...] | None:
+) -> tuple[_InsnT, ...] | None:
     """Decode one bounded port function, refusing unknown or unreadable bytes."""
     span = _code_span(elf, name, end_name)
     if span is None or elf.endian != "little":
         return None
-    instructions: list[_PortInstruction] = []
+    instructions: list[_InsnT] = []
     address = span[0]
     while address < span[1]:
         if len(instructions) >= _MAX_PORT_INSTRUCTIONS:

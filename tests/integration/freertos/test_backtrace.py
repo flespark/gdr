@@ -202,7 +202,9 @@ def _assert_irq_task_frame(raw: dict, *, expected_symbol: str) -> None:
 def _profile() -> SchedulerProfile:
     global _PROFILE_CACHE
     if _PROFILE_CACHE is None:
-        profile, reason = build_profile(ElfImage.from_path(SPEC.elf_path()))
+        elf = ElfImage.from_path(SPEC.elf_path())
+        assert elf is not None
+        profile, reason = build_profile(elf)
         assert profile is not None, reason
         _PROFILE_CACHE = profile
     return _PROFILE_CACHE
@@ -236,6 +238,7 @@ def _wait_stage(session, address: int, predicate, attempts: int = 40) -> dict:
 
 
 def _finish_cycle(session) -> dict:
+    state: dict = {}
     for _ in range(4):
         session.run("tbreak gdr_sched_cycle_done")
         output = session.run("continue", timeout=20)

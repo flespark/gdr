@@ -40,3 +40,12 @@ repos:
         args: ["--disable=MD013", "--"]
         # Scraped upstream GDB manual; reference only, never edit by hand.
         exclude: ^docs/gdb_python_reference\.md$
+
+  - repo: local
+    hooks:
+      - id: pyright
+        name: pyright
+        entry: uv run --no-sync pyright
+        language: system
+        types: [python]
+        pass_filenames: false

@@ -124,6 +124,7 @@ All commands run via `uv run` (auto-activates the `.venv`):
 | `uv run ruff check .` | Lint |
 | `uv run ruff format .` | Format (black-compatible) |
 | `uv run ruff format --check .` | Verify formatting without writing |
+| `uv run pyright` | Type check |
 | `uv run pytest tests/unit --cov` | Run unit tests and enforce core coverage |
 | `python3 ci/test.py run RTOS TARGET VERSION [VARIANT]` | Prepare and run one integration lane |
 | `cd vscode && npm run vendor` | Refresh the extension's bundled GDR runtime |
@@ -213,7 +214,7 @@ belongs in commit messages and run artifacts, not in repository docs.
 ## Workflow
 
 1. Read this file and `docs/architecture.md` before changing architecture.
-2. Run `uv run ruff check .` and `uv run ruff format --check .` before
-   committing; CI enforces both.
+2. Run `uv run ruff check .`, `uv run ruff format --check .` and
+   `uv run pyright` before committing; pre-commit and CI enforce all three.
 3. For layout changes, add/adjust a QEMU smoke test so the
    closed loop catches silent output drift.

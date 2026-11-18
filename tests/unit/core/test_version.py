@@ -22,7 +22,7 @@ from core.version import (
 def test_shared_version_parser_and_formatter():
     value = parse_version("4.0.5")
     assert value == (4, 0, 5)
-    assert format_version(value) == "4.0.5"
+    assert value is not None and format_version(value) == "4.0.5"
     assert parse_version("4.0") is None
 
 

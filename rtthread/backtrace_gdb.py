@@ -8,6 +8,7 @@ registers through GDB and converts the bounded result to the adapter model.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Any
 
 from core.adapter import (
     BacktraceReport,
@@ -65,12 +66,14 @@ from core.unwind_riscv import (
     riscv_snapshot as _core_riscv_snapshot,
 )
 from core.unwind_segments import (
+    ExceptionDetector,
     ExceptionHook,
     ExceptionTransitionContext,
     ExceptionTransitionResult,
     StackSegment,
+    TransitionGuard,
 )
-from rtthread.adapter import value_to_thread
+from rtthread.adapter import Thread, value_to_thread
 from rtthread.arm_scheduler_switch import (
     build_profile as build_scheduler_profile,
 )
@@ -671,12 +674,12 @@ def _scheduler_decision(
 class _TargetContext:
     """Validated target bounds and metadata shared across thread unwind steps."""
 
-    thread: object
+    thread: Thread
     target: str
     selection: StackContextSelection
     low: int
     high: int
-    current: object | None
+    current: Any
     is_current: bool
     metadata: UnwindMetadata | None
     max_depth: int
@@ -708,9 +711,9 @@ class _HandlerSetup:
     fault: FaultPrecision | None
     segments: tuple[StackSegment, ...] | None
     current_segment: str | None
-    detector: object | None = None
-    hook: object | None = None
-    guard: object | None = None
+    detector: ExceptionDetector | None = None
+    hook: ExceptionHook | None = None
+    guard: TransitionGuard | None = None
     stkalign: bool = True
     metadata: UnwindMetadata | None = None
 
@@ -1055,6 +1058,10 @@ def _resolve_live_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
 def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
     thread = ctx.thread
     context = ctx.selection.context
+    if context is None:
+        return ctx.stop(
+            ctx.selection.reason, "no verified save profile", source="saved"
+        )
     if thread.oncpu is not None:
         return ctx.stop(
             "smp-no-context",
@@ -1105,7 +1112,8 @@ def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
 def _resolve_target_seed(
     ctx: _TargetContext,
 ) -> (
-    tuple[SeedFrame, object | None, str | None, FaultPrecision | None] | BacktraceReport
+    tuple[SeedFrame, SchedulerSeed | None, str | None, FaultPrecision | None]
+    | BacktraceReport
 ):
     scheduler_decision = _scheduler_decision(
         architecture=ctx.architecture,
@@ -1330,7 +1338,7 @@ def _prepare_handler_setup(
     seed: SeedFrame,
     fault: FaultPrecision | None,
     *,
-    scheduler_decision,
+    scheduler_decision: SchedulerSeed | None,
     exit_pc: int | None,
 ) -> _HandlerSetup | BacktraceReport:
     if seed.exception_number:

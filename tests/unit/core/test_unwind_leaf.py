@@ -14,7 +14,13 @@ from tests.unit.core.test_cpus import _attributes
 from tests.unit.core.test_unwind import _cfi_bytes, _cfi_metadata, _elf, _Memory
 
 
-def _image(code=b"\x80\xf3\x10\x88\x70\x47", *, zero=False, thumb=True, isa="armv7-m"):
+def _image(
+    code=b"\x80\xf3\x10\x88\x70\x47",
+    *,
+    zero=False,
+    thumb: bool | None = True,
+    isa="armv7-m",
+):
     riscv = isa.startswith("riscv")
     attributes = _attributes(
         b"riscv" if riscv else b"aeabi",

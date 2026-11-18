@@ -130,7 +130,8 @@ def test_decoders_read_big_endian_arm_words_and_refuse_partial_instructions():
         for section in image.sections
     )
     big = replace(image, endian="big", sections=sections)
-    assert decode_arm(big, 0x1000, 0x1004).mnemonic == "bx"
+    arm_insn = decode_arm(big, 0x1000, 0x1004)
+    assert not isinstance(arm_insn, str) and arm_insn.mnemonic == "bx"
     assert decode_arm(big, 0x1000, 0x1003) == "instruction-outside-function"
 
 

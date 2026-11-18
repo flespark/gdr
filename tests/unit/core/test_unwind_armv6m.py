@@ -2,6 +2,7 @@
 
 import struct
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -28,7 +29,7 @@ def _frame(*, xpsr=0x01000000, pc=0x1010, lr=0x1101):
 
 
 def _context(**overrides):
-    values = dict(
+    values: dict[str, Any] = dict(
         value=0xFFFFFFFD,
         registers={4: 0x44, 7: 0x77},
         frame_sp=0x3010,

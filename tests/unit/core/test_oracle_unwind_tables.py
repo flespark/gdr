@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import struct
 from pathlib import Path
+from typing import Any
 
 import pytest
 from elftools.dwarf.dwarf_expr import DWARFExprParser
@@ -164,12 +165,13 @@ def _reference_fdes(elffile: ELFFile, *, eh: bool):
     for entry in entries:
         if type(entry).__name__ != "FDE":
             continue
-        header = entry.header
+        fde: Any = entry
+        header = fde.header
         start = header["initial_location"]
         end = start + header["address_range"]
         if start <= 0 or end <= start:
             continue
-        result.append((start, end, list(entry.get_decoded().table)))
+        result.append((start, end, list(fde.get_decoded().table)))
     return result
 
 
@@ -206,7 +208,7 @@ def _sample_fdes(fdes, limit: int = 40):
 
 def _assert_cfi_section_matches(
     blob: bytes, section_address: int, *, eh: bool, label: str
-) -> None:
+) -> int:
     elffile = ELFFile(io.BytesIO(blob))
     section = elffile.get_section_by_name(".eh_frame" if eh else ".debug_frame")
     assert section is not None, label
@@ -331,8 +333,9 @@ def _real_expressions(blob: bytes) -> list[bytes]:
         for entry in entries:
             if type(entry).__name__ != "FDE":
                 continue
+            fde: Any = entry
             try:
-                rows = entry.get_decoded().table
+                rows = fde.get_decoded().table
             except Exception:
                 continue
             for row in rows:

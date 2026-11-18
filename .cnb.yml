@@ -56,6 +56,8 @@
     script: uv run ruff check .
   - name: ruff format check
     script: uv run ruff format --check .
+  - name: pyright check
+    script: uv run pyright
   - name: unit test coverage
     script: uv run pytest tests/unit -v --cov
 

@@ -430,10 +430,12 @@ def riscv_trap_transition_factory(
                 bytes_read=0,
                 exact_pc=True,
                 value=context.value,
-                evidence=(
-                    f"mcause={mcause:#x}",
-                    f"mepc={mepc_csr:#x}",
-                    *span.evidence,
+                evidence=", ".join(
+                    (
+                        f"mcause={mcause:#x}",
+                        f"mepc={mepc_csr:#x}",
+                        *span.evidence,
+                    )
                 ),
             )
 
@@ -497,11 +499,13 @@ def riscv_trap_transition_factory(
             bytes_read=layout.frame_bytes,
             exact_pc=True,
             value=context.value,
-            evidence=(
-                f"mcause={mcause:#x}({'irq' if is_interrupt else 'exc'}:{cause_code})",
-                f"frame={frame_addr:#x}",
-                f"epc={interrupted_pc:#x}({epc_src})",
-                *span.evidence,
+            evidence=", ".join(
+                (
+                    f"mcause={mcause:#x}({'irq' if is_interrupt else 'exc'}:{cause_code})",
+                    f"frame={frame_addr:#x}",
+                    f"epc={interrupted_pc:#x}({epc_src})",
+                    *span.evidence,
+                )
             ),
         )
 

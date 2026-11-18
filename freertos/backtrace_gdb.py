@@ -10,6 +10,7 @@ interrupt-stack span and exception profile gates, and turns one bounded
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Any
 
 from core.adapter import (
     BacktraceReport,
@@ -29,6 +30,7 @@ from core.gdb_bridge import (
     type_size,
     value_address,
 )
+from core.stack_frame_parser import StackContextSelection
 from core.unwind import (
     ElfImage,
     SeedFrame,
@@ -70,6 +72,7 @@ from core.unwind_arm import (
 from core.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
 )
+from core.unwind_meta import Endian
 from core.unwind_riscv import (
     MSTATUS_MPP_MACHINE,
     MSTATUS_MPP_MASK,
@@ -86,7 +89,12 @@ from core.unwind_riscv import (
 from core.unwind_riscv import (
     riscv_snapshot as _core_riscv_snapshot,
 )
-from core.unwind_segments import StackSegment
+from core.unwind_segments import (
+    ExceptionDetector,
+    ExceptionHook,
+    StackSegment,
+    TransitionGuard,
+)
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
 from freertos.arm_scheduler_switch import build_profile as build_scheduler_profile
 from freertos.arm_scheduler_switch import classify_stage
@@ -614,7 +622,7 @@ def _riscv_matches_interrupted_frame(
     snap: _RiscvSnapshot,
     context,
     *,
-    endian: str,
+    endian: Endian,
     expected_epc: int,
 ) -> bool:
     low, high, _bounds = _task_bounds(task)
@@ -913,11 +921,11 @@ def backtrace(
 class _TargetContext:
     """Validated target bounds and metadata shared across task unwind steps."""
 
-    adapter: object
-    value: object
+    adapter: Any
+    value: Any
     task: FreeRtosTask
     target: str
-    selection: object
+    selection: StackContextSelection
     low: int
     high: int
     bounds: str
@@ -964,9 +972,9 @@ class _HandlerSetup:
     fault: FaultPrecision | None
     segments: tuple[StackSegment, ...] | None
     current_segment: str | None
-    detector: object | None = None
-    hook: object | None = None
-    guard: object | None = None
+    detector: ExceptionDetector | None = None
+    hook: ExceptionHook | None = None
+    guard: TransitionGuard | None = None
     stkalign: bool = True
     metadata: UnwindMetadata | None = None
 
@@ -1077,6 +1085,10 @@ def _resolve_live_seed(
 
 def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
     context = ctx.selection.context
+    if context is None:
+        return ctx.stop(
+            ctx.selection.reason, "no verified save profile", source="saved"
+        )
     context_low, context_high = (
         saved_context_bounds(ctx.value, ctx.adapter.layout)
         if context.context_in_tcb

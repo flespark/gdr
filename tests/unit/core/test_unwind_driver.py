@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -265,7 +266,7 @@ def test_block_reader_checks_size_bounds_and_short_reads():
     ],
 )
 def test_unavailable_register_drops_old_value_and_retains_failure(rule, reason):
-    options = dict(
+    options: dict[str, Any] = dict(
         read=_Memory({}),
         ptr_size=4,
         endian="little",
@@ -314,6 +315,7 @@ def test_unavailable_register_drops_old_value_and_retains_failure(rule, reason):
         sp=sp,
         **options,
     )
+    assert isinstance(restored, tuple)
     assert restored[0][7] == sp + 8
     assert 7 not in restored[0].unavailable
 

@@ -296,7 +296,7 @@ def _unwind_cfi(
     sp_register: int,
     stack_low: int | None,
     stack_high: int | None,
-) -> tuple[dict[int, int], int, int] | str:
+) -> tuple[_RecoveredRegisters, int, int] | str:
     if row.error is not None:
         return row.error
     return_register = (
@@ -421,7 +421,7 @@ def _unwind_frame_pointer(
     frame_pointer_register: int | None,
     stack_low: int | None,
     stack_high: int | None,
-) -> tuple[dict[int, int], int, int] | str:
+) -> tuple[_RecoveredRegisters, int, int] | str:
     if frame_pointer_register is None:
         return "fp-register-missing"
     if frame_pointer_register not in regs:

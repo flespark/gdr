@@ -8,6 +8,7 @@ import pytest
 
 import core.unwind_cfi as cfi
 from core.unwind_cfi import CfaRule, CfiRow, RegisterRule
+from core.unwind_meta import Endian
 
 
 def _run(blob, *, target=None, initial=None, **kwargs):
@@ -24,6 +25,12 @@ def _run(blob, *, target=None, initial=None, **kwargs):
         cie_row=row,
         max_steps=kwargs.get("max_steps", 1000),
     )
+
+
+def _run_row(blob, *, target=None, initial=None, **kwargs) -> CfiRow:
+    row = _run(blob, target=target, initial=initial, **kwargs)
+    assert isinstance(row, CfiRow)
+    return row
 
 
 @pytest.mark.parametrize(
@@ -43,7 +50,7 @@ def _run(blob, *, target=None, initial=None, **kwargs):
 def test_register_rules_use_the_specified_operand_signedness(
     blob, register, kind, value
 ):
-    row = _run(blob)
+    row = _run_row(blob)
     assert row.registers[register].kind == kind
     assert row.registers[register].value == value
 
@@ -59,19 +66,19 @@ def test_register_rules_use_the_specified_operand_signedness(
     ],
 )
 def test_cfa_rules_are_distinct_from_register_restore(blob, register, offset):
-    row = _run(blob)
+    row = _run_row(blob)
     assert (row.cfa.register, row.cfa.offset) == (register, offset)
 
 
 def test_register_copy_and_restore_and_remember_state():
     initial = CfiRow(CfaRule(13, 4), {14: RegisterRule("offset", -4)})
-    assert _run(b"\x09\x04\x05").registers[4].register == 5
+    assert _run_row(b"\x09\x04\x05").registers[4].register == 5
     for restore in (b"\xce", b"\x06\x0e"):
-        row = _run(b"\x8e\x03" + restore, initial=initial)
+        row = _run_row(b"\x8e\x03" + restore, initial=initial)
         assert row.registers[14] == initial.registers[14]
     for restore in (b"\xc4", b"\x06\x04"):
-        assert 4 not in _run(b"\x84\x03" + restore).registers
-    row = _run(b"\x0a\x0e\x20\x0b", initial=initial)
+        assert 4 not in _run_row(b"\x84\x03" + restore).registers
+    row = _run_row(b"\x0a\x0e\x20\x0b", initial=initial)
     assert row.cfa == initial.cfa
 
 
@@ -80,8 +87,8 @@ def test_register_copy_and_restore_and_remember_state():
 )
 def test_location_advance_changes_only_subsequent_rows(advance):
     blob = advance + b"\x0e\x08"
-    assert _run(blob, target=0x1003).cfa.offset == 0
-    assert _run(blob, target=0x1004).cfa.offset == 8
+    assert _run_row(blob, target=0x1003).cfa.offset == 0
+    assert _run_row(blob, target=0x1004).cfa.offset == 8
 
 
 @pytest.mark.parametrize(
@@ -144,7 +151,7 @@ def _section(
     version=4,
     dwarf64=False,
     eh=False,
-    endian="little",
+    endian: Endian = "little",
     augmentation=b"",
     aug_data=b"",
     instructions=b"\x0e\x08",

@@ -153,11 +153,11 @@ class _Memory:
         for base, blob in self.blocks.items():
             if base <= address and address + size <= base + len(blob):
                 start = address - base
-                return blob[start : start + size]
+                return bytes(blob[start : start + size])
         return None
 
     def write(self, address: int, data: bytes) -> None:
-        self.blocks[address] = data
+        self.blocks[address] = bytearray(data)
 
 
 def test_elf_parser_reads_32_and_64_bit_little_and_big_endian():
@@ -354,16 +354,16 @@ def test_frame_pointer_fallback_rejects_misaligned_and_out_of_bounds():
 
 
 def test_frame_pointer_fallback_accepts_riscv_frame_record():
-    metadata = UnwindMetadata.from_elf(
-        ElfImage.from_bytes(
-            _elf(
-                is_64=True,
-                endian="little",
-                machine=243,
-                sections=[(".text", 0x1000, b"\x00" * 0x400, 1, 0x4)],
-            )
+    elf = ElfImage.from_bytes(
+        _elf(
+            is_64=True,
+            endian="little",
+            machine=243,
+            sections=[(".text", 0x1000, b"\x00" * 0x400, 1, 0x4)],
         )
     )
+    assert elf is not None
+    metadata = UnwindMetadata.from_elf(elf)
     memory = _Memory({0x2000: b"\x00" * 0x200})
     struct.pack_into("<QQ", memory.blocks[0x2000], 0xF0, 0x0300, 0x1200)
     seed = SeedFrame(pc=0x1100, sp=0x2000, regs={2: 0x2000, 8: 0x2100, 1: 0})
@@ -485,8 +485,10 @@ def test_ehabi_unexecuted_prologue_at_isr_entry_falls_back_to_leaf_return():
             ),
         ],
     )
+    parsed_elf = ElfImage.from_bytes(raw_elf)
+    assert parsed_elf is not None
     elf = replace(
-        ElfImage.from_bytes(raw_elf),
+        parsed_elf,
         symbols=(
             CodeSymbol("isr_entry", isr_start, 0x20, True),
             CodeSymbol("task_fn", task_resume, 0x40, True),

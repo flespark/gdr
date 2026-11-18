@@ -513,16 +513,11 @@ def _match_armv8m(
 ) -> SchedulerProfile | None:
     if syms.trustzone is None:
         return None
-    if not fpu:
-        if len(p) != 64:
-            return None
-        s_off = 0  # offset after p[32] stmdb r4..r11
-        r_off = 0  # offset after p[59] ldmia r4..r11
-    else:
-        if len(p) != 70:
-            return None
-        s_off = 3
-        r_off = 3
+    expected_len = 70 if fpu else 64
+    if len(p) != expected_len:
+        return None
+    s_off = 3 if fpu else 0  # offset after p[32] stmdb r4..r11
+    r_off = 3 if fpu else 0  # offset after p[59] ldmia r4..r11
     prefix_ok = all(
         (
             _expect(p[0], "mrs", rd=2, sysm=_PRIMASK_SYSM),

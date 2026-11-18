@@ -124,11 +124,10 @@ def _route_epc_store(
         op = code[pc]
         if op[0] == "addi":
             source = values.get(op[2])
-            values[op[1]] = (
-                (source[0], source[1] + op[3]) if source is not None else None
-            )  # type: ignore[assignment]
-            if values[op[1]] is None:
+            if source is None:
                 values.pop(op[1], None)
+            else:
+                values[op[1]] = (source[0], source[1] + op[3])
         elif op[0] == store_op and op[2] == 2 and op[3] == 0:
             if values.get(op[1]) == ("mepc", addend):
                 return pc

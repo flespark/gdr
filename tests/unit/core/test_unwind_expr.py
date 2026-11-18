@@ -10,8 +10,9 @@ import core.unwind_cfi as cfi
 import core.unwind_expr as expr
 from core.unwind import _unwind_cfi
 from core.unwind_cfi import CfaRule, CfiRow, EncodedPointerContext, RegisterRule
+from core.unwind_meta import Endian
 from tests.unit.core.test_unwind import _Memory
-from tests.unit.core.test_unwind_cfi import _run
+from tests.unit.core.test_unwind_cfi import _run, _run_row
 
 
 def _expr(
@@ -21,7 +22,7 @@ def _expr(
     initial_stack=(),
     read=None,
     address_size=4,
-    endian="little",
+    endian: Endian = "little",
     **kwargs,
 ):
     return expr.evaluate_cfi_expression(
@@ -36,11 +37,11 @@ def _expr(
 
 
 def test_expression_rules_are_parsed_for_cfa_save_location_and_value():
-    row = _run(b"\x0f\x02\x72\x20")
+    row = _run_row(b"\x0f\x02\x72\x20")
     assert row.cfa == CfaRule(expression=b"\x72\x20")
-    row = _run(b"\x10\x0e\x02\x48\x1c")
+    row = _run_row(b"\x10\x0e\x02\x48\x1c")
     assert row.registers[14] == RegisterRule("expression", expression=b"\x48\x1c")
-    row = _run(b"\x16\x80\x01\x04\x13\x72\x08\x06")
+    row = _run_row(b"\x16\x80\x01\x04\x13\x72\x08\x06")
     assert row.registers[128] == RegisterRule(
         "val_expression", expression=b"\x13\x72\x08\x06"
     )
@@ -452,7 +453,7 @@ def _driver_row(
     sp,
     memory,
     ptr_size=4,
-    endian="little",
+    endian: Endian = "little",
     return_register=14,
     sp_register=13,
 ):
@@ -729,12 +730,17 @@ def test_non_pc_relative_fde_pointer_requires_an_explicit_base():
 
 
 @pytest.mark.parametrize(
-    "application,field",
-    [(0x20, "text_base"), (0x30, "data_base"), (0x40, "function_base")],
+    "application,context",
+    [
+        (0x20, EncodedPointerContext(text_base=0x8000)),
+        (0x30, EncodedPointerContext(data_base=0x8000)),
+        (0x40, EncodedPointerContext(function_base=0x8000)),
+    ],
 )
-def test_each_explicit_pointer_base_resolves_only_its_own_encoding(application, field):
+def test_each_explicit_pointer_base_resolves_only_its_own_encoding(
+    application, context
+):
     blob = _eh_section(encoding=application | 0x0B, start=0x1000 - 0x8000)
-    context = EncodedPointerContext(**{field: 0x8000})
     table = cfi.parse_cfi_section(
         blob,
         section_address=0,

@@ -13,6 +13,7 @@ from .formatting import (
     format_optional_int,
     format_symbol_or_address,
 )
+from .unwind_meta import Arch
 from .unwind_segments import SegmentTransition, StackSegment
 
 try:
@@ -181,8 +182,25 @@ def live_boot_backtrace_report(
     """Build a bounded live backtrace report before the RTOS scheduler starts."""
     from .unwind import live_boot_unwind
 
+    if family not in ("arm", "riscv"):
+        return BacktraceReport(
+            task="<current>",
+            address=0,
+            architecture=architecture or "unknown",
+            method="none",
+            source="current",
+            complete=False,
+            stop_reason="unsupported-architecture",
+            truncated=False,
+            max_depth=max_depth,
+            bounds="unknown",
+            frames=[],
+            messages=[f"unsupported architecture family {family!r}"],
+            abi=abi,
+        )
+    arch: Arch = "arm" if family == "arm" else "riscv"
     result, stop_reason, message, bounds = live_boot_unwind(
-        family,
+        arch,
         architecture,
         metadata,
         max_depth=max_depth,

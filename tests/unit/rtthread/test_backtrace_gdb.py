@@ -2,12 +2,15 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 import rtthread.backtrace_gdb as bridge
 from core.stack_frame_parser import StackContextSelection
 from core.unwind import SeedFrame, UnwindFrame, UnwindMetadata, UnwindResult
+from core.unwind_cfi import CfiTable
+from core.unwind_meta import ElfImage
 from rtthread.adapter import Thread
 from rtthread.backtrace import (
     ARMV7EM_FPU,
@@ -19,6 +22,7 @@ from rtthread.backtrace import (
     RISCV64_INTEGER,
 )
 from rtthread.layout import RT_THREAD_STACK_FILL
+from rtthread.scheduler_seed import SchedulerSeed
 
 
 @pytest.mark.parametrize(
@@ -742,7 +746,7 @@ def test_apply_hardfault_trampoline_recovers_psp_software_frame_and_refuses_bad_
     )
     monkeypatch.setattr(bridge, "analyze_hardfault_trampoline", lambda _elf: profile)
     meta = UnwindMetadata(
-        elf=SimpleNamespace(pointer_size=4, endian="little"),
+        elf=cast(ElfImage, SimpleNamespace(pointer_size=4, endian="little")),
         arch="arm",
         cfi_tables=(),
         ehabi=None,
@@ -779,6 +783,7 @@ def test_apply_hardfault_trampoline_recovers_psp_software_frame_and_refuses_bad_
 
     def base_hook(ctx: ExceptionTransitionContext):
         captured.append(ctx)
+        assert ctx.process_sp is not None
         return ExceptionTransitionResult(
             segment=task_seg,
             pc=0x1234,
@@ -788,7 +793,7 @@ def test_apply_hardfault_trampoline_recovers_psp_software_frame_and_refuses_bad_
             source="armv7m-exception-frame",
             value=ctx.value,
             bytes_read=32,
-            evidence=("basic",),
+            evidence="basic",
         )
 
     updated_meta, wrapped = bridge._apply_hardfault_trampoline(
@@ -836,7 +841,7 @@ def test_apply_hardfault_trampoline_recovers_psp_software_frame_and_refuses_bad_
 
 def test_apply_switch_return_cfi_adds_lr_return_only_for_switch_return():
     meta = UnwindMetadata(
-        elf=SimpleNamespace(pointer_size=4, endian="little"),
+        elf=cast(ElfImage, SimpleNamespace(pointer_size=4, endian="little")),
         arch="arm",
         cfi_tables=(),
         ehabi=None,
@@ -844,14 +849,14 @@ def test_apply_switch_return_cfi_adds_lr_return_only_for_switch_return():
         frame_pointer_register=7,
     )
     seed = SeedFrame(0x5B2B, 0x20001000, {13: 0x20001000, 14: 0x1235}, source="current")
-    switch_dec = SimpleNamespace(stage="switch-return", seed=seed)
+    switch_dec = cast(SchedulerSeed, SimpleNamespace(stage="switch-return", seed=seed))
     updated = bridge._apply_switch_return_cfi(meta, switch_dec)
     assert updated is not None and len(updated.cfi_tables) == 1
     row = updated.cfi_tables[0].row_for(0x5B2A)
     assert row is not None and row.cfa.register == 13 and row.cfa.offset == 0
     assert row.return_register == 14
 
-    other_dec = SimpleNamespace(stage="pendsv-entry", seed=seed)
+    other_dec = cast(SchedulerSeed, SimpleNamespace(stage="pendsv-entry", seed=seed))
     assert bridge._apply_switch_return_cfi(meta, other_dec) is meta
 
 
@@ -916,7 +921,9 @@ def test_current_pc_backtrace_tracks_outgoing_pendsv_and_boot(monkeypatch):
             symbols=(CodeSymbol("boot_leaf", 0x1004, 2),),
         ),
         arch="arm",
-        cfi_tables=(SimpleNamespace(row_for=lambda _pc: boot_row, error=None),),
+        cfi_tables=(
+            cast(CfiTable, SimpleNamespace(row_for=lambda _pc: boot_row, error=None)),
+        ),
         ehabi=None,
         return_register=14,
         frame_pointer_register=7,

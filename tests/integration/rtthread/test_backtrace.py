@@ -935,6 +935,7 @@ def test_switch_return_and_ambiguous_handler_stages(gdb_session):
     )
 
     elf = ElfImage.from_path(SPEC.elf_path())
+    assert elf is not None
     ambig_pendsv = None
     addr = prof.pendsv_entry
     while addr < prof.pendsv_save_pending:
