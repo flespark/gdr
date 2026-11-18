@@ -200,7 +200,7 @@ belongs in commit messages and run artifacts, not in repository docs.
 ## Conventions
 
 - Python 3.10+, PEP8, type hints, Google-style docstrings.
-- Files <= 1500 lines; split when approaching the limit.
+- Production source modules <= 1500 lines (excludes tests); split when approaching the limit.
 - Relative imports within packages.
 - Instruction-behaviour decisions in production logic must use decoder mnemonics and operands; direct matching of raw instruction encodings belongs only in architecture decoders and decoder tests.
 - No external runtime dependencies (GDB Python API only). Dev tools

@@ -159,10 +159,7 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 | `test_api.py` | `$gdr_json`, `$gdr_json_chunk`, `$gdr_dump`, `gdr api <verb>`, `gdr probe` evidence, and `gdr reset` / `--force` / `--allow-unverified` session lifecycle. |
 | `test_startup.py` | Separate paused-at-reset QEMU session verifying that snapshots taken before kernel initialization safely stop on `NULL` timer-list heads instead of fabricating wrapped object addresses, and recover once the scheduler starts. |
 | `test_backtrace.py` | Saved/current chains (including `worker_fpu` FPU frames on AN386/AN505 `fpu`), unstarted roots, exit completeness, external IRQ & SysTick cross-stack unwinding, real Arm M-profile and RISC-V (`rv32`/`rv64`) scheduler/trap transition stages (including `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` prologue/epilogue switches, `rt_hw_context_switch_exit`/`spurious_interrupt`, and E310 `nested-trap-epc-unproven`), deterministic `synchronous-fault` hook frames, bounded output, structured refusals, and unchanged target state. |
-| `test_saved_context_fixture.py` | Basic Armv6-M/Armv7-M compiled save/restore instructions, independent port DWARF offsets, raw blocked/unstarted register frames and exit sentinel, and bounded MSP/heap/vector evidence. |
-| `test_armv8m_mainline_fixture.py` | Armv8-M Mainline compiled port evidence, independent 80-byte DWARF layout, raw saved/unstarted registers and Secure context header, real tick progress and raw-seed exit completeness. |
-| `test_rv32_fixture.py` | RV32 compiled port evidence, independent 128-byte DWARF layout, raw saved/unstarted registers, real tick progress and raw-seed exit completeness. |
-| `test_microbit_fixture.py` | Architecture-valid first PendSV return and initial PC/LR state; real TIMER2 tick progress, hardware prescaler/compare/shortcut configuration, IRQ10 vector and unused SysTick vector. |
+| `test_fixtures.py` | Consolidated port/fixture oracles: basic Armv6-M/Armv7-M instructions, DWARF offsets, raw frames and bounded MSP/heap/vector evidence; Armv8-M Mainline 80-byte DWARF/Secure header/raw-seed exit checks; RV32 128-byte DWARF/raw-seed exit checks; and `microbit` PendSV `0xFFFFFFFD` return, TIMER2 tick registers, IRQ10 vector and unused SysTick vector. |
 
 ---
 
@@ -237,7 +234,7 @@ Verification spans three complementary execution arms:
 | `test_smp.py` | Dual-core `pxCurrentTCBs[0..1]` running-task resolution, `CPU` placement, core-affinity masks (`gdr_bound`), and preemption-disable state (`gdr_preempt`). |
 | `test_snapshot.py` | File-only negative testing for `frt check` and inline `Check[...]` failure/mismatch/corrupt verdicts on `freertos.elf` and `snapshot_heap.elf`. |
 | `test_startup.py` | Pre-task-creation vs post-scheduler-startup command output on `mps2-an385/full`. |
-| `test_backtrace.py` & `test_riscv_backtrace.py` | Saved-context and live chains across all ports, proven exit completeness versus partial RISC-V first-task chains, external IRQ & SysTick cross-stack unwinding (including extended FPU frames on `mps2-an386`), real M-profile PendSV/SVC and RISC-V `xPortStartFirstTask`/`ecall`/trap-prologue/`vTaskSwitchContext`/`processed_source` transition stages with raw oracles, deterministic synchronous faults (`synchronous-fault` on M3/M4/M33, `fault-frame-imprecise` on M0, `exception-frame-type-unproven` on non-`ecall` RISC-V), bounded depth, explicit refusals, and unchanged halted target state. |
+| `test_backtrace.py` | Saved-context and live chains across all ports, proven exit completeness versus partial RISC-V first-task chains, external IRQ & SysTick cross-stack unwinding (including extended FPU frames on `mps2-an386`), real M-profile PendSV/SVC and RISC-V `xPortStartFirstTask`/`ecall`/trap-prologue/`vTaskSwitchContext`/`processed_source` transition stages with raw oracles, deterministic synchronous faults (`synchronous-fault` on M3/M4/M33, `fault-frame-imprecise` on M0, `exception-frame-type-unproven` on non-`ecall` RISC-V), bounded depth, explicit refusals, and unchanged halted target state. |
 
 ### Exception unwind acceptance
 
