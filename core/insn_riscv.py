@@ -32,8 +32,8 @@ def riscv_code_decoder(word: int, size: int, pc: int, xlen: int) -> tuple:
             return ("xori", rd, rs, imm)
         if op == 19 and fn == 1 and (word >> 20) < xlen:
             return ("slli", rd, rs, word >> 20)
-        if op == 19 and fn == 5 and (word >> 25) == 0 and rt < xlen:
-            return ("srli", rd, rs, rt)
+        if op == 19 and fn == 5 and (word >> 26) == 0 and (word >> 20) < xlen:
+            return ("srli", rd, rs, word >> 20)
         if op == 27 and fn == 0 and xlen == 64:
             return ("addiw", rd, rs, imm)
         if op == 51 and fn in (0, 3, 4, 6, 7) and word >> 25 == 0:

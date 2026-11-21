@@ -1058,10 +1058,11 @@ def _riscv_trap_csrs_ok(
     if stage.name == "trap-sync-dispatch" and is_interrupt:
         return "exception-context-unproven"
     if stage.name in ("trap-prologue-tcb-written", "trap-prologue-epc-saved"):
-        if stage.pc >= profile.sync_entry and is_interrupt:
+        if stage.function == "synchronous_exception" and is_interrupt:
             return "exception-context-unproven"
         if (
-            profile.async_epc_store_pc <= stage.pc < profile.sync_entry
+            stage.function == "asynchronous_interrupt"
+            and stage.pc >= profile.async_epc_store_pc
             and not is_interrupt
         ):
             return "exception-context-unproven"
@@ -1257,7 +1258,11 @@ def build_riscv_stage_seed(
         else resume_pc
     )
 
-    if stage.name == "trap-prologue-epc-saved":
+    if stage.name == "trap-prologue-epc-saved" or (
+        stage.name == "trap-sync-unhandled" and stage.seed == "saved-tcb"
+    ):
+        if stage.name == "trap-sync-unhandled" and snapshot.sp != task_top:
+            return "scheduler-saved-sp-inconsistent"
         seed, reason = _riscv_decode_task_frame(
             context,
             top=task_top,
@@ -1393,3 +1398,55 @@ def build_riscv_stage_seed(
         )
 
     return "scheduler-stage-ambiguous"
+
+
+def riscv_interrupted_frame_matches(
+    top_of_stack: int,
+    low: int | None,
+    high: int | None,
+    snap: RiscvSnapshot,
+    context: SavedStackContext,
+    *,
+    read: Reader,
+    endian: Endian,
+    expected_epc: int,
+    mstatus_offset: int | None = None,
+    exit_pc: int | None = None,
+) -> bool:
+    """Return whether one saved RISC-V task frame matches the interrupted CSR state."""
+    word = snap.xlen // 8
+    frame_size = context.sp_offset if context.sp_offset is not None else 31 * word
+    status_off = frame_size - word if mstatus_offset is None else mstatus_offset
+    if (
+        low is None
+        or high is None
+        or top_of_stack <= 0
+        or top_of_stack % word != 0
+        or not low <= top_of_stack <= high - frame_size
+        or not 0 <= status_off <= frame_size - word
+    ):
+        return False
+    mask = u_xlen_mask(snap.xlen)
+    byteorder = "little" if endian == "little" else "big"
+    raw = read(top_of_stack, frame_size)
+    if raw is None or len(raw) != frame_size:
+        return False
+    stored_epc = int.from_bytes(raw[0:word], byteorder) & mask
+    if (stored_epc & ~1) != expected_epc:
+        return False
+    stored_mstatus = (
+        int.from_bytes(raw[status_off : status_off + word], byteorder) & mask
+    )
+    if (stored_mstatus & MSTATUS_MPP_MASK) != MSTATUS_MPP_MACHINE:
+        return False
+    seed, _reason = decode_saved_context(
+        context,
+        top_of_stack,
+        read,
+        endian=endian,
+        stack_low=low,
+        stack_high=high,
+        entry_pc=stored_epc,
+        exit_pc=exit_pc,
+    )
+    return seed is not None and seed.source != "unstarted"

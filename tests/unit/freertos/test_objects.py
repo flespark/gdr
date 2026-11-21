@@ -940,6 +940,43 @@ def test_decoder_is_width_agnostic(tick_bits):
     assert details_module
 
 
+@pytest.mark.parametrize(
+    ("version", "raw_val"),
+    [((10, 4, 6), 0x84000003), ((11, 1, 0), 0x8400000000000003)],
+)
+def test_iter_waiters_handles_64bit_tick_control_bit_era(monkeypatch, version, raw_val):
+    """Pre-10.5.0 64-bit TickType_t kernels still place control/IN_USE bits in bits [31:24]."""
+    layout = build_layout(FreeRtosConfig(tick_bits=64), version)
+    head, end, node = object(), object(), object()
+    chain = {head: node, end: node, node: end}
+
+    def fake_read_field(value, _sl, field):
+        if field == "waiting":
+            return head
+        if field == "end":
+            return end
+        if field == "next":
+            return chain[value]
+        if field == "value":
+            return raw_val
+        if field == "owner":
+            return 0x2000
+        return None
+
+    monkeypatch.setattr(events, "read_field", fake_read_field)
+    monkeypatch.setattr(events, "safe_dereference", lambda v: v)
+    monkeypatch.setattr(events, "value_address", lambda v: 0x100 if v is end else 0x200)
+    monkeypatch.setattr(events, "safe_int", lambda v: 0x100 if v is end else 0x200)
+    monkeypatch.setattr(events, "task_name_at", lambda _o, _l: "evw")
+    monkeypatch.setattr(events, "mapped_ranges", lambda: ())
+
+    waiters = list(events.iter_waiters(object(), layout, current_bits=0))
+    assert len(waiters) == 1
+    assert waiters[0].wants == 0x3
+    assert waiters[0].wait_all is True
+    assert waiters[0].in_use is True
+
+
 def test_iter_waiters_walks_the_item_chain(monkeypatch):
     """iter_waiters decodes each list item's request bits and owner name."""
     layout = build_layout(FreeRtosConfig(tick_bits=32), (10, 3, 1))

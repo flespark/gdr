@@ -1077,3 +1077,160 @@ def test_riscv_sync_fault_stages_recover_mepc_and_attach_fault():
             irq_bounds=(_ISR_LOW, _ISR_HIGH),
         )
         assert bad_res == "exception-frame-type-unproven"
+
+
+def test_riscv_historical_unhandled_sync_fault_uses_saved_tcb_frame():
+    from freertos.scheduler_seed import riscv_interrupted_frame_matches
+    from freertos.stack_frame_profile import riscv_zero_lr_sentinel, select_context
+    from tests.unit.freertos.test_riscv_scheduler_switch import (
+        _synthetic_variant_freertos_elf,
+    )
+
+    elf = _synthetic_variant_freertos_elf(xlen=32, variant="v10_3")
+    profile, reason = build_riscv_profile(elf)
+    assert reason == "ok" and profile is not None
+    ctx = select_context(elf).context
+    assert ctx is not None
+    assert riscv_zero_lr_sentinel(elf) is True
+
+    fault_pc = _TASK_LEAF_PC + 8
+    mem = _Mem(4)
+    words = [0xA5A5A5A5] * 30
+    words[0] = fault_pc + 4
+    words[1] = _TASK_ENTRY_PC + 12
+    for reg in range(5, 32):
+        words[reg - 3] = 0x1000 + reg
+    words[29] = MSTATUS_MPP_MACHINE | 0x80
+    for idx, val in enumerate(words):
+        mem.words[_OLD_TOP + idx * 4] = val
+
+    unhandled_pc = next(
+        pc for pc, st in profile.stages.items() if st.name == "trap-sync-unhandled"
+    )
+    unhandled = classify_riscv_stage(profile, unhandled_pc)
+    assert not isinstance(unhandled, str) and unhandled is not None
+    assert unhandled.seed == "saved-tcb"
+
+    snap = _snap(profile, unhandled_pc, sp=_OLD_TOP, mcause=2, mepc=fault_pc)
+    res = build_riscv_stage_seed(
+        profile,
+        unhandled,
+        snapshot=snap,
+        read=mem.read,
+        context=ctx,
+        endian="little",
+        task_tcb=_OLD_TCB,
+        task_top=_OLD_TOP,
+        task_low=_OLD_LOW,
+        task_high=_OLD_HIGH,
+        current_tcb=_OLD_TCB,
+        exit_pc=0,
+        is_entry=lambda addr: addr == _TASK_ENTRY_PC,
+        irq_bounds=(_ISR_LOW, _ISR_HIGH),
+    )
+    assert isinstance(res, SchedulerSeed), res
+    assert res.seed.pc == fault_pc
+    assert res.fault is not None and res.fault.fault == "Exception:IllegalInstruction"
+    assert riscv_interrupted_frame_matches(
+        _OLD_TOP,
+        _OLD_LOW,
+        _OLD_HIGH,
+        snap,
+        ctx,
+        read=mem.read,
+        endian="little",
+        expected_epc=fault_pc + 4,
+        mstatus_offset=profile.mstatus_offset,
+        exit_pc=0,
+    )
+
+    for bad_mcause in (3, 24):
+        assert (
+            build_riscv_stage_seed(
+                profile,
+                unhandled,
+                snapshot=_snap(
+                    profile, unhandled_pc, sp=_OLD_TOP, mcause=bad_mcause, mepc=fault_pc
+                ),
+                read=mem.read,
+                context=ctx,
+                endian="little",
+                task_tcb=_OLD_TCB,
+                task_top=_OLD_TOP,
+                task_low=_OLD_LOW,
+                task_high=_OLD_HIGH,
+                current_tcb=_OLD_TCB,
+                exit_pc=0,
+                is_entry=lambda addr: addr == _TASK_ENTRY_PC,
+                irq_bounds=(_ISR_LOW, _ISR_HIGH),
+            )
+            == "exception-frame-type-unproven"
+        )
+
+
+def test_riscv_11_3_swapped_header_seed_and_frame_match():
+    from freertos.scheduler_seed import riscv_interrupted_frame_matches
+    from freertos.stack_frame_profile import select_context
+    from tests.unit.freertos.test_riscv_scheduler_switch import (
+        _synthetic_variant_freertos_elf,
+    )
+
+    elf = _synthetic_variant_freertos_elf(xlen=32, variant="v11_3")
+    profile, reason = build_riscv_profile(elf)
+    assert reason == "ok" and profile is not None
+    assert profile.mstatus_offset == 4
+    ctx = select_context(elf).context
+    assert ctx is not None
+
+    mem = _Mem(4)
+    words = [0xA5A5A5A5] * 31
+    words[0] = _TASK_LEAF_PC
+    words[1] = MSTATUS_MPP_MACHINE | 0x80
+    words[2] = _TASK_ENTRY_PC + 12
+    for reg in range(5, 32):
+        words[reg - 2] = 0x1000 + reg
+    words[30] = 0
+    for idx, val in enumerate(words):
+        mem.words[_OLD_TOP + idx * 4] = val
+
+    epc_saved_pc = profile.async_epc_store_pc + 4
+    epc_stage = classify_riscv_stage(profile, epc_saved_pc)
+    assert not isinstance(epc_stage, str) and epc_stage is not None
+    snap = _snap(
+        profile,
+        epc_saved_pc,
+        sp=_OLD_TOP,
+        mepc=_TASK_LEAF_PC,
+        regs={reg: 0x1000 + reg for reg in range(5, 32)} | {1: words[2]},
+    )
+    res = build_riscv_stage_seed(
+        profile,
+        epc_stage,
+        snapshot=snap,
+        read=mem.read,
+        context=ctx,
+        endian="little",
+        task_tcb=_OLD_TCB,
+        task_top=_OLD_TOP,
+        task_low=_OLD_LOW,
+        task_high=_OLD_HIGH,
+        current_tcb=_OLD_TCB,
+        exit_pc=_EXIT_PC,
+        is_entry=lambda addr: addr == _TASK_ENTRY_PC,
+        irq_bounds=(_ISR_LOW, _ISR_HIGH),
+    )
+    assert isinstance(res, SchedulerSeed), res
+    assert res.seed.pc == _TASK_LEAF_PC
+    assert res.seed.regs[1] == words[2]
+    assert riscv_interrupted_frame_matches(
+        _OLD_TOP,
+        _OLD_LOW,
+        _OLD_HIGH,
+        snap,
+        ctx,
+        read=mem.read,
+        endian="little",
+        expected_epc=_TASK_LEAF_PC,
+        mstatus_offset=profile.mstatus_offset,
+        exit_pc=_EXIT_PC,
+    )

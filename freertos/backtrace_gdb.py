@@ -72,19 +72,16 @@ from core.unwind_arm import (
 from core.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
 )
-from core.unwind_meta import Endian
-from core.unwind_riscv import (
-    MSTATUS_MPP_MACHINE,
-    MSTATUS_MPP_MASK,
-    prepare_riscv_handler_unwind,
-    resolve_riscv_irq_stack_bounds_detail,
-    riscv_fault_precision,
-)
 from core.unwind_riscv import (
     RiscvSnapshot as _RiscvSnapshot,
 )
 from core.unwind_riscv import (
     decode_riscv_mcause as _decode_riscv_mcause,
+)
+from core.unwind_riscv import (
+    prepare_riscv_handler_unwind,
+    resolve_riscv_irq_stack_bounds_detail,
+    riscv_fault_precision,
 )
 from core.unwind_riscv import (
     riscv_snapshot as _core_riscv_snapshot,
@@ -110,8 +107,15 @@ from freertos.riscv_scheduler_switch import (
     build_riscv_profile as build_riscv_scheduler_profile,
 )
 from freertos.riscv_scheduler_switch import classify_riscv_stage
-from freertos.scheduler_seed import build_riscv_stage_seed, build_stage_seed
-from freertos.stack_frame_profile import analyze_riscv_trap_profile
+from freertos.scheduler_seed import (
+    build_riscv_stage_seed,
+    build_stage_seed,
+    riscv_interrupted_frame_matches,
+)
+from freertos.stack_frame_profile import (
+    analyze_riscv_trap_profile,
+    riscv_zero_lr_sentinel,
+)
 
 try:
     import gdb
@@ -130,6 +134,10 @@ def _exit_pc() -> int | None:
     if value is not None:
         return value_address(value) or None
     return read_int(eval_identifier("xTaskReturnAddress"))
+
+
+def _target_exit_pc(elf: ElfImage | None) -> int | None:
+    return 0 if riscv_zero_lr_sentinel(elf) else _exit_pc()
 
 
 def _arm_snapshot() -> tuple[_ArmSnapshot | None, str]:
@@ -373,7 +381,10 @@ def _riscv_scheduler_live_decision(
     if stage.name in ("trap-entry", "trap-dispatch") and is_interrupt:
         return None
     if (
-        stage.name in ("trap-entry", "trap-sync-unhandled")
+        (
+            stage.name == "trap-entry"
+            or (stage.name == "trap-sync-unhandled" and stage.seed == "refused")
+        )
         and not is_interrupt
         and riscv_fault_precision(
             snapshot.mcause,
@@ -421,7 +432,7 @@ def _riscv_scheduler_live_decision(
         task_low=low,
         task_high=high,
         current_tcb=current,
-        exit_pc=_exit_pc(),
+        exit_pc=_target_exit_pc(elf),
         is_entry=_is_entry,
         irq_bounds=irq_span,
         elf=elf,
@@ -617,55 +628,14 @@ _RISCV_SWITCH_RESTORE_STAGES = frozenset(
 )
 
 
-def _riscv_matches_interrupted_frame(
-    task: FreeRtosTask,
-    snap: _RiscvSnapshot,
-    context,
-    *,
-    endian: Endian,
-    expected_epc: int,
-) -> bool:
-    low, high, _bounds = _task_bounds(task)
-    word = snap.xlen // 8
-    frame_size = 31 * word
-    if (
-        low is None
-        or high is None
-        or task.top_of_stack <= 0
-        or task.top_of_stack % word != 0
-        or not low <= task.top_of_stack <= high - frame_size
-    ):
-        return False
-    mask = (1 << snap.xlen) - 1
-    byteorder = "little" if endian == "little" else "big"
-    raw = read_bytes(task.top_of_stack, frame_size)
-    if raw is None or len(raw) != frame_size:
-        return False
-    stored_epc = int.from_bytes(raw[0:word], byteorder) & mask
-    if (stored_epc & ~1) != expected_epc:
-        return False
-    stored_mstatus = int.from_bytes(raw[30 * word : frame_size], byteorder) & mask
-    if (stored_mstatus & MSTATUS_MPP_MASK) != MSTATUS_MPP_MACHINE:
-        return False
-    seed, _reason = decode_backtrace_context(
-        context,
-        task.top_of_stack,
-        read_bytes,
-        endian=endian,
-        stack_low=low,
-        stack_high=high,
-        entry_pc=stored_epc,
-        exit_pc=_exit_pc(),
-    )
-    return seed is not None and seed.source != "unstarted"
-
-
 def _resolve_riscv_interrupted_task(
     adapter,
     snap: _RiscvSnapshot,
     context,
     *,
     known_task: FreeRtosTask | None = None,
+    mstatus_offset: int | None = None,
+    exit_pc: int | None = None,
 ) -> tuple[int, int] | str:
     """Identify the unique task interrupted onto ``xISRStack`` cleanly.
 
@@ -681,6 +651,7 @@ def _resolve_riscv_interrupted_task(
     if expected_epc <= 0:
         return "exception-task-context-conflict"
     endian = arch_or_default()[1]
+    resolved_exit = exit_pc if exit_pc is not None else _exit_pc()
     current_tcb = _current_tcb_address()
     matches: list[tuple[int, int]] = []
     if current_tcb is not None:
@@ -701,10 +672,21 @@ def _resolve_riscv_interrupted_task(
                     adapter.layout,
                     collect_stack_metrics=False,
                 )
-        if cur_task is not None and _riscv_matches_interrupted_frame(
-            cur_task, snap, context, endian=endian, expected_epc=expected_epc
-        ):
-            matches.append((cur_task.address, cur_task.top_of_stack))
+        if cur_task is not None:
+            low, high, _ = _task_bounds(cur_task)
+            if riscv_interrupted_frame_matches(
+                cur_task.top_of_stack,
+                low,
+                high,
+                snap,
+                context,
+                read=read_bytes,
+                endian=endian,
+                expected_epc=expected_epc,
+                mstatus_offset=mstatus_offset,
+                exit_pc=resolved_exit,
+            ):
+                matches.append((cur_task.address, cur_task.top_of_stack))
 
     try:
         candidates = list(iter_tasks(adapter.layout))
@@ -716,8 +698,18 @@ def _resolve_riscv_interrupted_task(
         )
         if cand.address == current_tcb:
             continue
-        if _riscv_matches_interrupted_frame(
-            cand, snap, context, endian=endian, expected_epc=expected_epc
+        low, high, _ = _task_bounds(cand)
+        if riscv_interrupted_frame_matches(
+            cand.top_of_stack,
+            low,
+            high,
+            snap,
+            context,
+            read=read_bytes,
+            endian=endian,
+            expected_epc=expected_epc,
+            mstatus_offset=mstatus_offset,
+            exit_pc=resolved_exit,
         ):
             matches.append((cand.address, cand.top_of_stack))
             if len(matches) > 1:
@@ -769,8 +761,16 @@ def _riscv_active_isr_owner(
             )
         ):
             return None
+    span = analyze_riscv_trap_profile(metadata.elf)
     return _resolve_riscv_interrupted_task(
-        adapter, snap, selection.context, known_task=known_task
+        adapter,
+        snap,
+        selection.context,
+        known_task=known_task,
+        mstatus_offset=profile.mstatus_offset
+        if profile is not None
+        else (span.layout.mstatus_offset if span is not None else None),
+        exit_pc=_target_exit_pc(metadata.elf),
     )
 
 
@@ -1115,7 +1115,7 @@ def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
             stack_high=ctx.high,
             context_low=context_low,
             context_high=context_high,
-            exit_pc=_exit_pc(),
+            exit_pc=_target_exit_pc(ctx.metadata.elf if ctx.metadata else None),
         )
     if seed is None:
         return ctx.stop(
@@ -1164,22 +1164,22 @@ def _prepare_arm_handler(
         if _irq_stack_bounds is _DEFAULT_IRQ_STACK_BOUNDS
         else _irq_stack_bounds
     )
-    armv6m_limit_reader = (
+    m0_limit = (
         (lambda: _armv6m_port_limit(elf=elf_image))
         if _armv6m_port_limit is _DEFAULT_ARMV6M_PORT_LIMIT
         else _armv6m_port_limit
     )
-    external_limit_reader = (
+    ext_limit = (
         (lambda: _external_exception_limit(elf=elf_image))
         if _external_exception_limit is _DEFAULT_EXTERNAL_EXCEPTION_LIMIT
         else _external_exception_limit
     )
-    armv6m_vector_reader = (
+    m0_vec = (
         (lambda number: _armv6m_vector_entry(number, elf=elf_image))
         if _armv6m_vector_entry is _DEFAULT_ARMV6M_VECTOR_ENTRY
         else _armv6m_vector_entry
     )
-    vector_reader = (
+    vec_reader = (
         (lambda number: _vector_entry(number, elf=elf_image))
         if _vector_entry is _DEFAULT_VECTOR_ENTRY
         else _vector_entry
@@ -1190,15 +1190,9 @@ def _prepare_arm_handler(
         scheduler_running=_scheduler_running,
         irq_stack_bounds=bounds_reader,
         irq_stack_source="linker:__gdr_irq_stack_low..__gdr_irq_stack_top",
-        capacity_reader=(
-            armv6m_limit_reader
-            if ctx.architecture == "armv6-m"
-            else external_limit_reader
-        ),
+        capacity_reader=m0_limit if ctx.architecture == "armv6-m" else ext_limit,
         stkalign_reader=_ccr_stkalign,
-        vector_entry_reader=(
-            armv6m_vector_reader if ctx.architecture == "armv6-m" else vector_reader
-        ),
+        vector_entry_reader=m0_vec if ctx.architecture == "armv6-m" else vec_reader,
         guard_fn=_exception_guard,
         capacity_guard_factory=_capacity_exception_guard,
         read=read_bytes,
@@ -1291,7 +1285,7 @@ def _prepare_riscv_handler(
 
     setup = prepare_riscv_handler_unwind(
         snap,
-        root_pc=_exit_pc(),
+        root_pc=_target_exit_pc(elf_image),
         span=span,
         task_segment=task_segment,
         irq_stack_bounds=lambda: isr_bounds,
@@ -1432,7 +1426,11 @@ def _backtrace_task_value(
     if isinstance(handler, BacktraceReport):
         return handler
     seed = handler.seed
-    exit_pc = _exit_pc()
+    exit_pc = (
+        _target_exit_pc(ctx.metadata.elf if ctx.metadata else None)
+        if selection.family == "riscv"
+        else _exit_pc()
+    )
     if seed.source != "unstarted" and exit_pc is not None:
         seed = replace(seed, root_pc=exit_pc, root_reason="task-exit")
     messages = (

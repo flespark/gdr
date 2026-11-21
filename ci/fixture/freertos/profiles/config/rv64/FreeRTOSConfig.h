@@ -20,7 +20,9 @@
 
 #include "gdr_fixture_common.h"
 
+#ifdef TICK_TYPE_WIDTH_64_BITS
 #undef configUSE_16_BIT_TICKS
 #define configTICK_TYPE_WIDTH_IN_BITS TICK_TYPE_WIDTH_64_BITS
+#endif
 
 #endif

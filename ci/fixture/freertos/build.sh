@@ -120,7 +120,6 @@ compile_fixture() {
     esac
 
     local -a port_sources=()
-    local -a chip_include_paths=()
     case "$TARGET" in
     microbit)
         port_sources+=("$port_dir/portasm.c")
@@ -152,14 +151,10 @@ compile_fixture() {
     qemu-virt-rv64 | qemu-virt-rv32)
         # NOTE: the RISC-V port keeps the context switch and M-mode trap
         # handler in portASM.S (port.c alone would link but never switch
-        # tasks).  The chip-specific extension header (mtime/CLINT macros)
-        # is found through the preprocessor include path of the assembler
-        # pass, exactly as the port readme demands; each entry carries the
-        # -I prefix because it is appended to cflags, not sources.
+        # tasks).  Board-specific extensions and portasmHANDLE_INTERRUPT
+        # live in each board profile's freertos_risc_v_chip_specific_extensions.h
+        # on -I"$board_dir" across V10.3.x through V11.x.
         port_sources+=("$port_dir/portASM.S")
-        chip_include_paths+=(
-            "-I$KERNEL_DIR/portable/GCC/RISC-V/chip_specific_extensions/RISCV_MTIME_CLINT_no_extensions"
-        )
         ;;
     esac
 
@@ -194,12 +189,6 @@ compile_fixture() {
         # NOTE: merged entries hide function-start evidence from the EHABI
         # fixture; preserve it independently from CFI.
         link_flags+=(-Wl,--no-merge-exidx-entries)
-    fi
-    # NOTE: set -u treats "${chip_include_paths[@]}" on an empty array as
-    # an unbound-variable error on older bash (the same reason port_sources
-    # is gated below), so only expand when the target added paths.
-    if [[ ${#chip_include_paths[@]} -gt 0 ]]; then
-        cflags+=("${chip_include_paths[@]}")
     fi
     if [[ "$VARIANT" == "mpu" ]]; then
         # NOTE: upstream portable/Common/mpu_wrappers_v2.c and the CM33

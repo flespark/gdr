@@ -123,6 +123,11 @@ FREERTOS_CONFIG = tuple(
 )
 FREERTOS_VERSION = (
     *(Lane("freertos", "mps2-an385", v, "base") for v in ("10.4.6", "10.5.1")),
+    Lane("freertos", "qemu-virt-rv32", "10.3.1", "base"),
+    Lane("freertos", "qemu-virt-rv32", "10.4.6", "base"),
+    Lane("freertos", "qemu-virt-rv64", "10.4.6", "rv64"),
+    Lane("freertos", "qemu-virt-rv32", "11.3.1", "base"),
+    Lane("freertos", "qemu-virt-rv64", "11.3.1", "rv64"),
     *(
         Lane("freertos", "mps2-an385", "11.1.0", v)
         for v in (

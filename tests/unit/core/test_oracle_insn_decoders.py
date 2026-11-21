@@ -542,6 +542,21 @@ def test_riscv_stack_and_control_flow_match_capstone():
     assert checked > 0
 
 
+def test_riscv64_srli_decodes_high_shamt_against_capstone():
+    words = (0x02055613, 0x03F55613)  # srli a2, a0, 32 / srli a2, a0, 63
+    blob = b"".join(word.to_bytes(4, "little") for word in words)
+    engine = _riscv_engine(64)
+    disasm = list(engine.disasm(blob, 0x1000))
+    assert [(ins.mnemonic, ins.op_str) for ins in disasm] == [
+        ("srli", "a2, a0, 0x20"),
+        ("srli", "a2, a0, 0x3f"),
+    ]
+    assert riscv_code_decoder(words[0], 4, 0x1000, 64) == ("srli", 12, 10, 32)
+    assert riscv_code_decoder(words[1], 4, 0x1004, 64) == ("srli", 12, 10, 63)
+    with pytest.raises(EvidenceError):
+        riscv_code_decoder(words[1], 4, 0x1004, 32)
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: cached firmware pure-code intervals
 # ---------------------------------------------------------------------------

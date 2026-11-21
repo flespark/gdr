@@ -21,24 +21,21 @@ from core.insn_riscv import (
     riscv_frame_accesses,
     riscv_next_pc,
     riscv_slot_map,
-    riscv_stack_frame_size,
-    riscv_store_completion_slots,
-    riscv_target_loads,
     riscv_update_const_addr,
     riscv_written_register,
 )
 from core.unwind_meta import EM_RISCV, ElfImage
 
+from .stack_frame_profile import (
+    RiscvTrapAnalysis,
+    _riscv_slots_include,
+    analyze_riscv_trap_blocks,
+)
+
 RV32_PROFILE_ID = "freertos/rv32/riscv-mtvec-v1"
 RV64_PROFILE_ID = "freertos/rv64/riscv-mtvec-v1"
 
-_FRAME_WORDS = 31
-_CRITICAL_NESTING_WORD = 29
-_MSTATUS_WORD = 30
 _CSR_MSTATUS = 0x300
-_CSR_MEPC = 0x341
-_CSR_MCAUSE = 0x342
-_ECALL_M_CAUSE = 11
 _RISCV_CALLER_SAVED = frozenset(
     {1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31}
 )
@@ -67,6 +64,7 @@ class RiscvSchedulerProfile:
     xlen: int
     word_size: int
     frame_bytes: int
+    mstatus_offset: int
     px_current_tcb: int
     start_first_start: int
     start_first_end: int
@@ -93,17 +91,6 @@ class RiscvSchedulerProfile:
     stages: dict[int, RiscvSchedulerStage]
 
 
-def _expected_gpr_slots(word: int) -> dict[int, int]:
-    return {
-        1: word,
-        **{register: (register - 3) * word for register in range(5, 32)},
-    }
-
-
-def _slots_include(slots: dict[int, set[int]], expected: dict[int, int]) -> bool:
-    return all(offset in slots.get(reg, set()) for reg, offset in expected.items())
-
-
 def _symbol_span(elf: ElfImage, name: str) -> tuple[int, int] | str:
     candidates = {
         (sym.start, sym.end) for sym in elf.symbols if sym.name == name and sym.size > 0
@@ -115,34 +102,12 @@ def _symbol_span(elf: ElfImage, name: str) -> tuple[int, int] | str:
     return next(iter(candidates))
 
 
-def _route_epc_store(
-    code: dict[int, tuple], *, mepc_reg: int, addend: int, store_op: str
-) -> int | None:
-    """Return the PC of ``store_op r, 0(sp)`` storing ``mepc + addend``, or ``None``."""
-    values: dict[int, tuple[str, int]] = {mepc_reg: ("mepc", 0)}
-    for pc in sorted(code):
-        op = code[pc]
-        if op[0] == "addi":
-            source = values.get(op[2])
-            if source is None:
-                values.pop(op[1], None)
-            else:
-                values[op[1]] = (source[0], source[1] + op[3])
-        elif op[0] == store_op and op[2] == 2 and op[3] == 0:
-            if values.get(op[1]) == ("mepc", addend):
-                return pc
-        else:
-            written = riscv_written_register(op)
-            if written is not None:
-                values.pop(written, None)
-    return None
-
-
 def _verify_start_first(
     elf: ElfImage,
     word: int,
     tcb_ptr: int,
-    crit_ptr: int,
+    crit_ptr: int | None,
+    analysis: RiscvTrapAnalysis,
 ) -> tuple[dict[int, tuple], int, int, int] | str:
     try:
         insns = RiscvCodeParser(elf, "xPortStartFirstTask").instructions(
@@ -154,18 +119,24 @@ def _verify_start_first(
     if len(pcs) < 6 or insns[pcs[-1]] != ("ret",):
         return "scheduler-profile-mismatch:xPortStartFirstTask:terminal"
     pop_pc = pcs[-2]
-    if insns[pop_pc] != ("addi", 2, 2, _FRAME_WORDS * word):
+    prologue = analysis.prologue
+    if insns[pop_pc] != ("addi", 2, 2, prologue.frame_bytes):
         return "scheduler-profile-mismatch:xPortStartFirstTask:sp-pop"
     load_op = "ld" if word == 8 else "lw"
     store_op = "sd" if word == 8 else "sw"
     loads = riscv_frame_accesses(insns, "load", 2)
     slot_map = riscv_slot_map(loads)
     expected_rest = {
-        reg: offset for reg, offset in _expected_gpr_slots(word).items() if reg != 1
+        reg: offset for reg, offset in prologue.gpr_offsets.items() if reg != 1
     }
-    if not _slots_include(slot_map, expected_rest) or 0 not in slot_map.get(1, set()):
+    if not _riscv_slots_include(slot_map, expected_rest) or 0 not in slot_map.get(
+        1, set()
+    ):
         return "scheduler-profile-mismatch:xPortStartFirstTask:slots"
-    if not {_CRITICAL_NESTING_WORD * word, _MSTATUS_WORD * word}.issubset(loads):
+    if prologue.mstatus_offset not in loads or (
+        prologue.critical_nesting_offset is not None
+        and prologue.critical_nesting_offset not in loads
+    ):
         return "scheduler-profile-mismatch:xPortStartFirstTask:csr-slots"
 
     mask = (1 << (word * 8)) - 1
@@ -193,7 +164,7 @@ def _verify_start_first(
                 tcb_regs.add(rd)
             else:
                 tcb_regs.discard(rd)
-            if addr == crit_ptr:
+            if crit_ptr is not None and addr == crit_ptr:
                 crit_regs.add(rd)
             else:
                 crit_regs.discard(rd)
@@ -208,7 +179,8 @@ def _verify_start_first(
             crit_regs.discard(written)
         riscv_update_const_addr(op, pc, mask, const_addrs)
 
-    if sp_load_pc is None or not wrote_crit or not wrote_mstatus:
+    need_crit = prologue.critical_nesting_offset is not None
+    if sp_load_pc is None or not wrote_mstatus or (need_crit and not wrote_crit):
         return "scheduler-profile-mismatch:xPortStartFirstTask:sequence"
     return insns, sp_load_pc, pop_pc, pcs[-1]
 
@@ -414,253 +386,13 @@ def _verify_vtask_switch(
     return insns, store_pc, pre_pcs, post_pcs, signature
 
 
-def _verify_trap_handler(
-    elf: ElfImage,
-    word: int,
-    tcb_ptr: int,
-    switch_start: int,
-) -> tuple[dict[str, object], tuple[int, ...]] | str:
-    trap_start = elf.symbol_address("freertos_risc_v_trap_handler")
-    async_pc = elf.symbol_address("asynchronous_interrupt")
-    sync_pc = elf.symbol_address("synchronous_exception")
-    idle_pc = elf.symbol_address("handle_interrupt")
-    exc_pc = elf.symbol_address("handle_exception")
-    proc_pc = elf.symbol_address("processed_source")
-    if None in (trap_start, async_pc, sync_pc, idle_pc, exc_pc, proc_pc):
-        return "scheduler-profile-symbol-missing:freertos_risc_v_trap_handler"
-    assert (
-        trap_start is not None
-        and async_pc is not None
-        and sync_pc is not None
-        and idle_pc is not None
-        and exc_pc is not None
-        and proc_pc is not None
-    )
-    if not (trap_start < async_pc < sync_pc < idle_pc < exc_pc < proc_pc):
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:order"
-
-    store_op = "sd" if word == 8 else "sw"
-    load_op = "ld" if word == 8 else "lw"
-    expected_gprs = _expected_gpr_slots(word)
-    try:
-        trap = RiscvCodeParser(
-            elf, "freertos_risc_v_trap_handler", "asynchronous_interrupt"
-        ).instructions()
-        async_code = RiscvCodeParser(
-            elf, "asynchronous_interrupt", "synchronous_exception"
-        ).instructions()
-        sync_code = RiscvCodeParser(
-            elf, "synchronous_exception", "handle_interrupt"
-        ).instructions()
-        intr_code = RiscvCodeParser(
-            elf, "handle_interrupt", "handle_exception"
-        ).instructions()
-        exc_code = RiscvCodeParser(
-            elf, "handle_exception", "processed_source"
-        ).instructions()
-        restore = RiscvCodeParser(elf, "processed_source").instructions(
-            terminal=("mret",)
-        )
-    except EvidenceError:
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:decode"
-
-    trap_pcs = sorted(trap)
-    if not trap_pcs or riscv_stack_frame_size(trap) != _FRAME_WORDS * word:
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:frame-size"
-    if trap[trap_pcs[0]] != ("addi", 2, 2, -_FRAME_WORDS * word):
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:entry"
-    saved_slots = riscv_store_completion_slots(
-        trap, store_op, base=2, expected_offsets=expected_gprs
-    )
-    if saved_slots is None:
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:gpr-slots"
-    saved_offsets = {op[3] for op in trap.values() if op[0] == store_op and op[2] == 2}
-    if not {_CRITICAL_NESTING_WORD * word, _MSTATUS_WORD * word}.issubset(
-        saved_offsets
-    ):
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:csr-slots"
-
-    loads = riscv_target_loads(elf, trap)
-    tcb_reg = next((reg for reg, name in loads.items() if name == "pxCurrentTCB"), None)
-    tcb_store_pc = (
-        next(
-            (
-                pc
-                for pc, op in sorted(trap.items())
-                if op[0] == store_op and op[1] == 2 and op[2] == tcb_reg and op[3] == 0
-            ),
-            None,
-        )
-        if tcb_reg is not None
-        else None
-    )
-    mcause_reg = next(
-        (op[1] for op in trap.values() if op[0] == "csrr" and op[2] == _CSR_MCAUSE),
-        None,
-    )
-    mepc_reg = next(
-        (op[1] for op in trap.values() if op[0] == "csrr" and op[2] == _CSR_MEPC),
-        None,
-    )
-    branch_pc = next(
-        (
-            pc
-            for pc, op in trap.items()
-            if op[0] in ("bge", "blt") and op[1] == mcause_reg and op[3] == sync_pc
-        ),
-        None,
-    )
-    if (
-        tcb_store_pc is None
-        or mcause_reg is None
-        or mepc_reg is None
-        or branch_pc is None
-        or branch_pc <= tcb_store_pc
-        or branch_pc + 4 != async_pc
-    ):
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:prologue"
-
-    async_epc_store_pc = _route_epc_store(
-        async_code, mepc_reg=mepc_reg, addend=0, store_op=store_op
-    )
-    sync_epc_store_pc = _route_epc_store(
-        sync_code, mepc_reg=mepc_reg, addend=4, store_op=store_op
-    )
-    if async_epc_store_pc is None or sync_epc_store_pc is None:
-        return "scheduler-profile-mismatch:freertos_risc_v_trap_handler:epc-store"
-
-    # handle_interrupt: locate optional post-vTaskSwitchContext return PCs.
-    intr_pcs = sorted(intr_code)
-    after_switch_async_pcs: set[int] = set()
-    for idx, pc in enumerate(intr_pcs):
-        op = intr_code[pc]
-        if op[0] == "jal" and op[1] == 1 and op[2] == switch_start:
-            if idx + 1 >= len(intr_pcs):
-                return "scheduler-profile-mismatch:handle_interrupt:switch-ret"
-            after_switch_async_pcs.add(intr_pcs[idx + 1])
-
-    # handle_exception: locate ecall check, switch call, post-switch ret, and app handler.
-    exc_pcs = sorted(exc_code)
-    app_exc_sym = elf.symbol_address("freertos_risc_v_application_exception_handler")
-    switch_call_sync_pc: int | None = None
-    after_switch_sync_pc: int | None = None
-    app_exc_call_pc: int | None = None
-    has_ecall_branch = any(
-        op[0] in ("bne", "beq") and op[1] == mcause_reg for op in exc_code.values()
-    ) or any(
-        op[0] == "addi" and op[2] == 0 and op[3] == _ECALL_M_CAUSE
-        for op in exc_code.values()
-    )
-    for idx, pc in enumerate(exc_pcs):
-        op = exc_code[pc]
-        if op[0] == "jal" and op[1] == 1:
-            if op[2] == switch_start:
-                if switch_call_sync_pc is not None or idx + 1 >= len(exc_pcs):
-                    return "scheduler-profile-mismatch:handle_exception:switch-call"
-                switch_call_sync_pc = pc
-                after_switch_sync_pc = exc_pcs[idx + 1]
-            elif app_exc_sym is None or op[2] == app_exc_sym:
-                app_exc_call_pc = pc
-    if (
-        not has_ecall_branch
-        or switch_call_sync_pc is None
-        or after_switch_sync_pc is None
-    ):
-        return "scheduler-profile-mismatch:handle_exception:structure"
-    if app_exc_call_pc is None or app_exc_call_pc != riscv_next_pc(
-        exc_code, after_switch_sync_pc
-    ):
-        return "scheduler-profile-mismatch:handle_exception:app-handler"
-
-    # processed_source .. mret
-    restore_pcs = sorted(restore)
-    if len(restore_pcs) < 6 or restore[restore_pcs[-1]] != ("mret",):
-        return "scheduler-profile-mismatch:processed_source:terminal"
-    restore_pop_pc = restore_pcs[-2]
-    if restore[restore_pop_pc] != ("addi", 2, 2, _FRAME_WORDS * word):
-        return "scheduler-profile-mismatch:processed_source:sp-pop"
-    restore_loads = riscv_frame_accesses(restore, "load", 2)
-    restore_slot_map = riscv_slot_map(restore_loads)
-    if not _slots_include(restore_slot_map, expected_gprs):
-        return "scheduler-profile-mismatch:processed_source:slots"
-    if not {_CRITICAL_NESTING_WORD * word, _MSTATUS_WORD * word}.issubset(
-        restore_loads
-    ):
-        return "scheduler-profile-mismatch:processed_source:csr-slots"
-
-    mask = (1 << (word * 8)) - 1
-    const_addrs: dict[int, int] = {}
-    restore_tcb_regs: set[int] = set()
-    restore_load_sp_pc: int | None = None
-    for pc in restore_pcs:
-        op = restore[pc]
-        if op[0] == load_op:
-            rd, rn, imm = op[1], op[2], op[3]
-            if (
-                rd == 2
-                and imm == 0
-                and rn in restore_tcb_regs
-                and restore_load_sp_pc is None
-            ):
-                restore_load_sp_pc = pc
-            addr = (const_addrs[rn] + imm) & mask if rn in const_addrs else None
-            riscv_update_const_addr(op, pc, mask, const_addrs)
-            if addr == tcb_ptr:
-                restore_tcb_regs.add(rd)
-            else:
-                restore_tcb_regs.discard(rd)
-            continue
-        written = riscv_written_register(op)
-        if written is not None:
-            restore_tcb_regs.discard(written)
-        riscv_update_const_addr(op, pc, mask, const_addrs)
-    if restore_load_sp_pc is None or restore_load_sp_pc >= restore_pop_pc:
-        return "scheduler-profile-mismatch:processed_source:sp-load"
-
-    info: dict[str, object] = {
-        "trap_start": trap_start,
-        "trap_end": restore_pcs[-1] + 4,
-        "trap_tcb_store_pc": tcb_store_pc,
-        "async_pc": async_pc,
-        "async_epc_store_pc": async_epc_store_pc,
-        "sync_pc": sync_pc,
-        "sync_epc_store_pc": sync_epc_store_pc,
-        "idle_pc": idle_pc,
-        "exc_pc": exc_pc,
-        "proc_pc": proc_pc,
-        "restore_load_sp_pc": restore_load_sp_pc,
-        "restore_pop_pc": restore_pop_pc,
-        "restore_mret_pc": restore_pcs[-1],
-        "trap_pcs": trap_pcs,
-        "async_pcs": sorted(async_code),
-        "sync_pcs": sorted(sync_code),
-        "intr_pcs": intr_pcs,
-        "exc_pcs": exc_pcs,
-        "restore_pcs": restore_pcs,
-        "after_switch_async_pcs": after_switch_async_pcs,
-        "switch_call_sync_pc": switch_call_sync_pc,
-        "after_switch_sync_pc": after_switch_sync_pc,
-        "app_exc_call_pc": app_exc_call_pc,
-        "saved_slots": saved_slots,
-    }
-    all_pcs = tuple(
-        trap_pcs
-        + sorted(async_code)
-        + sorted(sync_code)
-        + intr_pcs
-        + exc_pcs
-        + restore_pcs
-    )
-    return info, all_pcs
-
-
 def _build_stage_map(
     *,
     start_insns: dict[int, tuple],
     sp_load_pc: int,
     start_pop_pc: int,
     start_ret_pc: int,
-    trap_info: dict[str, object],
+    analysis: RiscvTrapAnalysis,
     switch_pre_pcs: set[int],
     switch_post_pcs: set[int],
 ) -> dict[int, RiscvSchedulerStage]:
@@ -695,10 +427,12 @@ def _build_stage_map(
                 detail="xPortStartFirstTask at ret with first task registers restored",
             )
 
-    trap_pcs: list[int] = trap_info["trap_pcs"]  # type: ignore[assignment]
-    tcb_store_pc: int = trap_info["trap_tcb_store_pc"]  # type: ignore[assignment]
-    for pc in trap_pcs:
-        if pc == trap_pcs[0]:
+    prologue = analysis.prologue
+    dispatch = analysis.dispatch
+    restore = analysis.restore
+
+    for pc in prologue.pcs:
+        if pc == prologue.pcs[0]:
             stages[pc] = RiscvSchedulerStage(
                 name="trap-entry",
                 owner="old",
@@ -707,7 +441,7 @@ def _build_stage_map(
                 function="freertos_risc_v_trap_handler",
                 detail="trap entry before saving context or decrementing sp",
             )
-        elif pc <= tcb_store_pc:
+        elif pc <= prologue.tcb_store_pc:
             stages[pc] = RiscvSchedulerStage(
                 name="trap-prologue-saving",
                 owner="old",
@@ -726,9 +460,8 @@ def _build_stage_map(
                 detail="trap prologue with GPR frame on task stack and epc still in mepc CSR",
             )
 
-    async_epc_store_pc: int = trap_info["async_epc_store_pc"]  # type: ignore[assignment]
-    for pc in trap_info["async_pcs"]:  # type: ignore[attr-defined]
-        if pc <= async_epc_store_pc:
+    for pc in dispatch.async_pre_sp_pcs:
+        if pc <= dispatch.async_epc_store_pc:
             stages[pc] = RiscvSchedulerStage(
                 name="trap-prologue-tcb-written",
                 owner="old",
@@ -747,9 +480,8 @@ def _build_stage_map(
                 detail="asynchronous trap frame complete on task stack before ISR dispatch",
             )
 
-    sync_epc_store_pc: int = trap_info["sync_epc_store_pc"]  # type: ignore[assignment]
-    for pc in trap_info["sync_pcs"]:  # type: ignore[attr-defined]
-        if pc <= sync_epc_store_pc:
+    for pc in dispatch.sync_pre_sp_pcs:
+        if pc <= dispatch.sync_epc_store_pc:
             stages[pc] = RiscvSchedulerStage(
                 name="trap-prologue-tcb-written",
                 owner="old",
@@ -768,9 +500,8 @@ def _build_stage_map(
                 detail="synchronous trap frame complete on task stack before exception dispatch",
             )
 
-    after_switch_async_pcs: set[int] = trap_info["after_switch_async_pcs"]  # type: ignore[assignment]
-    for pc in trap_info["intr_pcs"]:  # type: ignore[attr-defined]
-        if pc in after_switch_async_pcs:
+    for pc in dispatch.async_dispatch_pcs:
+        if pc in dispatch.after_switch_async_pcs:
             stages[pc] = RiscvSchedulerStage(
                 name="switch-after-update",
                 owner="new",
@@ -789,10 +520,8 @@ def _build_stage_map(
                 detail="interrupt handler dispatch on ISR stack before context switch",
             )
 
-    after_switch_sync_pc: int = trap_info["after_switch_sync_pc"]  # type: ignore[assignment]
-    app_exc_call_pc: int = trap_info["app_exc_call_pc"]  # type: ignore[assignment]
-    for pc in trap_info["exc_pcs"]:  # type: ignore[attr-defined]
-        if pc < after_switch_sync_pc:
+    for pc in dispatch.sync_dispatch_pcs:
+        if pc < dispatch.after_switch_sync_pc:
             stages[pc] = RiscvSchedulerStage(
                 name="trap-sync-dispatch",
                 owner="old",
@@ -801,7 +530,7 @@ def _build_stage_map(
                 function="handle_exception",
                 detail="synchronous exception dispatch prior to vTaskSwitchContext return",
             )
-        elif pc == after_switch_sync_pc:
+        else:
             stages[pc] = RiscvSchedulerStage(
                 name="switch-after-update",
                 owner="new",
@@ -810,21 +539,25 @@ def _build_stage_map(
                 function="handle_exception",
                 detail="returned from vTaskSwitchContext in ecall yield dispatch",
             )
-        elif pc >= app_exc_call_pc:
-            stages[pc] = RiscvSchedulerStage(
-                name="trap-sync-unhandled",
-                owner="old",
-                seed="refused",
-                pc=pc,
-                function="application_exception_handler",
-                detail="non-ecall synchronous exception handler path",
-            )
 
-    restore_load_sp_pc: int = trap_info["restore_load_sp_pc"]  # type: ignore[assignment]
-    restore_pop_pc: int = trap_info["restore_pop_pc"]  # type: ignore[assignment]
-    restore_mret_pc: int = trap_info["restore_mret_pc"]  # type: ignore[assignment]
-    for pc in trap_info["restore_pcs"]:  # type: ignore[attr-defined]
-        if pc <= restore_load_sp_pc:
+    unhandled_seed = "refused" if dispatch.unhandled_sync_on_isr_stack else "saved-tcb"
+    unhandled_fn = (
+        "application_exception_handler"
+        if dispatch.app_exc_call_pc is not None
+        else "is_exception"
+    )
+    for pc in dispatch.unhandled_sync_pcs:
+        stages[pc] = RiscvSchedulerStage(
+            name="trap-sync-unhandled",
+            owner="old",
+            seed=unhandled_seed,
+            pc=pc,
+            function=unhandled_fn,
+            detail="non-ecall synchronous exception handler path",
+        )
+
+    for pc in restore.pcs:
+        if pc <= restore.load_sp_pc:
             stages[pc] = RiscvSchedulerStage(
                 name="switch-after-update",
                 owner="new",
@@ -833,7 +566,7 @@ def _build_stage_map(
                 function="processed_source",
                 detail="processed_source prior to loading incoming task sp",
             )
-        elif pc <= restore_pop_pc:
+        elif pc <= restore.pop_pc:
             stages[pc] = RiscvSchedulerStage(
                 name="restore-sp-loaded",
                 owner="new",
@@ -842,7 +575,7 @@ def _build_stage_map(
                 function="processed_source",
                 detail="processed_source restoring incoming task context from intact stack frame",
             )
-        elif pc == restore_mret_pc:
+        elif pc == restore.mret_pc:
             stages[pc] = RiscvSchedulerStage(
                 name="restore-sp-popped",
                 owner="new",
@@ -891,22 +624,28 @@ def build_riscv_profile(
     tcb_ptr = elf.symbol_address("pxCurrentTCB")
     crit_ptr = elf.symbol_address("pxCriticalNesting")
     isr_top_ptr = elf.symbol_address("xISRStackTop")
-    if tcb_ptr is None or crit_ptr is None or isr_top_ptr is None:
+    if tcb_ptr is None or isr_top_ptr is None:
         return None, "scheduler-profile-symbol-missing:kernel-globals"
     switch_span = _symbol_span(elf, "vTaskSwitchContext")
     if isinstance(switch_span, str):
         return None, switch_span
     switch_start, switch_end = switch_span
 
-    start_res = _verify_start_first(elf, word, tcb_ptr, crit_ptr)
+    analysis = analyze_riscv_trap_blocks(
+        elf, switch_start=switch_start, crit_ptr=crit_ptr
+    )
+    if isinstance(analysis, str):
+        return None, analysis
+    prologue = analysis.prologue
+    dispatch = analysis.dispatch
+    restore = analysis.restore
+    if prologue.critical_nesting_offset is not None and crit_ptr is None:
+        return None, "scheduler-profile-symbol-missing:kernel-globals"
+
+    start_res = _verify_start_first(elf, word, tcb_ptr, crit_ptr, analysis)
     if isinstance(start_res, str):
         return None, start_res
     start_insns, sp_load_pc, start_pop_pc, start_ret_pc = start_res
-
-    trap_res = _verify_trap_handler(elf, word, tcb_ptr, switch_start)
-    if isinstance(trap_res, str):
-        return None, trap_res
-    trap_info, trap_all_pcs = trap_res
 
     switch_res = _verify_vtask_switch(elf, switch_start, switch_end, word, tcb_ptr)
     if isinstance(switch_res, str):
@@ -924,8 +663,8 @@ def build_riscv_profile(
         == 3
         else 2
     )
-    trap_start: int = trap_info["trap_start"]  # type: ignore[assignment]
-    trap_end: int = trap_info["trap_end"]  # type: ignore[assignment]
+    trap_start = analysis.trap_start
+    trap_end = analysis.trap_end
 
     ordered = sorted(
         (
@@ -946,14 +685,23 @@ def build_riscv_profile(
         sp_load_pc=sp_load_pc,
         start_pop_pc=start_pop_pc,
         start_ret_pc=start_ret_pc,
-        trap_info=trap_info,
+        analysis=analysis,
         switch_pre_pcs=switch_pre_pcs,
         switch_post_pcs=switch_post_pcs,
     )
 
+    trap_count = (
+        len(prologue.pcs)
+        + len(dispatch.async_pre_sp_pcs)
+        + len(dispatch.async_dispatch_pcs)
+        + len(dispatch.sync_pre_sp_pcs)
+        + len(dispatch.sync_dispatch_pcs)
+        + len(dispatch.unhandled_sync_pcs)
+        + len(restore.pcs)
+    )
     tokens = [
         f"xPortStartFirstTask:{len(start_insns)}",
-        f"trap:{len(trap_all_pcs)}",
+        f"trap:{trap_count}",
         switch_sig,
     ]
     fingerprint = hashlib.sha256("\n".join(tokens).encode("utf-8")).hexdigest()[:16]
@@ -964,7 +712,8 @@ def build_riscv_profile(
             fingerprint=fingerprint,
             xlen=xlen,
             word_size=word,
-            frame_bytes=_FRAME_WORDS * word,
+            frame_bytes=prologue.frame_bytes,
+            mstatus_offset=prologue.mstatus_offset,
             px_current_tcb=tcb_ptr,
             start_first_start=start_first_start,
             start_first_end=start_first_end,
@@ -973,21 +722,21 @@ def build_riscv_profile(
             start_first_ret_pc=start_ret_pc,
             trap_start=trap_start,
             trap_end=trap_end,
-            trap_tcb_store_pc=trap_info["trap_tcb_store_pc"],  # type: ignore[arg-type]
-            async_epc_store_pc=trap_info["async_epc_store_pc"],  # type: ignore[arg-type]
-            sync_entry=trap_info["sync_pc"],  # type: ignore[arg-type]
-            sync_epc_store_pc=trap_info["sync_epc_store_pc"],  # type: ignore[arg-type]
-            handle_interrupt_pc=trap_info["idle_pc"],  # type: ignore[arg-type]
-            handle_exception_pc=trap_info["exc_pc"],  # type: ignore[arg-type]
-            processed_source_pc=trap_info["proc_pc"],  # type: ignore[arg-type]
-            restore_load_sp_pc=trap_info["restore_load_sp_pc"],  # type: ignore[arg-type]
-            restore_pop_sp_pc=trap_info["restore_pop_pc"],  # type: ignore[arg-type]
-            restore_mret_pc=trap_info["restore_mret_pc"],  # type: ignore[arg-type]
+            trap_tcb_store_pc=prologue.tcb_store_pc,
+            async_epc_store_pc=dispatch.async_epc_store_pc,
+            sync_entry=dispatch.sync_pc,
+            sync_epc_store_pc=dispatch.sync_epc_store_pc,
+            handle_interrupt_pc=dispatch.intr_dispatch_start,
+            handle_exception_pc=dispatch.sync_dispatch_start,
+            processed_source_pc=restore.proc_pc,
+            restore_load_sp_pc=restore.load_sp_pc,
+            restore_pop_sp_pc=restore.pop_pc,
+            restore_mret_pc=restore.mret_pc,
             switch_start=switch_start,
             switch_end=switch_end,
             switch_update_pc=switch_update_pc,
             switch_after_update_pc=switch_after_pc,
-            trap_saved_slots=trap_info["saved_slots"],  # type: ignore[arg-type]
+            trap_saved_slots=prologue.saved_slots,
             stages=stages,
         ),
         "ok",

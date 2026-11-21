@@ -780,3 +780,74 @@ def test_riscv_mtvec_targets_entry_direct_and_vectored():
         read=mem,
     )
     assert not isinstance(ok_vec, tuple)
+
+
+def test_core_riscv_static_cfg_and_trap_helpers():
+    from core.unwind_riscv import (
+        riscv_cfg_successors,
+        riscv_decode_until_return,
+        riscv_find_sp_loads_from_symbol,
+        riscv_partition_by_sp_loads,
+        riscv_reachable_pcs,
+        riscv_route_epc_store,
+    )
+
+    code = {
+        0x1000: ("auipc", 5, 0x10000),
+        0x1004: ("lw", 2, 5, 0x10),
+        0x1008: ("beq", 10, 0, 0x1014),
+        0x100C: ("jal", 1, 0x2000),
+        0x1010: ("jal", 0, 0x1018),
+        0x1014: ("jal", 0, 0x1014),
+        0x1018: ("ret",),
+        0x101C: ("nop",),
+    }
+    succs = riscv_cfg_successors(code)
+    assert succs[0x1008] == (0x100C, 0x1014)
+    assert succs[0x1010] == (0x1018,)
+    assert succs[0x1018] == ()
+    assert riscv_reachable_pcs(code, 0x1008) == {0x1008, 0x100C, 0x1010, 0x1014, 0x1018}
+
+    sp_loads = riscv_find_sp_loads_from_symbol(
+        code, symbol_addr=0x11010, word=4, mask=0xFFFFFFFF
+    )
+    assert sp_loads == {0x1004}
+    pre, post = riscv_partition_by_sp_loads(code, 0x1000, sp_loads)
+    assert pre == {0x1000, 0x1004}
+    assert post == {0x1008, 0x100C, 0x1010, 0x1014, 0x1018}
+
+    # Clobbering the mepc carrier register invalidates tracking; valid chain recovers store PC.
+    assert (
+        riscv_route_epc_store(
+            {
+                0x1000: ("addi", 6, 5, 4),
+                0x1004: ("lui", 6, 0),
+                0x1008: ("sw", 6, 2, 0),
+            },
+            mepc_register=5,
+            addend=4,
+        )
+        is None
+    )
+    assert (
+        riscv_route_epc_store(
+            {
+                0x1000: ("addi", 6, 5, 4),
+                0x1004: ("sw", 6, 2, 0),
+            },
+            mepc_register=5,
+            addend=4,
+        )
+        == 0x1004
+    )
+
+    blob = (0x0001).to_bytes(2, "little") + (0x00008067).to_bytes(4, "little")
+    elf = ElfImage(
+        pointer_size=4,
+        endian="little",
+        machine=243,
+        sections=(ElfSection(".text", 0x1000, blob, 0x4, 1),),
+    )
+    decoded = riscv_decode_until_return(elf, 0x1000)
+    assert list(decoded) == [0x1000, 0x1002]
+    assert decoded[0x1002][0] == "ret"

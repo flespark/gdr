@@ -307,20 +307,23 @@ def test_freertos_and_rtthread_arm_and_riscv_profile_selection():
 
 
 def test_riscv_route_and_initial_stack_helpers():
+    from core.unwind_riscv import riscv_route_epc_store
     from freertos.stack_frame_profile import (
         _riscv_initial_stack,
-        _riscv_route_pc_store,
         _riscv_slots_include,
     )
     from tests.unit.core.test_stack_frame_parser import _i, _s
 
-    assert _riscv_route_pc_store(
-        {
-            0x1000: ("addi", 6, 5, 4),
-            0x1004: ("sw", 6, 2, 0),
-        },
-        mepc_register=5,
-        addend=4,
+    assert (
+        riscv_route_epc_store(
+            {
+                0x1000: ("addi", 6, 5, 4),
+                0x1004: ("sw", 6, 2, 0),
+            },
+            mepc_register=5,
+            addend=4,
+        )
+        == 0x1004
     )
     assert _riscv_slots_include({1: {4, 8}}, {1: 4})
     assert not _riscv_slots_include({1: {4}}, {1: 8})

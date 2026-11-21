@@ -7,12 +7,19 @@ fail-closed RISC-V cross-stack unwind mechanism.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from .cpus import RISCV_CONVENTION
-from .insn_riscv import EvidenceError, riscv_code_decoder
+from .insn_riscv import (
+    EvidenceError,
+    riscv_code_decoder,
+    riscv_next_pc,
+    riscv_update_const_addr,
+    riscv_written_register,
+)
 from .unwind_arm import FaultPrecision
 from .unwind_meta import ElfImage, Reader
 from .unwind_segments import (
@@ -661,3 +668,147 @@ def prepare_riscv_handler_unwind(
             mtval=snapshot.mtval,
         ),
     )
+
+
+_CFG_BRANCH_MNEMONICS = frozenset({"beq", "bne", "blt", "bge", "bltu", "bgeu"})
+
+
+def riscv_cfg_successors(code: dict[int, tuple]) -> dict[int, tuple[int, ...]]:
+    """Build local control-flow successor PCs for each decoded RISC-V instruction."""
+    succs: dict[int, tuple[int, ...]] = {}
+    for pc in sorted(code):
+        op = code[pc]
+        fallthrough = riscv_next_pc(code, pc)
+        if op[0] in _CFG_BRANCH_MNEMONICS:
+            targets = [t for t in (fallthrough, op[3]) if t is not None and t in code]
+            succs[pc] = tuple(dict.fromkeys(targets))
+        elif op[0] == "jal" and op[1] == 0:
+            succs[pc] = (op[2],) if op[2] in code else ()
+        elif op[0] in ("ret", "jalr", "mret"):
+            succs[pc] = ()
+        else:
+            succs[pc] = (
+                (fallthrough,)
+                if fallthrough is not None and fallthrough in code
+                else ()
+            )
+    return succs
+
+
+def riscv_reachable_pcs(code: dict[int, tuple], start: int) -> set[int]:
+    """Return every PC in *code* reachable from *start* along local CFG edges."""
+    succs = riscv_cfg_successors(code)
+    seen: set[int] = set()
+    queue: deque[int] = deque([start])
+    while queue:
+        pc = queue.popleft()
+        if pc in seen or pc not in code:
+            continue
+        seen.add(pc)
+        for nxt in succs.get(pc, ()):
+            queue.append(nxt)
+    return seen
+
+
+def riscv_partition_by_sp_loads(
+    code: dict[int, tuple], start: int, sp_loads: set[int]
+) -> tuple[set[int], set[int]]:
+    """Split reachable PCs in *code* from *start* into before vs after *sp_loads*."""
+    succs = riscv_cfg_successors(code)
+    pre: set[int] = set()
+    post: set[int] = set()
+    queue: deque[tuple[int, bool]] = deque([(start, False)])
+    seen: set[tuple[int, bool]] = set()
+    while queue:
+        pc, switched = queue.popleft()
+        if (pc, switched) in seen or pc not in code:
+            continue
+        seen.add((pc, switched))
+        if switched:
+            post.add(pc)
+        else:
+            pre.add(pc)
+        next_switched = switched or (pc in sp_loads)
+        for nxt in succs.get(pc, ()):
+            queue.append((nxt, next_switched))
+    return pre, post
+
+
+def riscv_find_sp_loads_from_symbol(
+    code: dict[int, tuple], *, symbol_addr: int, word: int, mask: int
+) -> set[int]:
+    """Return PCs in *code* that load ``sp`` from global slot *symbol_addr*."""
+    load_op = "ld" if word == 8 else "lw"
+    const_addrs: dict[int, int] = {}
+    hits: set[int] = set()
+    for pc in sorted(code):
+        op = code[pc]
+        if op[0] == load_op and op[1] == 2:
+            rn, imm = op[2], op[3]
+            if rn in const_addrs and ((const_addrs[rn] + imm) & mask) == symbol_addr:
+                hits.add(pc)
+        riscv_update_const_addr(op, pc, mask, const_addrs)
+    return hits
+
+
+def riscv_route_epc_store(
+    code: dict[int, tuple],
+    *,
+    mepc_register: int,
+    addend: int,
+    store_ops: tuple[str, ...] = ("sd", "sw"),
+) -> int | None:
+    """Return the PC storing ``mepc + addend`` into ``0(sp)``, or ``None``."""
+    values: dict[int, tuple[str, int]] = {mepc_register: ("mepc", 0)}
+    for pc in sorted(code):
+        op = code[pc]
+        if op[0] == "addi":
+            source = values.get(op[2])
+            if source is None:
+                values.pop(op[1], None)
+            else:
+                values[op[1]] = (source[0], source[1] + op[3])
+        elif op[0] in store_ops and op[2] == 2 and op[3] == 0:
+            if values.get(op[1]) == ("mepc", addend):
+                return pc
+        else:
+            written = riscv_written_register(op)
+            if written is not None:
+                values.pop(written, None)
+    return None
+
+
+def riscv_decode_until_return(
+    elf: ElfImage, start: int, *, limit: int = 128
+) -> dict[int, tuple]:
+    """Decode sequential RISC-V instructions from *start* through ``ret``/``jalr``."""
+    section = next(
+        (
+            item
+            for item in elf.sections
+            if item.flags & 4 and item.address <= start < item.address + len(item.data)
+        ),
+        None,
+    )
+    if section is None or start % 2:
+        raise EvidenceError("code anchor unavailable")
+    end = section.address + len(section.data)
+    xlen = elf.pointer_size * 8
+    result: dict[int, tuple] = {}
+    pc = start
+    while pc < end and len(result) < limit:
+        raw = elf.read_at(pc, 2)
+        if raw is None:
+            raise EvidenceError("instruction unavailable")
+        size = 4 if (int.from_bytes(raw, "little") & 3) == 3 else 2
+        if pc + size > end:
+            raise EvidenceError("instruction outside code range")
+        word_raw = elf.read_at(pc, size)
+        if word_raw is None:
+            raise EvidenceError("instruction unavailable")
+        op = riscv_code_decoder(int.from_bytes(word_raw, "little"), size, pc, xlen)
+        result[pc] = op
+        pc += size
+        if op[0] in ("ret", "jalr"):
+            return result
+    raise EvidenceError("instruction budget exceeded")

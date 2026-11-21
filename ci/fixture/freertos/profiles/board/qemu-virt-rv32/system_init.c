@@ -5,6 +5,13 @@ void SystemInit(void)
 {
 }
 
+void gdr_rv_unhandled_irq(void)
+{
+    for (;;)
+    {
+    }
+}
+
 /* Reason: qemu-system-riscv64 supports the RISC-V semihosting spec when
  * started with -semihosting (-semihosting-config enable=on, which the
  * GDR test harness passes); the fixture's ready marker then reaches QEMU's

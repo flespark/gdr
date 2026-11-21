@@ -9,6 +9,8 @@ decodes; the unwind itself lives in :mod:`core.unwind`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from core.cpus import Isa
 from core.stack_frame_parser import SavedStackContext, decode_profile_slots
 from core.unwind import Endian, Reader, SeedFrame, read_block, read_slot
@@ -206,25 +208,38 @@ def decode_cm4f_saved_context(
     )
 
 
-def _riscv_context(isa: Isa, word: int) -> SavedStackContext:
+def build_riscv_saved_context(
+    isa: Isa,
+    word: int,
+    *,
+    gpr_offsets: Mapping[int, int] | None = None,
+    frame_bytes: int | None = None,
+) -> SavedStackContext:
+    """Build a FreeRTOS RISC-V integer saved-context layout."""
+    offsets = (
+        dict(gpr_offsets)
+        if gpr_offsets is not None
+        else {1: word, **{reg: (reg - 3) * word for reg in range(5, 32)}}
+    )
+    span_bytes = 31 * word if frame_bytes is None else frame_bytes
+    ordered = tuple((reg, offsets[reg]) for reg in sorted(offsets))
     return SavedStackContext(
         profile_id=f"freertos/{isa}/integer-gpr",
         pointer_size=word,
-        registers=((1, word),)
-        + tuple((register, (register - 3) * word) for register in range(5, 32)),
+        registers=ordered,
         pc_offset=0,
-        lr_offset=word,
+        lr_offset=offsets[1],
         status_offset=None,
-        sp_offset=31 * word,
-        context_span=(0, 31 * word),
+        sp_offset=span_bytes,
+        context_span=(0, span_bytes),
         slot_aliases=(("r1", "lr"),),
         fill_word=int.from_bytes(bytes([0xA5]) * word, "little"),
         validation="live",
     )
 
 
-RISCV32_INTEGER = _riscv_context("riscv32", 4)
-RISCV64_INTEGER = _riscv_context("riscv64", 8)
+RISCV32_INTEGER = build_riscv_saved_context("riscv32", 4)
+RISCV64_INTEGER = build_riscv_saved_context("riscv64", 8)
 
 
 def decode_saved_context(

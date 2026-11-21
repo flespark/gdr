@@ -637,6 +637,19 @@ class FreeRtosEventGroupObject:
             self.waiters = []
 
 
+def _event_control_tick_bits(layout: FreeRtosLayout) -> int:
+    """Return the bit width used for EventBits_t control/IN_USE masks.
+
+    Pre-10.5.0 kernels (without ``configTICK_TYPE_WIDTH_IN_BITS``) hardcode
+    32-bit control and ``taskEVENT_LIST_ITEM_VALUE_IN_USE`` masks even when
+    a 64-bit port typedefs ``TickType_t`` to 64 bits.
+    """
+    tick_bits = layout.config.tick_bits
+    if tick_bits > 32 and layout.version is not None and layout.version < (10, 5, 0):
+        return 32
+    return tick_bits
+
+
 def iter_waiters(
     value,
     layout: FreeRtosLayout,
@@ -652,7 +665,7 @@ def iter_waiters(
     head = read_field(value, layout.structs["struct EventGroupDef_t"], "waiting")
     if head is None:
         return
-    masks = event_bit_masks(layout.config.tick_bits)
+    masks = event_bit_masks(_event_control_tick_bits(layout))
     try:
         list_layout = layout.structs["struct xLIST"]
         end = read_field(head, list_layout, "end")
