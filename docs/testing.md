@@ -96,9 +96,11 @@ answers.
 | `mps2-an385` | RT-Thread | `qemu-system-arm -M mps2-an385 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv7-M (Cortex-M3) |
 | `microbit` | RT-Thread | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv6-M (Cortex-M0) |
 | `mps2-an505` | RT-Thread | `qemu-system-arm -M mps2-an505 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv8-M Mainline (single Cortex-M33) |
-| `mps2-an386` | RT-Thread | `qemu-system-arm -M mps2-an386 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv7E-M (single Cortex-M4 with FPU) |
+| `mps2-an386` | RT-Thread | `qemu-system-arm -M mps2-an386 -kernel rtthread.elf` | `rtthread.elf` | 32-bit Armv7E-M (single Cortex-M4; `soft`/`softfp`/`fpu`) |
 | `rv32` | RT-Thread | `qemu-system-riscv32 -M virt -cpu rv32 -m 256M -bios rtthread.bin` | `rtthread.elf` | 32-bit RISC-V (`riscv:rv32`) |
 | `mps2-an385` | FreeRTOS | `qemu-system-arm -M mps2-an385 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv7-M (Cortex-M3) |
+| `mps2-an386` | FreeRTOS | `qemu-system-arm -M mps2-an386 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv7E-M (single Cortex-M4; `soft`/`softfp`/`fpu`) |
+| `mps2-an505` | FreeRTOS | `qemu-system-arm -M mps2-an505 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv8-M Mainline (single Cortex-M33) |
 | `mps2-an521` | FreeRTOS | `qemu-system-arm -M mps2-an521 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv8-M Mainline (dual Cortex-M33, SSE-200) |
 | `microbit` | FreeRTOS | `qemu-system-arm -M microbit -global nrf51-soc.sram-size=262144 -kernel freertos.elf -semihosting-config enable=on,target=native` | `freertos.elf` | 32-bit Armv6-M (Cortex-M0, Thumb-1) |
 | `qemu-virt-rv32` | FreeRTOS | `qemu-system-riscv32 -M virt -cpu rv32 -m 256M -bios freertos.bin -semihosting-config enable=on` | `freertos.elf` | 32-bit RISC-V (`riscv:rv32`) |
@@ -158,7 +160,7 @@ Each fixture spawns a deterministic set of healthy and blocked worker threads
 | `test_commands.py` | Every `rtt` list and detail command (`threads`/`thread`, `semaphores`, `mutexes`, `events`, `mailboxes`, `msgqueues`, `mempools`, `timers`, `objects`, `system`, `heap`, `heap dump`, `check`, `watch`/`unwatch`), waiter chains (`count@names`), mailbox slot addresses, timer `Src` provenance (`registry+active`), and proven saved-frame `PC`. |
 | `test_api.py` | `$gdr_json`, `$gdr_json_chunk`, `$gdr_dump`, `gdr api <verb>`, `gdr probe` evidence, and `gdr reset` / `--force` / `--allow-unverified` session lifecycle. |
 | `test_startup.py` | Separate paused-at-reset QEMU session verifying that snapshots taken before kernel initialization safely stop on `NULL` timer-list heads instead of fabricating wrapped object addresses, and recover once the scheduler starts. |
-| `test_backtrace.py` | Saved/current chains (including `worker_fpu` FPU frames on AN386/AN505 `fpu`), unstarted roots, exit completeness, external IRQ & SysTick cross-stack unwinding, real Arm M-profile and RISC-V (`rv32`/`rv64`) scheduler/trap transition stages (including `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` prologue/epilogue switches, `rt_hw_context_switch_exit`/`spurious_interrupt`, and E310 `nested-trap-epc-unproven`), deterministic `synchronous-fault` hook frames, bounded output, structured refusals, and unchanged target state. |
+| `test_backtrace.py` | Saved/current chains (including `soft`/`softfp`/`fpu` ABI coverage on AN386 and `worker_fpu` FPU frames on AN386/AN505), unstarted roots, exit completeness, external IRQ & SysTick cross-stack unwinding, real Arm M-profile and RISC-V (`rv32`/`rv64`) scheduler/trap transition stages (including `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` prologue/epilogue switches, `rt_hw_context_switch_exit`/`spurious_interrupt`, and E310 `nested-trap-epc-unproven`), deterministic `synchronous-fault` hook frames, `NMI`/`DebugMonitor` refusals, bounded output, structured refusals, and unchanged target state. |
 | `test_fixtures.py` | Consolidated port/fixture oracles: basic Armv6-M/Armv7-M instructions, DWARF offsets, raw frames and bounded MSP/heap/vector evidence; Armv8-M Mainline 80-byte DWARF/Secure header/raw-seed exit checks; RV32 128-byte DWARF/raw-seed exit checks; and `microbit` PendSV `0xFFFFFFFD` return, TIMER2 tick registers, IRQ10 vector and unused SysTick vector. |
 
 ---
@@ -204,15 +206,17 @@ Verification spans three complementary execution arms:
      the [lane README](../ci/fixture/freertos/README.md#microbit-armv6-m));
      verifies the Thumb-1 context frame, EHABI/CFI selection, IRQ/SysTick handler
      unwinding, `fault-frame-imprecise` refusal, and Armv6-M scheduler transitions.
-   - **Armv7E-M (`mps2-an386` / `11.3.1` / `fpu`)**: Builds
-     `portable/GCC/ARM_CM4F` on Cortex-M4F; verifies extended FPU task/handler frames
-     (`0xFFFFFFE1/E9/ED`), synchronous faults, SysTick, and CM4F scheduler stages.
+   - **Armv7E-M (`mps2-an386` / `11.3.1` / `fpu`, `softfp`, `soft`)**: Builds
+     `portable/GCC/ARM_CM4F` (`fpu`, `softfp`) and `portable/GCC/ARM_CM3`
+     (`soft`) on Cortex-M4; verifies `aapcs32` integer and `aapcs32`/`aapcs32-vfp`
+     extended FPU task/handler frames (`0xFFFFFFE1/E9/ED`), synchronous faults,
+     SysTick, and CM3/CM4F scheduler stages.
    - **Single-core Armv8-M Mainline (`mps2-an505` / `11.3.1` / `full`)**: Builds
      single-core `ARM_CM33_NTZ/non_secure` with single-Secure-state QEMU execution;
      verifies external IRQ `19`/`20`, SysTick, synchronous faults, and CM33 scheduler transitions.
-   - **RISC-V (`qemu-virt-rv32` / `11.1.0` / `base`, `qemu-virt-rv64` / `11.1.0` / `rv64`)**:
+   - **RISC-V (`qemu-virt-rv32` `10.3.1`/`10.4.6`/`11.1.0`/`11.3.1` `base`, `qemu-virt-rv64` `10.4.6`/`11.1.0`/`11.3.1` `rv64`)**:
      Builds `rv32imac_zicsr` (`ilp32`) and `rv64imac_zicsr` (`lp64`, 64-bit ticks);
-     verifies saved/live CFI unwinding, M-mode IRQ traps, synchronous `ecall` yield,
+     verifies saved/live CFI unwinding across `10.3.x–11.3.1` trap layouts, M-mode IRQ traps, synchronous `ecall` yield,
      `xPortStartFirstTask` first-start stages, `vTaskSwitchContext` before/after TCB
      writeback, `processed_source` restore stages, and fail-closed non-`ecall` sync faults.
 3. **File-only static snapshot for corruption negatives (`mps2-an521/11.1.0/snapshot`)**:
@@ -248,7 +252,7 @@ test rejection behavior, not live port support.
 | RTOS port | Proven task ownership and stack spans, target-specific capacity/vector evidence, ISA hook selection and fail-before-unwind refusals; actual IRQ, nested handler and handler C-call chains; raw frame oracles and unchanged target state. | `tests/unit/freertos/test_backtrace_armv6m.py`, `test_backtrace_gdb.py` and `tests/integration/freertos/test_backtrace.py`. |
 
 The live IRQ tests select `freertos/microbit/11.1.0/full`, `mps2-an385/full`,
-`mps2-an386/11.3.1/fpu`, or `mps2-an505/11.3.1/full` (gated by `gdr_irq_gate`).
+`mps2-an386/11.3.1/{fpu,softfp,soft}`, or `mps2-an505/11.3.1/full` (gated by `gdr_irq_gate`).
 Their oracle reads GDB MSP/PSP, xPSR, CONTROL, raw hardware frames, task bounds
 and linker symbols independently of GDR's transition result. Register,
 task/IRQ-stack hashes, current TCB and tick snapshots must remain unchanged
@@ -277,9 +281,9 @@ python3 ci/test.py run freertos mps2-an385 11.1.0 full -- tests/integration/free
 ### Scheduler unwind acceptance
 
 The scheduler tests run across Arm M-profile (`freertos/mps2-an385/full`,
-`freertos/microbit/11.1.0/full`, `freertos/mps2-an386/11.3.1/fpu`,
-`freertos/mps2-an505/11.3.1/full`) and RISC-V (`freertos/qemu-virt-rv32/11.1.0/base`,
-`freertos/qemu-virt-rv64/11.1.0/rv64`, `rtthread/rv32/4.0.5`, `rtthread/rv64/4.0.5`). Tests
+`freertos/microbit/11.1.0/full`, `freertos/mps2-an386/11.3.1/{fpu,softfp,soft}`,
+`freertos/mps2-an505/11.3.1/full`) and RISC-V (`freertos/qemu-virt-rv32/{10.3.1,10.4.6,11.1.0,11.3.1}/base`,
+`freertos/qemu-virt-rv64/{10.4.6,11.1.0,11.3.1}/rv64`, `rtthread/rv32/4.0.5`, `rtthread/rv64/4.0.5`). Tests
 check compiled instruction bytes and raw TCBs, saved core registers, hardware
 frames, PSP/MSP and xPSR independently of GDR's stage decision. Breakpoints
 observe SysTick before PendSV, the current-TCB store before/after execution,
@@ -326,7 +330,7 @@ assertions through the [same lane extension contract](../ci/README.md#layering-a
 | Dimension | RT-Thread (`ci/fixture/rtthread/`) | FreeRTOS (`ci/fixture/freertos/`) |
 | --- | --- | --- |
 | **Firmware source** | Upstream RT-Thread repo + per-BSP/version patch sets | Upstream `FreeRTOS-Kernel` tags + shared `profiles/main.c`, `board/`, `config/<variant>/` |
-| **Primary matrix axis** | Kernel release history (`3.1.0–3.1.5`, `4.0.0–4.1.1`) across 32-bit ARM and 64-bit RV64 | Compile-time `FreeRTOSConfig.h` feature matrix (19 variants) + kernel version sweep (`10.3.1–11.3.1`) |
-| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv32`, `rv64` (`virt`), `microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505` | `microbit` (Armv6-M), `mps2-an385` (Armv7-M), `mps2-an386` (Armv7E-M FPU), `mps2-an505` (Armv8-M Mainline single-core), `mps2-an521` (Armv8-M Mainline SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
+| **Primary matrix axis** | Kernel release history (`3.1.0–3.1.5`, `4.0.0–4.1.1`) across 32-bit ARM and 64-bit RV64 | Compile-time `FreeRTOSConfig.h` feature matrix (22 variants) + kernel version sweep (`10.3.1–11.3.1`) |
+| **QEMU targets** | `cortex-a9` (`vexpress-a9`), `rv32`, `rv64` (`virt`), `microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505` | `microbit` (Armv6-M), `mps2-an385` (Armv7-M), `mps2-an386` (Armv7E-M `soft`/`softfp`/`fpu`), `mps2-an505` (Armv8-M Mainline single-core), `mps2-an521` (Armv8-M Mainline SMP / MPU), `qemu-virt-rv32`, `qemu-virt-rv64` |
 | **Negative / corruption testing** | Unit tests + reset-vector `NULL`-head startup session (`test_startup.py`) | Dedicated file-only static ELF pair (`test_snapshot.py`: `freertos.elf` + `snapshot_heap.elf`) |
 | **Expectation oracle** | `tests/support/rtthread_fixture_profiles.py` | `tests/support/freertos_fixture_profiles.py` |

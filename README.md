@@ -183,31 +183,26 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 
 ## Note
 
-GDR insist on data struct **keep align** between RTOS code and runtime memory. But there
-maybe bias due to compiler optimization. GDR also infer RTOS version, component/feature
-enable from macros in ELF DWARF. Fellow debug optimized compilation options is recommend:
+Users must specify the RTOS and version explicitly (`no auto-detection`), while
+kernel config features are probed at startup. GDR expects target memory layouts to
+match RTOS source without aggressive layout distortion and verifies version/feature
+macros plus unwinding via the unstripped ELF; mandatory and recommended firmware
+build settings:
 
-```cmake
-add_compile_options(-O0 -ggdb3)
-```
+- **Compiler (mandatory)**: Target/ABI flags (`-mcpu`/`-mfloat-abi` or
+  `-march`/`-mabi`), `-g3 -gdwarf-4` (DWARF-4 `.debug_macro` and `.debug_frame`),
+  and `-funwind-tables` (`.ARM.exidx`/`.eh_frame`). Recommended: `-O0`/`-Og`,
+  `-fno-lto`, and `-g3 -gdwarf-4` in assembler flags.
+- **Linker & RTOS config (mandatory for backtrace)**: Keep full symbols in the
+  GDB `.elf`, retain unwind sections under `--gc-sections` (`KEEP(*(.eh_frame))` /
+  `*(.ARM.exidx*)`), enable `configRECORD_STACK_HIGH_ADDRESS=1` (FreeRTOS), and
+  export MSP/ISR stack bounds for cross-stack IRQ/trap unwinding.
 
-Users must specify the RTOS and major version explicitly when using GDR;
-there is **no auto-detection** of the RTOS type or version (Consider variance of
-version declare in RTOS and ELF compilation). Kernel *config features* (SMP, heap
-manager kind, enabled IPC components) are probed automatically by symbol
-presence at startup.
-
-Cross-stack IRQ unwinding on Armv6-M / Armv7-M / Armv7E-M resolves interrupt stack bounds
-from standard linker symbols (`__StackLimit`..`__StackTop`, `_sstack`..`_estack`),
-dedicated ELF stack sections (`.irq_stack`, `.isr_stack`, `.stack`), or the
-vector-table initial MSP (`__gdr_irq_stack_low` / `__gdr_irq_stack_top` can
-override). Armv6-M external IRQ capacity is derived from `.isr_vector`,
-`__Vectors_End`, or the first code symbol after `0x0` (`__gdr_vector_table_end`
-and `__gdr_armv6m_irq_count` can override).
-
-Synchronous Arm M-profile faults unwind into the faulting task with
-`stop_reason=synchronous-fault` when SCB fault registers (`CFSR`/`HFSR`/`MMFAR`/`BFAR`)
-prove a precise cause; imprecise faults stop as `fault-frame-imprecise`.
+Cross-stack Arm M-profile IRQ unwinding resolves MSP bounds and Armv6-M vector
+capacity from linker symbols/sections; precise SCB faults end with
+`synchronous-fault` while imprecise ones report `fault-frame-imprecise`. See
+[docs/backtrace.md](docs/backtrace.md) for the full unwind pipeline, linker
+override symbols, and build details.
 
 ## Contribute
 

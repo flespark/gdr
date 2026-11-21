@@ -15,7 +15,7 @@ cleans an existing working tree.
 | `cortex-a9` | Armv7-A | `3.1.0–3.1.5, 4.0.0–4.1.1` | default | `bsp/qemu-vexpress-a9` | Saved integer context (`context_gcc.S`), live C EHABI/CFI, initial entry root, `rt_thread_exit` sentinel; no M-profile `sched`/`irq`/`fault` lanes |
 | `microbit` | Armv6-M | `4.0.5` | default | `bsp/gdr-microbit` (patch) | `sched` (first-start & PendSV stages), `irq` (single, nested, 4B `STKALIGN`), saved/live Thumb-1, exit sentinel; no M0 fault fixture (`CFSR` and exception hook absent; FreeRTOS `microbit` covers `fault-frame-imprecise`) |
 | `mps2-an385` | Armv7-M | `4.0.5` | default | `bsp/gdr-mps2-an385` (patch) | `sched` (PendSV & `rt_hw_context_switch`), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`, HardFault hook trampoline) |
-| `mps2-an386` | Armv7E-M | `4.0.5` | `fpu` | `bsp/gdr-mps2-an386` (patch) | `sched` (CM4F integer+FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
+| `mps2-an386` | Armv7E-M | `4.0.5` | `fpu`, `softfp`, `soft` | `bsp/gdr-mps2-an386` (patch + `softfp`/`soft` overlays) | `sched` (CM3 integer on `soft`; CM4F integer+FPU stages on `fpu`/`softfp`), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking on `fpu`/`softfp`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`, 36B `soft` vs 40B `fpu`/`softfp` trampoline) |
 | `mps2-an505` | Armv8-M Mainline | `4.0.5` | default, `fpu` | `bsp/gdr-mps2-an505` (patch) | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick; FP lazy stacking in `fpu`), `fault` (`UNDEFINSTR`, precise `BusFault`; MPU load surfaces as BusFault on QEMU AN505); TZ dual-world and nonzero `SPLIM` unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
 | `rv32` | RV32 | `4.0.5` | default | `bsp/gdr-rv32` (patch) | Saved/live CFI (`ilp32`), M-mode `trap_entry` cross-stack (E310 `deferred-mepc`; nested `>1` fails `nested-trap-epc-unproven`), `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` epilogue switches, and `spurious_interrupt` / `exit` stages; no vendor IRQ/fault extensions (XuanTie, Nuclei ECLIC, WCH PFIC) |
@@ -178,6 +178,8 @@ top of the base BSP.
 
 ```bash
 python3 ci/test.py run rtthread mps2-an386 4.0.5 fpu
+python3 ci/test.py run rtthread mps2-an386 4.0.5 softfp
+python3 ci/test.py run rtthread mps2-an386 4.0.5 soft
 ```
 
 ### RTOS config
@@ -186,12 +188,16 @@ python3 ci/test.py run rtthread mps2-an386 4.0.5 fpu
 `RT_TICK_PER_SECOND=100`). Memory map, CMSDK UART0 (`0x40004000`), 25 MHz
 SysTick, 64 KiB heap, 16 KiB MSP span, and CMSDK Timer0/Timer1 match AN385;
 `board.c` enables `CPACR` CP10/CP11 because upstream M4 init leaves FPU
-access disabled.
+access disabled. Variant overlays under `patches/mps2-an386/4.0.5/softfp/` and
+`patches/mps2-an386/4.0.5/soft/` adjust the compiler float ABI (and `soft` skips
+`GDR_IRQ_SCENARIO_FP` and uses the 36-byte HardFault PSP unwind offset).
 
 ### Build option
 
 Compiles upstream `libcpu/arm/cortex-m4/` with
-`-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer`.
+`-mcpu=cortex-m4 -mthumb` plus `-mfloat-abi=hard -mfpu=fpv4-sp-d16` (`fpu`),
+`-mfloat-abi=softfp -mfpu=fpv4-sp-d16` (`softfp`), or `-mfloat-abi=soft` (`soft`),
+and `-O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer`.
 `003-fpu-context.patch` wraps upstream conditional `VSTMDBEQ`/`VLDMIANE`/`MOVEQ`/`BICNE`
 instructions in Thumb-2 `IT` blocks and adds `worker_fpu`; `004-irq-fixture.patch`
 and `005-fault-fixture.patch` add the runtime-gated exception fixtures.
@@ -203,16 +209,18 @@ and `005-fault-fixture.patch` add the runtime-gated exception fixtures.
 
 ### Unwind testcase
 
-- **Scheduled & FPU (`fpu` variant)**: CM4F integer+FPU PendSV stages,
-  `worker_fpu` extended saved slots (`FPCA` / `s16-s31`), and basic integer threads.
+- **Scheduled & FPU (`fpu` / `softfp` / `soft`)**: CM4F integer+FPU PendSV stages and
+  `worker_fpu` extended saved slots (`FPCA` / `s16-s31`) on `fpu` (`aapcs32-vfp`) and
+  `softfp` (`aapcs32`), plus CM4 integer PendSV stages (`__SOFTFP__`, 9-word save) on `soft`.
 - **IRQ (`004-irq-fixture.patch` + SysTick)**: `GDR_IRQ_SCENARIO_SINGLE`,
   `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, `GDR_IRQ_SCENARIO_FP`
-  (`EXC_RETURN=0xffffffed` lazy FPU stacking across MSP), and SysTick
+  (`EXC_RETURN=0xffffffed` lazy FPU stacking across MSP on `fpu`/`softfp`), and SysTick
   `rt_tick_increase` cross-stack unwind.
 - **Fault (`005-fault-fixture.patch`, `gdr_fault_gate`)**: `GDR_FAULT_SCENARIO_UNDEFINSTR`,
   `GDR_FAULT_SCENARIO_BUS`, and `GDR_FAULT_SCENARIO_MEMMANAGE` (`DACCVIOL`);
   `rt_exception_hook` receives the hardware frame pointer and adds back the
-  10-word (40-byte) M4F software prologue (`r4-r11` + `EXC_RETURN` + FPU flag word).
+  10-word (40-byte) M4F software prologue on `fpu`/`softfp` (`r4-r11` + `EXC_RETURN` + FPU flag word)
+  or the 9-word (36-byte) integer prologue on `soft`.
 
 ## `mps2-an505` (Armv8-M Mainline)
 

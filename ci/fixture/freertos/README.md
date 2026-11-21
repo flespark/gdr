@@ -12,7 +12,7 @@ are described in [testing](../../../docs/testing.md).
 | Live kernel-direct | `build.sh` | Clean `FreeRTOS-Kernel` tag, shared application, board and config headers. |
 | File-only `snapshot` | `build.sh` | Kernel headers and `profiles/config/snapshot/` data-only sources. |
 | Isolated `eh-frame` | `../../bare/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
-| M-profile IRQ / sched / fault fixtures | `build.sh` | Board-specific `irq.c`, `sched.c` and `fault.c` under `profiles/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) plus linker-reserved `.irq_stack`, all linked into `full` (and `fpu` on `mps2-an386`) under explicit runtime gate symbols. |
+| M-profile IRQ / sched / fault fixtures | `build.sh` | Board-specific `irq.c`, `sched.c` and `fault.c` under `profiles/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) plus linker-reserved `.irq_stack`, all linked into `full` (and `fpu`/`softfp`/`soft` on `mps2-an386`) under explicit runtime gate symbols. |
 
 The shared runner supplies explicit source, build, compiler and install
 paths. `build.sh` rejects a modified or mismatched tag checkout and never
@@ -28,12 +28,12 @@ preparation.
 | --- | --- | --- | --- | --- | --- |
 | `microbit` | Armv6-M | `11.1.0` | `full` | `portable/GCC/ARM_CM0`, `profiles/board/microbit/` | `sched` (PendSV/SVC stages), `irq` (single, nested, 4B `STKALIGN`), `fault` (`fault-frame-imprecise` on M0 `udf`), saved/live Thumb-1 + EHABI |
 | `mps2-an385` | Armv7-M | `10.3.1`, `10.4.6`, `10.5.1`, `11.1.0` | `10.3.1`: config matrix (`base`, `full`, `tick16`, heap/static/stream); `10.4.6–10.5.1`: `base`; `11.1.0`: `base`, `full`, `tick16`, `streams` | `portable/GCC/ARM_CM3`, `profiles/board/mps2-an385/` | `sched` (cooperative/tick/nested-IRQ PendSV & `vTaskSwitchContext`), `irq` (single, nested, 4B `STKALIGN`, SysTick `xTaskIncrementTick`), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`), EHABI `.ARM.exidx` |
-| `mps2-an386` | Armv7E-M | `11.3.1` | `fpu` | `portable/GCC/ARM_CM4F`, `profiles/board/mps2-an386/` | `sched` (CM4F basic/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
+| `mps2-an386` | Armv7E-M | `11.3.1` | `fpu`, `softfp`, `soft` | `portable/GCC/ARM_CM4F` (`fpu`, `softfp`), `portable/GCC/ARM_CM3` (`soft`), `profiles/board/mps2-an386/` | `sched` (CM3 integer + CM4F basic/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking on `fpu`/`softfp`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
 | `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an505/` | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
 | `mps2-an521` | Armv8-M Mainline | `11.3.1`, `11.1.0` | `11.3.1`: `smp`, `mpu`; `11.1.0`: `snapshot` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an521/` | Saved/live task unwind on `smp` (with `smp-no-context` cross-core refusal) and `mpu` (`mpu-pool`); `snapshot` file-only negative ELF; SMP/MPU handler cross-stack unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
-| `qemu-virt-rv32` | RV32 | `11.1.0` | `base` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` IRQs, `ecall` yield, `xPortStartFirstTask`, trap prologue, `vTaskSwitchContext`, `processed_source` restore stages (non-`ecall` sync faults fail closed); no vendor IRQ/fault extensions |
-| `qemu-virt-rv64` | RV64 | `11.1.0` | `rv64` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv64/` | Saved/live CFI (`lp64`, 64-bit tick), M-mode `freertos_risc_v_trap_handler` IRQs, `ecall` yield, `xPortStartFirstTask`, trap prologue, `vTaskSwitchContext`, `processed_source` restore stages (non-`ecall` sync faults fail closed); no vendor IRQ/fault extensions |
+| `qemu-virt-rv32` | RV32 | `10.3.1`, `10.4.6`, `11.1.0`, `11.3.1` | `base` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` IRQs, `ecall` yield, `xPortStartFirstTask`, trap prologue, `vTaskSwitchContext`, `processed_source` restore stages across `10.3.x–11.3.1` trap layouts (non-`ecall` sync faults fail closed); no vendor IRQ/fault extensions |
+| `qemu-virt-rv64` | RV64 | `10.4.6`, `11.1.0`, `11.3.1` | `rv64` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv64/` | Saved/live CFI (`lp64`, 64-bit tick), M-mode `freertos_risc_v_trap_handler` IRQs, `ecall` yield, `xPortStartFirstTask`, trap prologue, `vTaskSwitchContext`, `processed_source` restore stages across `10.4.x–11.3.1` trap layouts (non-`ecall` sync faults fail closed); no vendor IRQ/fault extensions |
 
 ## Container tools and cache
 
@@ -145,21 +145,25 @@ GDB uses `arm` and waits for `"GDR FreeRTOS fixture ready."`.
 
 ```bash
 python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
+python3 ci/test.py run freertos mps2-an386 11.3.1 softfp
+python3 ci/test.py run freertos mps2-an386 11.3.1 soft
 ```
 
 ### RTOS config
 
-Links `V11.3.1` `portable/GCC/ARM_CM4F` with `profiles/board/mps2-an386/`
+Links `V11.3.1` `portable/GCC/ARM_CM4F` (`fpu`, `softfp`) or
+`portable/GCC/ARM_CM3` (`soft`) with `profiles/board/mps2-an386/`
 (single Cortex-M4 with FPU: `MVFR0` nonzero, `CPACR` writable; `configCPU_CLOCK_HZ=25000000`,
 `configPRIO_BITS=8`, 4 MiB flash at `0x0`, 4 MiB RAM at `0x20000000`, top 16 KiB
-`.irq_stack`, CMSDK Timer0/1). Variant `fpu` enables `configENABLE_FPU 1`, links
-`irq.c`, `sched.c`, and `fault.c`, and adds `gdr_fpu_task` executing VFP
-instructions before blocking; AN505/AN521 models lack FPU hardware so FPU
-coverage lives here.
+`.irq_stack`, CMSDK Timer0/1). Variants `fpu` and `softfp` enable `configENABLE_FPU 1`
+and add `gdr_fpu_task` executing VFP instructions before blocking; `soft` sets
+`configENABLE_FPU 0` because `ARM_CM4F/port.c` rejects integer-only builds without
+`__VFP_FP__`. All three link `irq.c`, `sched.c`, and `fault.c`; AN505/AN521 models
+lack FPU hardware so FPU coverage lives here.
 
 ### Build option
 
-Built with `arm-none-eabi-*`, `-mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`.
+Built with `arm-none-eabi-*`, `-mcpu=cortex-m4 -mthumb` plus `-mfloat-abi=hard -mfpu=fpv4-sp-d16` (`fpu`), `-mfloat-abi=softfp -mfpu=fpv4-sp-d16` (`softfp`), or `-mfloat-abi=soft` (`soft`), and `-Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`.
 
 ### QEMU boot
 

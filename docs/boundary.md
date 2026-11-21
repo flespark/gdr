@@ -21,7 +21,7 @@ probes to safe defaults with warnings instead of guessing.
 
 ### SMP core context
 
-Core assignments and per-core pointers come from shared kernel memory
+For SMP hardware, core assignments and per-core pointers come from shared kernel memory
 (`pxCurrentTCBs[]` on FreeRTOS, `rt_cpu_index` on RT-Thread) rather than
 switching GDB inferiors or per-core register banks. Tasks actively executing on
 cores other than the halted GDB core always fail backtrace with
@@ -29,37 +29,33 @@ cores other than the halted GDB core always fail backtrace with
 
 ### Stack direction and bounds
 
-Both adapters support downward-growing stacks only and require recorded stack
+Both RTOS adapters support downward-growing stacks only and require recorded stack
 bounds (`configRECORD_STACK_HIGH_ADDRESS` on FreeRTOS; `stack_addr`/`stack_size`
 on RT-Thread) for stack usage metrics and unwinding (`stack-bounds-unavailable`
 when absent).
 
 ### Task backtraces
 
-`EXIDX` entries must match an enclosing sized `STT_FUNC` symbol and do not
-inherit across uncovered gaps. DWARF CFI supports `.debug_frame`/`.eh_frame`,
-on-demand `PT_GNU_EH_FRAME`/`.eh_frame_hdr` search (falling back to `.eh_frame`
-on index errors), bounded integer `DW_CFA_*` expressions (`DW_OP_stack_value`
-terminal only; `DW_OP_reg*` rejected), and encoded pointers with explicit
-section/memory context. Frame-pointer fallback is prohibited whenever CFI or
-`EXIDX` metadata fails to parse or an expression errors, and is disabled on
-Armv7-A. Clean uncovered PCs admit a `leaf` step only when sized ELF code
-proves a straight-line SP/LR-preserving return.
+Unwind flow, fallback precedence, cross-stack symbol resolution, and firmware
+build requirements live in [`backtrace.md`](backtrace.md); operational boundaries
+and exclusions apply across all adapters:
 
-M-profile IRQ unwinding requires readable `xPSR`/`MSP`/`PSP`, running-scheduler
-ownership, linker/vector MSP bounds, external vector capacity `<= 47`, `FPCCR`
-for extended VFP frames (`EXC_RETURN=0xFFFFFFE1/E9/ED`), and rejects
-`NMI`/`DebugMonitor` (`exception-number-unverified`). Armv6-M requires Cortex-M0
-`CPUID` and fixed-zero vectors without `ICTR`/`VTOR`/`CCR`. Imprecise,
-stacking, vector-fetch, and debug-event faults refuse (`fault-frame-imprecise`);
-`IACCVIOL` has no live QEMU fault path. Armv8-M profile selection requires
-explicit FPU/TrustZone/MPU compile macros (`port-configuration-unavailable`
-otherwise). **Armv8-M Baseline** (`Cortex-M23`) is unsupported
-(`unverified-port`).
-
-RISC-V trap and scheduler unwinding requires compiled direct-mode `mtvec`
-dispatch (`mstatus.MPP == M`), resolved IRQ stack bounds, and compiled
-instruction verification (`scheduler-stage-ambiguous:*` on unverified PCs).
+- **Metadata and fallback limits**: Frame-pointer fallback is prohibited whenever
+  CFI or `EXIDX` metadata fails to parse or evaluates with an error, and is
+  disabled on Armv7-A. `DW_CFA_*` expressions support bounded integers with
+  terminal `DW_OP_stack_value` only (`DW_OP_reg*` rejected).
+- **Arm M-profile exclusions**: IRQ cross-stack unwinding enforces external
+  vector capacity `<= 47` and rejects `NMI`/`DebugMonitor`
+  (`exception-number-unverified`); Cortex-M0+ and relocated Armv6-M VTOR are
+  unverified. Imprecise, stacking, vector-fetch, and debug-event faults refuse
+  (`fault-frame-imprecise`), and `IACCVIOL` has no live QEMU fault path.
+  Armv8-M Mainline requires explicit FPU/TrustZone/MPU compile macros
+  (`port-configuration-unavailable`); **Armv8-M Baseline** (`Cortex-M23`) is
+  unsupported (`unverified-port`).
+- **RISC-V exclusions**: Requires compiled direct-mode `mtvec` dispatch
+  (`mstatus.MPP == M`), resolved ISR stack bounds, and verified scheduler/trap
+  instructions (`scheduler-stage-ambiguous:*` on unverified PCs); vendor IRQ
+  extensions and non-`ecall` sync faults remain unsupported.
 
 ## RT-Thread
 
@@ -94,7 +90,7 @@ walks dispatch from the probed heap manager type and render missing counters as
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Armv6-M (`microbit`, `4.0.5`) | Integer Thumb-1 (`EHABI`/`CFI`/`leaf`) | Saved + `first-start` / PendSV restore | Single, nested, SysTick, 8B-aligned | Unsupported | `rt_hw_context_switch_to`, PendSV stages, `switch-return` | — | Cortex-M0+ & relocated VTOR unverified |
 | Armv7-M (`mps2-an385`, `4.0.5`) | Integer (`EHABI`/`CFI`) | Saved + `first-start` / PendSV restore | Single, nested, SysTick, `STKALIGN` | Precise CFSR/HFSR + `HardFault_Handler` trampoline | First-start, PendSV save/restore, `switch-return` | — | Vector capacity `<=47` |
-| Armv7E-M (`mps2-an386`) & Armv8-M (`mps2-an505`) FPU | Basic + 204B/216B FPU; CM33 `tz=0`/`PSPLIM=0`/priv `CONTROL` | Saved + `first-start` / PendSV restore | Single, nested, SysTick, extended FPU lazy stacking | Precise CFSR/HFSR + trampoline (`DACCVIOL` unavailable on AN505) | Verified M4F/CM33 first-start, PendSV, `switch-return` | FPU | Non-secure TZ returns, `PSPLIM != 0`, unprivileged contexts refused |
+| Armv7E-M (`mps2-an386`: `soft`/`softfp`/`fpu`) & Armv8-M (`mps2-an505`: integer/`fpu`) | Integer (36B `soft`) + basic/204B/216B FPU (`softfp`/`fpu`); CM33 `tz=0`/`PSPLIM=0`/priv `CONTROL` | Saved + `first-start` / PendSV restore | Single, nested, SysTick, extended FPU lazy stacking (`softfp`/`fpu`) | Precise CFSR/HFSR + trampoline (`DACCVIOL` unavailable on AN505) | Verified M4 integer/`M4F`/CM33 first-start, PendSV, `switch-return` | FPU (`softfp`/`fpu`) | Non-secure TZ returns, `PSPLIM != 0`, unprivileged contexts refused |
 | Armv7-A (`cortex-a9`, `4.0.5`) | Integer SMP/signal/LWP (`EHABI`; no FP fallback) | Saved context only | Refused | Refused | Unsupported | Kernel LWP context | `3.1.x` has no verified saved-context layout beyond `stackpc` |
 | RV32 (`E310`, `4.0.5`) & RV64 (`virt64`, `4.0.4–4.1.1`) | Integer `ilp32`/`lp64` (`CFI`/`leaf`) | Saved + switch / trap / restore stages | M-mode direct `mtvec` (`E310` `deferred-mepc`; `virt64` `stacked-epc`) | Unsupported (`exception-model-unverified`) | `rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry` prologue/epilogue (`from`/`to`), `exit`/`spurious_interrupt` | — | `E310` nested trap `>1` (`nested-trap-epc-unproven`), `RT_USING_SMP`, `rt_signal_check`, RV FPU, vendor IRQs refused |
 
@@ -113,10 +109,11 @@ prologue/epilogue/`spurious_interrupt`) overwrite `mepc` and fail closed with
 ### FreeRTOS version and ISA scope
 
 Accepts versions `10.3.0–11.3.x` across **Armv6-M** (`ARM_CM0`), **Armv7-M**
-(`ARM_CM3`), **Armv7E-M** (`ARM_CM4F`), **Armv8-M Mainline** (`ARM_CM33_NTZ`,
-dual-core SMP, and MPU wrappers v2), **RV32**, and **RV64** (where `TickType_t`
-matches pointer width and event-group control bits occupy the top byte). Armv8-M
-Baseline and grow-up stacks (`portSTACK_GROWTH > 0`) are unsupported.
+(`ARM_CM3`), **Armv7E-M** (`ARM_CM3` integer and `ARM_CM4F` `softfp`/`hard`),
+**Armv8-M Mainline** (`ARM_CM33_NTZ`, dual-core SMP, and MPU wrappers v2),
+**RV32**, and **RV64** (where `TickType_t` matches pointer width and
+event-group control bits occupy the top byte). Armv8-M Baseline and grow-up
+stacks (`portSTACK_GROWTH > 0`) are unsupported.
 
 Version verification checks explicit `X.Y.Z` input against `10.3.0–11.3.x`,
 confirms target presence via FreeRTOS kernel symbols (overridable only
@@ -197,10 +194,10 @@ outranks it.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Armv6-M (`microbit`, `ARM_CM0`) | Integer Thumb-1 (`EHABI`/`CFI`/`leaf`) | `first-start` SVC only; PendSV refused | Single, nested, SysTick, 8B-aligned (6-bit IPSR `<=47`) | Refused (`fault-frame-imprecise`) | `ARM_CM0` PendSV, SVC, `vTaskSwitchContext` | — | Cortex-M0+ & relocated VTOR unverified |
 | Armv7-M (`mps2-an385`, `ARM_CM3`) | Integer (`EHABI`/`CFI`) | `first-start` SVC only; PendSV refused | Single, nested, SysTick, `CCR.STKALIGN` | Precise `UsageFault`/`BusFault`/`MemManage` | `ARM_CM3` PendSV, SVC, `vTaskSwitchContext` | — | Vector capacity `<=47` |
-| Armv7E-M (`mps2-an386`, `ARM_CM4F`) | Basic + 204B FPU (`EXC_RETURN`) | `first-start` SVC only; PendSV refused | Single, nested, SysTick, `0x68`B FPU (`LSPACT=1` integer) | Precise `UsageFault`/`BusFault`/`MemManage` | `ARM_CM4F` basic/FPU PendSV, SVC, `vTaskSwitchContext` | FPU | Missing `FPCCR` -> `exception-fp-state-unavailable` |
+| Armv7E-M (`mps2-an386`: `ARM_CM3` `soft`, `ARM_CM4F` `softfp`/`fpu`) | Integer (`soft`, `aapcs32`) + basic/204B FPU (`softfp`/`fpu`, `EXC_RETURN`) | `first-start` SVC only; PendSV refused | Single, nested, SysTick, `0x68`B FPU (`LSPACT=1` integer, `softfp`/`fpu`) | Precise `UsageFault`/`BusFault`/`MemManage` | `ARM_CM3` (`soft`) and `ARM_CM4F` basic/FPU (`softfp`/`fpu`) PendSV, SVC, `vTaskSwitchContext` | FPU (`softfp`/`fpu`) | Missing `FPCCR` -> `exception-fp-state-unavailable` |
 | Armv8-M Mainline (`mps2-an505`, `ARM_CM33_NTZ`) | Integer (single-Secure NTZ) | `first-start` SVC only; PendSV refused | Single, nested, SysTick, `STKALIGN` | Precise `UsageFault`/`BusFault` | `ARM_CM33_NTZ` PendSV, SVC, `vTaskSwitchContext` | — | Dual-world TZ, `SecureFault`, FPU/MPU fault variants excluded |
 | Armv8-M SMP+MPU (`mps2-an521`) | Integer on selected core | Refused (no scheduler profile) | Unsupported | Unsupported | Unsupported | SMP + MPU v2 | Other cores -> `smp-no-context`; SMP/MPU handlers refused |
-| RV32 / RV64 (`qemu-virt-rv32`, `qemu-virt-rv64`) | Integer `ilp32`/`lp64` (`CFI`/`leaf`) | `xPortStartFirstTask` + incoming switch target (`unstarted`) | M-mode direct `mtvec` IRQ + `ecall` yield (`mcause=11`) | Refused (`exception-frame-type-unproven` for non-`ecall`) | `xPortStartFirstTask`, trap prologue, `ecall` yield, `vTaskSwitchContext`, `processed_source` | — | Vendor IRQs/faults, SMP, RV FPU, preempted pre-`ret` first start refused |
+| RV32 / RV64 (`qemu-virt-rv32`, `qemu-virt-rv64`, `10.3.x–11.3.x`) | Integer `ilp32`/`lp64` (`CFI`/`leaf`) | `xPortStartFirstTask` + incoming switch target (`unstarted`) | M-mode direct `mtvec` IRQ + `ecall` yield (`mcause=11`) | Refused (`exception-frame-type-unproven` for non-`ecall`) | `xPortStartFirstTask`, trap prologue, `ecall` yield, `vTaskSwitchContext`, `processed_source` (`10.3.x`–`11.3.1` layouts) | — | Vendor IRQs/faults, SMP, RV FPU, preempted pre-`ret` first start refused |
 
 Without a retained TCB entry pointer, `source=unstarted` is accepted only inside
 verified `first-start` or incoming scheduler selection with ELF entry evidence.

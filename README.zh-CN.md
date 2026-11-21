@@ -179,27 +179,22 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 
 ## 注意
 
-GDR 认为运行时内存中的数据结构和 RTOS 源码**保持一致**，没有考虑经过编译过度优化产生
-偏差的情况。 且 GDR 需要从 ELF DWARF 中的宏定义推断 RTOS 版本，功能/特性的使能，
-所以编译时最好 开启如下调试优化选项：
+使用 GDR 时需显式指定 RTOS 与版本（**不自动检测**），内核特性在初始化时通过符号
+探测。GDR 依赖与源码一致的内存布局并通过未裁剪的 ELF 读取 DWARF 宏与栈回溯表；
+固件构建须满足以下配置：
 
-```cmake
-add_compile_options(-O0 -ggdb3)
-```
+- **编译选项（必需）**：明确架构/ABI 参数（如 Arm `-mcpu`/`-mfloat-abi` 或
+  RISC-V `-march`/`-mabi`）、`-g3 -gdwarf-4`（生成 DWARF-4 `.debug_macro` 与
+  `.debug_frame`）以及 `-funwind-tables`（生成 `.ARM.exidx`/`.eh_frame`）；推荐
+  同时开启 `-O0`/`-Og`、`-fno-lto` 并在汇编选项中保留 `-g3 -gdwarf-4`。
+- **链接与 RTOS 配置（栈回溯必需）**：保留提供给 GDB 的 `.elf` 完整符号与表项
+  （在 `--gc-sections` 下通过 `KEEP(*(.eh_frame))` / `*(.ARM.exidx*)` 保留），
+  FreeRTOS 启用 `configRECORD_STACK_HIGH_ADDRESS=1`，并导出 MSP/ISR 栈边界以
+  支持跨栈 IRQ/Trap 回溯。
 
-使用 GDR 时，用户需显式指定 RTOS 与版本；GDR **不会**自动检测 RTOS 类型或版本
-（考虑 RTOS 实现和编译配置的差异， 可能无法从 ELF 推断出准确的 RTOS 版本）。
-内核 *配置特性* （SMP、堆管理器类型、已启用的 IPC 组件）会在启动时通过符号是否
-存在自动探测。
-
-Armv6-M / Armv7-M / Armv7E-M 跨栈 IRQ 回溯支持从标准链接符号（`__StackLimit`..`__StackTop`、
-`_sstack`..`_estack`）、ELF 栈段（`.irq_stack`、`.isr_stack`、`.stack`）或向量表
-初始 MSP 自动推导中断栈边界（也可通过 `__gdr_irq_stack_low` / `__gdr_irq_stack_top`
-显式覆盖）；Armv6-M 外部中断容量支持从 `.isr_vector`、`__Vectors_End` 或 `0x0` 后首个
-代码符号自动推导（也可通过 `__gdr_vector_table_end` 与 `__gdr_armv6m_irq_count` 覆盖）。
-
-Arm M-profile 同步 Fault 在 SCB 故障寄存器（`CFSR`/`HFSR`/`MMFAR`/`BFAR`）证明精确故障原因时
-跨栈回溯并以 `stop_reason=synchronous-fault` 结束；非精确 Fault 则以 `fault-frame-imprecise` 拒绝。
+Arm M-profile 跨栈 IRQ 回溯自动从链接符号或段解析中断栈与向量容量；精确 SCB Fault
+结束于 `synchronous-fault`，非精确 Fault 返回 `fault-frame-imprecise`。完整回溯
+流程、覆盖符号及构建细节见 [docs/backtrace.md](docs/backtrace.md)。
 
 ## 贡献
 

@@ -11,7 +11,9 @@ firmware in GDB by:
 
 Non-goals: replacing GDB expressions, wrapping QEMU monitor commands, or
 duplicating what GDB already displays well. Design rationale lives in
-`decisions.md`, verification in `testing.md`, and known limits in `boundary.md`.
+[`decisions.md`](decisions.md), backtrace pipeline and build rules in
+[`backtrace.md`](backtrace.md), verification in [`testing.md`](testing.md), and
+known limits in [`boundary.md`](boundary.md).
 
 ## Layering
 
@@ -43,7 +45,7 @@ duplicating what GDB already displays well. Design rationale lives in
 | `unwind.py` | Bounded task unwind driver: seed frames, live register seed dispatch, ELF metadata cache, EHABI/CFI/instruction-leaf/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
 | `unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
 | `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
-| `unwind_riscv.py` | Shared RISC-V Machine-mode trap frame recovery, IRQ stack bounds resolution and handler-mode unwind setup. |
+| `unwind_riscv.py` | Shared RISC-V Machine-mode trap frame recovery, generic trap-block prologue/epilogue/store analysis, IRQ stack bounds resolution and handler-mode unwind setup. |
 | `unwind_meta.py` | Bounded ELF sections, `PT_GNU_EH_FRAME` segment resolution, code symbols, zero-size symbol anchors and shared binary encodings. |
 | `unwind_leaf.py` | Architecture-neutral, bounded scalar instruction proofs for straight-line functions that preserve SP/LR and return through LR. ELF function types and instruction state define the scan; unknown code, calls, branches and stack-bank changes refuse the proof. |
 | `insn_arm.py` | Bounded ARM/A32 instruction decoder with normalized mnemonic/operand evidence for instruction-leaf proofs and compiled port checks. |
@@ -80,11 +82,11 @@ duplicating what GDB already displays well. Design rationale lives in
 | `layout.py` | Config/DWARF probes, struct paths, version policy and probe evidence. |
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
 | `stackpc.py` | Last PC projection from the selected saved-context profile. |
-| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic handler-frame transitions use ISA-specific validation and verified port evidence. |
+| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv7E-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic and FPU handler-frame transitions use ISA-specific validation and verified port evidence. |
 | `arm_scheduler_switch.py` | Pure compiled Arm M-profile (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, `ARM_CM33_NTZ`) transition profiles and instruction-relative stage classification; GDB-facing collection remains in `backtrace_gdb.py`. |
-| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and CFG-partitioned stage classification (`xPortStartFirstTask`, `freertos_risc_v_trap_handler`, `vTaskSwitchContext`). |
+| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and CFG-partitioned stage classification (`xPortStartFirstTask`, trap handlers, `vTaskSwitchContext`) across `10.3.x–11.3.1` port variants. |
 | `scheduler_seed.py` | Owner-consistent seeds from classified Arm M-profile (basic/FPU) and RISC-V scheduler/trap stages. |
-| `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled RISC-V save-layout evidence for verified profile selection. |
+| `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled save-layout/trap-frame evidence for verified M-profile (`aapcs32`/`aapcs32-vfp`) and RISC-V (`10.3.x–11.3.1`) profile selection. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |
 | `adapter.py` | Task/object models, conversion, tables, summaries, `RtosAdapter` surface. |
@@ -118,39 +120,19 @@ rtt/freertos command -> generic coordinator -> active adapter
   -> shared formatting -> GDB output
 ```
 
-Task stack backtraces resolve the task, decode its TCB/port context, parse
-the loaded ELF's unwind sections and walk bounded frames:
+Task stack backtraces resolve the task or halted context, parse the loaded
+ELF's unwind sections, and step bounded frames (details in
+[`backtrace.md`](backtrace.md) and [`boundary.md`](boundary.md#task-backtraces)):
 
 ```text
 rtt/frt backtrace <task> / gdr api backtrace -> active adapter (backtrace_gdb.py)
   -> saved task profile (backtrace.py + stack_frame_profile.py)
      or live/handler/scheduler seed (scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
   -> core.unwind_meta (ELF sections, sized symbols, code bytes)
-  -> core.unwind_cfi / core.unwind_ehabi / core.unwind_leaf (step recovery + optional FP)
+  -> core.unwind_ehabi / core.unwind_cfi / core.unwind_leaf (strict step order)
   -> core.unwind (typed segments, PC - 1 normalization, exception hooks, budgets)
   -> frames + method + complete/stop_reason + messages
 ```
-
-Every task backtrace requires explicit stack bounds and typed segments carrying
-identity, owner, bounds and source: saved tasks decode only verified port
-layouts, while live handler or scheduler stops select owner-consistent seeds
-only after validating architecture state (`core.unwind_arm` / `core.unwind_riscv`)
-and compiled instruction-level transition profiles (`arm_scheduler_switch.py` /
-`riscv_scheduler_switch.py`), refusing mixed-task state or unverified stops.
-`core.unwind` steps frames via `.debug_frame`/`.eh_frame` (including on-demand
-`.eh_frame_hdr` search and bounded integer `DW_CFA_*` expressions) or sized
-`EXIDX` tables, strips unavailable registers instead of reusing stale bases,
-admits `leaf` steps only on clean metadata gaps with a proven straight-line
-return, and prohibits frame-pointer fallback whenever metadata or expressions
-fail—never scanning stacks for return addresses, invoking inferior calls, or
-writing target memory. Ordinary frames normalize caller metadata lookups with
-`PC - 1` while seeds, signal CIE frames, crossed exception PCs, and proven
-task roots retain exact PCs; segment boundaries reject arbitrary jumps so only
-evidence-gated architecture hooks cross between handler and task stacks under
-independent depth and read budgets, failing closed via structured `stop_reason`
-and `messages` outputs (see
-[testing](testing.md#exception-unwind-acceptance) and
-[boundaries](boundary.md#task-backtraces)).
 
 Native inspection stays separate:
 

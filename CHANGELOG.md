@@ -41,8 +41,12 @@ All notable changes to GDR are documented in this file.
   `xPortSysTickHandler`/`xTaskIncrementTick`/`rt_tick_increase`) cross to the
   interrupted task as a proven periodic interrupt.
 - Non-secure FPU task and extended exception-frame backtraces (`0xFFFFFFE1/E9/ED`)
-  are supported on Armv7E-M (FreeRTOS `ARM_CM4F`, RT-Thread) and Armv8-M Mainline
-  (RT-Thread).
+  are supported on Armv7E-M (`softfp` and hard-float on FreeRTOS `ARM_CM4F`
+  and RT-Thread) and Armv8-M Mainline (RT-Thread), alongside integer
+  (`-mfloat-abi=soft`) Armv7E-M backtraces.
+- FreeRTOS RISC-V `10.3.x–11.3.x` backtraces unwind M-mode trap frames and
+  scheduler transition stages across differing `xCriticalNesting` and trap
+  stack layouts.
 
 ### Changed
 

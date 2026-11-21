@@ -184,6 +184,7 @@ that owns the fact:
 | `README.md` / `README.zh-CN.md` | users | install, load, command index, output-decode notes | kernel internals, fixtures/CI, design rationale | each note ≤2 lines, mirror both languages |
 | `AGENTS.md` | contributors/agents | file map (one line per file), setup/commands, CI lane table, conventions | per-module prose (point to architecture.md), lane internals (point to ci/fixture/*/README.md) | one line per file |
 | `docs/architecture.md` | design readers | layering, module contracts, runtime flows, core mechanisms, RTOS capability comparison | VSCode panel/DOM detail, trial-and-error history, fixture build details | module-table cells ≤1-3 sentences |
+| `docs/backtrace.md` | users & design readers | end-to-end backtrace flow, step fallback order, cross-stack gates, firmware build requirements | per-RTOS support matrices (→ boundary.md), fixture builds (→ ci/fixture/*/README.md) | concise pipeline & option lists |
 | `docs/decisions.md` | design readers | architecture decisions and why they exist | mechanisms (→ architecture.md), limits (→ boundary.md) | one decision per section, no change narration |
 | `docs/testing.md` | contributors | closed-loop harness, QEMU profiles, version/variant matrices | fixture build steps (→ ci/fixture/*/README.md) | link lane READMEs, never copy |
 | `docs/boundary.md` | design readers | functional boundaries, support RTOS version / ISA, and limits by scope/adapter | development rules (→ AGENTS.md), CI/test history | sections and matrices by scope/adapter |
