@@ -28,6 +28,8 @@ _SUPPORTED_VARIANTS = (
     "streams",
     "mpu",
     "fpu",
+    "soft",
+    "softfp",
     "rv64",
     "smp",
     "snapshot",
@@ -144,7 +146,7 @@ def get_freertos_test_profile(
         mini_list_item=True if v10_5 or (major, minor, patch) >= (10, 3, 0) else None,
         high_water_source=(
             "pxEndOfStack"
-            if variant in {"full", "smp", "mpu", "fpu", "rv64"}
+            if variant in {"full", "smp", "mpu", "fpu", "soft", "softfp", "rv64"}
             or target == "qemu-virt-rv32"
             else "scan"
         ),

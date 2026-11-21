@@ -60,7 +60,7 @@ _ISA = _ISA_BY_TARGET.get(SPEC.target, "")
 _XLEN = 64 if _ISA == "riscv64" else 32
 _M_FULL_TARGETS = {"microbit", "mps2-an385", "mps2-an386", "mps2-an505"}
 _HAS_FULL_BACKTRACE = SPEC.target in _M_FULL_TARGETS and (
-    (SPEC.target == "mps2-an386" and SPEC.variant == "fpu")
+    (SPEC.target == "mps2-an386" and SPEC.variant in {"fpu", "soft", "softfp"})
     or (SPEC.target != "mps2-an386" and SPEC.variant == "full")
 )
 _ABI = "aapcs32-vfp" if SPEC.variant == "fpu" else "aapcs32"
@@ -74,7 +74,11 @@ _BUS_FAULT_ADDR = 0xA0000000 if SPEC.target == "mps2-an505" else 0x50000000
 
 _PORT_SPECS = {
     "mps2-an385": ("arm-cm3", 0x20, 0x00, False),
-    "mps2-an386": ("arm-cm4f", 0x24, 0x00, False),
+    "mps2-an386": (
+        ("arm-cm3", 0x20, 0x00, False)
+        if SPEC.variant == "soft"
+        else ("arm-cm4f", 0x24, 0x00, False)
+    ),
     "microbit": ("arm-cm0", 0x24, 0x04, True),
     "mps2-an505": ("arm-cm33", 0x28, 0x08, True),
 }
@@ -96,7 +100,7 @@ def _recorded_bounds() -> bool:
 
 def _irq_skip(*, fpu_only: bool = False):
     return pytest.mark.skipif(
-        not _HAS_FULL_BACKTRACE or (fpu_only and SPEC.variant != "fpu"),
+        not _HAS_FULL_BACKTRACE or (fpu_only and SPEC.variant not in {"fpu", "softfp"}),
         reason="requires a FreeRTOS M-profile full/fpu IRQ fixture lane",
     )
 
@@ -126,7 +130,7 @@ def _fault_skip(*, precise: bool = False, mm: bool = False, m0: bool = False):
 
 def _fpu_skip():
     return pytest.mark.skipif(
-        SPEC.variant != "fpu",
+        SPEC.variant not in {"fpu", "softfp"},
         reason="requires the live ARM_CM4F FPU fixture",
     )
 
@@ -477,10 +481,10 @@ def test_fpu_context_registers_are_enabled_on_target(gdb_session):
 def test_fpu_task_saved_chain_is_complete(gdb_session):
     data = _backtrace(gdb_session, "gdr_fpu")
     assert data["architecture"] == "armv7e-m", data
-    assert data["abi"] == "aapcs32-vfp", data
+    assert data["abi"] == _ABI, data
     assert data["source"] == "saved", data
     assert data["bounds"] == "recorded", data
-    assert data["method"] == "cfi", data
+    assert data["method"] in {"cfi", "ehabi"}, data
     assert data["stop_reason"] == "task-exit", data
     assert data["complete"] and not data["truncated"], data
     functions = [frame["symbol"] or "" for frame in data["frames"]]

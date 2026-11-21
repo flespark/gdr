@@ -49,6 +49,7 @@ extern void gdr_sched_timer1_isr(void);
 
 static inline void gdr_irq_fpca_write(int set)
 {
+#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
     uint32_t control;
     __asm__ volatile("mrs %0, control" : "=r"(control) :: "memory");
     if (set)
@@ -56,6 +57,9 @@ static inline void gdr_irq_fpca_write(int set)
     else
         control &= ~(1U << 2);
     __asm__ volatile("msr control, %0" ::"r"(control) : "memory");
+#else
+    (void)set;
+#endif
 }
 
 static volatile uint32_t gdr_irq_scenario;
@@ -260,6 +264,7 @@ static void gdr_irq_task(void *argument)
             continue;
         }
 
+#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
         gdr_irq_fpca_write(0);
         gdr_irq_scenario = GDR_IRQ_SCENARIO_FP;
         gdr_irq_done = 0;
@@ -267,6 +272,7 @@ static void gdr_irq_task(void *argument)
         gdr_irq_timer_arm(gdr_timer0, 125000U);
         gdr_irq_wait();
         vTaskDelay(pdMS_TO_TICKS(100));
+#endif
     }
 }
 

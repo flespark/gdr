@@ -215,8 +215,11 @@
         python3 ci/test.py run bare qemu-virt-rv64 none eh-frame
     - name: FreeRTOS single-core Cortex-M33 (mps2-an505, kernel 11.3.1)
       script: python3 ci/test.py run freertos mps2-an505 11.3.1 full
-    - name: FreeRTOS Cortex-M4F (mps2-an386, kernel 11.3.1)
-      script: python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
+    - name: FreeRTOS Cortex-M4 (mps2-an386, kernel 11.3.1)
+      script: |
+        python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
+        python3 ci/test.py run freertos mps2-an386 11.3.1 softfp
+        python3 ci/test.py run freertos mps2-an386 11.3.1 soft
     # NOTE: the first-version M0 and RV32 targets are separate stages so a
     # 32-bit RISC-V or Thumb-1 port failure is distinguishable from the
     # already-covered M3/M4F/M33/RV64 lanes.

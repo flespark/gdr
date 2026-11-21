@@ -1,0 +1,41 @@
+diff --git a/bsp/gdr-mps2-an386/rtconfig.py b/bsp/gdr-mps2-an386/rtconfig.py
+--- a/bsp/gdr-mps2-an386/rtconfig.py
++++ b/bsp/gdr-mps2-an386/rtconfig.py
+@@ -17,6 +17,6 @@
+ OBJCPY = PREFIX + "objcopy"
+ TARGET_EXT = "elf"
+-DEVICE = " -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16"
++DEVICE = " -mcpu=cortex-m4 -mthumb -mfloat-abi=soft"
+ CFLAGS = DEVICE + " -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer"
+ CFLAGS += " -ffunction-sections -fdata-sections -fno-common -fno-builtin -Wall"
+ CXXFLAGS = CFLAGS
+diff --git a/bsp/gdr-mps2-an386/fault.c b/bsp/gdr-mps2-an386/fault.c
+--- a/bsp/gdr-mps2-an386/fault.c
++++ b/bsp/gdr-mps2-an386/fault.c
+@@ -85,12 +85,11 @@
+     frame[6] += gdr_fault_scenario == GDR_FAULT_SCENARIO_UNDEFINSTR ? 4 : 2;
+     GDR_SCB_CFSR = GDR_SCB_CFSR;
+     GDR_SCB_HFSR = GDR_SCB_HFSR;
+-    /* NOTE: this hard-float build pushes r4-r11, one FPU-flag dummy word and
+-       EXC_RETURN (10 words) below the hardware frame; restore PSP to the
+-       hardware frame base or the forced return unstacks the pushed block. */
++    /* NOTE: under -mfloat-abi=soft (__SOFTFP__), HardFault pushes r4-r11 and
++       EXC_RETURN (9 words = 36 bytes) below the hardware frame. */
+     __asm volatile(
+         "mrs r0, psp\n"
+-        "adds r0, r0, #40\n"
++        "adds r0, r0, #36\n"
+         "msr psp, r0"
+         ::: "r0", "memory");
+     gdr_fault_done++;
+diff --git a/bsp/gdr-mps2-an386/irq.c b/bsp/gdr-mps2-an386/irq.c
+--- a/bsp/gdr-mps2-an386/irq.c
++++ b/bsp/gdr-mps2-an386/irq.c
+@@ -148,7 +148,6 @@
+             GDR_IRQ_SCENARIO_SINGLE,
+             GDR_IRQ_SCENARIO_NESTED,
+             GDR_IRQ_SCENARIO_ALIGN,
+-            GDR_IRQ_SCENARIO_FP,
+         };
+         for (rt_size_t i = 0; i < sizeof(scenarios) / sizeof(scenarios[0]); i++)
+         {

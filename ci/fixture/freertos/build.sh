@@ -113,7 +113,13 @@ compile_fixture() {
 
     case "$TARGET" in
     mps2-an385) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM3" ;;
-    mps2-an386) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM4F" ;;
+    mps2-an386)
+        if [[ "$VARIANT" == "soft" ]]; then
+            port_dir="$KERNEL_DIR/portable/GCC/ARM_CM3"
+        else
+            port_dir="$KERNEL_DIR/portable/GCC/ARM_CM4F"
+        fi
+        ;;
     microbit) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM0" ;;
     mps2-an521 | mps2-an505) port_dir="$KERNEL_DIR/portable/GCC/ARM_CM33_NTZ/non_secure" ;;
     qemu-virt-rv64 | qemu-virt-rv32) port_dir="$KERNEL_DIR/portable/GCC/RISC-V" ;;
@@ -174,9 +180,14 @@ compile_fixture() {
         -I"$KERNEL_DIR/include"
         -I"$port_dir"
     )
-    # The AN386 CM4F port requires hard-float codegen (__ARM_FP__).
+    # The AN386 CM4F port uses hard-float (fpu) or softfp, while the soft
+    # variant compiles the integer-only ARM_CM3 port with soft float ABI.
     if [[ "$TARGET" == "mps2-an386" ]]; then
-        cflags+=(-mfloat-abi=hard -mfpu=fpv4-sp-d16)
+        case "$VARIANT" in
+        soft) cflags+=(-mfloat-abi=soft) ;;
+        softfp) cflags+=(-mfloat-abi=softfp -mfpu=fpv4-sp-d16) ;;
+        *) cflags+=(-mfloat-abi=hard -mfpu=fpv4-sp-d16) ;;
+        esac
     fi
     # The M3/M33/M0 lanes carry real EHABI tables so the fallback and
     # compact personalities are exercised against compiler output, not
@@ -230,7 +241,7 @@ compile_fixture() {
         sources+=("$heap")
     fi
     if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "full" ]] ||
-       [[ "$TARGET" == "mps2-an386" && "$VARIANT" == "fpu" ]]; then
+       [[ "$TARGET" == "mps2-an386" && ("$VARIANT" == "fpu" || "$VARIANT" == "soft" || "$VARIANT" == "softfp") ]]; then
         sources+=("$board_dir/irq.c" "$board_dir/sched.c" "$board_dir/fault.c")
     fi
 

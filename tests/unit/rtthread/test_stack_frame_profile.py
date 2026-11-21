@@ -366,7 +366,7 @@ def test_soft_abi_armv7em_admits_integer_and_softfp_fpu(monkeypatch):
 def test_cached_firmware_fpu_verifier_matches_only_fpu_lanes(path):
     image = ElfImage.from_path(path)
     assert image is not None
-    if "fpu" in path.parts:
+    if "fpu" in path.parts or "softfp" in path.parts:
         isa = cpu_of(image).isa
         verifier = _FPU_VERIFIERS.get(isa or "")
         assert verifier is not None, isa
@@ -376,10 +376,10 @@ def test_cached_firmware_fpu_verifier_matches_only_fpu_lanes(path):
         assert selected.context is not None
         assert selected.alt_context is not None
         assert selected.alt_context.fpu
-    elif "mps2-an386" in path.parts:
-        # The CM4F port requires a hard-float build, so its save/restore
-        # carries the FPU block even for integer-only lanes; selection must
-        # still prefer the integer profile and keep FPU as the per-task alt.
+    elif "mps2-an386" in path.parts and "soft" not in path.parts:
+        # Hard-float and softfp AN386 builds emit the CM4F FPU flag word even
+        # for integer-only lanes; selection must still prefer the integer
+        # profile and keep FPU as the per-task alternate.
         assert _armv7em_fpu_verify_context(image)
         selected = select_context(image)
         assert selected.reason == "ok"
@@ -401,7 +401,7 @@ def test_cached_firmware_hardfault_trampoline_matches_m3_m4_m33_lanes(path):
     assert image is not None
     isa = cpu_of(image).isa
     profile = analyze_hardfault_trampoline(image)
-    if isa == "armv7-m":
+    if isa == "armv7-m" or (isa == "armv7e-m" and "soft" in path.parts):
         assert profile is not None
         assert profile.software_bytes == 36 and profile.r4_offset == 4
     elif isa == "armv7e-m":

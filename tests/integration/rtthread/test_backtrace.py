@@ -66,19 +66,23 @@ def _bt_fixture_skip():
 def _fpu_skip(*targets: str):
     allowed = targets or ("mps2-an386", "mps2-an505")
     return pytest.mark.skipif(
-        SPEC.variant != "fpu" or SPEC.target not in allowed,
+        SPEC.variant not in {"fpu", "softfp"} or SPEC.target not in allowed,
         reason=f"requires RT-Thread FPU fixture on {allowed}",
     )
 
 
 def _irq_skip(*, fpu_only: bool = False):
-    invalid_an386 = SPEC.target == "mps2-an386" and SPEC.variant != "fpu"
+    invalid_an386 = SPEC.target == "mps2-an386" and SPEC.variant not in {
+        "fpu",
+        "soft",
+        "softfp",
+    }
     invalid_an505 = SPEC.target == "mps2-an505" and SPEC.variant not in {"", "fpu"}
     return pytest.mark.skipif(
         SPEC.target not in _M_PROFILE_TARGETS
         or invalid_an386
         or invalid_an505
-        or (fpu_only and SPEC.variant != "fpu"),
+        or (fpu_only and SPEC.variant not in {"fpu", "softfp"}),
         reason="requires an RT-Thread Arm M-profile IRQ fixture",
     )
 
@@ -86,7 +90,10 @@ def _irq_skip(*, fpu_only: bool = False):
 def _systick_skip():
     return pytest.mark.skipif(
         SPEC.target not in {"mps2-an385", "mps2-an386", "mps2-an505"}
-        or (SPEC.target == "mps2-an386" and SPEC.variant != "fpu"),
+        or (
+            SPEC.target == "mps2-an386"
+            and SPEC.variant not in {"fpu", "soft", "softfp"}
+        ),
         reason="requires an RT-Thread SysTick-driven M-profile lane",
     )
 
@@ -94,8 +101,11 @@ def _systick_skip():
 def _sched_skip():
     return pytest.mark.skipif(
         SPEC.target not in _M_PROFILE_TARGETS
-        or SPEC.variant not in {"", "fpu"}
-        or (SPEC.target == "mps2-an386" and SPEC.variant != "fpu"),
+        or SPEC.variant not in {"", "fpu", "soft", "softfp"}
+        or (
+            SPEC.target == "mps2-an386"
+            and SPEC.variant not in {"fpu", "soft", "softfp"}
+        ),
         reason="requires an RT-Thread Arm M-profile scheduler fixture lane",
     )
 
@@ -108,7 +118,10 @@ def _fault_skip(*, memmanage: bool = False):
     )
     return pytest.mark.skipif(
         SPEC.target not in targets
-        or (SPEC.target == "mps2-an386" and SPEC.variant != "fpu")
+        or (
+            SPEC.target == "mps2-an386"
+            and SPEC.variant not in {"fpu", "soft", "softfp"}
+        )
         or (SPEC.target == "mps2-an505" and SPEC.variant not in {"", "fpu"}),
         reason="requires an RT-Thread M-profile synchronous-fault fixture",
     )
@@ -391,8 +404,11 @@ def _symbol_address(session, symbol: str) -> int:
 def first_start_session():
     if (
         SPEC.target not in _M_PROFILE_TARGETS
-        or SPEC.variant not in {"", "fpu"}
-        or (SPEC.target == "mps2-an386" and SPEC.variant != "fpu")
+        or SPEC.variant not in {"", "fpu", "soft", "softfp"}
+        or (
+            SPEC.target == "mps2-an386"
+            and SPEC.variant not in {"fpu", "soft", "softfp"}
+        )
     ):
         pytest.skip("requires an RT-Thread Arm M-profile scheduler fixture lane")
     profile = replace(get_rtthread_qemu_profile(GDR_ROOT, SPEC), init_command=None)
@@ -584,7 +600,7 @@ def test_fpu_saved_slot_names_the_extended_frame(gdb_session):
 def test_fpu_task_backtrace_is_complete(gdb_session):
     data = _backtrace(gdb_session, "worker_fpu")
     assert data["architecture"] == _ISA, data
-    assert data["abi"] == "aapcs32-vfp", data
+    assert data["abi"] == ("aapcs32-vfp" if SPEC.variant == "fpu" else "aapcs32"), data
     assert data["source"] == "saved", data
     assert data["bounds"] == "recorded", data
     assert data["method"] == "leaf", data

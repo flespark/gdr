@@ -1,0 +1,11 @@
+diff --git a/bsp/gdr-mps2-an386/rtconfig.py b/bsp/gdr-mps2-an386/rtconfig.py
+--- a/bsp/gdr-mps2-an386/rtconfig.py
++++ b/bsp/gdr-mps2-an386/rtconfig.py
+@@ -17,6 +17,6 @@
+ OBJCPY = PREFIX + "objcopy"
+ TARGET_EXT = "elf"
+-DEVICE = " -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16"
++DEVICE = " -mcpu=cortex-m4 -mthumb -mfloat-abi=softfp -mfpu=fpv4-sp-d16"
+ CFLAGS = DEVICE + " -O0 -g3 -gdwarf-4 -funwind-tables -fno-omit-frame-pointer"
+ CFLAGS += " -ffunction-sections -fdata-sections -fno-common -fno-builtin -Wall"
+ CXXFLAGS = CFLAGS

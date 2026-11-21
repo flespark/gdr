@@ -116,6 +116,8 @@ RTTHREAD_PORTS = (
     Lane("rtthread", "mps2-an505", "4.0.5"),
     Lane("rtthread", "mps2-an505", "4.0.5", "fpu"),
     Lane("rtthread", "mps2-an386", "4.0.5", "fpu"),
+    Lane("rtthread", "mps2-an386", "4.0.5", "soft"),
+    Lane("rtthread", "mps2-an386", "4.0.5", "softfp"),
     Lane("rtthread", "rv32", "4.0.5"),
 )
 FREERTOS_CONFIG = tuple(
@@ -146,6 +148,8 @@ FREERTOS_PORTS = (
     Lane("freertos", "mps2-an521", "11.3.1", "smp"),
     Lane("freertos", "mps2-an521", "11.3.1", "mpu"),
     Lane("freertos", "mps2-an386", "11.3.1", "fpu"),
+    Lane("freertos", "mps2-an386", "11.3.1", "soft"),
+    Lane("freertos", "mps2-an386", "11.3.1", "softfp"),
     Lane("freertos", "mps2-an505", "11.3.1", "full"),
     Lane("freertos", "qemu-virt-rv64", "11.1.0", "rv64"),
     Lane("freertos", "microbit", "11.1.0", "full"),
