@@ -415,11 +415,11 @@ def test_uninitialized_and_unknown_verb_are_structured(session):  # noqa: ARG001
     assert _error(api.api_call("tasks"))["code"] == "not_initialized"
 
 
-def test_probe_is_the_one_verb_that_answers_before_init(monkeypatch):
-    """A client's first question is which adapter to initialize.
+def test_probe_and_current_backtrace_answer_before_init(monkeypatch):
+    """Pre-init sessions answer ``probe`` and un-targeted ``backtrace``.
 
-    ``probe`` therefore answers with no active session, and keeps the
-    ``not_initialized`` precedence for every other verb.
+    Every RTOS-specific verb and targeted ``backtrace <task>`` still return
+    ``not_initialized``.
     """
     adapter_api.reset()
     monkeypatch.setattr(
@@ -441,6 +441,31 @@ def test_probe_is_the_one_verb_that_answers_before_init(monkeypatch):
     data = _data(envelope)
     assert data["resolved"] == {"rtos": "rtthread", "version": "4.0.5"}
     assert _dict_list(data["candidates"])[0]["confidence"] == "exact"
+
+    report = BacktraceReport(
+        task="<current>",
+        address=0,
+        architecture="riscv64",
+        abi="lp64",
+        method="cfi",
+        source="current",
+        complete=False,
+        stop_reason="cfi-return-address-undefined",
+        truncated=False,
+        max_depth=8,
+        bounds="recorded",
+        frames=[BacktraceFrame(0, 0x80000100, "seed", "hdr_checkpoint")],
+    )
+    recorded_depths: list[int] = []
+    monkeypatch.setattr(
+        "core.backtrace.backtrace_gdb.live_backtrace",
+        lambda max_depth=32: recorded_depths.append(max_depth) or report,
+    )
+    bt_env = api.api_call("backtrace", "--max-depth", "8")
+    assert bt_env["ok"] is True and bt_env["rtos"] is None
+    assert _data(bt_env)["architecture"] == "riscv64"
+    assert recorded_depths == [8]
+    assert _error(api.api_call("bt", "worker1"))["code"] == "not_initialized"
 
 
 def test_probe_reports_an_empty_target_as_a_capability_note(monkeypatch):

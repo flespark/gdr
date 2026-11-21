@@ -257,6 +257,66 @@ def test_block_reader_checks_size_bounds_and_short_reads():
     assert driver.read_block(lambda _a, _n: b"abcd", 0x2000, 4) == b"abcd"
 
 
+def test_live_backtrace_handles_missing_symbol_file_and_caches_boot_elf(
+    monkeypatch, tmp_path
+):
+    from core.adapter import BacktraceReport
+    from core.backtrace import backtrace_gdb as bt_gdb
+    from core.elf import EM_ARM, SHT_ATTRIBUTES
+    from tests.unit.core.test_cpus import _attributes
+    from tests.unit.core.test_unwind import _elf
+
+    bt_gdb.reset_boot_metadata_cache()
+    missing = bt_gdb.live_backtrace(8, path_reader=lambda: None)
+    assert not missing.complete and missing.stop_reason == "no-unwind-info"
+    assert "file <elf>" in missing.messages[0]
+
+    elf_path = tmp_path / "boot.elf"
+    elf_path.write_bytes(
+        _elf(
+            is_64=False,
+            endian="little",
+            machine=EM_ARM,
+            sections=[
+                (
+                    ".ARM.attributes",
+                    0,
+                    _attributes(b"aeabi", [(6, 10), (7, "M")]),
+                    SHT_ATTRIBUTES,
+                    0,
+                )
+            ],
+        )
+    )
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        bt_gdb,
+        "live_boot_backtrace_report",
+        lambda **kwargs: (
+            calls.append((kwargs["architecture"], kwargs["max_depth"])),
+            BacktraceReport(
+                task="<current>",
+                address=0,
+                architecture=kwargs["architecture"],
+                abi=kwargs["abi"],
+                method="cfi",
+                source="current",
+                complete=True,
+                stop_reason="task-exit",
+                truncated=False,
+                max_depth=kwargs["max_depth"],
+                bounds="recorded",
+                frames=[],
+            ),
+        )[1],
+    )
+    first = bt_gdb.live_backtrace(12, path_reader=lambda: str(elf_path))
+    second = bt_gdb.live_backtrace(16, path_reader=lambda: str(elf_path))
+    assert first.architecture == "armv7-m" and first.abi == "aapcs32"
+    assert second.max_depth == 16 and calls == [("armv7-m", 12), ("armv7-m", 16)]
+    bt_gdb.reset_boot_metadata_cache()
+
+
 @pytest.mark.parametrize(
     "rule,reason",
     [

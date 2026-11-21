@@ -313,6 +313,13 @@ def test_root_help_supports_topics_and_completion(capsys):
 
     assert entrypoint._complete("help pre", "pre") == ["pretty-printers"]
     assert "init" in entrypoint._complete("help ", None)
+    assert "backtrace" in entrypoint._complete("back", "back")
+    assert entrypoint._complete("backtrace --", "--") == ["--max-depth", "--json"]
+
+    entrypoint._invoke_command("help backtrace")
+    bt_help = capsys.readouterr().out
+    assert "gdr backtrace" in bt_help
+    assert "--json" in bt_help
 
 
 def test_a_documented_topic_is_reported_as_a_topic_not_a_command(monkeypatch, capsys):
@@ -648,3 +655,55 @@ def test_reset_command_clears_the_semantic_session(monkeypatch):
 
     assert resets == ["adapter", "printers", "session"]
     assert notes and "reset" in notes[0]
+
+
+def test_gdr_backtrace_command_supports_text_json_and_arg_guards(monkeypatch, capsys):
+    """``gdr backtrace`` dispatches adaptive unwinding in text and JSON forms."""
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    from core.adapter import BacktraceFrame, BacktraceReport
+
+    entrypoint = _load_entrypoint()
+    report = BacktraceReport(
+        task="<current>",
+        address=0,
+        architecture="riscv64",
+        abi="lp64",
+        method="cfi",
+        source="current",
+        complete=True,
+        stop_reason="task-exit",
+        truncated=False,
+        max_depth=6,
+        bounds="recorded",
+        frames=[BacktraceFrame(0, 0x80000100, "seed", "main+0")],
+    )
+    depths: list[int] = []
+    warnings: list[str] = []
+    fake_gdb = SimpleNamespace(
+        STDERR=2,
+        write=lambda text, _stream=None: sys.stdout.write(text),
+    )
+    monkeypatch.setattr("core.gdb_bridge.gdb", fake_gdb)
+    monkeypatch.setattr("core.gdb_bridge.terminal_width", lambda: 120)
+    monkeypatch.setattr("core.commands.warn", warnings.append)
+    monkeypatch.setattr(
+        "core.backtrace.backtrace_gdb.live_backtrace",
+        lambda max_depth=32: depths.append(max_depth) or report,
+    )
+
+    entrypoint._invoke_command("backtrace --max-depth 6")
+    text = capsys.readouterr().out
+    assert depths == [6] and "main+0" in text and "riscv64" in text
+
+    entrypoint._invoke_command("backtrace --json --max-depth=6")
+    raw_json = capsys.readouterr().out.strip()
+    payload = json.loads(raw_json)
+    assert payload["ok"] is True
+    assert payload["data"]["frames"][0]["symbol"] == "main+0"
+    assert depths == [6, 6]
+
+    entrypoint._invoke_command("backtrace worker1")
+    assert warnings == ["usage: gdr backtrace [--max-depth N] [--json]"]

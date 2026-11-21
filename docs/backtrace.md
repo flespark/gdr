@@ -1,7 +1,8 @@
 # Task Backtrace
 
 Design, unwind rules, cross-stack verification gates, and target firmware
-build requirements for `rtt backtrace`, `frt backtrace`, and `gdr api backtrace`.
+build requirements for `gdr backtrace`, `rtt backtrace`, `frt backtrace`, and
+`gdr api backtrace`.
 For module inventories see [`architecture.md`](architecture.md); for RTOS/ISA
 matrices and exclusions see [`boundary.md`](boundary.md); for fixture lanes and
 acceptance tests see [`testing.md`](testing.md).
@@ -14,9 +15,10 @@ backtrace runs through three sequential phases.
 
 ### 1. Seed, ABI, and Stack-Segment Validation
 
-Before stepping any caller frame, the adapter resolves the target task or
-current halted context (`<rtos>/backtrace/backtrace_gdb.py`) and validates the seed
-([`core/backtrace/unwind.py`](../core/backtrace/unwind.py)):
+Before stepping any caller frame, GDR resolves the halted core or target task
+(`core/backtrace/backtrace_gdb.py` for pre-init/bare-metal `gdr backtrace` and
+`<rtos>/backtrace/backtrace_gdb.py` when an adapter is active) and validates the
+seed ([`core/backtrace/unwind.py`](../core/backtrace/unwind.py)):
 
 1. **RTOS identity, version, and struct layout**: Verified from explicit
    `gdr init <rtos> <version>` against ELF symbols and `-g3` DWARF macros;
@@ -39,7 +41,9 @@ current halted context (`<rtos>/backtrace/backtrace_gdb.py`) and validates the s
      the ordinary frame loop.
 
 ```text
-rtt/frt backtrace <task> / gdr api backtrace -> adapter (backtrace/backtrace_gdb.py)
+gdr backtrace [--max-depth N] [--json] / pre-init gdr api backtrace
+  -> core.backtrace.backtrace_gdb (live register seed, linker/ELF stack bounds)
+rtt/frt backtrace [<task>] / gdr api backtrace -> adapter (backtrace/backtrace_gdb.py)
   -> saved task profile (backtrace/backtrace.py + stack_frame_profile.py)
      or live/handler/scheduler seed (backtrace/scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
   -> core.elf (ELF sections, sized STT_FUNC symbols, CPU attributes, code bytes)

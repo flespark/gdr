@@ -12,7 +12,13 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from core import heapmap
-from core.adapter import HeapReport, ObjectDetail, ObjectTable, active
+from core.adapter import (
+    BacktraceReport,
+    HeapReport,
+    ObjectDetail,
+    ObjectTable,
+    active,
+)
 from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
     gdb_command_guard,
@@ -40,26 +46,8 @@ def render_tasks() -> None:
     print_table(table.rows, table.headers, elastic=table.elastic)
 
 
-@gdb_command_guard
-def render_backtrace(target: str | None = None, max_depth: int = 32) -> None:
-    """Render one bounded task or current-PC backtrace as a compact frame table.
-
-    ``target=None`` selects the halted core's current running task or pre-
-    scheduler live context.  Each row names the frame index, PC, resolved
-    symbol and source line.
-    """
-    adapter = active()
-    if adapter is None:
-        warn("run `gdr init <rtos> <version>` first")
-        return
-    if target is not None and not target.strip():
-        warn("task name or address must not be empty")
-        return
-    normalized = target.strip() if target is not None else None
-    report = adapter.backtrace(normalized, max_depth)
-    if report is None:
-        warn("this adapter cannot unwind task stacks")
-        return
+def render_backtrace_report(report: BacktraceReport) -> None:
+    """Format and print one bounded :class:`BacktraceReport` as a frame table."""
     for message in report.messages:
         info(message)
     headers = ["#", "PC", "Function", "Source", "Method"]
@@ -87,10 +75,34 @@ def render_backtrace(target: str | None = None, max_depth: int = 32) -> None:
     )
 
 
-def invoke_backtrace_command(argument: str, usage: str) -> None:
-    """Parse ``backtrace [<target>] [--max-depth N]`` and render the frame table."""
-    words = argument.split(None, 1)
-    rest = words[1].strip() if len(words) == 2 else ""
+@gdb_command_guard
+def render_backtrace(target: str | None = None, max_depth: int = 32) -> None:
+    """Render one bounded task or current-PC backtrace as a compact frame table.
+
+    ``target=None`` selects the halted core's current running task or pre-
+    scheduler live context.  Each row names the frame index, PC, resolved
+    symbol and source line.
+    """
+    adapter = active()
+    if adapter is None:
+        warn("run `gdr init <rtos> <version>` first")
+        return
+    if target is not None and not target.strip():
+        warn("task name or address must not be empty")
+        return
+    normalized = target.strip() if target is not None else None
+    report = adapter.backtrace(normalized, max_depth)
+    if report is None:
+        warn("this adapter cannot unwind task stacks")
+        return
+    render_backtrace_report(report)
+
+
+def parse_backtrace_max_depth(
+    argument: str, usage: str, *, allow_target: bool = True
+) -> tuple[str | None, int] | None:
+    """Parse ``[<target>] [--max-depth N]``, or warn and return ``None``."""
+    rest = argument.strip()
     max_depth = 32
     marker = rest.rfind("--max-depth")
     if marker >= 0 and (marker == 0 or rest[marker - 1].isspace()):
@@ -98,26 +110,38 @@ def invoke_backtrace_command(argument: str, usage: str) -> None:
         if option[0] == "--max-depth":
             if len(option) != 2:
                 warn(usage)
-                return
+                return None
             depth_text = option[1]
         elif option[0].startswith("--max-depth=") and len(option) == 1:
             depth_text = option[0].split("=", 1)[1]
         else:
             warn(usage)
-            return
+            return None
         try:
             max_depth = int(depth_text)
         except ValueError:
             warn(f"invalid --max-depth: {depth_text}")
-            return
+            return None
         rest = rest[:marker].strip()
-    if rest.startswith("--"):
+    if rest.startswith("--") or (not allow_target and rest):
         warn(usage)
-        return
+        return None
     if max_depth < 1 or max_depth > 64:
         warn("--max-depth must be between 1 and 64")
+        return None
+    return (rest or None), max_depth
+
+
+def invoke_backtrace_command(argument: str, usage: str) -> None:
+    """Parse ``backtrace [<target>] [--max-depth N]`` and render the frame table."""
+    words = argument.split(None, 1)
+    parsed = parse_backtrace_max_depth(
+        words[1] if len(words) == 2 else "", usage, allow_target=True
+    )
+    if parsed is None:
         return
-    render_backtrace(rest or None, max_depth)
+    target, max_depth = parsed
+    render_backtrace(target, max_depth)
 
 
 @gdb_command_guard

@@ -149,6 +149,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | --------- | ------------- |
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
 | `gdr reset` | Drop the active adapter and session caches |
+| `gdr backtrace [--max-depth N] [--json]` | Adaptive bare-metal/pre-init unwind of the halted core via EHABI, DWARF CFI, proven leaves, or validated FP (no RTOS required) |
 | `gdr help [topic]` | Show bootstrap or pretty-printer help |
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |

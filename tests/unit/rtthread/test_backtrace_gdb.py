@@ -190,7 +190,7 @@ def test_symbols_and_source_use_lookup_pc_without_changing_resume_pc(monkeypatch
 
 
 def test_saved_pc_setup_reset_and_live_riscv_seed(monkeypatch):
-    from core.backtrace.unwind import (
+    from core.backtrace.backtrace_gdb import (
         cached_unwind_metadata,
         live_seed,
     )

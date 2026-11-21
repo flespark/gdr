@@ -519,8 +519,8 @@ def _table_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
     )
 
 
-def _backtrace_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
-    """One task's or current PC's bounded backtrace; ``backtrace [<task>] [--max-depth N]``."""
+def _parse_backtrace_args(args: Sequence[str]) -> tuple[str | None, int]:
+    """Parse ``[<task>] [--max-depth N]`` arguments for backtrace verbs."""
     target: str | None = None
     max_depth = 32
     index = 0
@@ -554,9 +554,63 @@ def _backtrace_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
         raise ApiError("empty_name", "task name must not be empty")
     if max_depth < 1 or max_depth > 64:
         raise ApiError("bad_args", "--max-depth must be between 1 and 64")
-    report = adapter.backtrace(
-        target.strip() if target is not None else None, max_depth
+    return (target.strip() if target is not None else None), max_depth
+
+
+def _pre_init_backtrace_verb(args: Sequence[str]) -> _VerbResult:
+    """Adaptive non-RTOS current-PC backtrace before any RTOS adapter is active."""
+    from .backtrace.backtrace_gdb import live_backtrace
+
+    target, max_depth = _parse_backtrace_args(args)
+    if target is not None:
+        raise ApiError(
+            "not_initialized",
+            "task backtrace requires an active RTOS adapter; "
+            "run `gdr init <rtos> <version>` first",
+        )
+    report = live_backtrace(max_depth)
+    return backtrace_to_dict(report), list(report.messages)
+
+
+def live_backtrace_envelope(max_depth: int = 32) -> dict[str, object]:
+    """Run RTOS-agnostic live backtrace and wrap the result in a GDR envelope."""
+    from .backtrace.backtrace_gdb import live_backtrace
+
+    start = time.monotonic()
+    rtos, rtos_version = session_meta()
+    note = verification_note()
+    try:
+        report = live_backtrace(max_depth)
+    except TARGET_ACCESS_ERRORS as exc:
+        return _error_envelope(
+            "target_unavailable", format_exception(exc), _elapsed_ms(start)
+        )
+    except Exception as exc:
+        if is_debug():
+            show_last_exception()
+            if propagate_exception():
+                raise
+        return _error_envelope(
+            "internal", f"{type(exc).__name__}: {exc}", _elapsed_ms(start)
+        )
+    warnings = list(report.messages)
+    if note is not None:
+        warnings.insert(0, note)
+    return pack_envelope(
+        backtrace_to_dict(report),
+        rtos=rtos,
+        rtos_version=rtos_version,
+        gdr_version=GDR_VERSION,
+        warnings=warnings,
+        generation=current_generation(),
+        elapsed_ms=_elapsed_ms(start),
     )
+
+
+def _backtrace_verb(adapter: RtosAdapter, args: Sequence[str]) -> _VerbResult:
+    """One task's or current PC's bounded backtrace; ``backtrace [<task>] [--max-depth N]``."""
+    target, max_depth = _parse_backtrace_args(args)
+    report = adapter.backtrace(target, max_depth)
     if report is None:
         raise ApiError(
             "backtrace_unavailable", "this adapter cannot unwind task stacks"
@@ -729,7 +783,11 @@ _VERBS: dict[str, _VerbHandler] = {
 }
 
 # Verbs an uninitialized session can still answer (see _dispatch).
-_PRE_INIT_VERBS: dict[str, _PreInitVerbHandler] = {"probe": _probe_payload}
+_PRE_INIT_VERBS: dict[str, _PreInitVerbHandler] = {
+    "probe": _probe_payload,
+    "backtrace": _pre_init_backtrace_verb,
+    "bt": _pre_init_backtrace_verb,
+}
 
 
 def _error_envelope(code: str, message: str, elapsed_ms: float) -> dict[str, object]:

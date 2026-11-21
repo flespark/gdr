@@ -8,6 +8,9 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- `gdr backtrace [--max-depth N] [--json]` and pre-init `gdr api backtrace`
+  unwind halted Arm and RISC-V targets using live registers and ELF metadata
+  without requiring `gdr init`.
 - `container stop` stops the CI Podman machine, leaving the image and fixture
   caches intact.
 - `rtt backtrace`, `frt backtrace` and `gdr api backtrace` show bounded task

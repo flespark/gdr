@@ -97,6 +97,21 @@ unambiguous result.",
             action="probe",
             category="Available command",
         ),
+        CommandHelp(
+            "backtrace",
+            "Unwind the halted core from ELF metadata without an RTOS adapter",
+            "Inspects loaded ELF CPU attributes, unwind tables and live target registers for bare-metal, pre-init or pre-scheduler stops.",
+            usage=("gdr backtrace [--max-depth N] [--json]",),
+            tips=(
+                "Use `<rtos> backtrace [<task>]` after `gdr init` to unwind RTOS task or exception stacks.",
+                "`--json` writes one GDR API envelope (`live_backtrace_envelope`).",
+            ),
+            configuration=(
+                "Reads ELF metadata and live target registers; requires explicit stack bounds.",
+            ),
+            action="backtrace",
+            category="Available command",
+        ),
         HelpTopic(
             "rtthread",
             "Continue with the registered `rtt` command tree",
@@ -188,7 +203,7 @@ def _report_unknown_command(token: str) -> None:
     if token.lower() in documented:
         warn(f"'{token}' is a help topic, not a command; run 'gdr help {token}'")
         return
-    commands = "init, probe, reset, api, help"
+    commands = "init, probe, backtrace, reset, api, help"
     rtos, _version = session_meta()
     if rtos is None:
         warn(
@@ -213,7 +228,11 @@ def _complete(text: str, word: str | None) -> list[str]:
         return prefix_candidates(
             word, [topic.name for topic in _root_help_tree().topics]
         )
-    return prefix_candidates(word, ["init", "probe", "reset", "api", "help"])
+    if parts and parts[0].lower() in ("backtrace", "bt") and " " in text:
+        return prefix_candidates(word, ["--max-depth", "--json"])
+    return prefix_candidates(
+        word, ["init", "probe", "backtrace", "reset", "api", "help"]
+    )
 
 
 _GdbCommandBase = gdb.Command if gdb is not None else object
@@ -260,6 +279,9 @@ def _invoke_command(argument: str) -> None:
         return
     if argv[0] == "api":
         _api_command(argv[1:])
+        return
+    if argv[0] in ("backtrace", "bt"):
+        _backtrace_command(argv[1:])
         return
     if argv[0] == "probe":
         _probe_command(argv[1:])
@@ -480,6 +502,30 @@ def _probe_command(argv: list[str]) -> None:
             info(f"{candidate.get('rtos')}: {candidate['detail']}")
 
 
+def _backtrace_command(argv: list[str]) -> None:
+    """``gdr backtrace [--max-depth N] [--json]``: non-RTOS live stack backtrace."""
+    import shlex
+
+    from core.api import live_backtrace_envelope
+    from core.backtrace.backtrace_gdb import live_backtrace
+    from core.commands import parse_backtrace_max_depth, render_backtrace_report
+
+    json_mode = "--json" in argv
+    rest = [token for token in argv if token != "--json"]
+    parsed = parse_backtrace_max_depth(
+        " ".join(shlex.quote(token) for token in rest),
+        "usage: gdr backtrace [--max-depth N] [--json]",
+        allow_target=False,
+    )
+    if parsed is None:
+        return
+    _target, max_depth = parsed
+    if json_mode:
+        _write_json(live_backtrace_envelope(max_depth))
+        return
+    render_backtrace_report(live_backtrace(max_depth))
+
+
 def _resolve_auto(rtos: str) -> str | None:
     """The probed version for ``gdr init <rtos> auto``, or ``None``.
 
@@ -532,10 +578,12 @@ def _reset_command() -> None:
     """
     from core.adapter import active, is_initialized, reset
     from core.api import next_generation
+    from core.backtrace.backtrace_gdb import reset_boot_metadata_cache
     from core.commands import clear as clear_watches
     from core.gdb_bridge import reset_loadable_ranges
     from core.layout import unregister_printers
 
+    reset_boot_metadata_cache()
     if not is_initialized():
         warn("no active RTOS adapter to reset")
         return
@@ -586,10 +634,12 @@ def _register_session_events() -> None:
         try:
             from core.adapter import active
             from core.api import next_generation
+            from core.backtrace.backtrace_gdb import reset_boot_metadata_cache
             from core.gdb_bridge import reset_loadable_ranges
 
             next_generation()
             reset_loadable_ranges()
+            reset_boot_metadata_cache()
             adapter = active()
             reset_adapter = getattr(adapter, "reset", None)
             if reset_adapter is not None:

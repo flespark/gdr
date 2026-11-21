@@ -145,6 +145,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | ------ | ------ |
 | `gdr init <rtos> <version>` | 初始化指定的 RTOS adapter |
 | `gdr reset` | 清除当前 adapter 与会话缓存 |
+| `gdr backtrace [--max-depth N] [--json]` | 无须初始化 RTOS，通过 EHABI、DWARF CFI、叶子指令证明或帧指针对当前停机上下文做自适应栈回溯 |
 | `gdr help [topic]` | 查看初始化或 pretty-printer 帮助 |
 | `<rtos> help [topic]` | 浏览命令树；topic 包含字段说明、使用 tips、配置依赖与实现限制 |
 | `<rtos> <objects>` | 列表形式展示指定内核对象的总体状态 |

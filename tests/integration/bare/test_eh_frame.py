@@ -525,3 +525,42 @@ print(json.dumps({{"reason": res.stop_reason, "frames": len(res.frames)}}))
         json.loads(line) for line in output.splitlines() if line.startswith("{")
     )
     assert payload == {"reason": "cfi-fde-pointer-unavailable", "frames": 1}
+
+
+def test_gdr_backtrace_and_pre_init_api_work_without_an_rtos_adapter(hdr_session):
+    text = hdr_session.run("gdr backtrace")
+    for name in ("hdr_checkpoint", "hdr_leaf", "hdr_middle", "hdr_root"):
+        assert name in text, text
+    assert "cfi-return-address-undefined" in text, text
+
+    cli_json = hdr_session.run("gdr backtrace --json --max-depth 2")
+    cli_env = json.loads(
+        next(line for line in cli_json.splitlines() if line.startswith("{"))
+    )
+    assert cli_env["ok"] is True and cli_env["rtos"] is None
+    assert cli_env["data"]["truncated"] is True and cli_env["data"]["max_depth"] == 2
+    assert cli_env["data"]["architecture"] == "riscv64"
+    assert cli_env["data"]["abi"] == "lp64"
+    assert [f["symbol"].split("+", 1)[0] for f in cli_env["data"]["frames"]] == [
+        "hdr_checkpoint",
+        "hdr_leaf",
+    ]
+
+    api_json = hdr_session.run("gdr api backtrace --json")
+    api_env = json.loads(
+        next(line for line in api_json.splitlines() if line.startswith("{"))
+    )
+    assert api_env["ok"] is True and api_env["rtos"] is None
+    assert [f["symbol"].split("+", 1)[0] for f in api_env["data"]["frames"]] == [
+        "hdr_checkpoint",
+        "hdr_leaf",
+        "hdr_middle",
+        "hdr_root",
+    ]
+
+    targeted_json = hdr_session.run("gdr api backtrace worker1 --json")
+    targeted_env = json.loads(
+        next(line for line in targeted_json.splitlines() if line.startswith("{"))
+    )
+    assert targeted_env["ok"] is False
+    assert targeted_env["error"]["code"] == "not_initialized"

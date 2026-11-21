@@ -159,6 +159,7 @@ source = [
     "core.insn_riscv",
     "core.insn_thumb",
     "core.stack_frame_parser",
+    "core.backtrace.backtrace_gdb",
     "core.backtrace.unwind",
     "core.backtrace.unwind_leaf",
     "core.backtrace.unwind_segments",

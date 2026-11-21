@@ -39,7 +39,7 @@ known limits in [`boundary.md`](boundary.md).
 | `layout.py` | Generic `StructLayout` / `StructField` / `ListHook` dataclasses and accessors (`read_field`, `iter_list`, `container_of`), plus layout-driven pretty-printer registration. Type matching uses `strip_typedefs().unqualified().tag` so typedef-spelled values resolve. |
 | `version.py` | RTOS-neutral version parsing/decoding, `TargetVerdict`, and the `ProbeCandidate` registry behind `gdr probe`. |
 | `adapter.py` | `RtosAdapter` protocol, presentation dataclasses (`Cell`, `ColumnSpec`, `ObjectTable`, `ObjectDetail`, `SystemSummary`, `HeapReport`, `CheckFinding`), and the active session. |
-| `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`backtrace`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
+| `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`backtrace`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`; `probe` and current-context `backtrace` also run pre-init) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
 | `commands.py` | Shared collectors and guarded text renderers, the stop-time watch set, and convenience functions (`$gdr_task`, `$gdr_object`, `$gdr_json`). |
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
 | `elf.py` | Bounded ELF sections, `PT_GNU_EH_FRAME` resolution, code symbols, common binary encodings, and Arm/RISC-V CPU ISA/ABI attributes (`RegisterConvention`). |
@@ -47,7 +47,8 @@ known limits in [`boundary.md`](boundary.md).
 | `insn_riscv.py` | Bounded RISC-V instruction decoder and ELF code-range primitives for port evidence checks. |
 | `insn_thumb.py` | Bounded Arm Thumb/Thumb-2 instruction and stream decoder for port evidence checks. |
 | `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, bounded slot readers, typed xPSR/CPSR decoding and synthetic/file-only/live validation tiers. |
-| `backtrace/unwind.py` | Bounded task unwind driver: seed frames, live register seed dispatch, ELF metadata cache, EHABI/CFI/instruction-leaf/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
+| `backtrace/unwind.py` | Pure bounded task unwind driver: seed validation, EHABI/CFI/instruction-leaf/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
+| `backtrace/backtrace_gdb.py` | GDB-facing live-register seed readers, cached ELF unwind metadata, M-profile/RISC-V live stack bounds, and RTOS-agnostic ``live_backtrace`` orchestration. |
 | `backtrace/unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
 | `backtrace/unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
 | `backtrace/unwind_riscv.py` | Shared RISC-V Machine-mode trap frame recovery, generic trap-block prologue/epilogue/store analysis, IRQ stack bounds resolution and handler-mode unwind setup. |
@@ -119,16 +120,19 @@ rtt/freertos command -> generic coordinator -> active adapter
   -> shared formatting -> GDB output
 ```
 
-Task stack backtraces resolve the task or halted context, parse the loaded
-ELF's unwind sections, and step bounded frames (details in
-[`backtrace.md`](backtrace.md) and [`boundary.md`](boundary.md#task-backtraces)):
+Task stack backtraces resolve the task or halted context (before or after
+`gdr init`), parse the loaded ELF's unwind sections, and step bounded frames
+(details in [`backtrace.md`](backtrace.md) and [`boundary.md`](boundary.md#task-backtraces)):
 
 ```text
-rtt/frt backtrace <task> / gdr api backtrace -> active adapter (backtrace/backtrace_gdb.py)
+gdr backtrace [--max-depth N] [--json] / pre-init gdr api backtrace
+  -> core.backtrace.backtrace_gdb (live registers, stack/vector bounds, core.elf)
+rtt/frt backtrace [<task>] / post-init gdr api backtrace
+  -> active adapter (backtrace/backtrace_gdb.py)
   -> saved task profile (backtrace/backtrace.py + stack_frame_profile.py)
      or live/handler/scheduler seed (backtrace/scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
   -> core.elf (ELF sections, sized symbols, CPU attributes, code bytes)
-  -> core.backtrace (strict EHABI -> CFI -> leaf -> gap-only FP, segments, budgets)
+  -> core.backtrace.unwind (strict EHABI -> CFI -> leaf -> gap-only FP, segments, budgets)
   -> frames + method + complete/stop_reason + messages
 ```
 

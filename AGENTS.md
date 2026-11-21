@@ -29,7 +29,8 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   insn_thumb.py        bounded Arm Thumb/Thumb-2 instruction and stream decoding
   stack_frame_parser.py validated task-frame profiles and bounded slot readers
   backtrace/           task/exception unwind subpackage
-    unwind.py          bounded task unwind driver (seed, stack/PC validation, stop reasons)
+    unwind.py          pure bounded task unwind driver (seed, stack/PC validation, stop reasons)
+    backtrace_gdb.py   GDB live-register seed, ELF metadata cache, and standalone ``live_backtrace``
     unwind_leaf.py     bounded instruction proofs for stack-neutral scalar leaf returns
     unwind_cfi.py      bounded DWARF CFI tables and encoded-pointer decoding
     unwind_expr.py     bounded integer CFI expressions and guarded memory reads
