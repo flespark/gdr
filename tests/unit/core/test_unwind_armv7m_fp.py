@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import struct
 
-from core.unwind_arm import (
+from core.backtrace.unwind_arm import (
     EXTENDED_EXC_RETURNS,
     armv7m_exception_transition,
     decode_armv7m_exception_return,
 )
-from core.unwind_segments import ExceptionTransitionContext, StackSegment
+from core.backtrace.unwind_segments import ExceptionTransitionContext, StackSegment
 from tests.unit.core.test_unwind import _Memory
 
 ED = 0xFFFFFFED

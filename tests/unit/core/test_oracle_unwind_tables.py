@@ -18,10 +18,10 @@ from elftools.dwarf.dwarf_expr import DWARFExprParser
 from elftools.ehabi.ehabiinfo import EHABIInfo, arm_expand_prel31
 from elftools.elf.elffile import ELFFile
 
-from core.unwind_cfi import parse_cfi_section
-from core.unwind_ehabi import _eh_insn_words, parse_ehabi
-from core.unwind_expr import _expression_boundaries, evaluate_cfi_expression
-from core.unwind_meta import ElfImage
+from core.backtrace.unwind_cfi import parse_cfi_section
+from core.backtrace.unwind_ehabi import _eh_insn_words, parse_ehabi
+from core.backtrace.unwind_expr import _expression_boundaries, evaluate_cfi_expression
+from core.elf import ElfImage
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 from .oracle_support import (

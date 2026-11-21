@@ -1,10 +1,10 @@
 """GDB-facing FreeRTOS backtrace orchestration (no target writes).
 
 The pure context layout and ELF/CFI/EHABI parsers live in
-:mod:`freertos.backtrace` and :mod:`core.unwind`; this module only resolves
+:mod:`freertos.backtrace.backtrace` and :mod:`core.backtrace.unwind`; this module only resolves
 the task, reads live/saved registers through GDB, supplies the linker-owned
 interrupt-stack span and exception profile gates, and turns one bounded
-:class:`core.unwind.UnwindResult` into the adapter presentation model.
+:class:`core.backtrace.unwind.UnwindResult` into the adapter presentation model.
 """
 
 from __future__ import annotations
@@ -17,6 +17,67 @@ from core.adapter import (
     active,
     build_backtrace_report,
     live_boot_backtrace_report,
+)
+from core.backtrace.unwind import (
+    ElfImage,
+    SeedFrame,
+    UnwindMetadata,
+    cached_unwind_metadata,
+    unwind_chain,
+)
+from core.backtrace.unwind import (
+    live_seed_detail as _core_live_seed_detail,
+)
+from core.backtrace.unwind_arm import (
+    ArmSnapshot as _ArmSnapshot,
+)
+from core.backtrace.unwind_arm import (
+    FaultPrecision,
+    prepare_arm_handler_unwind,
+    resolve_arm_irq_stack_bounds,
+    resolve_arm_irq_stack_bounds_detail,
+    resolve_armv6m_vector_limit,
+)
+from core.backtrace.unwind_arm import (
+    arm_capacity_exception_guard as _capacity_exception_guard,
+)
+from core.backtrace.unwind_arm import (
+    arm_ccr_stkalign as _core_ccr_stkalign,
+)
+from core.backtrace.unwind_arm import (
+    arm_exception_guard as _exception_guard,
+)
+from core.backtrace.unwind_arm import (
+    arm_external_exception_limit as _core_external_exception_limit,
+)
+from core.backtrace.unwind_arm import (
+    arm_snapshot as _core_arm_snapshot,
+)
+from core.backtrace.unwind_arm import (
+    armv6m_vector_entry as _core_armv6m_vector_entry,
+)
+from core.backtrace.unwind_arm import (
+    armv7m_vector_entry as _core_armv7m_vector_entry,
+)
+from core.backtrace.unwind_riscv import (
+    RiscvSnapshot as _RiscvSnapshot,
+)
+from core.backtrace.unwind_riscv import (
+    decode_riscv_mcause as _decode_riscv_mcause,
+)
+from core.backtrace.unwind_riscv import (
+    prepare_riscv_handler_unwind,
+    resolve_riscv_irq_stack_bounds_detail,
+    riscv_fault_precision,
+)
+from core.backtrace.unwind_riscv import (
+    riscv_snapshot as _core_riscv_snapshot,
+)
+from core.backtrace.unwind_segments import (
+    ExceptionDetector,
+    ExceptionHook,
+    StackSegment,
+    TransitionGuard,
 )
 from core.gdb_bridge import (
     arch_or_default,
@@ -31,86 +92,29 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.stack_frame_parser import StackContextSelection
-from core.unwind import (
-    ElfImage,
-    SeedFrame,
-    UnwindMetadata,
-    cached_unwind_metadata,
-    unwind_chain,
-)
-from core.unwind import (
-    live_seed_detail as _core_live_seed_detail,
-)
-from core.unwind_arm import (
-    ArmSnapshot as _ArmSnapshot,
-)
-from core.unwind_arm import (
-    FaultPrecision,
-    prepare_arm_handler_unwind,
-    resolve_arm_irq_stack_bounds,
-    resolve_arm_irq_stack_bounds_detail,
-    resolve_armv6m_vector_limit,
-)
-from core.unwind_arm import (
-    arm_capacity_exception_guard as _capacity_exception_guard,
-)
-from core.unwind_arm import (
-    arm_ccr_stkalign as _core_ccr_stkalign,
-)
-from core.unwind_arm import (
-    arm_exception_guard as _exception_guard,
-)
-from core.unwind_arm import (
-    arm_external_exception_limit as _core_external_exception_limit,
-)
-from core.unwind_arm import (
-    arm_snapshot as _core_arm_snapshot,
-)
-from core.unwind_arm import (
-    armv6m_vector_entry as _core_armv6m_vector_entry,
-)
-from core.unwind_arm import (
-    armv7m_vector_entry as _core_armv7m_vector_entry,
-)
-from core.unwind_riscv import (
-    RiscvSnapshot as _RiscvSnapshot,
-)
-from core.unwind_riscv import (
-    decode_riscv_mcause as _decode_riscv_mcause,
-)
-from core.unwind_riscv import (
-    prepare_riscv_handler_unwind,
-    resolve_riscv_irq_stack_bounds_detail,
-    riscv_fault_precision,
-)
-from core.unwind_riscv import (
-    riscv_snapshot as _core_riscv_snapshot,
-)
-from core.unwind_segments import (
-    ExceptionDetector,
-    ExceptionHook,
-    StackSegment,
-    TransitionGuard,
-)
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
-from freertos.arm_scheduler_switch import build_profile as build_scheduler_profile
-from freertos.arm_scheduler_switch import classify_stage
-from freertos.backtrace import decode_cm4f_saved_context
-from freertos.backtrace import decode_saved_context as decode_backtrace_context
+from freertos.backtrace.arm_scheduler_switch import (
+    build_profile as build_scheduler_profile,
+)
+from freertos.backtrace.arm_scheduler_switch import classify_stage
+from freertos.backtrace.backtrace import decode_cm4f_saved_context
+from freertos.backtrace.backtrace import (
+    decode_saved_context as decode_backtrace_context,
+)
+from freertos.backtrace.riscv_scheduler_switch import (
+    build_riscv_profile as build_riscv_scheduler_profile,
+)
+from freertos.backtrace.riscv_scheduler_switch import classify_riscv_stage
+from freertos.backtrace.scheduler_seed import (
+    build_riscv_stage_seed,
+    build_stage_seed,
+    riscv_interrupted_frame_matches,
+)
 from freertos.navigation import (
     current_tasks,
     iter_tasks,
     saved_context_bounds,
     task_state,
-)
-from freertos.riscv_scheduler_switch import (
-    build_riscv_profile as build_riscv_scheduler_profile,
-)
-from freertos.riscv_scheduler_switch import classify_riscv_stage
-from freertos.scheduler_seed import (
-    build_riscv_stage_seed,
-    build_stage_seed,
-    riscv_interrupted_frame_matches,
 )
 from freertos.stack_frame_profile import (
     analyze_riscv_trap_profile,

@@ -6,9 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from .gdb_bridge import linker_symbol_address, read_bytes
+from ..elf import Reader
+from ..gdb_bridge import linker_symbol_address, read_bytes
 from .unwind import SeedFrame
-from .unwind_meta import Reader
 from .unwind_segments import (
     ExceptionDetector,
     ExceptionHook,

@@ -7,9 +7,9 @@ from dataclasses import replace
 
 import pytest
 
-from core import unwind_cfi as cfi
-from core.unwind import UnwindMetadata
-from core.unwind_meta import (
+from core.backtrace import unwind_cfi as cfi
+from core.backtrace.unwind import UnwindMetadata
+from core.elf import (
     DW_EH_PE_DATAREL,
     DW_EH_PE_OMIT,
     DW_EH_PE_PCREL,

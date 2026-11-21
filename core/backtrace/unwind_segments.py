@@ -1,6 +1,6 @@
 """Typed stack segments and exception-transition evidence for unwinding (pure).
 
-The driver in :mod:`core.unwind` normally advances inside one stack segment.
+The driver in :mod:`core.backtrace.unwind` normally advances inside one stack segment.
 Crossing to another stack requires an architecture hook that proves an
 exception-return boundary and supplies the restored context.  This module owns
 the neutral data types shared by that driver and the architecture decoder; it
@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from .unwind_meta import Method, Reader
+from ..elf import Method, Reader
 
 MAX_EXCEPTION_DEPTH = 8
 MAX_EXCEPTION_READ_BYTES = 256

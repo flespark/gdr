@@ -5,10 +5,10 @@ from typing import Any, cast
 
 import pytest
 
-import freertos.backtrace_gdb as bridge
-from core.unwind import UnwindResult
-from core.unwind_arm import armv6m_exception_transition
-from core.unwind_segments import ExceptionTransitionContext
+import freertos.backtrace.backtrace_gdb as bridge
+from core.backtrace.unwind import UnwindResult
+from core.backtrace.unwind_arm import armv6m_exception_transition
+from core.backtrace.unwind_segments import ExceptionTransitionContext
 from tests.unit.freertos.test_backtrace_gdb import (
     _handler_session,
     _live_gdb,

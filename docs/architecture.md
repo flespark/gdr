@@ -42,20 +42,19 @@ known limits in [`boundary.md`](boundary.md).
 | `api.py` | Neutral verb layer (`tasks`/`objects`/`detail`/`backtrace`/`system`/`heap`/`snapshot`/`check`/`table`/`heap-dump`) over the same collectors the text renderers use, plus the JSON envelope and chunked evaluate transport. |
 | `commands.py` | Shared collectors and guarded text renderers, the stop-time watch set, and convenience functions (`$gdr_task`, `$gdr_object`, `$gdr_json`). |
 | `heapmap.py` | Heap-block layout to grid, owner palette, PNG and inline-terminal frames, including the dependency-free bitmap lettering for legends. Pure; no GDB import. |
-| `unwind.py` | Bounded task unwind driver: seed frames, live register seed dispatch, ELF metadata cache, EHABI/CFI/instruction-leaf/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
-| `unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
-| `unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
-| `unwind_riscv.py` | Shared RISC-V Machine-mode trap frame recovery, generic trap-block prologue/epilogue/store analysis, IRQ stack bounds resolution and handler-mode unwind setup. |
-| `unwind_meta.py` | Bounded ELF sections, `PT_GNU_EH_FRAME` segment resolution, code symbols, zero-size symbol anchors and shared binary encodings. |
-| `unwind_leaf.py` | Architecture-neutral, bounded scalar instruction proofs for straight-line functions that preserve SP/LR and return through LR. ELF function types and instruction state define the scan; unknown code, calls, branches and stack-bank changes refuse the proof. |
+| `elf.py` | Bounded ELF sections, `PT_GNU_EH_FRAME` resolution, code symbols, common binary encodings, and Arm/RISC-V CPU ISA/ABI attributes (`RegisterConvention`). |
 | `insn_arm.py` | Bounded ARM/A32 instruction decoder with normalized mnemonic/operand evidence for instruction-leaf proofs and compiled port checks. |
-| `cpus.py` | Bounded Arm/RISC-V CPU ISA/ABI evidence and `RegisterConvention` contracts from ELF attributes; contains no RTOS policy. |
-| `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, typed xPSR/CPSR status decoding and synthetic/file-only/live validation tiers; only live profiles pass runtime gates. |
 | `insn_riscv.py` | Bounded RISC-V instruction decoder and ELF code-range primitives for port evidence checks. |
 | `insn_thumb.py` | Bounded Arm Thumb/Thumb-2 instruction and stream decoder for port evidence checks. |
-| `unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`), `.eh_frame_hdr` binary search on demand with safe fallback to linear `.eh_frame` parsing, and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
-| `unwind_expr.py` | Pure integer CFI expression evaluation for CFA, register-save addresses and direct register values, with independent bytecode, step, stack and memory-read budgets. |
-| `unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
+| `stack_frame_parser.py` | Immutable saved-frame profiles with buffer spans, explicit slot aliases, bounded slot readers, typed xPSR/CPSR decoding and synthetic/file-only/live validation tiers. |
+| `backtrace/unwind.py` | Bounded task unwind driver: seed frames, live register seed dispatch, ELF metadata cache, EHABI/CFI/instruction-leaf/frame-pointer selection, stack-segment/PC/progress validation, evidence-gated transitions, per-frame method and stop reason. |
+| `backtrace/unwind_segments.py` | RTOS-neutral stack-segment ownership, transition evidence and independent exception-depth/read budgets. |
+| `backtrace/unwind_arm.py` | Shared eight-word Arm M-profile integer frame recovery, Armv6-M/Armv7-M exception policies, SCB/VTOR/vector-table readers, agnostic MSP/vector-capacity resolvers and handler-mode unwind setup. |
+| `backtrace/unwind_riscv.py` | Shared RISC-V Machine-mode trap frame recovery, generic trap-block prologue/epilogue/store analysis, IRQ stack bounds resolution and handler-mode unwind setup. |
+| `backtrace/unwind_leaf.py` | Architecture-neutral, bounded scalar instruction proofs for straight-line functions that preserve SP/LR and return through LR. ELF function types and instruction state define the scan; unknown code, calls, branches and stack-bank changes refuse the proof. |
+| `backtrace/unwind_cfi.py` | Bounded DWARF CFI (`.debug_frame`/`.eh_frame`), `.eh_frame_hdr` binary search on demand with safe fallback to linear `.eh_frame` parsing, and encoded pointers; rejects unsupported rules and unavailable pointer bases. |
+| `backtrace/unwind_expr.py` | Pure integer CFI expression evaluation for CFA, register-save addresses and direct register values, with independent bytecode, step, stack and memory-read budgets. |
+| `backtrace/unwind_ehabi.py` | Bounded ARM EHABI (`.ARM.exidx`/`.ARM.extab`) tables and virtual-register unwinding. |
 | `help.py` | Structured help schema with terminal/Markdown renderers; command metadata stays structured so the same source feeds GDB now and docs later. |
 
 ### `rtthread/` — RT-Thread adapter
@@ -65,11 +64,11 @@ known limits in [`boundary.md`](boundary.md).
 | `layout.py` | **The only place that knows RT-Thread struct layouts.** `RtConfig`, symbol-presence probing, `build_layouts(config)`, version policy and probe evidence. |
 | `navigation.py` | Registry/current-thread/tick symbols, type codes, timer traversal, halted system-heap snapshot. Returns raw `gdb.Value`. |
 | `stackpc.py` | Last PC from the version-specific frame, retaining the Cortex-A9 path. Verified RV64 uses the selected saved-context profile. |
-| `backtrace.py` / `backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing orchestration for integer Arm M/A-profile and RV32/RV64 contexts. Arm M-profile handler contexts use shared segment/exception validation; proven scheduler transitions select owner-consistent seeds per stage. Verified configurations and extension limits live in [RT-Thread boundaries](boundary.md#rt-thread-backtrace-matrix). |
-| `arm_scheduler_switch.py` | Pure compiled Arm M-profile (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state `armv8m-integer`/`fpu`) scheduler transition profiles (`rt_hw_context_switch`, `PendSV_Handler`, `rt_hw_context_switch_to`) and stage classification. |
-| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and stage classification (`rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry`, `rt_hw_context_switch_exit`, `spurious_interrupt`; distinguishing `virt64` `stacked-epc` from `e310` `deferred-mepc`). |
-| `scheduler_seed.py` | Owner-consistent seeds from classified Arm M-profile and RISC-V scheduler/trap stages. |
 | `stack_frame_profile.py` | ISA selection and decoded Arm/RISC-V save/restore/initial-context evidence (register bitmaps, SP switch, LWP header) without fixed instruction-stream fingerprints; unverified profiles remain gated. |
+| `backtrace/backtrace.py` / `backtrace/backtrace_gdb.py` | Pure RT-Thread saved-context layouts and GDB-facing orchestration for integer Arm M/A-profile and RV32/RV64 contexts. Arm M-profile handler contexts use shared segment/exception validation; proven scheduler transitions select owner-consistent seeds per stage. Verified configurations and extension limits live in [RT-Thread boundaries](boundary.md#rt-thread-backtrace-matrix). |
+| `backtrace/arm_scheduler_switch.py` | Pure compiled Arm M-profile (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state `armv8m-integer`/`fpu`) scheduler transition profiles (`rt_hw_context_switch`, `PendSV_Handler`, `rt_hw_context_switch_to`) and stage classification. |
+| `backtrace/riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and stage classification (`rt_hw_context_switch_to`, `rt_hw_context_switch`, `trap_entry`, `rt_hw_context_switch_exit`, `spurious_interrupt`; distinguishing `virt64` `stacked-epc` from `e310` `deferred-mepc`). |
+| `backtrace/scheduler_seed.py` | Owner-consistent seeds from classified Arm M-profile and RISC-V scheduler/trap stages. |
 | `adapter.py` | Intermediate models, value conversion, task/object tables, detail dispatch, system summaries. |
 | `views.py` | Column contracts, typed detail-table navigation cells, heap views and verdicts. |
 | `diagnostics.py` | Bounded raw-memory walks (IPC, heap), consistency diagnostics, and `rtt check`. |
@@ -82,11 +81,11 @@ known limits in [`boundary.md`](boundary.md).
 | `layout.py` | Config/DWARF probes, struct paths, version policy and probe evidence. |
 | `navigation.py` | Scheduler-list traversal and six-channel object discovery (MPU pool, registry, active lists, symbols, waiter hosts, user addresses). |
 | `stackpc.py` | Last PC projection from the selected saved-context profile. |
-| `backtrace.py` / `backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv7E-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic and FPU handler-frame transitions use ISA-specific validation and verified port evidence. |
-| `arm_scheduler_switch.py` | Pure compiled Arm M-profile (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, `ARM_CM33_NTZ`) transition profiles and instruction-relative stage classification; GDB-facing collection remains in `backtrace_gdb.py`. |
-| `riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and CFG-partitioned stage classification (`xPortStartFirstTask`, trap handlers, `vTaskSwitchContext`) across `10.3.x–11.3.1` port variants. |
-| `scheduler_seed.py` | Owner-consistent seeds from classified Arm M-profile (basic/FPU) and RISC-V scheduler/trap stages. |
 | `stack_frame_profile.py` | ISA/ABI, symbol, configuration and compiled save-layout/trap-frame evidence for verified M-profile (`aapcs32`/`aapcs32-vfp`) and RISC-V (`10.3.x–11.3.1`) profile selection. |
+| `backtrace/backtrace.py` / `backtrace/backtrace_gdb.py` | Pure saved-context layouts (Armv6-M, Armv7-M, Armv7E-M, Armv8-M Mainline SMP/MPU, RV32, RV64) and GDB-facing seed/task orchestration; basic and FPU handler-frame transitions use ISA-specific validation and verified port evidence. |
+| `backtrace/arm_scheduler_switch.py` | Pure compiled Arm M-profile (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, `ARM_CM33_NTZ`) transition profiles and instruction-relative stage classification; GDB-facing collection remains in `backtrace/backtrace_gdb.py`. |
+| `backtrace/riscv_scheduler_switch.py` | Pure compiled RISC-V scheduler/trap transition profiles and CFG-partitioned stage classification (`xPortStartFirstTask`, trap handlers, `vTaskSwitchContext`) across `10.3.x–11.3.1` port variants. |
+| `backtrace/scheduler_seed.py` | Owner-consistent seeds from classified Arm M-profile (basic/FPU) and RISC-V scheduler/trap stages. |
 | `objects.py` | Per-kind decode: software timers, event groups, stream/message buffers. |
 | `heap.py` | Heap-1..5 snapshot, canary decode, free-list/linear walks with cross-check verdicts. |
 | `adapter.py` | Task/object models, conversion, tables, summaries, `RtosAdapter` surface. |
@@ -125,12 +124,11 @@ ELF's unwind sections, and step bounded frames (details in
 [`backtrace.md`](backtrace.md) and [`boundary.md`](boundary.md#task-backtraces)):
 
 ```text
-rtt/frt backtrace <task> / gdr api backtrace -> active adapter (backtrace_gdb.py)
-  -> saved task profile (backtrace.py + stack_frame_profile.py)
-     or live/handler/scheduler seed (scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
-  -> core.unwind_meta (ELF sections, sized symbols, code bytes)
-  -> core.unwind_ehabi / core.unwind_cfi / core.unwind_leaf (strict step order)
-  -> core.unwind (typed segments, PC - 1 normalization, exception hooks, budgets)
+rtt/frt backtrace <task> / gdr api backtrace -> active adapter (backtrace/backtrace_gdb.py)
+  -> saved task profile (backtrace/backtrace.py + stack_frame_profile.py)
+     or live/handler/scheduler seed (backtrace/scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
+  -> core.elf (ELF sections, sized symbols, CPU attributes, code bytes)
+  -> core.backtrace (strict EHABI -> CFI -> leaf -> gap-only FP, segments, budgets)
   -> frames + method + complete/stop_reason + messages
 ```
 

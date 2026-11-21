@@ -6,13 +6,13 @@ from typing import cast
 
 import pytest
 
-import rtthread.backtrace_gdb as bridge
+import rtthread.backtrace.backtrace_gdb as bridge
+from core.backtrace.unwind import SeedFrame, UnwindFrame, UnwindMetadata, UnwindResult
+from core.backtrace.unwind_cfi import CfiTable
+from core.elf import ElfImage
 from core.stack_frame_parser import StackContextSelection
-from core.unwind import SeedFrame, UnwindFrame, UnwindMetadata, UnwindResult
-from core.unwind_cfi import CfiTable
-from core.unwind_meta import ElfImage
 from rtthread.adapter import Thread
-from rtthread.backtrace import (
+from rtthread.backtrace.backtrace import (
     ARMV7EM_FPU,
     ARMV7EM_INTEGER,
     ARMV7M_INTEGER,
@@ -21,8 +21,8 @@ from rtthread.backtrace import (
     RISCV32_INTEGER,
     RISCV64_INTEGER,
 )
+from rtthread.backtrace.scheduler_seed import SchedulerSeed
 from rtthread.layout import RT_THREAD_STACK_FILL
-from rtthread.scheduler_seed import SchedulerSeed
 
 
 @pytest.mark.parametrize(
@@ -190,11 +190,11 @@ def test_symbols_and_source_use_lookup_pc_without_changing_resume_pc(monkeypatch
 
 
 def test_saved_pc_setup_reset_and_live_riscv_seed(monkeypatch):
-    from core.unwind import (
+    from core.backtrace.unwind import (
         cached_unwind_metadata,
         live_seed,
     )
-    from core.unwind_arm import (
+    from core.backtrace.unwind_arm import (
         arm_ccr_stkalign,
         arm_cpuid,
         arm_external_exception_limit,
@@ -727,8 +727,8 @@ def test_arm_precise_fault_preserves_failure_or_marks_synchronous_fault(
 def test_apply_hardfault_trampoline_recovers_psp_software_frame_and_refuses_bad_marker(
     monkeypatch,
 ):
-    from core.unwind import UnwindMetadata
-    from core.unwind_segments import (
+    from core.backtrace.unwind import UnwindMetadata
+    from core.backtrace.unwind_segments import (
         ExceptionTransitionContext,
         ExceptionTransitionResult,
         StackSegment,
@@ -861,9 +861,12 @@ def test_apply_switch_return_cfi_adds_lr_return_only_for_switch_return():
 
 
 def test_current_pc_backtrace_tracks_outgoing_pendsv_and_boot(monkeypatch):
-    from core.unwind import UnwindFrame, UnwindResult
-    from core.unwind_arm import ArmSnapshot
-    from rtthread.arm_scheduler_switch import SchedulerProfile, SchedulerStage
+    from core.backtrace.unwind import UnwindFrame, UnwindResult
+    from core.backtrace.unwind_arm import ArmSnapshot
+    from rtthread.backtrace.arm_scheduler_switch import (
+        SchedulerProfile,
+        SchedulerStage,
+    )
 
     adapter = _arm_current(monkeypatch, exception=0)
     monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"fn_{pc:#x}")
@@ -896,8 +899,8 @@ def test_current_pc_backtrace_tracks_outgoing_pendsv_and_boot(monkeypatch):
         stack_grows_up=False,
         oncpu=None,
     )
-    from core.unwind_cfi import CfaRule, CfiRow, RegisterRule
-    from core.unwind_meta import EM_ARM, CodeSymbol, ElfImage, ElfSection
+    from core.backtrace.unwind_cfi import CfaRule, CfiRow, RegisterRule
+    from core.elf import EM_ARM, CodeSymbol, ElfImage, ElfSection
 
     boot_row = CfiRow(
         cfa=CfaRule(13, 4),

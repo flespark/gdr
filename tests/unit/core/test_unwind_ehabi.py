@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import core.unwind_ehabi as eh
-from core.unwind_ehabi import EhabiTable, _ExidxEntry
+import core.backtrace.unwind_ehabi as eh
+from core.backtrace.unwind_ehabi import EhabiTable, _ExidxEntry
 from tests.unit.core.test_unwind import _Memory
 
 

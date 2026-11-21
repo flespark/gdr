@@ -8,18 +8,18 @@ from typing import Any
 
 import pytest
 
-from core.unwind import SeedFrame, unwind_chain
-from core.unwind_arm import (
+from core.backtrace.unwind import SeedFrame, unwind_chain
+from core.backtrace.unwind_arm import (
     armv7m_exception_number_kind,
     armv7m_exception_return_candidate,
     armv7m_exception_transition,
     armv7m_max_external_exception,
     prepare_arm_handler_unwind,
 )
-from core.unwind_arm import (
+from core.backtrace.unwind_arm import (
     decode_armv7m_exception_return as decode_exception_return,
 )
-from core.unwind_segments import (
+from core.backtrace.unwind_segments import (
     ExceptionTransitionContext,
     ExceptionTransitionResult,
     StackSegment,
@@ -788,14 +788,14 @@ def test_unknown_current_segment_is_rejected_without_unwinding():
 
 
 def test_elf_vector_table_fallback_when_scb_unreadable():
-    from core.unwind_arm import (
+    from core.backtrace.unwind_arm import (
         arm_external_exception_limit,
         arm_vector_initial_msp,
         armv6m_vector_entry,
         armv7m_vector_entry,
         resolve_arm_irq_stack_bounds_detail,
     )
-    from core.unwind_meta import ElfImage, ElfSection
+    from core.elf import ElfImage, ElfSection
 
     words = [0] * 32
     words[0] = 0x20004000  # initial MSP

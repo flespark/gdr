@@ -6,10 +6,10 @@ from dataclasses import replace
 
 import pytest
 
-from core.unwind import SeedFrame, UnwindMetadata, unwind_chain
-from core.unwind_cfi import CfaRule, CfiRow, CfiTable
-from core.unwind_leaf import prove_leaf_return
-from core.unwind_meta import CodeSymbol, ElfImage, ElfSection, _parse_code_symbols
+from core.backtrace.unwind import SeedFrame, UnwindMetadata, unwind_chain
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable
+from core.backtrace.unwind_leaf import prove_leaf_return
+from core.elf import CodeSymbol, ElfImage, ElfSection, _parse_code_symbols
 from tests.unit.core.test_cpus import _attributes
 from tests.unit.core.test_unwind import _cfi_bytes, _cfi_metadata, _elf, _Memory
 

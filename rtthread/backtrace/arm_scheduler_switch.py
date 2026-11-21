@@ -10,11 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.cpus import Isa, cpu_of
+from core.elf import ElfImage, Isa, cpu_of
 from core.insn_thumb import ThumbInstruction, decode_thumb
-from core.unwind_meta import ElfImage
 
-from .stack_frame_profile import _code_span, _operand, _port_instructions
+from ..stack_frame_profile import _code_span, _operand, _port_instructions
 
 _ICSR_ADDRESS = 0xE000ED04
 _PENDSVSET_VALUE = 0x10000000

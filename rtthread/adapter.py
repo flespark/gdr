@@ -53,6 +53,7 @@ from core.adapter import (
     text_cell,
     waiters_cell,
 )
+from core.backtrace.unwind import UnwindMetadata
 from core.formatting import timer_expires_in as derive_timer_expires_in
 from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
@@ -65,7 +66,6 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.layout import KernelLayout, read_field
-from core.unwind import UnwindMetadata
 from rtthread import diagnostics
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
@@ -1111,13 +1111,13 @@ class RtThreadAdapter(RtosAdapter):
 
     def _saved_pc_setup(self) -> tuple[SavedPcLayout, int] | None:
         """Return the image-proven saved-PC layout and switch address."""
-        from rtthread.backtrace_gdb import saved_pc_setup
+        from rtthread.backtrace.backtrace_gdb import saved_pc_setup
 
         return saved_pc_setup(self, gdb is not None)
 
     def reset(self) -> None:
         """Drop image-derived backtrace and last-PC decisions."""
-        from rtthread.backtrace_gdb import reset_adapter
+        from rtthread.backtrace.backtrace_gdb import reset_adapter
 
         reset_adapter(self)
 
@@ -1157,7 +1157,9 @@ class RtThreadAdapter(RtosAdapter):
         self, target: str | None = None, max_depth: int = 32
     ) -> BacktraceReport:
         """Unwind one RT-Thread thread or the current halted core context."""
-        from rtthread.backtrace_gdb import backtrace as run_backtrace
+        from rtthread.backtrace.backtrace_gdb import (
+            backtrace as run_backtrace,
+        )
 
         return run_backtrace(self, target, max_depth)
 

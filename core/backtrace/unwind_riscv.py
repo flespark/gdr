@@ -12,8 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .cpus import RISCV_CONVENTION
-from .insn_riscv import (
+from ..elf import RISCV_CONVENTION, ElfImage, Reader
+from ..insn_riscv import (
     EvidenceError,
     riscv_code_decoder,
     riscv_next_pc,
@@ -21,7 +21,6 @@ from .insn_riscv import (
     riscv_written_register,
 )
 from .unwind_arm import FaultPrecision
-from .unwind_meta import ElfImage, Reader
 from .unwind_segments import (
     ExceptionDetector,
     ExceptionHook,

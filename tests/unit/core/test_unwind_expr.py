@@ -6,11 +6,16 @@ import struct
 
 import pytest
 
-import core.unwind_cfi as cfi
-import core.unwind_expr as expr
-from core.unwind import _unwind_cfi
-from core.unwind_cfi import CfaRule, CfiRow, EncodedPointerContext, RegisterRule
-from core.unwind_meta import Endian
+import core.backtrace.unwind_cfi as cfi
+import core.backtrace.unwind_expr as expr
+from core.backtrace.unwind import _unwind_cfi
+from core.backtrace.unwind_cfi import (
+    CfaRule,
+    CfiRow,
+    EncodedPointerContext,
+    RegisterRule,
+)
+from core.elf import Endian
 from tests.unit.core.test_unwind import _Memory
 from tests.unit.core.test_unwind_cfi import _run, _run_row
 

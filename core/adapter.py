@@ -7,14 +7,14 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+from .backtrace.unwind_segments import SegmentTransition, StackSegment
+from .elf import Arch
 from .formatting import (
     SourceLoc,
     format_address,
     format_optional_int,
     format_symbol_or_address,
 )
-from .unwind_meta import Arch
-from .unwind_segments import SegmentTransition, StackSegment
 
 try:
     import gdb
@@ -108,7 +108,7 @@ def build_backtrace_report(
     initial_messages: Sequence[str] = (),
     fault=None,
 ) -> BacktraceReport:
-    """Convert one :class:`core.unwind.UnwindResult` into :class:`BacktraceReport`."""
+    """Convert one :class:`core.backtrace.unwind.UnwindResult` into :class:`BacktraceReport`."""
     frames = [
         BacktraceFrame(
             index=item.index,
@@ -180,7 +180,7 @@ def live_boot_backtrace_report(
     arm_snapshot_reader=None,
 ) -> BacktraceReport:
     """Build a bounded live backtrace report before the RTOS scheduler starts."""
-    from .unwind import live_boot_unwind
+    from .backtrace.unwind import live_boot_unwind
 
     if family not in ("arm", "riscv"):
         return BacktraceReport(

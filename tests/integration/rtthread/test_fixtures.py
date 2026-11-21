@@ -54,10 +54,10 @@ def test_basic_arm_fixture_has_real_port_and_bounded_memory_evidence(gdb_session
         gdb_session.run_python(
             """
 import json
-from core.cpus import cpu_of
+from core.elf import cpu_of
 from core.insn_thumb import decode_thumb
-from core.unwind import UnwindMetadata
-from core.unwind_meta import ElfImage
+from core.backtrace.unwind import UnwindMetadata
+from core.elf import ElfImage
 
 elf = ElfImage.from_path(gdb.current_progspace().filename)
 assert elf is not None
@@ -197,7 +197,7 @@ def test_basic_arm_saved_and_initial_contexts_match_raw_port_frames(
         gdb_session.run_python(
             f"""
 import json
-from rtthread.backtrace import ARMV6M_INTEGER, ARMV7M_INTEGER, decode_saved_context
+from rtthread.backtrace.backtrace import ARMV6M_INTEGER, ARMV7M_INTEGER, decode_saved_context
 
 thread = gdb.lookup_static_symbol('{symbol}').value()
 top = int(thread['sp'])
@@ -266,9 +266,9 @@ def test_armv8m_mainline_fixture_compiled_layout_and_tick_evidence(gdb_session):
         gdb_session.run_python(
             """
 import json
-from core.cpus import cpu_of
-from core.unwind import UnwindMetadata
-from core.unwind_meta import ElfImage
+from core.elf import cpu_of
+from core.backtrace.unwind import UnwindMetadata
+from core.elf import ElfImage
 from rtthread.stack_frame_profile import (
     _armv8m_mainline_fpu_verify_context,
     _armv8m_mainline_verify_context,
@@ -324,7 +324,7 @@ def test_armv8m_mainline_saved_frames_match_raw_memory(gdb_session, symbol, sour
         gdb_session.run_python(
             f"""
 import json
-from rtthread.backtrace import ARMV8M_MAINLINE_INTEGER, decode_saved_context
+from rtthread.backtrace.backtrace import ARMV8M_MAINLINE_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('{symbol}_thread').value()
 top = int(thread['sp'])
 low = int(thread['stack_addr'])
@@ -373,9 +373,9 @@ def test_armv8m_mainline_raw_seed_unwinds_to_the_real_exit(gdb_session):
             """
 import json
 from dataclasses import replace
-from core.unwind import UnwindMetadata, unwind_chain
-from core.unwind_meta import ElfImage
-from rtthread.backtrace import ARMV8M_MAINLINE_INTEGER, decode_saved_context
+from core.backtrace.unwind import UnwindMetadata, unwind_chain
+from core.elf import ElfImage
+from rtthread.backtrace.backtrace import ARMV8M_MAINLINE_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('worker1_thread').value()
 low = int(thread['stack_addr'])
 high = low + int(thread['stack_size'])
@@ -407,9 +407,9 @@ def test_rv32_fixture_compiled_layout_and_tick_evidence(gdb_session):
         gdb_session.run_python(
             """
 import json
-from core.cpus import cpu_of
-from core.unwind import UnwindMetadata
-from core.unwind_meta import ElfImage
+from core.elf import cpu_of
+from core.backtrace.unwind import UnwindMetadata
+from core.elf import ElfImage
 from rtthread.stack_frame_profile import _riscv_verify_context_switch
 elf = ElfImage.from_path(gdb.current_progspace().filename)
 assert elf is not None
@@ -474,7 +474,7 @@ def test_rv32_saved_frames_match_raw_memory(gdb_session, symbol, source):
         gdb_session.run_python(
             f"""
 import json
-from rtthread.backtrace import RISCV32_INTEGER, decode_saved_context
+from rtthread.backtrace.backtrace import RISCV32_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('{symbol}_thread').value()
 top = int(thread['sp'])
 low = int(thread['stack_addr'])
@@ -517,9 +517,9 @@ def test_rv32_raw_seed_unwinds_to_the_real_exit(gdb_session):
             """
 import json
 from dataclasses import replace
-from core.unwind import UnwindMetadata, unwind_chain
-from core.unwind_meta import ElfImage
-from rtthread.backtrace import RISCV32_INTEGER, decode_saved_context
+from core.backtrace.unwind import UnwindMetadata, unwind_chain
+from core.elf import ElfImage
+from rtthread.backtrace.backtrace import RISCV32_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('worker1_thread').value()
 low = int(thread['stack_addr'])
 high = low + int(thread['stack_size'])
@@ -607,7 +607,7 @@ def test_first_pendsv_returns_fd_and_enters_the_application(qemu_profile):
             session.run_python("""
 import json
 from core.insn_thumb import decode_thumb
-from core.unwind_meta import ElfImage
+from core.elf import ElfImage
 elf = ElfImage.from_path(gdb.current_progspace().filename)
 pc = elf.symbol_address('PendSV_Handler')
 end = elf.symbol_address('rt_hw_context_switch_to')

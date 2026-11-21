@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from .unwind_meta import (
+from ..elf import (
     DW_EH_PE_ABSPTR,
     DW_EH_PE_ALIGNED,
     DW_EH_PE_DATAREL,

@@ -13,21 +13,22 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from core.cpus import RISCV_CONVENTION
-from core.stack_frame_parser import (
-    SavedStackContext,
-    StackContextSelection,
-    decode_profile_slots,
-)
-from core.unwind import Endian, Reader, SeedFrame, read_slot
-from core.unwind_arm import FaultPrecision
-from core.unwind_riscv import (
+from core.backtrace.unwind import SeedFrame
+from core.backtrace.unwind_arm import FaultPrecision
+from core.backtrace.unwind_riscv import (
     MSTATUS_MPP_MACHINE,
     MSTATUS_MPP_MASK,
     RiscvSnapshot,
     riscv_exception_guard,
     riscv_fault_precision,
     u_xlen_mask,
+)
+from core.elf import RISCV_CONVENTION, Endian, Reader
+from core.stack_frame_parser import (
+    SavedStackContext,
+    StackContextSelection,
+    decode_profile_slots,
+    read_slot,
 )
 
 from .arm_scheduler_switch import SchedulerProfile, SchedulerStage, classify_stage

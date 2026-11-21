@@ -9,10 +9,9 @@ from typing import Any
 
 import pytest
 
-from core.unwind import UnwindMetadata, unwind_chain
-from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
-from core.unwind_meta import CodeSymbol, ElfImage, ElfSection
-from core.unwind_riscv import (
+from core.backtrace.unwind import UnwindMetadata, unwind_chain
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_riscv import (
     MCAUSE_EXC_ECALL_M,
     MSTATUS_MPP_MACHINE,
     RiscvSnapshot,
@@ -29,7 +28,8 @@ from core.unwind_riscv import (
     riscv_trap_transition_factory,
     u_xlen_mask,
 )
-from core.unwind_segments import ExceptionTransitionContext, StackSegment
+from core.backtrace.unwind_segments import ExceptionTransitionContext, StackSegment
+from core.elf import CodeSymbol, ElfImage, ElfSection
 
 
 class _Memory:
@@ -676,7 +676,7 @@ def test_prepare_riscv_handler_unwind_attaches_fault_only_on_sync_faults():
 
 
 def test_riscv_mtvec_targets_entry_direct_and_vectored():
-    from core.unwind_riscv import MTVEC_MODE_VECTORED
+    from core.backtrace.unwind_riscv import MTVEC_MODE_VECTORED
 
     def _jal(rd: int, pc: int, target: int) -> bytes:
         offset = target - pc
@@ -783,7 +783,7 @@ def test_riscv_mtvec_targets_entry_direct_and_vectored():
 
 
 def test_core_riscv_static_cfg_and_trap_helpers():
-    from core.unwind_riscv import (
+    from core.backtrace.unwind_riscv import (
         riscv_cfg_successors,
         riscv_decode_until_return,
         riscv_find_sp_loads_from_symbol,

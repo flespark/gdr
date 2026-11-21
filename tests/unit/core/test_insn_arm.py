@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from core.backtrace.unwind_leaf import prove_leaf_return
 from core.insn_arm import (
     decode_arm,
     decode_arm_prefix,
@@ -12,7 +13,6 @@ from core.insn_arm import (
     expect_arm,
 )
 from core.insn_thumb import decode_thumb16, decode_thumb32, decode_thumb_stream
-from core.unwind_leaf import prove_leaf_return
 from tests.unit.core.test_unwind_leaf import _image
 
 

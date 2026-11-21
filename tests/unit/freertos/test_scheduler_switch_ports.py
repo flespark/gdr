@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import pytest
 
-from core.unwind_meta import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
-from freertos.arm_scheduler_switch import SchedulerStage, build_profile, classify_stage
-from freertos.backtrace import (
+from core.elf import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
+from freertos.backtrace.arm_scheduler_switch import (
+    SchedulerStage,
+    build_profile,
+    classify_stage,
+)
+from freertos.backtrace.backtrace import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV8M_MAINLINE_INTEGER,
 )
-from freertos.scheduler_seed import build_stage_seed
+from freertos.backtrace.scheduler_seed import build_stage_seed
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 # Compiled GCC port sequences captured from the FreeRTOS fixtures.

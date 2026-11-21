@@ -1,6 +1,6 @@
 """Bounded, read-only task stack unwinding over ELF unwind metadata (pure).
 
-The driver consumes :mod:`core.unwind_ehabi` and :mod:`core.unwind_cfi` tables and
+The driver consumes :mod:`core.backtrace.unwind_ehabi` and :mod:`core.backtrace.unwind_cfi` tables and
 uses instruction-proven leaf returns or a validated frame-pointer chain only
 for clean uncovered PCs. It never calls an inferior function and never writes target
 memory.  Every ordinary frame preserves or advances SP inside the current stack
@@ -15,8 +15,20 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .cpus import RISCV_CONVENTION, convention_for_arch
-from .gdb_bridge import loaded_object_path
+from ..elf import (
+    EM_RISCV,
+    MAX_FRAMES,
+    RISCV_CONVENTION,
+    Arch,
+    ElfImage,
+    Endian,
+    Method,
+    Reader,
+    convention_for_arch,
+)
+from ..gdb_bridge import loaded_object_path
+from ..stack_frame_parser import read_block as read_block
+from ..stack_frame_parser import read_slot as read_slot
 from .unwind_cfi import (
     CfiRow,
     CfiTable,
@@ -27,16 +39,6 @@ from .unwind_cfi import (
 from .unwind_ehabi import EhabiTable, parse_ehabi, unwind_ehabi
 from .unwind_expr import evaluate_cfi_expression
 from .unwind_leaf import prove_leaf_return
-from .unwind_meta import (
-    EM_RISCV,
-    MAX_FRAME_READ,
-    MAX_FRAMES,
-    Arch,
-    ElfImage,
-    Endian,
-    Method,
-    Reader,
-)
 from .unwind_segments import (
     MAX_EXCEPTION_DEPTH,
     MAX_EXCEPTION_READ_BYTES,
@@ -174,25 +176,7 @@ class UnwindMetadata:
         return bool(self.ehabi) or any(self.cfi_tables)
 
 
-def _read_value(
-    read: Reader,
-    address: int,
-    size: int,
-    endian: Endian,
-    *,
-    stack_low: int | None,
-    stack_high: int | None,
-) -> int | None:
-    if size <= 0 or size > 8 or address <= 0:
-        return None
-    if stack_low is not None and address < stack_low:
-        return None
-    if stack_high is not None and address + size > stack_high:
-        return None
-    raw = read(address, size)
-    if raw is None or len(raw) != size:
-        return None
-    return int.from_bytes(raw, endian)
+_read_value = read_slot
 
 
 class _RecoveredRegisters(dict[int, int]):
@@ -1022,49 +1006,6 @@ def unwind_chain(
     return _result(frames, stop_reason, complete, truncated, method)
 
 
-# The following two helpers are used by RTOS adapters to read a frame slot
-# without duplicating bounds checks.
-def read_slot(
-    read: Reader,
-    address: int,
-    width: int,
-    endian: Endian,
-    *,
-    stack_low: int | None = None,
-    stack_high: int | None = None,
-) -> int | None:
-    """Read one integer slot with optional stack bounds; ``None`` on failure."""
-    return _read_value(
-        read,
-        address,
-        width,
-        endian,
-        stack_low=stack_low,
-        stack_high=stack_high,
-    )
-
-
-def read_block(
-    read: Reader,
-    address: int,
-    size: int,
-    *,
-    stack_low: int | None = None,
-    stack_high: int | None = None,
-) -> bytes | None:
-    """Read a bounded block; ``None`` on a short read or bounds violation."""
-    if size <= 0 or size > MAX_FRAME_READ or address <= 0:
-        return None
-    if stack_low is not None and address < stack_low:
-        return None
-    if stack_high is not None and address + size > stack_high:
-        return None
-    raw = read(address, size)
-    if raw is None or len(raw) != size:
-        return None
-    return raw
-
-
 try:
     import gdb
 except ImportError:
@@ -1222,7 +1163,7 @@ def live_boot_unwind(
     arm_snapshot_reader: Callable[[], tuple[Any, str]] | None = None,
 ) -> tuple[UnwindResult | None, str, str, str]:
     """Unwind the halted core's current pre-scheduler stack within boot bounds."""
-    from .gdb_bridge import linker_symbol_address, read_bytes
+    from ..gdb_bridge import linker_symbol_address, read_bytes
     from .unwind_arm import (
         XPSR_IPSR_MAX_MASK,
         arm_snapshot,

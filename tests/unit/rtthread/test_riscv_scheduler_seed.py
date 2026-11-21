@@ -7,18 +7,30 @@ from types import SimpleNamespace
 
 import pytest
 
-import rtthread.backtrace_gdb as bridge
-from core.cpus import RISCV_CONVENTION
+import rtthread.backtrace.backtrace_gdb as bridge
+from core.backtrace.unwind import UnwindMetadata
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_riscv import MSTATUS_MPP_MACHINE, RiscvSnapshot
+from core.elf import (
+    EM_RISCV,
+    RISCV_CONVENTION,
+    SHF_EXECINSTR,
+    CodeSymbol,
+    ElfImage,
+    ElfSection,
+)
 from core.stack_frame_parser import StackContextSelection
-from core.unwind import UnwindMetadata
-from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
-from core.unwind_meta import EM_RISCV, SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
-from core.unwind_riscv import MSTATUS_MPP_MACHINE, RiscvSnapshot
 from rtthread.adapter import Thread
-from rtthread.backtrace import RISCV32_INTEGER, RISCV64_INTEGER
+from rtthread.backtrace.backtrace import RISCV32_INTEGER, RISCV64_INTEGER
+from rtthread.backtrace.riscv_scheduler_switch import (
+    build_riscv_profile,
+    classify_riscv_stage,
+)
+from rtthread.backtrace.scheduler_seed import (
+    SchedulerSeed,
+    build_riscv_stage_seed,
+)
 from rtthread.layout import RT_THREAD_STACK_FILL, RtConfig, build_layouts
-from rtthread.riscv_scheduler_switch import build_riscv_profile, classify_riscv_stage
-from rtthread.scheduler_seed import SchedulerSeed, build_riscv_stage_seed
 from tests.unit.core.oracle_support import attributes_blob
 
 _TEXT_BASE = 0x80000000

@@ -8,20 +8,20 @@ from types import SimpleNamespace
 
 import pytest
 
-import freertos.backtrace_gdb as bridge
-from core.stack_frame_parser import StackContextSelection
-from core.unwind import SeedFrame, UnwindMetadata
-from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
-from core.unwind_meta import CodeSymbol, ElfImage, ElfSection
-from core.unwind_riscv import (
+import freertos.backtrace.backtrace_gdb as bridge
+from core.backtrace.unwind import SeedFrame, UnwindMetadata
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_riscv import (
     MCAUSE_EXC_ECALL_M,
     MSTATUS_MPP_MACHINE,
     RiscvSnapshot,
     RiscvTrapFrameLayout,
     RiscvTrapSpan,
 )
+from core.elf import CodeSymbol, ElfImage, ElfSection
+from core.stack_frame_parser import StackContextSelection
 from freertos.adapter import FreeRtosTask
-from freertos.backtrace import RISCV32_INTEGER
+from freertos.backtrace.backtrace import RISCV32_INTEGER
 from freertos.layout import FreeRtosConfig, build_layout
 from freertos.stack_frame_profile import analyze_riscv_trap_profile
 

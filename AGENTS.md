@@ -23,43 +23,39 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   api.py               neutral verb layer + JSON envelope and chunked transport
   commands.py          shared collectors/renderers, watch set, convenience functions
   heapmap.py           heap grid, owner palette, PNG/inline frames, legend lettering
-  unwind.py            bounded task unwind driver (seed, stack/PC validation, stop reasons)
-  unwind_meta.py       bounded ELF sections, code symbols and binary encodings
-  unwind_leaf.py       bounded instruction proofs for stack-neutral scalar leaf returns
+  elf.py               bounded ELF sections, symbols, encodings and CPU ISA/ABI evidence
   insn_arm.py          bounded ARM/A32 instruction decoder for code-evidence checks
-  cpus.py              bounded Arm/RISC-V CPU attributes, conventions and ISA/ABI evidence
-  stack_frame_parser.py validated task-frame profiles and common slot decoding
   insn_riscv.py        bounded RISC-V instruction decoding and code-range evidence
   insn_thumb.py        bounded Arm Thumb/Thumb-2 instruction and stream decoding
-  unwind_cfi.py        bounded DWARF CFI tables and encoded-pointer decoding
-  unwind_expr.py       bounded integer CFI expressions and guarded memory reads
-  unwind_segments.py   typed stack segments, transition evidence and exception budgets
-  unwind_arm.py        Arm M-profile frame recovery, Armv6-M/Armv7-M rules, SCB/vector reads and handler setup
-  unwind_riscv.py      RISC-V M-mode trap frame recovery, IRQ stack bounds and handler setup
-  unwind_ehabi.py      bounded ARM EHABI tables and virtual-register unwinding
+  stack_frame_parser.py validated task-frame profiles and bounded slot readers
+  backtrace/           task/exception unwind subpackage
+    unwind.py          bounded task unwind driver (seed, stack/PC validation, stop reasons)
+    unwind_leaf.py     bounded instruction proofs for stack-neutral scalar leaf returns
+    unwind_cfi.py      bounded DWARF CFI tables and encoded-pointer decoding
+    unwind_expr.py     bounded integer CFI expressions and guarded memory reads
+    unwind_segments.py typed stack segments, transition evidence and exception budgets
+    unwind_arm.py      Arm M-profile frame recovery, Armv6-M/Armv7-M rules, SCB/vector reads and handler setup
+    unwind_riscv.py    RISC-V M-mode trap frame recovery, IRQ stack bounds and handler setup
+    unwind_ehabi.py    bounded ARM EHABI tables and virtual-register unwinding
 rtthread/              RT-Thread 3.1.x/4.x adapter
   layout.py            ABI layouts + build_layouts(config) + version/probe policy
   navigation.py        symbols, object navigation, and heap snapshot
   stackpc.py           last PC from the saved switch frame (pure; slot table + proofs)
-  backtrace.py         saved-context layouts and seed decoding (pure)
-  backtrace_gdb.py     GDB-facing thread backtrace orchestration
-  arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
-  riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
-  scheduler_seed.py         owner-consistent seeds from classified M-profile stages
   stack_frame_profile.py compiled save-layout evidence and profile selection
   adapter.py           intermediate models, value converters, summaries and tables
   views.py             column contracts, detail-table cells, heap views/verdicts
   diagnostics.py       bounded raw-memory walks (IPC, heap) + `rtt check`
   commands.py          routing, completion, and structured help tree
+  backtrace/           RT-Thread backtrace subpackage
+    backtrace.py       saved-context layouts and seed decoding (pure)
+    backtrace_gdb.py   GDB-facing thread backtrace orchestration
+    arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
+    riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
+    scheduler_seed.py         owner-consistent seeds from classified M-profile/RISC-V stages
 freertos/              FreeRTOS adapter
   layout.py            config/DWARF probes, struct paths, version/probe policy
   navigation.py        scheduler lists + six-channel object discovery
   stackpc.py           last PC from the saved frame (pure; port evidence + proofs)
-  backtrace.py         saved-context layouts and seed decoding (pure)
-  backtrace_gdb.py     GDB-facing task backtrace orchestration
-  arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
-  riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
-  scheduler_seed.py         owner-consistent seeds from classified stages (basic/FPU geometry)
   stack_frame_profile.py compiled save-layout evidence and profile selection
   objects.py           per-kind decode: timers, event groups, stream buffers
   heap.py              heap_1..5 snapshot, canary, walks and cross-check verdicts
@@ -67,6 +63,12 @@ freertos/              FreeRTOS adapter
   views.py             column contracts, detail builders, merged detail tables
   diagnostics.py       bounded consistency checks + `frt check`
   commands.py          routing, completion, and structured help tree
+  backtrace/           FreeRTOS backtrace subpackage
+    backtrace.py       saved-context layouts and seed decoding (pure)
+    backtrace_gdb.py   GDB-facing task backtrace orchestration
+    arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
+    riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
+    scheduler_seed.py         owner-consistent seeds from classified stages (basic/FPU geometry)
 vscode/                VSCode extension: a client of GDR's JSON envelope
   src/transport.ts     evaluate transport: $gdr_json, chunk reassembly, envelope
   src/probe.ts         probe payload -> init decision (never guesses a version)

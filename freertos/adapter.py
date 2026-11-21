@@ -32,6 +32,7 @@ from core.adapter import (
     text_cell,
     waiters_cell,
 )
+from core.backtrace.unwind import ElfImage, UnwindMetadata
 from core.formatting import fill_watermark, format_address
 from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
@@ -48,9 +49,8 @@ from core.gdb_bridge import (
 )
 from core.layout import read_field, value_at
 from core.stack_frame_parser import StackContextSelection
-from core.unwind import ElfImage, UnwindMetadata
 from freertos import heap as heap_module
-from freertos.backtrace import decode_saved_context
+from freertos.backtrace.backtrace import decode_saved_context
 from freertos.diagnostics import system_checks
 from freertos.layout import (
     OBJECT_KIND_ORDER,
@@ -630,7 +630,9 @@ class FreeRtosAdapter(RtosAdapter):
         self, target: str | None = None, max_depth: int = 32
     ) -> BacktraceReport:
         """Unwind one FreeRTOS task or the current halted core context."""
-        from freertos.backtrace_gdb import backtrace as run_backtrace
+        from freertos.backtrace.backtrace_gdb import (
+            backtrace as run_backtrace,
+        )
 
         return run_backtrace(self, target, max_depth)
 

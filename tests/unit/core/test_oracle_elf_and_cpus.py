@@ -15,8 +15,7 @@ from typing import Any
 import pytest
 from elftools.elf.elffile import ELFFile
 
-from core.cpus import cpu_of, file_attributes
-from core.unwind_meta import ElfImage
+from core.elf import ElfImage, cpu_of, file_attributes
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 from .oracle_support import (

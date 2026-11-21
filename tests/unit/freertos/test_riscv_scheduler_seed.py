@@ -7,21 +7,27 @@ from types import SimpleNamespace
 
 import pytest
 
-import freertos.backtrace_gdb as bridge
-from core.stack_frame_parser import StackContextSelection
-from core.unwind import SeedFrame, UnwindMetadata
-from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
-from core.unwind_meta import EM_RISCV, SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
-from core.unwind_riscv import (
+import freertos.backtrace.backtrace_gdb as bridge
+from core.backtrace.unwind import SeedFrame, UnwindMetadata
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_riscv import (
     MCAUSE_EXC_ECALL_M,
     MSTATUS_MPP_MACHINE,
     RiscvSnapshot,
 )
+from core.elf import EM_RISCV, SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
+from core.stack_frame_parser import StackContextSelection
 from freertos.adapter import FreeRtosTask
-from freertos.backtrace import RISCV32_INTEGER, RISCV64_INTEGER
+from freertos.backtrace.backtrace import RISCV32_INTEGER, RISCV64_INTEGER
+from freertos.backtrace.riscv_scheduler_switch import (
+    build_riscv_profile,
+    classify_riscv_stage,
+)
+from freertos.backtrace.scheduler_seed import (
+    SchedulerSeed,
+    build_riscv_stage_seed,
+)
 from freertos.layout import FreeRtosConfig, build_layout
-from freertos.riscv_scheduler_switch import build_riscv_profile, classify_riscv_stage
-from freertos.scheduler_seed import SchedulerSeed, build_riscv_stage_seed
 from tests.unit.core.oracle_support import attributes_blob
 
 _TEXT_BASE = 0x80001000
@@ -871,7 +877,7 @@ def test_gdb_bridge_current_pc_tracks_old_and_new_tasks_across_riscv_switch(
 
 
 def test_riscv_prologue_saving_live_reg_subset_and_popped_strict_top():
-    from core.cpus import RISCV_CONVENTION
+    from core.elf import RISCV_CONVENTION
 
     elf = _build_rv_elf(32)
     profile, _ = build_riscv_profile(elf)
@@ -1080,7 +1086,9 @@ def test_riscv_sync_fault_stages_recover_mepc_and_attach_fault():
 
 
 def test_riscv_historical_unhandled_sync_fault_uses_saved_tcb_frame():
-    from freertos.scheduler_seed import riscv_interrupted_frame_matches
+    from freertos.backtrace.scheduler_seed import (
+        riscv_interrupted_frame_matches,
+    )
     from freertos.stack_frame_profile import riscv_zero_lr_sentinel, select_context
     from tests.unit.freertos.test_riscv_scheduler_switch import (
         _synthetic_variant_freertos_elf,
@@ -1169,7 +1177,9 @@ def test_riscv_historical_unhandled_sync_fault_uses_saved_tcb_frame():
 
 
 def test_riscv_11_3_swapped_header_seed_and_frame_match():
-    from freertos.scheduler_seed import riscv_interrupted_frame_matches
+    from freertos.backtrace.scheduler_seed import (
+        riscv_interrupted_frame_matches,
+    )
     from freertos.stack_frame_profile import select_context
     from tests.unit.freertos.test_riscv_scheduler_switch import (
         _synthetic_variant_freertos_elf,

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from core.unwind_meta import ElfImage
+from core.elf import ElfImage
 from tests.support.loader import load_integration_spec
 from tests.support.qemu_harness import (
     GdbSession,
@@ -148,7 +148,7 @@ def _trace(session, *, signal=False, chain="ordinary", damage="none"):
         f"""
 import json
 from dataclasses import replace
-from core.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
+from core.backtrace.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
 from core.gdb_bridge import loaded_object_path, read_bytes
 elf = ElfImage.from_path(loaded_object_path())
 section = elf.section('.eh_frame')
@@ -267,7 +267,7 @@ def test_real_pt_gnu_eh_frame_hdr_binary_search_unwinds_on_demand(hdr_session):
         """
 import json
 from core.gdb_bridge import loaded_object_path, read_bytes
-from core.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
+from core.backtrace.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
 
 elf = ElfImage.from_path(loaded_object_path())
 metadata = UnwindMetadata.from_elf(elf)
@@ -334,7 +334,7 @@ def test_real_eh_frame_hdr_degrades_safely_without_masking(
 import json
 from dataclasses import replace
 from core.gdb_bridge import loaded_object_path, read_bytes
-from core.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
+from core.backtrace.unwind import ElfImage, SeedFrame, UnwindMetadata, unwind_chain
 
 elf = ElfImage.from_path(loaded_object_path())
 mode = {mode!r}
@@ -417,7 +417,7 @@ def test_real_encoded_pointers_require_explicit_context_and_unwind_live(reloc_se
         f"""
 import json
 from core.gdb_bridge import read_bytes
-from core.unwind import ElfImage, EncodedPointerContext, SeedFrame, UnwindMetadata, unwind_chain
+from core.backtrace.unwind import ElfImage, EncodedPointerContext, SeedFrame, UnwindMetadata, unwind_chain
 
 elf = ElfImage.from_path({str(reloc_elf)!r})
 frame = gdb.newest_frame()
@@ -492,7 +492,7 @@ def test_real_indirect_pointer_zero_slot_in_ram_fails_closed(reloc_session):
         f"""
 import json
 from core.gdb_bridge import read_bytes
-from core.unwind import ElfImage, EncodedPointerContext, SeedFrame, UnwindMetadata, unwind_chain
+from core.backtrace.unwind import ElfImage, EncodedPointerContext, SeedFrame, UnwindMetadata, unwind_chain
 
 elf = ElfImage.from_path({str(reloc_elf)!r})
 slot = elf.symbol_address("indirect_slot")

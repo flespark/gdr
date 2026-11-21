@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from core.cpus import cpu_of
+from core.elf import EM_RISCV, ElfImage, cpu_of
 from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
@@ -23,7 +23,6 @@ from core.insn_riscv import (
     riscv_update_const_addr,
     riscv_written_register,
 )
-from core.unwind_meta import EM_RISCV, ElfImage
 
 RV32_PROFILE_ID = "rtthread/rv32/riscv-mtvec-v1"
 RV64_PROFILE_ID = "rtthread/rv64/riscv-mtvec-v1"

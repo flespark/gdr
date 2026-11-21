@@ -6,16 +6,16 @@ from typing import Any
 
 import pytest
 
-from core.unwind import SeedFrame, unwind_chain
-from core.unwind_arm import (
+from core.backtrace.unwind import SeedFrame, unwind_chain
+from core.backtrace.unwind_arm import (
     armv6m_exception_number_kind,
     armv6m_exception_return_candidate,
     armv6m_exception_transition,
 )
-from core.unwind_arm import (
+from core.backtrace.unwind_arm import (
     decode_armv6m_exception_return as decode_exception_return,
 )
-from core.unwind_segments import ExceptionTransitionContext, StackSegment
+from core.backtrace.unwind_segments import ExceptionTransitionContext, StackSegment
 from tests.unit.core.test_unwind import _cfi_bytes, _cfi_metadata, _Memory
 
 TASK = StackSegment(

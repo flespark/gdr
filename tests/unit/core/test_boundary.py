@@ -7,9 +7,9 @@ import re
 from pathlib import Path
 
 try:
-    import tomllib
+    import tomllib  # pyright: ignore[reportMissingImports]
 except ImportError:  # Python 3.10
-    import tomli as tomllib  # type: ignore[import-not-found]
+    import tomli as tomllib  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
 
 _ROOT = Path(__file__).resolve().parents[3]
 _CORE_DIR = _ROOT / "core"
@@ -33,10 +33,10 @@ _FREERTOS_TERMS = re.compile(
 def test_core_source_contains_no_rtthread_coupling():
     """Target names, symbols, and types must remain in the adapter package."""
     violations = []
-    for source in _CORE_DIR.glob("*.py"):
+    for source in _CORE_DIR.rglob("*.py"):
         match = _RTTHREAD_TERMS.search(source.read_text())
         if match is not None:
-            violations.append(f"{source.name}: {match.group(0)}")
+            violations.append(f"{source.relative_to(_CORE_DIR)}: {match.group(0)}")
 
     assert not violations, "RT-Thread coupling leaked into core/: " + ", ".join(
         violations
@@ -46,10 +46,10 @@ def test_core_source_contains_no_rtthread_coupling():
 def test_core_source_contains_no_freertos_coupling():
     """FreeRTOS symbol/type names must remain in the adapter package."""
     violations = []
-    for source in _CORE_DIR.glob("*.py"):
+    for source in _CORE_DIR.rglob("*.py"):
         match = _FREERTOS_TERMS.search(source.read_text())
         if match is not None:
-            violations.append(f"{source.name}: {match.group(0)}")
+            violations.append(f"{source.relative_to(_CORE_DIR)}: {match.group(0)}")
 
     assert not violations, "FreeRTOS coupling leaked into core/: " + ", ".join(
         violations
@@ -78,7 +78,7 @@ def test_freertos_term_pattern_catches_long_identifiers():
 def test_core_never_imports_an_rtos_adapter_package():
     """Only the composition root may select an RTOS adapter."""
     violations = []
-    for source in _CORE_DIR.glob("*.py"):
+    for source in _CORE_DIR.rglob("*.py"):
         tree = ast.parse(source.read_text(), filename=str(source))
         for node in ast.walk(tree):
             names = []
@@ -91,7 +91,7 @@ def test_core_never_imports_an_rtos_adapter_package():
             elif node.module:
                 names = [node.module]
             violations.extend(
-                f"{source.name}:{lineno}: {name}"
+                f"{source.relative_to(_CORE_DIR)}:{lineno}: {name}"
                 for name in names
                 if name.split(".", 1)[0] in {"rtthread", "freertos"}
             )
@@ -108,7 +108,7 @@ def test_production_files_stay_within_the_size_limit():
     oversized = [
         str(path.relative_to(roots[0].parent))
         for root in roots
-        for path in root.glob("*.py")
+        for path in root.rglob("*.py")
         if len(path.read_text().splitlines()) > 1500
     ]
     assert not oversized
@@ -143,12 +143,13 @@ _RAW_SYMBOL_TERMS = re.compile(r'(?:lookup_symbol|lookup_type|symbol_exists)\("'
 
 def _collect_violations(directory: Path, skip: set[str], pattern) -> list[str]:
     violations = []
-    for source in directory.glob("*.py"):
-        if source.name in skip:
+    for source in directory.rglob("*.py"):
+        rel = source.relative_to(directory).as_posix()
+        if rel in skip:
             continue
         match = pattern.search(source.read_text())
         if match is not None:
-            violations.append(f"{source.name}: {match.group(0)}")
+            violations.append(f"{rel}: {match.group(0)}")
     return violations
 
 
@@ -209,10 +210,10 @@ def test_no_raw_gdb_type_lookup_outside_the_core():
     """
     violations = []
     for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.glob("*.py"):
+        for source in directory.rglob("*.py"):
             match = re.search(r"gdb\.lookup_type\(", source.read_text())
             if match is not None:
-                violations.append(f"{source.name}: {match.group(0)}")
+                violations.append(f"{source.relative_to(_ROOT)}: {match.group(0)}")
     assert not violations, "raw gdb.lookup_type outside core/: " + ", ".join(violations)
 
 
@@ -235,12 +236,12 @@ def test_unavailable_sentinel_only_as_a_verdict_prefix():
     # the ``"unavailable:"`` prefix remain verdict logic, not sentinels.
     bare = re.compile(r'(?:= |return |else )"unavailable"(?:[^:.]|$)')
     for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.glob("*.py"):
+        for source in directory.rglob("*.py"):
             text = source.read_text()
             for lineno, line in enumerate(text.splitlines(), 1):
                 if bare.search(line):
                     raise AssertionError(
-                        f"{source.name}:{lineno}: bare 'unavailable' sentinel; "
+                        f"{source.relative_to(_ROOT)}:{lineno}: bare 'unavailable' sentinel; "
                         "use N/A for cells or 'unavailable: <reason>' for a verdict"
                     )
 
@@ -287,7 +288,7 @@ def test_adapter_error_tuples_resolve_to_the_shared_set():
         r"^_\w+ERRORS(?:: tuple\[type\[BaseException\], \.\.\.\])? = \("
     )
     for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.glob("*.py"):
+        for source in directory.rglob("*.py"):
             rel = source.as_posix().removeprefix(
                 str(_FREERTOS_DIR.parent).rstrip("/") + "/"
             )
@@ -296,7 +297,7 @@ def test_adapter_error_tuples_resolve_to_the_shared_set():
             text = source.read_text()
             if pattern.search(text):
                 raise AssertionError(
-                    f"{source.name}: new module-level _*_ERRORS tuple; "
+                    f"{rel}: new module-level _*_ERRORS tuple; "
                     "resolve to core.gdb_bridge.TARGET_ACCESS_ERRORS instead"
                 )
 
@@ -313,13 +314,13 @@ def test_no_bare_except_exception_outside_completion():
     pattern = re.compile(r"except Exception:")
     completion_files = {"freertos/commands.py", "rtthread/commands.py"}
     for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.glob("*.py"):
+        for source in directory.rglob("*.py"):
             rel = source.as_posix().removeprefix(
                 str(_FREERTOS_DIR.parent).rstrip("/") + "/"
             )
             if rel not in completion_files and pattern.search(source.read_text()):
                 raise AssertionError(
-                    f"{source.name}: bare 'except Exception:'; use "
+                    f"{rel}: bare 'except Exception:'; use "
                     "TARGET_ACCESS_ERRORS or let the command guard report it"
                 )
 
@@ -335,7 +336,7 @@ def test_no_raw_dwarf_attribute_access_outside_whitelist():
     """
     pattern = re.compile(r"\.sizeof\b|\.range\(\)\[1\]|\.fields\(\)")
     for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.glob("*.py"):
+        for source in directory.rglob("*.py"):
             rel = source.as_posix().removeprefix(
                 str(_FREERTOS_DIR.parent).rstrip("/") + "/"
             )
@@ -343,7 +344,7 @@ def test_no_raw_dwarf_attribute_access_outside_whitelist():
                 continue
             if pattern.search(source.read_text()):
                 raise AssertionError(
-                    f"{source.name}: raw DWARF attribute access; use "
+                    f"{rel}: raw DWARF attribute access; use "
                     "core.gdb_bridge.type_size / array_bound / type_field_names"
                 )
 
@@ -368,7 +369,7 @@ def test_production_never_hardcodes_compiled_stream_fingerprints():
     roots = (_ROOT / "core", _ROOT / "freertos", _ROOT / "rtthread")
     sources = [
         _ROOT / "gdr.py",
-        *(path for root in roots for path in root.glob("*.py")),
+        *(path for root in roots for path in root.rglob("*.py")),
     ]
     violations = [
         f"{source.relative_to(_ROOT)}:{lineno}"
@@ -383,7 +384,7 @@ def test_production_never_imports_oracle_packages():
     roots = (_ROOT / "core", _ROOT / "freertos", _ROOT / "rtthread")
     sources = [
         _ROOT / "gdr.py",
-        *(path for root in roots for path in root.glob("*.py")),
+        *(path for root in roots for path in root.rglob("*.py")),
     ]
     violations = []
     for source in sources:

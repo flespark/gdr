@@ -12,10 +12,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 
-from core.cpus import RISCV_CONVENTION
-from core.stack_frame_parser import SavedStackContext
-from core.unwind import Endian, SeedFrame, read_slot
-from core.unwind_arm import (
+from core.backtrace.unwind import SeedFrame
+from core.backtrace.unwind_arm import (
     BASIC_EXC_RETURNS,
     EXC_RETURN_EXTENDED_THREAD_PROCESS,
     EXTENDED_EXC_RETURNS,
@@ -23,8 +21,7 @@ from core.unwind_arm import (
     FaultPrecision,
     decode_armv7m_exception_return,
 )
-from core.unwind_meta import ElfImage, Reader
-from core.unwind_riscv import (
+from core.backtrace.unwind_riscv import (
     MCAUSE_EXC_ECALL_M,
     MSTATUS_MPP_MACHINE,
     MSTATUS_MPP_MASK,
@@ -35,6 +32,8 @@ from core.unwind_riscv import (
     riscv_mtvec_targets_entry,
     u_xlen_mask,
 )
+from core.elf import RISCV_CONVENTION, ElfImage, Endian, Reader
+from core.stack_frame_parser import SavedStackContext, read_slot
 
 from .arm_scheduler_switch import SchedulerProfile, SchedulerStage
 from .backtrace import CM4F_EXC_RETURN_SLOT, decode_saved_context

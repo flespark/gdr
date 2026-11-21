@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import core.unwind as driver
-from core.unwind import SeedFrame, UnwindFrame, unwind_chain
-from core.unwind_cfi import CfaRule, CfiRow, RegisterRule, parse_cfi_section
-from core.unwind_meta import CodeSymbol
+import core.backtrace.unwind as driver
+from core.backtrace.unwind import SeedFrame, UnwindFrame, unwind_chain
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, RegisterRule, parse_cfi_section
+from core.elf import CodeSymbol
 from tests.unit.core.test_unwind import _cfi_bytes, _cfi_metadata, _Memory
 from tests.unit.core.test_unwind_cfi import _section
 

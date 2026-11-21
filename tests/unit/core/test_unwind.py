@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 from dataclasses import replace
 
-from core.unwind import (
+from core.backtrace.unwind import (
     ElfImage,
     SeedFrame,
     UnwindMetadata,
@@ -13,8 +13,8 @@ from core.unwind import (
     parse_ehabi,
     unwind_chain,
 )
-from core.unwind_ehabi import EhabiTable, _ExidxEntry, unwind_ehabi
-from core.unwind_meta import _prel31
+from core.backtrace.unwind_ehabi import EhabiTable, _ExidxEntry, unwind_ehabi
+from core.elf import _prel31
 
 
 def _elf(
@@ -449,12 +449,12 @@ def test_prel31_sign_extension_is_signed():
 
 
 def test_ehabi_unexecuted_prologue_at_isr_entry_falls_back_to_leaf_return():
-    from core.unwind_arm import (
+    from core.backtrace.unwind_arm import (
         armv7m_exception_return_candidate,
         armv7m_exception_transition,
     )
-    from core.unwind_meta import CodeSymbol
-    from core.unwind_segments import StackSegment
+    from core.backtrace.unwind_segments import StackSegment
+    from core.elf import CodeSymbol
     from tests.unit.core.oracle_support import attributes_blob
 
     # ISR entry pushes in body -> .ARM.exidx has post-prologue pop (vsp delta 16),

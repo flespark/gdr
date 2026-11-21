@@ -6,14 +6,14 @@ import struct
 
 import pytest
 
-from core.unwind import SeedFrame
-from core.unwind_arm import (
+from core.backtrace.unwind import SeedFrame
+from core.backtrace.unwind_arm import (
     arm_fault_precision,
     armv7m_exception_return_candidate,
     armv7m_exception_transition,
     prepare_arm_handler_unwind,
 )
-from core.unwind_segments import StackSegment
+from core.backtrace.unwind_segments import StackSegment
 from tests.unit.core.test_unwind import _Memory
 
 CFSR = 0xE000ED28
@@ -259,7 +259,7 @@ def _systick_seed(number: int = 15):
 
 
 def test_prepare_admits_mainline_systick_with_default_guard():
-    from core.unwind_arm import arm_exception_guard
+    from core.backtrace.unwind_arm import arm_exception_guard
 
     setup = prepare_arm_handler_unwind(
         _systick_seed(),
@@ -293,7 +293,7 @@ def test_prepare_refuses_mainline_systick_when_guard_rejects():
 
 
 def test_baseline_table_has_no_configurable_faults():
-    from core.unwind_arm import armv8m_baseline_exception_number_kind as kind
+    from core.backtrace.unwind_arm import armv8m_baseline_exception_number_kind as kind
 
     assert kind(0) == "thread"
     assert kind(2) == "system" and kind(15) == "system"
@@ -306,7 +306,7 @@ def test_baseline_table_has_no_configurable_faults():
 
 
 def test_mainline_table_keeps_secure_fault_as_fault_for_seed_validity():
-    from core.unwind_arm import armv8m_mainline_exception_number_kind as kind
+    from core.backtrace.unwind_arm import armv8m_mainline_exception_number_kind as kind
 
     assert kind(0) == "thread"
     assert kind(7) == "fault"
@@ -321,7 +321,7 @@ def test_mainline_table_keeps_secure_fault_as_fault_for_seed_validity():
 
 
 def test_dispatcher_routes_each_isa_to_its_own_table():
-    from core.unwind_arm import arm_exception_number_kind as dispatch
+    from core.backtrace.unwind_arm import arm_exception_number_kind as dispatch
 
     assert dispatch("armv6-m", 4) == "invalid"
     assert dispatch("armv7-m", 4) == "fault"
@@ -336,7 +336,7 @@ def test_dispatcher_routes_each_isa_to_its_own_table():
 
 
 def test_exception_guard_refuses_nested_fault_and_admits_system_and_external_irq():
-    from core.unwind_arm import arm_exception_guard
+    from core.backtrace.unwind_arm import arm_exception_guard
 
     assert arm_exception_guard(3, 0x1000, "armv7-m") == "exception-frame-type-unproven"
     assert (

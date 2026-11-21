@@ -12,6 +12,7 @@ from dataclasses import replace
 
 import pytest
 
+from core.elf import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection, Endian
 from core.insn_thumb import (
     decode_thumb32 as _decode_thumb32,
 )
@@ -19,14 +20,13 @@ from core.insn_thumb import (
     semantic_token as _semantic_token,
 )
 from core.stack_frame_parser import SavedStackContext
-from core.unwind_meta import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection, Endian
-from freertos.arm_scheduler_switch import (
+from freertos.backtrace.arm_scheduler_switch import (
     SchedulerStage,
     build_profile,
     classify_stage,
 )
-from freertos.backtrace import ARMV7M_INTEGER
-from freertos.scheduler_seed import build_stage_seed
+from freertos.backtrace.backtrace import ARMV7M_INTEGER
+from freertos.backtrace.scheduler_seed import build_stage_seed
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 PENDSV = bytes.fromhex(

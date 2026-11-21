@@ -5,7 +5,7 @@ supported FreeRTOS GCC ports (``ARM_CM0``, ``ARM_CM3``, ``ARM_CM4F``, and
 single-core non-MPU ``ARM_CM33_NTZ``) from the loaded ELF and classifies a live
 stop inside them.  A symbol-relative decoder keeps this independent of any one
 fixture's link address.  Owner-consistent seeds for classified stages live in
-:mod:`freertos.scheduler_seed`.
+:mod:`freertos.backtrace.scheduler_seed`.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from core.elf import EM_ARM, ElfImage
 from core.insn_thumb import (
     ThumbInstruction,
     decode_expected_thumb,
@@ -34,7 +35,6 @@ from core.insn_thumb import (
 from core.insn_thumb import (
     semantic_token as _semantic_token,
 )
-from core.unwind_meta import EM_ARM, ElfImage
 
 PROFILE_ID = "freertos/armv7-m/arm-cm3-pendsv-v1"
 CM0_PROFILE_ID = "freertos/armv6-m/arm-cm0-pendsv-v1"

@@ -7,11 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .cpus import Cpu, cpu_of
-from .insn_arm import decode_arm
-from .insn_riscv import EvidenceError, riscv_code_decoder
-from .insn_thumb import decode_thumb
-from .unwind_meta import CodeSymbol, ElfImage
+from ..elf import CodeSymbol, Cpu, ElfImage, cpu_of
+from ..insn_arm import decode_arm
+from ..insn_riscv import EvidenceError, riscv_code_decoder
+from ..insn_thumb import decode_thumb
 
 MAX_LEAF_INSTRUCTIONS = 32
 MAX_LEAF_BYTES = 128

@@ -6,8 +6,8 @@ from dataclasses import replace
 
 import pytest
 
-from core.unwind_meta import EM_RISCV, SHF_EXECINSTR, ElfImage, ElfSection
-from rtthread.riscv_scheduler_switch import (
+from core.elf import EM_RISCV, SHF_EXECINSTR, ElfImage, ElfSection
+from rtthread.backtrace.riscv_scheduler_switch import (
     RV32_PROFILE_ID,
     RV64_PROFILE_ID,
     RiscvSchedulerStage,

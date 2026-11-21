@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .unwind_meta import ElfImage, _sign_extend
+from .elf import ElfImage, _sign_extend
 
 _THUMB_CONDITIONS = (
     "eq",

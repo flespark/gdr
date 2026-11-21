@@ -14,7 +14,7 @@ import hashlib
 from collections import deque
 from dataclasses import dataclass
 
-from core.cpus import cpu_of
+from core.elf import EM_RISCV, ElfImage, cpu_of
 from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
@@ -24,9 +24,8 @@ from core.insn_riscv import (
     riscv_update_const_addr,
     riscv_written_register,
 )
-from core.unwind_meta import EM_RISCV, ElfImage
 
-from .stack_frame_profile import (
+from ..stack_frame_profile import (
     RiscvTrapAnalysis,
     _riscv_slots_include,
     analyze_riscv_trap_blocks,

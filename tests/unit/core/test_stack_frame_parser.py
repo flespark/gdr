@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from core.elf import CodeSymbol, ElfImage
 from core.stack_frame_parser import (
     EvidenceError,
     RiscvCodeParser,
@@ -15,7 +16,6 @@ from core.stack_frame_parser import (
     riscv_stack_frame_size,
     riscv_target_loads,
 )
-from core.unwind_meta import CodeSymbol, ElfImage
 from tests.unit.core.test_unwind import _elf
 
 

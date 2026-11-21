@@ -6,7 +6,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TypeVar
 
-from core.cpus import Cpu, cpu_of
+from core.backtrace.unwind_riscv import RiscvTrapFrameLayout, RiscvTrapSpan
+from core.elf import Cpu, ElfImage, cpu_of
 from core.insn_arm import ArmInstruction, decode_arm
 from core.insn_riscv import (
     EvidenceError,
@@ -20,10 +21,8 @@ from core.stack_frame_parser import (
     SavedStackContext,
     StackContextSelection,
 )
-from core.unwind_meta import ElfImage
-from core.unwind_riscv import RiscvTrapFrameLayout, RiscvTrapSpan
 
-from .backtrace import (
+from .backtrace.backtrace import (
     ARMV6M_INTEGER,
     ARMV7A_LWP_INTEGER,
     ARMV7EM_FPU,

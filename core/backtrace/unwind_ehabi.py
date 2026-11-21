@@ -6,7 +6,7 @@ import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from .unwind_meta import MAX_EHABI_OPCODES, Endian, Reader, _prel31, _read_uleb
+from ..elf import MAX_EHABI_OPCODES, Endian, Reader, _prel31, _read_uleb
 
 
 @dataclass(frozen=True)

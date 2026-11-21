@@ -11,7 +11,7 @@ from __future__ import annotations
 import struct
 
 from core.stack_frame_parser import SavedStackContext
-from freertos.backtrace import (
+from freertos.backtrace.backtrace import (
     ARMV6M_INTEGER,
     ARMV7M_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,

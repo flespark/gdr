@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-import core.unwind as driver
-import core.unwind_cfi as cfi
-from core.unwind import SeedFrame, unwind_chain
-from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
-from core.unwind_ehabi import EhabiTable, _ExidxEntry
-from core.unwind_meta import CodeSymbol
+import core.backtrace.unwind as driver
+import core.backtrace.unwind_cfi as cfi
+from core.backtrace.unwind import SeedFrame, unwind_chain
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_ehabi import EhabiTable, _ExidxEntry
+from core.elf import CodeSymbol
 from tests.unit.core.test_unwind import _cfi_bytes, _cfi_metadata, _Memory
 
 

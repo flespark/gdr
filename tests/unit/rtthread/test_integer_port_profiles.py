@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from core.unwind_meta import ElfImage
+from core.elf import ElfImage
 from rtthread.stack_frame_profile import select_context
 from tests.unit.core.oracle_support import (
     SectionSpec,

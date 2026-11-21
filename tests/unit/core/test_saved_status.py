@@ -6,8 +6,8 @@ from dataclasses import replace
 
 import pytest
 
+from core.elf import Endian
 from core.stack_frame_parser import StatusKind, decode_profile_slots
-from core.unwind_meta import Endian
 from tests.unit.core.test_saved_context import _profile
 
 

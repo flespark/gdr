@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from core.unwind import unwind_chain
-from core.unwind_meta import Endian
-from rtthread.backtrace import (
+from core.backtrace.unwind import unwind_chain
+from core.elf import Endian
+from rtthread.backtrace.backtrace import (
     ARMV7A_INTEGER,
     ARMV7A_LWP_INTEGER,
     ARMV7EM_FPU,

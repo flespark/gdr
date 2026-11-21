@@ -35,8 +35,8 @@ from core.constants import (
     GDR_MAX_CSTRING_LENGTH,
     GDR_PROPAGATE_EXCEPTION,
 )
+from core.elf import iter_elf_section_headers
 from core.formatting import SourceLoc, format_table
-from core.unwind_meta import iter_elf_section_headers
 
 
 @dataclass(frozen=True)

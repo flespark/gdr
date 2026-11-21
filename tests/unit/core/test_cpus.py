@@ -6,9 +6,8 @@ from typing import Any, cast
 
 import pytest
 
-from core.cpus import cpu_of, file_attributes
+from core.elf import ElfImage, cpu_of, file_attributes
 from core.stack_frame_parser import SavedStackContext
-from core.unwind_meta import ElfImage
 from tests.unit.core.test_unwind import _elf
 
 
@@ -236,7 +235,7 @@ def test_riscv_xlen_abi_conflict_and_nonstandard_extension_are_rejected():
 
 
 def test_freertos_and_rtthread_arm_and_riscv_profile_selection():
-    from core.unwind_meta import ElfSection
+    from core.elf import ElfSection
     from freertos.stack_frame_profile import (
         _arm_configuration_evidence,
     )
@@ -307,7 +306,7 @@ def test_freertos_and_rtthread_arm_and_riscv_profile_selection():
 
 
 def test_riscv_route_and_initial_stack_helpers():
-    from core.unwind_riscv import riscv_route_epc_store
+    from core.backtrace.unwind_riscv import riscv_route_epc_store
     from freertos.stack_frame_profile import (
         _riscv_initial_stack,
         _riscv_slots_include,

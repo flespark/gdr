@@ -1,7 +1,7 @@
 """GDB-facing RT-Thread backtrace orchestration (no target writes).
 
-Pure saved-context and metadata parsing lives in :mod:`rtthread.backtrace`
-and :mod:`core.unwind`; this module resolves one thread, reads live or saved
+Pure saved-context and metadata parsing lives in :mod:`rtthread.backtrace.backtrace`
+and :mod:`core.backtrace.unwind`; this module resolves one thread, reads live or saved
 registers through GDB and converts the bounded result to the adapter model.
 """
 
@@ -14,6 +14,51 @@ from core.adapter import (
     BacktraceReport,
     build_backtrace_report,
     live_boot_backtrace_report,
+)
+from core.backtrace.unwind import (
+    ElfImage,
+    SeedFrame,
+    UnwindMetadata,
+    cached_unwind_metadata,
+    unwind_chain,
+)
+from core.backtrace.unwind import (
+    live_seed as _core_live_seed,
+)
+from core.backtrace.unwind import live_seed_detail as _core_live_seed_detail
+from core.backtrace.unwind_arm import (
+    ArmSnapshot,
+    FaultPrecision,
+    arm_ccr_stkalign,
+    arm_exception_guard,
+    arm_external_exception_limit,
+    armv6m_vector_entry,
+    armv7m_vector_entry,
+    prepare_arm_handler_unwind,
+    resolve_arm_irq_stack_bounds,
+    resolve_arm_irq_stack_bounds_detail,
+    resolve_armv6m_vector_limit,
+)
+from core.backtrace.unwind_arm import (
+    arm_snapshot as _core_arm_snapshot,
+)
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_riscv import (
+    RiscvSnapshot,
+    prepare_riscv_handler_unwind,
+    resolve_riscv_irq_stack_bounds_detail,
+    u_xlen_mask,
+)
+from core.backtrace.unwind_riscv import (
+    riscv_snapshot as _core_riscv_snapshot,
+)
+from core.backtrace.unwind_segments import (
+    ExceptionDetector,
+    ExceptionHook,
+    ExceptionTransitionContext,
+    ExceptionTransitionResult,
+    StackSegment,
+    TransitionGuard,
 )
 from core.gdb_bridge import (
     arch_or_default,
@@ -28,77 +73,34 @@ from core.gdb_bridge import (
 )
 from core.layout import member_offset
 from core.stack_frame_parser import StackContextSelection
-from core.unwind import (
-    ElfImage,
-    SeedFrame,
-    UnwindMetadata,
-    cached_unwind_metadata,
-    unwind_chain,
-)
-from core.unwind import (
-    live_seed as _core_live_seed,
-)
-from core.unwind import live_seed_detail as _core_live_seed_detail
-from core.unwind_arm import (
-    ArmSnapshot,
-    FaultPrecision,
-    arm_ccr_stkalign,
-    arm_exception_guard,
-    arm_external_exception_limit,
-    armv6m_vector_entry,
-    armv7m_vector_entry,
-    prepare_arm_handler_unwind,
-    resolve_arm_irq_stack_bounds,
-    resolve_arm_irq_stack_bounds_detail,
-    resolve_armv6m_vector_limit,
-)
-from core.unwind_arm import (
-    arm_snapshot as _core_arm_snapshot,
-)
-from core.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
-from core.unwind_riscv import (
-    RiscvSnapshot,
-    prepare_riscv_handler_unwind,
-    resolve_riscv_irq_stack_bounds_detail,
-    u_xlen_mask,
-)
-from core.unwind_riscv import (
-    riscv_snapshot as _core_riscv_snapshot,
-)
-from core.unwind_segments import (
-    ExceptionDetector,
-    ExceptionHook,
-    ExceptionTransitionContext,
-    ExceptionTransitionResult,
-    StackSegment,
-    TransitionGuard,
-)
 from rtthread.adapter import Thread, value_to_thread
-from rtthread.arm_scheduler_switch import (
+from rtthread.backtrace.arm_scheduler_switch import (
     build_profile as build_scheduler_profile,
 )
-from rtthread.arm_scheduler_switch import (
+from rtthread.backtrace.arm_scheduler_switch import (
     classify_stage as classify_scheduler_stage,
 )
-from rtthread.backtrace import (
+from rtthread.backtrace.backtrace import (
     _armv8m_psplim_valid,
     decode_armv7em_saved_context,
     decode_armv8m_mainline_saved_context,
 )
-from rtthread.backtrace import decode_saved_context as decode_backtrace_context
-from rtthread.layout import RT_THREAD_STACK_FILL
-from rtthread.navigation import find_thread, get_current_thread, iter_threads
-from rtthread.riscv_scheduler_switch import (
+from rtthread.backtrace.backtrace import (
+    decode_saved_context as decode_backtrace_context,
+)
+from rtthread.backtrace.riscv_scheduler_switch import (
     build_riscv_profile as build_riscv_scheduler_profile,
 )
-from rtthread.riscv_scheduler_switch import (
+from rtthread.backtrace.riscv_scheduler_switch import (
     classify_riscv_stage,
 )
-from rtthread.scheduler_seed import (
+from rtthread.backtrace.scheduler_seed import (
     SchedulerSeed,
     build_riscv_stage_seed,
     build_stage_seed,
 )
+from rtthread.layout import RT_THREAD_STACK_FILL
+from rtthread.navigation import find_thread, get_current_thread, iter_threads
 from rtthread.stack_frame_profile import (
     analyze_hardfault_trampoline,
     analyze_riscv_trap_profile,

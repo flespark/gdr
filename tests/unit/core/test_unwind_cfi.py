@@ -6,9 +6,9 @@ import struct
 
 import pytest
 
-import core.unwind_cfi as cfi
-from core.unwind_cfi import CfaRule, CfiRow, RegisterRule
-from core.unwind_meta import Endian
+import core.backtrace.unwind_cfi as cfi
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, RegisterRule
+from core.elf import Endian
 
 
 def _run(blob, *, target=None, initial=None, **kwargs):

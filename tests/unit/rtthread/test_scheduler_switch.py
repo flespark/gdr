@@ -6,10 +6,13 @@ from dataclasses import dataclass
 
 import pytest
 
+from core.elf import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
 from core.stack_frame_parser import StackContextSelection
-from core.unwind_meta import SHF_EXECINSTR, CodeSymbol, ElfImage, ElfSection
-from rtthread.arm_scheduler_switch import build_profile, classify_stage
-from rtthread.backtrace import (
+from rtthread.backtrace.arm_scheduler_switch import (
+    build_profile,
+    classify_stage,
+)
+from rtthread.backtrace.backtrace import (
     ARMV6M_INTEGER,
     ARMV7EM_FPU,
     ARMV7EM_INTEGER,
@@ -17,7 +20,7 @@ from rtthread.backtrace import (
     ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
 )
-from rtthread.scheduler_seed import SchedulerSeed, build_stage_seed
+from rtthread.backtrace.scheduler_seed import SchedulerSeed, build_stage_seed
 from tests.support.loader import cached_elfs, fixture_cache_root
 from tests.unit.core.oracle_support import attributes_blob
 

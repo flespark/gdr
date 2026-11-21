@@ -10,8 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from core.elf import Reader
 from core.stack_frame_parser import SavedStackContext
-from core.unwind import Reader
 
 
 @dataclass(frozen=True)

@@ -7,19 +7,19 @@ from typing import Any, cast
 
 import pytest
 
-import freertos.backtrace_gdb as bridge
+import freertos.backtrace.backtrace_gdb as bridge
 import freertos.stack_frame_profile as ports
-from core.cpus import Cpu
-from core.stack_frame_parser import StackContextSelection
-from core.unwind import SeedFrame, UnwindFrame, UnwindResult, unwind_chain
-from core.unwind_arm import (
+from core.backtrace.unwind import SeedFrame, UnwindFrame, UnwindResult, unwind_chain
+from core.backtrace.unwind_arm import (
     armv7m_exception_return_candidate,
     armv7m_exception_transition,
 )
-from core.unwind_cfi import CfiTable
-from core.unwind_segments import StackSegment
+from core.backtrace.unwind_cfi import CfiTable
+from core.backtrace.unwind_segments import StackSegment
+from core.elf import Cpu
+from core.stack_frame_parser import StackContextSelection
 from freertos.adapter import FreeRtosTask
-from freertos.backtrace import (
+from freertos.backtrace.backtrace import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
@@ -1324,8 +1324,8 @@ def test_scheduler_report_refuses_inconsistent_frame_alignment_before_unwind(
 
 
 def test_current_pc_backtrace_delegates_to_running_task_and_handles_boot(monkeypatch):
-    from core.unwind import UnwindFrame, UnwindMetadata, UnwindResult
-    from core.unwind_arm import ArmSnapshot
+    from core.backtrace.unwind import UnwindFrame, UnwindMetadata, UnwindResult
+    from core.backtrace.unwind_arm import ArmSnapshot
 
     adapter, task = _session(monkeypatch)
     current_val = object()
@@ -1364,8 +1364,8 @@ def test_current_pc_backtrace_delegates_to_running_task_and_handles_boot(monkeyp
     assert null_tcb.stop_reason == "scheduler-current-tcb-unavailable"
 
     # Pre-scheduler boot unwinds current MSP within boot stack bounds.
-    from core.unwind_cfi import CfaRule, CfiRow, RegisterRule
-    from core.unwind_meta import EM_ARM, CodeSymbol, ElfImage, ElfSection
+    from core.backtrace.unwind_cfi import CfaRule, CfiRow, RegisterRule
+    from core.elf import EM_ARM, CodeSymbol, ElfImage, ElfSection
 
     monkeypatch.setattr(bridge, "_scheduler_running", lambda: False)
     boot_elf = ElfImage(

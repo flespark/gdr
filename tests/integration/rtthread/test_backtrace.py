@@ -10,10 +10,13 @@ from pathlib import Path
 
 import pytest
 
+from core.elf import ElfImage
 from core.insn_thumb import decode_thumb
-from core.unwind_meta import ElfImage
-from rtthread.arm_scheduler_switch import SchedulerProfile, build_profile
-from rtthread.riscv_scheduler_switch import (
+from rtthread.backtrace.arm_scheduler_switch import (
+    SchedulerProfile,
+    build_profile,
+)
+from rtthread.backtrace.riscv_scheduler_switch import (
     RiscvSchedulerProfile,
     build_riscv_profile,
 )
@@ -628,7 +631,7 @@ def test_fpu_switch_request_window_refuses_unverified_profile_live(gdb_session):
     _stop_symbol(gdb_session, "PendSV_Handler")
     data = _envelope(
         gdb_session.run_python("""
-import rtthread.backtrace_gdb as bridge
+import rtthread.backtrace.backtrace_gdb as bridge
 original = bridge.build_scheduler_profile
 try:
     bridge.build_scheduler_profile = lambda _elf: None
@@ -681,7 +684,7 @@ def test_switch_request_window_refuses_unverified_profile_live(gdb_session):
     gdb_session.run("continue", timeout=60)
     data = _envelope(
         gdb_session.run_python("""
-import rtthread.backtrace_gdb as bridge
+import rtthread.backtrace.backtrace_gdb as bridge
 original = bridge.build_scheduler_profile
 try:
     bridge.build_scheduler_profile = lambda _elf: None
@@ -755,7 +758,7 @@ def test_pending_switch_refuses_task_ownership_without_writing_the_target(gdb_se
     result = _json_line(
         gdb_session.run_python("""
 import json
-import rtthread.backtrace_gdb as bridge
+import rtthread.backtrace.backtrace_gdb as bridge
 original = bridge.read_int
 targets = {
     int(gdb.parse_and_eval(f"&{name}"))
@@ -786,7 +789,7 @@ def test_partial_msp_override_cannot_enable_an_unbounded_walk(gdb_session):
     _stop_symbol(gdb_session, "gdr_irq_single_stop")
     result = _json_line(
         gdb_session.run_python("""
-import rtthread.backtrace_gdb as bridge
+import rtthread.backtrace.backtrace_gdb as bridge
 original = bridge.linker_symbol_address
 try:
     bridge.linker_symbol_address = lambda name: 0x203fc000 if name == '__gdr_irq_stack_low' else None
@@ -1216,7 +1219,7 @@ print(json.dumps({"mepc": int(frame.read_register("mepc")) & mask}))
                 """
 import dataclasses, json
 from core.adapter import active
-import rtthread.backtrace_gdb as bt
+import rtthread.backtrace.backtrace_gdb as bt
 
 orig = bt._riscv_snapshot
 def forced(cause):
@@ -1523,7 +1526,7 @@ def test_riscv_trap_nested_e310_and_broken_profile_fail_closed(gdb_session):
                 """
 import json
 from core.adapter import active
-import rtthread.backtrace_gdb as bt
+import rtthread.backtrace.backtrace_gdb as bt
 
 original = bt.build_riscv_scheduler_profile
 bt.build_riscv_scheduler_profile = lambda _elf: (None, "scheduler-profile-mismatch:test")
@@ -1546,7 +1549,7 @@ print(json.dumps({"complete": report.complete, "stop_reason": report.stop_reason
                     """
 import json
 from core.adapter import active
-import rtthread.backtrace_gdb as bt
+import rtthread.backtrace.backtrace_gdb as bt
 
 orig_eval = bt.eval_identifier
 orig_read = bt.read_int
@@ -1583,7 +1586,7 @@ def test_riscv_synchronous_fault_unwinds_and_unknown_cause_fails_closed(gdb_sess
                 f"""
 import dataclasses, json
 from core.adapter import active
-import rtthread.backtrace_gdb as bt
+import rtthread.backtrace.backtrace_gdb as bt
 
 orig_snap = bt._riscv_snapshot
 def forced_cause(cause):
@@ -1648,7 +1651,7 @@ def test_armv8m_nonzero_psplim_admits_valid_and_refuses_invalid_bounds(gdb_sessi
             """
 import gdb, json
 from core.adapter import active
-import rtthread.backtrace_gdb as bt
+import rtthread.backtrace.backtrace_gdb as bt
 
 thread = gdb.lookup_static_symbol("worker1_thread").value()
 sp = int(thread["sp"])

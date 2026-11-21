@@ -13,8 +13,7 @@ from dataclasses import replace
 
 import pytest
 
-from core.cpus import cpu_of
-from core.unwind_meta import ElfImage
+from core.elf import ElfImage, cpu_of
 from rtthread.stack_frame_profile import (
     _armv7em_fpu_verify_context,
     _armv8m_mainline_fpu_verify_context,

@@ -4,17 +4,22 @@
 when the task last left the CPU.  The frame shape is a property of the port
 (and, on Armv8-M Mainline, of the MPU/non-MPU save path), not of the kernel
 version, so the tables below are keyed by port evidence.  The module only
-decodes; the unwind itself lives in :mod:`core.unwind`.
+decodes; the unwind itself lives in :mod:`core.backtrace.unwind`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from core.cpus import Isa
-from core.stack_frame_parser import SavedStackContext, decode_profile_slots
-from core.unwind import Endian, Reader, SeedFrame, read_block, read_slot
-from core.unwind_arm import BASIC_EXC_RETURNS, EXTENDED_EXC_RETURNS
+from core.backtrace.unwind import SeedFrame
+from core.backtrace.unwind_arm import BASIC_EXC_RETURNS, EXTENDED_EXC_RETURNS
+from core.elf import Endian, Isa, Reader
+from core.stack_frame_parser import (
+    SavedStackContext,
+    decode_profile_slots,
+    read_block,
+    read_slot,
+)
 
 _ARM_FILL = 0xA5A5A5A5
 

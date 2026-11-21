@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import struct
 
-from freertos.arm_scheduler_switch import SchedulerProfile
+from freertos.backtrace.arm_scheduler_switch import SchedulerProfile
 
 
 def json_line(output: str) -> dict:
@@ -284,7 +284,7 @@ for value, _state, _core in iter_tasks(layout):
 
 
 def verify_readonly_backtrace(session, task: str, *, include_tick: bool) -> dict:
-    """Run ``freertos.backtrace_gdb.backtrace`` and assert registers/stacks stay unchanged."""
+    """Run ``freertos.backtrace.backtrace_gdb.backtrace`` and assert registers/stacks stay unchanged."""
     extra = (
         ', str(gdb.parse_and_eval("pxCurrentTCB")), int(gdb.parse_and_eval("xTickCount"))'
         if include_tick
@@ -295,7 +295,7 @@ def verify_readonly_backtrace(session, task: str, *, include_tick: bool) -> dict
             f"""
 import gdb, hashlib, json
 from core.adapter import active
-import freertos.backtrace_gdb as bt
+import freertos.backtrace.backtrace_gdb as bt
 
 def snapshot():
     frame = gdb.newest_frame()
@@ -342,7 +342,7 @@ def m0_fixed_vector_probe(session) -> dict:
             """
 import json
 from core.adapter import active
-import freertos.backtrace_gdb as bt
+import freertos.backtrace.backtrace_gdb as bt
 original = bt.read_bytes
 reads = []
 def guarded(address, size):
@@ -405,7 +405,7 @@ def scheduler_profile_override(session, reason: str, task: str | None = None) ->
         session.run_python(
             f"""
 import json, gdb
-import freertos.backtrace_gdb as bt
+import freertos.backtrace.backtrace_gdb as bt
 from core.adapter import active
 
 original = bt.build_scheduler_profile
@@ -450,7 +450,7 @@ def riscv_isr_yield_owner_probe(session, active_tcb: int) -> dict:
 import json
 from core.adapter import active
 from freertos.adapter import iter_converted_tasks
-import freertos.backtrace_gdb as bt
+import freertos.backtrace.backtrace_gdb as bt
 
 ad = active()
 other = next(t for t in iter_converted_tasks(ad.layout) if t.address != {active_tcb:#x})
@@ -494,7 +494,7 @@ def riscv_vectored_mtvec_probe(
             f"""
 import dataclasses, json
 from core.adapter import active
-import freertos.backtrace_gdb as bt
+import freertos.backtrace.backtrace_gdb as bt
 
 jal = bytes.fromhex({jal_bytes.hex()!r})
 orig_snap = bt._riscv_snapshot

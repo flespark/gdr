@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Literal
 
-from .unwind_meta import (
+from ..elf import (
     MAX_CFI_EXPRESSION_BYTES,
     MAX_CFI_EXPRESSION_READ_BYTES,
     MAX_CFI_EXPRESSION_READS,

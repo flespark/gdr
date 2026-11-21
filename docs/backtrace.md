@@ -15,17 +15,17 @@ backtrace runs through three sequential phases.
 ### 1. Seed, ABI, and Stack-Segment Validation
 
 Before stepping any caller frame, the adapter resolves the target task or
-current halted context (`<rtos>/backtrace_gdb.py`) and validates the seed
-([`core/unwind.py`](../core/unwind.py)):
+current halted context (`<rtos>/backtrace/backtrace_gdb.py`) and validates the seed
+([`core/backtrace/unwind.py`](../core/backtrace/unwind.py)):
 
 1. **RTOS identity, version, and struct layout**: Verified from explicit
    `gdr init <rtos> <version>` against ELF symbols and `-g3` DWARF macros;
    kernel feature toggles and TCB offsets derive from ELF DWARF (`<rtos>/layout.py`).
 2. **ISA / ABI & port/scheduler verification**: Reads ELF CPU attributes
-   ([`core/cpus.py`](../core/cpus.py)) and inspects compiled port, scheduler,
+   ([`core/elf.py`](../core/elf.py)) and inspects compiled port, scheduler,
    and trap routines (`<rtos>/stack_frame_profile.py`,
-   `<rtos>/*_scheduler_switch.py`) rather than guessing from application caller
-   code. Saved contexts decode only verified layouts (`<rtos>/backtrace.py`).
+   `<rtos>/backtrace/*_scheduler_switch.py`) rather than guessing from application caller
+   code. Saved contexts decode only verified layouts (`<rtos>/backtrace/backtrace.py`).
 3. **Seed & segment bounds**:
    - Enforces recorded downward-growing task stack bounds
      (`configRECORD_STACK_HIGH_ADDRESS` on FreeRTOS; `stack_addr`/`stack_size` on
@@ -39,18 +39,18 @@ current halted context (`<rtos>/backtrace_gdb.py`) and validates the seed
      the ordinary frame loop.
 
 ```text
-rtt/frt backtrace <task> / gdr api backtrace -> adapter (backtrace_gdb.py)
-  -> saved task profile (backtrace.py + stack_frame_profile.py)
-     or live/handler/scheduler seed (scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
-  -> core.unwind_meta (ELF sections, sized STT_FUNC symbols, code bytes)
+rtt/frt backtrace <task> / gdr api backtrace -> adapter (backtrace/backtrace_gdb.py)
+  -> saved task profile (backtrace/backtrace.py + stack_frame_profile.py)
+     or live/handler/scheduler seed (backtrace/scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
+  -> core.elf (ELF sections, sized STT_FUNC symbols, CPU attributes, code bytes)
   -> step order: .ARM.exidx (EHABI) -> DWARF CFI -> leaf instruction proof -> FP fallback
-  -> core.unwind (PC - 1 normalization, exception hooks, bounds, budgets)
+  -> core.backtrace.unwind (PC - 1 normalization, exception hooks, bounds, budgets)
   -> frames + method + complete/stop_reason + messages
 ```
 
 ### 2. Per-Frame Step and Fallback Order
 
-At each frame (`lookup_pc`), [`core/unwind.py`](../core/unwind.py) tries
+At each frame (`lookup_pc`), [`core/backtrace/unwind.py`](../core/backtrace/unwind.py) tries
 unwinding mechanisms in strict priority order:
 
 1. **ARM `.ARM.exidx` / `.ARM.extab` (EHABI) first** *(ARM ELFs only)*:
@@ -73,7 +73,7 @@ unwinding mechanisms in strict priority order:
      `ehabi-prologue-unexecuted` without parse failures) when `.ARM.exidx` is
      structurally intact.
    - Decodes bounded straight-line instructions inside the sized `STT_FUNC`
-     function (`core/unwind_leaf.py`) to prove SP preservation and return
+     function (`core/backtrace/unwind_leaf.py`) to prove SP preservation and return
      through `LR`/`ra`, stripping any clobbered registers so stale values are
      not reused by callers.
 4. **Frame-pointer (`FP`) fallback last — strictly gap-only**:
@@ -90,7 +90,7 @@ After recovering `(new_regs, new_sp, raw_caller)` from a step:
 
 - **Exception/trap crossing**: If `exception_detector(raw_caller)` matches
   (such as Arm M-profile `EXC_RETURN`), `_apply_transition` invokes the
-  architecture `exception_hook` (`core/unwind_arm.py` or `core/unwind_riscv.py`)
+  architecture `exception_hook` (`core/backtrace/unwind_arm.py` or `core/backtrace/unwind_riscv.py`)
   to validate the exception frame and switch back to the interrupted segment
   under independent `max_exception_depth` and `max_exception_bytes` budgets.
 - **PC lookup normalization**: Ordinary call sites look up caller unwind info at
@@ -105,7 +105,7 @@ After recovering `(new_regs, new_sp, raw_caller)` from a step:
 
 ### Arm M-Profile IRQ, Fault, and Vector Resolution
 
-Cross-stack M-profile unwinding (`core/unwind_arm.py`) requires readable
+Cross-stack M-profile unwinding (`core/backtrace/unwind_arm.py`) requires readable
 `xPSR`/`MSP`/`PSP`, proven running-scheduler task ownership, resolved MSP
 bounds, and external vector capacity checks:
 
@@ -135,7 +135,7 @@ bounds, and external vector capacity checks:
 
 ### RISC-V M-Mode Trap & Scheduler Verification
 
-RISC-V unwinding (`core/unwind_riscv.py`, `<rtos>/riscv_scheduler_switch.py`)
+RISC-V unwinding (`core/backtrace/unwind_riscv.py`, `<rtos>/backtrace/riscv_scheduler_switch.py`)
 requires direct-mode `mtvec` dispatch (`mstatus.MPP == M`), resolved ISR stack
 bounds (`__freertos_irq_stack_top` / `xISRStackTop` /
 `configISR_STACK_SIZE_WORDS`), and compiled instruction verification of the

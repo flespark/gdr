@@ -16,11 +16,11 @@ import capstone as cs
 import pytest
 from capstone import arm, riscv
 
+from core.backtrace.unwind_leaf import prove_leaf_return
+from core.elf import EM_ARM, ElfImage, ElfSection
 from core.insn_arm import decode_arm
 from core.insn_riscv import EvidenceError, riscv_code_decoder
 from core.insn_thumb import decode_thumb
-from core.unwind_leaf import prove_leaf_return
-from core.unwind_meta import EM_ARM, ElfImage, ElfSection
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 from .oracle_support import SHF_EXECINSTR, SHT_PROGBITS

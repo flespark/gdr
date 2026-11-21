@@ -6,7 +6,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
-from core.cpus import Cpu, Isa, cpu_of
+from core.backtrace.unwind_riscv import (
+    RiscvTrapFrameLayout,
+    RiscvTrapSpan,
+    riscv_decode_until_return,
+    riscv_find_sp_loads_from_symbol,
+    riscv_partition_by_sp_loads,
+    riscv_reachable_pcs,
+    riscv_route_epc_store,
+)
+from core.elf import EM_RISCV, Cpu, ElfImage, Isa, cpu_of
 from core.insn_riscv import (
     EvidenceError,
     RiscvCodeParser,
@@ -22,18 +31,8 @@ from core.stack_frame_parser import (
     SavedStackContext,
     StackContextSelection,
 )
-from core.unwind_meta import EM_RISCV, ElfImage
-from core.unwind_riscv import (
-    RiscvTrapFrameLayout,
-    RiscvTrapSpan,
-    riscv_decode_until_return,
-    riscv_find_sp_loads_from_symbol,
-    riscv_partition_by_sp_loads,
-    riscv_reachable_pcs,
-    riscv_route_epc_store,
-)
 
-from .backtrace import (
+from .backtrace.backtrace import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,

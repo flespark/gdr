@@ -12,10 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .cpus import (
+from .elf import (
     ARM_CONVENTION,
+    MAX_FRAME_READ,
     RISCV_CONVENTION,
     CpuFamily,
+    Endian,
+    Reader,
     RegisterConvention,
     convention_for_arch,
 )
@@ -30,8 +33,50 @@ from .insn_riscv import (
     riscv_stack_frame_size,
     riscv_target_loads,
 )
-from .unwind import read_slot
-from .unwind_meta import Endian, Reader
+
+
+def read_slot(
+    read: Reader,
+    address: int,
+    width: int,
+    endian: Endian,
+    *,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+) -> int | None:
+    """Read one integer slot with optional stack bounds; ``None`` on failure."""
+    if width <= 0 or width > 8 or address <= 0:
+        return None
+    if stack_low is not None and address < stack_low:
+        return None
+    if stack_high is not None and address + width > stack_high:
+        return None
+    raw = read(address, width)
+    if raw is None or len(raw) != width:
+        return None
+    return int.from_bytes(raw, endian)
+
+
+def read_block(
+    read: Reader,
+    address: int,
+    size: int,
+    *,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+) -> bytes | None:
+    """Read a bounded block; ``None`` on a short read or bounds violation."""
+    if size <= 0 or size > MAX_FRAME_READ or address <= 0:
+        return None
+    if stack_low is not None and address < stack_low:
+        return None
+    if stack_high is not None and address + size > stack_high:
+        return None
+    raw = read(address, size)
+    if raw is None or len(raw) != size:
+        return None
+    return raw
+
 
 ValidationLevel = Literal["synthetic", "file-only", "live"]
 StatusKind = Literal["xpsr", "cpsr"]
@@ -352,6 +397,8 @@ __all__ = [
     "StackContextSelection",
     "ValidationLevel",
     "decode_profile_slots",
+    "read_block",
+    "read_slot",
     "riscv_all_store_offsets",
     "riscv_code_decoder",
     "riscv_frame_accesses",

@@ -13,13 +13,13 @@ shared test infrastructure and the per-RTOS integration test coverage.
 across the configured hardware-independent modules in `core/`, `rtthread/`, and
 `freertos/` (`adapter`, `api`, `commands`, `constants`, `formatting`,
 `heapmap`, `help`, `version`, `layout`, `stackpc`, `views`, `diagnostics`,
-`objects`, `heap`, `unwind`, `unwind_meta`, `unwind_cfi`, `unwind_expr`, `unwind_ehabi`,
-`backtrace`). Direct `gdb.Value` / DWARF / target-memory traversal modules
+`objects`, `heap`, `elf`, `stack_frame_parser`, and the `backtrace/`
+subpackages (`core/backtrace/`, `freertos/backtrace/`, `rtthread/backtrace/`)).
+Direct `gdb.Value` / DWARF / target-memory traversal modules
 (`core/gdb_bridge.py`, `core/layout.py`,
 `rtthread/navigation.py`, `freertos/navigation.py`) and the two
-`backtrace_gdb.py` orchestration modules are excluded from the unit-only
-coverage gate. Focused orchestration unit tests and the closed-loop QEMU
-suites below verify their adapter contracts and target reads.
+`backtrace/backtrace_gdb.py` orchestration modules remain verified via focused
+orchestration unit tests and closed-loop QEMU suites.
 
 In addition to functional unit tests, `tests/unit/core/test_boundary.py`
 enforces repository-wide structural invariants on every run:
@@ -248,7 +248,7 @@ test rejection behavior, not live port support.
 
 | Layer | Acceptance requirements | Evidence |
 | --- | --- | --- |
-| Architecture | ISA-specific EXC_RETURN/IPSR widths and exception tables; shared eight-word frame register layout; Armv6-M mandatory 8-byte entry alignment versus Armv7-M CCR.STKALIGN; exact stacked PC, padding, bounds and independent budgets. | `core/unwind_arm.py`, `tests/unit/core/test_unwind_armv6m.py`, `test_unwind_armv7m.py` and shared driver tests. |
+| Architecture | ISA-specific EXC_RETURN/IPSR widths and exception tables; shared eight-word frame register layout; Armv6-M mandatory 8-byte entry alignment versus Armv7-M CCR.STKALIGN; exact stacked PC, padding, bounds and independent budgets. | `core/backtrace/unwind_arm.py`, `tests/unit/core/test_unwind_armv6m.py`, `test_unwind_armv7m.py` and shared driver tests. |
 | RTOS port | Proven task ownership and stack spans, target-specific capacity/vector evidence, ISA hook selection and fail-before-unwind refusals; actual IRQ, nested handler and handler C-call chains; raw frame oracles and unchanged target state. | `tests/unit/freertos/test_backtrace_armv6m.py`, `test_backtrace_gdb.py` and `tests/integration/freertos/test_backtrace.py`. |
 
 The live IRQ tests select `freertos/microbit/11.1.0/full`, `mps2-an385/full`,

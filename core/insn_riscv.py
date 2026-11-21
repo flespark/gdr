@@ -7,7 +7,7 @@ context-save and context-restore conventions from ELF text sections.
 
 from __future__ import annotations
 
-from .unwind_meta import ElfImage, _sign_extend
+from .elf import ElfImage, _sign_extend
 
 
 class EvidenceError(ValueError):

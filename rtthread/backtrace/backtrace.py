@@ -10,13 +10,14 @@ a guessed context.
 
 from __future__ import annotations
 
-from core.cpus import Isa
+from core.backtrace.unwind import SeedFrame
+from core.elf import Endian, Isa, Reader
 from core.stack_frame_parser import (
     SavedStackContext,
     ValidationLevel,
     decode_profile_slots,
+    read_slot,
 )
-from core.unwind import Endian, Reader, SeedFrame, read_slot
 
 
 def _arm_integer(
