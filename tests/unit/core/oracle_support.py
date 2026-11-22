@@ -24,6 +24,7 @@ SHF_EXECINSTR = 0x4
 SHF_ARM_EXIDX = 0x80
 STT_FUNC = 2
 STT_OBJECT = 1
+PT_GNU_EH_FRAME = 0x6474E550
 
 
 class SectionSpec(NamedTuple):
@@ -55,15 +56,19 @@ def build_elf(
     sections: tuple[SectionSpec, ...],
     symbols: tuple[SymbolSpec, ...] = (),
     flags: int = 0,
+    gnu_eh_frame: bool = False,
 ) -> bytes:
     """Build one valid ELF with a name table, optional NOBITS and a symtab.
 
     Section indices are ``0`` NULL, ``1`` ``.shstrtab``, then the caller's
     sections; a symtab pair follows when ``symbols`` is supplied.  ``shndx``
     in a :class:`SymbolSpec` therefore names a caller section starting at 2.
+    When ``gnu_eh_frame`` is true and ``.eh_frame_hdr`` is present, a matching
+    ``PT_GNU_EH_FRAME`` program header is emitted.
     """
     order = "<" if endian == "little" else ">"
     ehsize, shentsize = (64, 64) if is_64 else (52, 40)
+    phentsize = 56 if is_64 else 32
     entries: list[SectionSpec] = list(sections)
     strtab = b"\0"
     offsets: dict[str, int] = {}
@@ -113,8 +118,18 @@ def build_elf(
     for spec in entries:
         name_offsets[spec.name] = len(names)
         names += spec.name.encode() + b"\0"
+    eh_hdr_index = next(
+        (
+            i
+            for i, spec in enumerate(entries)
+            if gnu_eh_frame and spec.name == ".eh_frame_hdr"
+        ),
+        None,
+    )
+    phnum = 1 if eh_hdr_index is not None else 0
+    phoff = ehsize if phnum else 0
     shnum = 2 + len(entries)
-    shoff = ehsize
+    shoff = ehsize + phnum * phentsize
     data_start = shoff + shnum * shentsize
 
     blobs = [names]
@@ -142,17 +157,53 @@ def build_elf(
     struct.pack_into(f"{order}H", header, 18, machine)
     struct.pack_into(f"{order}I", header, 48 if is_64 else 36, flags)
     if is_64:
+        struct.pack_into(f"{order}Q", header, 0x20, phoff)
         struct.pack_into(f"{order}Q", header, 0x28, shoff)
         struct.pack_into(f"{order}H", header, 0x34, ehsize)
+        struct.pack_into(f"{order}H", header, 0x36, phentsize if phnum else 0)
+        struct.pack_into(f"{order}H", header, 0x38, phnum)
         struct.pack_into(f"{order}H", header, 0x3A, shentsize)
         struct.pack_into(f"{order}H", header, 0x3C, shnum)
         struct.pack_into(f"{order}H", header, 0x3E, 1)
     else:
+        struct.pack_into(f"{order}I", header, 0x1C, phoff)
         struct.pack_into(f"{order}I", header, 0x20, shoff)
         struct.pack_into(f"{order}H", header, 0x28, ehsize)
+        struct.pack_into(f"{order}H", header, 0x2A, phentsize if phnum else 0)
+        struct.pack_into(f"{order}H", header, 0x2C, phnum)
         struct.pack_into(f"{order}H", header, 0x2E, shentsize)
         struct.pack_into(f"{order}H", header, 0x30, shnum)
         struct.pack_into(f"{order}H", header, 0x32, 1)
+
+    phdr_bytes = b""
+    if eh_hdr_index is not None:
+        eh_spec = entries[eh_hdr_index]
+        eh_offset = file_offsets[eh_hdr_index]
+        eh_size = len(eh_spec.data)
+        if is_64:
+            phdr_bytes = struct.pack(
+                f"{order}IIQQQQQQ",
+                PT_GNU_EH_FRAME,
+                4,
+                eh_offset,
+                eh_spec.address,
+                eh_spec.address,
+                eh_size,
+                eh_size,
+                4,
+            )
+        else:
+            phdr_bytes = struct.pack(
+                f"{order}IIIIIIII",
+                PT_GNU_EH_FRAME,
+                eh_offset,
+                eh_spec.address,
+                eh_spec.address,
+                eh_size,
+                eh_size,
+                4,
+                4,
+            )
 
     def section_header(
         name: int,
@@ -209,7 +260,7 @@ def build_elf(
             spec.info,
             spec.entsize,
         )
-    return bytes(header) + bytes(table) + b"".join(blobs)
+    return bytes(header) + phdr_bytes + bytes(table) + b"".join(blobs)
 
 
 def attributes_blob(
@@ -244,6 +295,9 @@ def synthetic_corpus() -> tuple[tuple[str, bytes], ...]:
     arm_attrs = ((5, "7-M"), (6, 10), (7, "M"), (9, 2), (18, 4), (20, 1))
     riscv_attrs = ((5, "rv64i2p1_m2p0_a2p1_c2p0"), (4, 16))
     words = (0x7FFFFFD1, 0x80B0B0B0, 0x7FFFFFE1, 0x00000001)
+    eh_hdr = bytes.fromhex("011b033b140000000100000000e0ffff30000000")
+    debug_macro = b"\x00\x05\x00RT_NAME_MAX 8\x00"
+    debug_str = b"\x00configUSE_PREEMPTION 1UL\x00ordinary_string\x00"
     for endian in ("little", "big"):
         arm = attributes_blob(b"aeabi", arm_attrs, endian)
         exidx = b"".join(word.to_bytes(4, endian) for word in words)
@@ -254,6 +308,7 @@ def synthetic_corpus() -> tuple[tuple[str, bytes], ...]:
                     is_64=False,
                     endian=endian,
                     machine=40,
+                    gnu_eh_frame=True,
                     sections=(
                         SectionSpec(
                             ".text",
@@ -271,6 +326,15 @@ def synthetic_corpus() -> tuple[tuple[str, bytes], ...]:
                             SHF_ALLOC | 0x80,
                         ),
                         SectionSpec(
+                            ".eh_frame_hdr",
+                            0x3000,
+                            eh_hdr,
+                            SHT_PROGBITS,
+                            SHF_ALLOC,
+                        ),
+                        SectionSpec(".debug_macro", 0, debug_macro, SHT_PROGBITS),
+                        SectionSpec(".debug_str", 0, debug_str, SHT_PROGBITS),
+                        SectionSpec(
                             ".bss",
                             0x20000000,
                             b"",
@@ -283,6 +347,8 @@ def synthetic_corpus() -> tuple[tuple[str, bytes], ...]:
                         SymbolSpec("leaf", 0x1001, 8, 2, thumb=True),
                         SymbolSpec("worker", 0x1009, 6, 2, thumb=True),
                         SymbolSpec("boundary", 0x1004, 0, 2),
+                        SymbolSpec("dup_label", 0x1002, 0, 2),
+                        SymbolSpec("dup_label", 0x1006, 0, 2),
                         SymbolSpec("$t", 0x1000, 0, 2, info=STT_OBJECT),
                         SymbolSpec("$d", 0x1010, 0, 2, info=STT_OBJECT),
                     ),
@@ -297,6 +363,7 @@ def synthetic_corpus() -> tuple[tuple[str, bytes], ...]:
                 is_64=True,
                 endian="little",
                 machine=243,
+                gnu_eh_frame=True,
                 sections=(
                     SectionSpec(
                         ".text",
@@ -306,6 +373,15 @@ def synthetic_corpus() -> tuple[tuple[str, bytes], ...]:
                         SHF_ALLOC | SHF_EXECINSTR,
                     ),
                     SectionSpec(".riscv.attributes", 0, riscv, SHT_ATTRIBUTES),
+                    SectionSpec(
+                        ".eh_frame_hdr",
+                        0x3000,
+                        eh_hdr,
+                        SHT_PROGBITS,
+                        SHF_ALLOC,
+                    ),
+                    SectionSpec(".debug_macro", 0, debug_macro, SHT_PROGBITS),
+                    SectionSpec(".debug_str", 0, debug_str, SHT_PROGBITS),
                     SectionSpec(
                         ".bss",
                         0x20000000,

@@ -16,9 +16,11 @@ import pytest
 from elftools.elf.elffile import ELFFile
 
 from core.elf import ElfImage, cpu_of, file_attributes
+from core.gdb_bridge import section_payloads
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 from .oracle_support import (
+    PT_GNU_EH_FRAME,
     SHF_ALLOC,
     SHF_EXECINSTR,
     SHT_ARM_EXIDX,
@@ -212,3 +214,150 @@ def test_build_attributes_and_isa_match_pyelftools(source):
     for tag in (6, 7) if vendor == b"aeabi" else (5,):
         assert tag in ours and reference.get(tag) == ours[tag], tag
     assert cpu_of(image).isa == _expected_isa(elffile, reference)
+
+
+@pytest.mark.parametrize("source", _SOURCES, ids=[entry[0] for entry in _SOURCES])
+def test_vaddr_reads_and_code_bounds_match_pyelftools(source):
+    image, elffile = _decoded_elf(_load(source))
+    all_retained_spans: list[tuple[int, int]] = []
+    retained_spans: list[tuple[str, int, int, bytes, bool]] = []
+    expected_code_end = 0
+    for section in elffile.iter_sections():
+        numeric = _TYPE_NUMBERS.get(section["sh_type"])
+        start = section["sh_addr"]
+        size = section["sh_size"]
+        if numeric in _KEEP_TYPES and size > 0:
+            data = section.data()
+            end = start + len(data)
+            is_exec = bool(section["sh_flags"] & SHF_EXECINSTR)
+            if is_exec and end > expected_code_end:
+                expected_code_end = end
+            all_retained_spans.append((start, end))
+            if start > 0:
+                retained_spans.append((section.name, start, end, data, is_exec))
+        elif (
+            section["sh_type"] == "SHT_NOBITS"
+            and section["sh_flags"] & SHF_ALLOC
+            and start > 0
+            and size > 0
+        ):
+            assert image.read_at(start, 1) is None, section.name
+            assert not image.is_code(start), section.name
+
+    assert image.code_end() == expected_code_end
+    assert not image.is_code(0)
+    assert image.read_at(0x1000, 0) is None
+
+    for name, start, end, data, is_exec in retained_spans:
+        size = len(data)
+        assert image.section_bounds(name) == (start, end), name
+        head = min(size, 16)
+        assert image.read_at(start, head) == data[:head], name
+        assert image.read_at(end - head, head) == data[size - head :], name
+        if size > 4:
+            mid = size // 2
+            span = min(4, size - mid)
+            assert image.read_at(start + mid, span) == data[mid : mid + span], name
+        assert image.is_code(start) is is_exec, name
+        assert image.is_code(end - 1) is is_exec, name
+        if not any(
+            other_start <= end - 1 and end + 1 <= other_end
+            for other_start, other_end in all_retained_spans
+        ):
+            assert image.read_at(end - 1, 2) is None, name
+        if not any(
+            other_start <= end < other_end
+            for _, other_start, other_end, _, other_exec in retained_spans
+            if other_exec
+        ):
+            assert not image.is_code(end), name
+
+
+@pytest.mark.parametrize("source", _SOURCES, ids=[entry[0] for entry in _SOURCES])
+def test_symbol_lookup_and_containing_functions_match_pyelftools(source):
+    image, elffile = _decoded_elf(_load(source))
+    symtab: Any = elffile.get_section_by_name(".symtab")
+    if symtab is None:
+        return
+    sections = list(elffile.iter_sections())
+    arm = _arm(elffile)
+    by_name: dict[str, set[int]] = {}
+    sized_funcs: list[tuple[str, int, int, bool | None]] = []
+    for symbol in symtab.iter_symbols():
+        name = symbol.name
+        shndx = symbol["st_shndx"]
+        if not name or not isinstance(shndx, int) or not 0 < shndx < len(sections):
+            continue
+        flags = sections[shndx]["sh_flags"]
+        if not flags & SHF_ALLOC:
+            continue
+        raw_value = symbol["st_value"]
+        value = _normalise(raw_value, arm)
+        by_name.setdefault(name, set()).add(value)
+        if (
+            flags & SHF_EXECINSTR
+            and symbol["st_info"]["type"] == "STT_FUNC"
+            and symbol["st_size"] > 0
+        ):
+            thumb = bool(raw_value & 1) if arm else None
+            sized_funcs.append((name, value, value + symbol["st_size"], thumb))
+
+    sized_funcs.sort(key=lambda item: item[1])
+    sampled_names = [name for name, addrs in by_name.items() if len(addrs) > 1] + list(
+        by_name
+    )[:128]
+    for name in dict.fromkeys(sampled_names):
+        addrs = by_name[name]
+        expected = next(iter(addrs)) if len(addrs) == 1 else None
+        assert image.symbol_address(name) == expected, name
+    assert image.symbol_address("__gdr_absent_symbol__") is None
+
+    for _name, start, end, _thumb in sized_funcs[:64]:
+        for pc in (start, (start + end) // 2, end - 1):
+            ref = next(item for item in sized_funcs if item[1] <= pc < item[2])
+            ours = image.function_containing(pc)
+            assert ours is not None, hex(pc)
+            assert (ours.name, ours.start, ours.end, ours.thumb) == ref
+
+
+@pytest.mark.parametrize("source", _SOURCES, ids=[entry[0] for entry in _SOURCES])
+def test_gnu_eh_frame_segment_matches_pyelftools(source):
+    image, elffile = _decoded_elf(_load(source))
+    segments = [
+        seg
+        for seg in elffile.iter_segments()
+        if seg["p_type"] in ("PT_GNU_EH_FRAME", PT_GNU_EH_FRAME)
+    ]
+    section = elffile.get_section_by_name(".eh_frame_hdr")
+    expected_seg = (
+        (segments[0]["p_vaddr"], segments[0].data())
+        if len(segments) == 1 and segments[0]["p_filesz"] > 0
+        else None
+    )
+    assert image.gnu_eh_frame == expected_seg
+    assert image.gnu_eh_frame_error is None
+    expected_sec = (
+        (section["sh_addr"], section.data())
+        if section is not None and section["sh_size"] > 0
+        else None
+    )
+    hdr, err = image.eh_frame_hdr_source()
+    if expected_seg is not None and expected_sec is not None:
+        if expected_seg == expected_sec:
+            assert (hdr, err) == (expected_seg, None)
+        else:
+            assert (hdr, err) == (None, "eh-hdr-program-section-mismatch")
+    else:
+        assert (hdr, err) == (expected_seg or expected_sec, None)
+
+
+@pytest.mark.parametrize("source", _SOURCES, ids=[entry[0] for entry in _SOURCES])
+def test_debug_macro_section_payloads_match_pyelftools(source):
+    blob = _load(source)
+    _image, elffile = _decoded_elf(blob)
+    expected: dict[str, bytes] = {}
+    for name in (".debug_macro", ".debug_str", ".debug_line_str"):
+        section = elffile.get_section_by_name(name)
+        if section is not None and section["sh_offset"] and section["sh_size"]:
+            expected[name] = section.data()
+    assert section_payloads(blob) == expected
