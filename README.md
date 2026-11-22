@@ -20,10 +20,12 @@ the [Asterinas GDB helper](#acknowledgements):
 
 ### Supported RTOS
 
-| RTOS | Versions | Status |
-|------|----------|--------|
-| RT-Thread | 3.1.x, 4.0.x, 4.1.x | implemented; Arm M/A-profile and RV32/RV64; [verified versions, ports and limits](docs/boundary.md#rt-thread) |
-| FreeRTOS | V10.3.0–V11.3.x | implemented; Armv6-M/v7-M/v7E-M/v8-M Mainline (SMP/MPU) and RV32/RV64; [verified versions, ports and limits](docs/boundary.md#freertos) |
+| RTOS      | Versions            | ISA                                                                                     | Status                                                                         |
+| --------- | ------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| RT-Thread | 3.1.x, 4.0.x, 4.1.x | Armv6-M/v7-M/v7E-M/v8-M Mainline (no SMP/MPU), Armv7-A, RV32/RV64 (no vendor extension) | implemented; [verified versions, ports and limits](docs/boundary.md#rt-thread) |
+| FreeRTOS  | V10.3.0–V11.3.x     | Armv6-M/v7-M/v7E-M/v8-M Mainline (SMP/MPU), RV32/RV64 (no vendor extension)             | implemented; [verified versions, ports and limits](docs/boundary.md#freertos)  |
+
+`timer`, `IPC`, `heap`, and `task` struct inspection use DWARF symbols on any GDB target. Only `backtrace` and saved-task `PC` decoding depend on the listed ISAs; unsupported ISAs report `N/A` for saved `PC`.
 
 ## Quick start
 
