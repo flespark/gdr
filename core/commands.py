@@ -24,6 +24,7 @@ from core.gdb_bridge import (
     gdb_command_guard,
     gdb_function_guard,
     info,
+    is_debug,
     make_pointer_array,
     print_detail,
     print_table,
@@ -48,8 +49,9 @@ def render_tasks() -> None:
 
 def render_backtrace_report(report: BacktraceReport) -> None:
     """Format and print one bounded :class:`BacktraceReport` as a frame table."""
-    for message in report.messages:
-        info(message)
+    if is_debug():
+        for message in report.messages:
+            info(message)
     headers = ["#", "PC", "Function", "Source", "Method"]
     rows: list[list[str]] = []
     for frame in report.frames:

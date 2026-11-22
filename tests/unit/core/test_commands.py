@@ -706,3 +706,51 @@ def test_invoke_backtrace_command_supports_omitted_and_explicit_targets(monkeypa
 
     assert calls == [(None, 32), (None, 8), (None, 12), ("Tmr Svc", 6)]
     assert warnings == ["usage: test", "usage: test", "invalid --max-depth: abc"]
+
+
+def test_render_backtrace_report_gates_logs_on_debug(monkeypatch, capsys):
+    from core.adapter import BacktraceFrame, BacktraceReport
+    from core.formatting import SourceLoc
+
+    report = BacktraceReport(
+        task="gdr_spin",
+        address=0x280033A0,
+        architecture="armv8-m.mainline",
+        method="exception",
+        source="current",
+        complete=True,
+        stop_reason="task-exit",
+        truncated=False,
+        max_depth=32,
+        bounds="recorded",
+        frames=[
+            BacktraceFrame(
+                index=0,
+                pc=0x10002910,
+                method="seed",
+                symbol="SysTick_Handler",
+                source=SourceLoc(
+                    "/Users/simon/Source/FreeRTOS-Kernel/portable/GCC/ARM_CM33_NTZ/non_secure/port.c",
+                    1078,
+                    "/Users/simon/Source/FreeRTOS-Kernel/portable/GCC/ARM_CM33_NTZ/non_secure/port.c",
+                ),
+            )
+        ],
+        messages=["exception transition exception:15 -> task:0x280033a0 at 0x100028bc"],
+    )
+    infos: list[str] = []
+    monkeypatch.setattr(commands, "info", infos.append)
+    monkeypatch.setattr(commands, "print_table", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(commands, "is_debug", lambda: False)
+    commands.render_backtrace_report(report)
+    assert infos == []
+    assert "gdr_spin: armv8-m.mainline, current, exception, complete (task-exit)" in (
+        capsys.readouterr().out
+    )
+
+    monkeypatch.setattr(commands, "is_debug", lambda: True)
+    commands.render_backtrace_report(report)
+    assert infos == [
+        "exception transition exception:15 -> task:0x280033a0 at 0x100028bc"
+    ]
