@@ -16,8 +16,8 @@ backtrace runs through three sequential phases.
 ### 1. Seed, ABI, and Stack-Segment Validation
 
 Before stepping any caller frame, GDR resolves the halted core or target task
-(`core/backtrace/backtrace_gdb.py` for pre-init/bare-metal `gdr backtrace` and
-`<rtos>/backtrace/backtrace_gdb.py` when an adapter is active) and validates the
+(`core/backtrace/unwind_gdb.py` for pre-init/bare-metal `gdr backtrace` and
+`<rtos>/backtrace/unwind_gdb.py` when an adapter is active) and validates the
 seed ([`core/backtrace/unwind.py`](../core/backtrace/unwind.py)):
 
 1. **RTOS identity, version, and struct layout**: Verified from explicit
@@ -27,7 +27,7 @@ seed ([`core/backtrace/unwind.py`](../core/backtrace/unwind.py)):
    ([`core/elf.py`](../core/elf.py)) and inspects compiled port, scheduler,
    and trap routines (`<rtos>/stack_frame_profile.py`,
    `<rtos>/backtrace/*_scheduler_switch.py`) rather than guessing from application caller
-   code. Saved contexts decode only verified layouts (`<rtos>/backtrace/backtrace.py`).
+   code. Saved contexts decode only verified layouts (`<rtos>/backtrace/unwind.py`).
 3. **Seed & segment bounds**:
    - Enforces recorded downward-growing task stack bounds
      (`configRECORD_STACK_HIGH_ADDRESS` on FreeRTOS; `stack_addr`/`stack_size` on
@@ -42,9 +42,9 @@ seed ([`core/backtrace/unwind.py`](../core/backtrace/unwind.py)):
 
 ```text
 gdr backtrace [--max-depth N] [--json] / pre-init gdr api backtrace
-  -> core.backtrace.backtrace_gdb (live register seed, linker/ELF stack bounds)
-rtt/frt backtrace [<task>] / gdr api backtrace -> adapter (backtrace/backtrace_gdb.py)
-  -> saved task profile (backtrace/backtrace.py + stack_frame_profile.py)
+  -> core.backtrace.unwind_gdb (live register seed, linker/ELF stack bounds)
+rtt/frt backtrace [<task>] / gdr api backtrace -> adapter (backtrace/unwind_gdb.py)
+  -> saved task profile (backtrace/unwind.py + stack_frame_profile.py)
      or live/handler/scheduler seed (backtrace/scheduler_seed.py / unwind_arm.py / unwind_riscv.py)
   -> core.elf (ELF sections, sized STT_FUNC symbols, CPU attributes, code bytes)
   -> step order: .ARM.exidx (EHABI) -> DWARF CFI -> leaf instruction proof -> FP fallback

@@ -1,7 +1,7 @@
 """GDB-facing FreeRTOS backtrace orchestration (no target writes).
 
 The pure context layout and ELF/CFI/EHABI parsers live in
-:mod:`freertos.backtrace.backtrace` and :mod:`core.backtrace.unwind`; this module only resolves
+:mod:`freertos.backtrace.unwind` and :mod:`core.backtrace.unwind`; this module only resolves
 the task, reads live/saved registers through GDB, supplies the linker-owned
 interrupt-stack span and exception profile gates, and turns one bounded
 :class:`core.backtrace.unwind.UnwindResult` into the adapter presentation model.
@@ -17,12 +17,6 @@ from core.adapter import (
     active,
     build_backtrace_report,
     live_boot_backtrace_report,
-)
-from core.backtrace.backtrace_gdb import (
-    cached_unwind_metadata,
-)
-from core.backtrace.backtrace_gdb import (
-    live_seed_detail as _core_live_seed_detail,
 )
 from core.backtrace.unwind import (
     ElfImage,
@@ -60,6 +54,12 @@ from core.backtrace.unwind_arm import (
 )
 from core.backtrace.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
+)
+from core.backtrace.unwind_gdb import (
+    cached_unwind_metadata,
+)
+from core.backtrace.unwind_gdb import (
+    live_seed_detail as _core_live_seed_detail,
 )
 from core.backtrace.unwind_riscv import (
     RiscvSnapshot as _RiscvSnapshot,
@@ -99,10 +99,6 @@ from freertos.backtrace.arm_scheduler_switch import (
     build_profile as build_scheduler_profile,
 )
 from freertos.backtrace.arm_scheduler_switch import classify_stage
-from freertos.backtrace.backtrace import decode_cm4f_saved_context
-from freertos.backtrace.backtrace import (
-    decode_saved_context as decode_backtrace_context,
-)
 from freertos.backtrace.riscv_scheduler_switch import (
     build_riscv_profile as build_riscv_scheduler_profile,
 )
@@ -111,6 +107,10 @@ from freertos.backtrace.scheduler_seed import (
     build_riscv_stage_seed,
     build_stage_seed,
     riscv_interrupted_frame_matches,
+)
+from freertos.backtrace.unwind import decode_cm4f_saved_context
+from freertos.backtrace.unwind import (
+    decode_saved_context as decode_backtrace_context,
 )
 from freertos.navigation import (
     current_tasks,

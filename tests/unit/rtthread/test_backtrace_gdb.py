@@ -6,13 +6,14 @@ from typing import cast
 
 import pytest
 
-import rtthread.backtrace.backtrace_gdb as bridge
+import rtthread.backtrace.unwind_gdb as bridge
 from core.backtrace.unwind import SeedFrame, UnwindFrame, UnwindMetadata, UnwindResult
 from core.backtrace.unwind_cfi import CfiTable
 from core.elf import ElfImage
 from core.stack_frame_parser import StackContextSelection
 from rtthread.adapter import Thread
-from rtthread.backtrace.backtrace import (
+from rtthread.backtrace.scheduler_seed import SchedulerSeed
+from rtthread.backtrace.unwind import (
     ARMV7EM_FPU,
     ARMV7EM_INTEGER,
     ARMV7M_INTEGER,
@@ -21,7 +22,6 @@ from rtthread.backtrace.backtrace import (
     RISCV32_INTEGER,
     RISCV64_INTEGER,
 )
-from rtthread.backtrace.scheduler_seed import SchedulerSeed
 from rtthread.layout import RT_THREAD_STACK_FILL
 
 
@@ -190,16 +190,16 @@ def test_symbols_and_source_use_lookup_pc_without_changing_resume_pc(monkeypatch
 
 
 def test_saved_pc_setup_reset_and_live_riscv_seed(monkeypatch):
-    from core.backtrace.backtrace_gdb import (
-        cached_unwind_metadata,
-        live_seed,
-    )
     from core.backtrace.unwind_arm import (
         arm_ccr_stkalign,
         arm_cpuid,
         arm_external_exception_limit,
         armv6m_vector_entry,
         armv7m_vector_entry,
+    )
+    from core.backtrace.unwind_gdb import (
+        cached_unwind_metadata,
+        live_seed,
     )
 
     adapter = SimpleNamespace(version="4.0.5")

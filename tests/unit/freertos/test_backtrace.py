@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from freertos.backtrace.backtrace import (
+from freertos.backtrace.unwind import (
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,

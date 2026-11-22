@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import rtthread.backtrace.backtrace_gdb as bridge
+import rtthread.backtrace.unwind_gdb as bridge
 from core.backtrace.unwind import UnwindMetadata
 from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
 from core.backtrace.unwind_riscv import MSTATUS_MPP_MACHINE, RiscvSnapshot
@@ -21,7 +21,6 @@ from core.elf import (
 )
 from core.stack_frame_parser import StackContextSelection
 from rtthread.adapter import Thread
-from rtthread.backtrace.backtrace import RISCV32_INTEGER, RISCV64_INTEGER
 from rtthread.backtrace.riscv_scheduler_switch import (
     build_riscv_profile,
     classify_riscv_stage,
@@ -30,6 +29,7 @@ from rtthread.backtrace.scheduler_seed import (
     SchedulerSeed,
     build_riscv_stage_seed,
 )
+from rtthread.backtrace.unwind import RISCV32_INTEGER, RISCV64_INTEGER
 from rtthread.layout import RT_THREAD_STACK_FILL, RtConfig, build_layouts
 from tests.unit.core.oracle_support import attributes_blob
 

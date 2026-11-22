@@ -180,7 +180,7 @@ def live_boot_backtrace_report(
     arm_snapshot_reader=None,
 ) -> BacktraceReport:
     """Build a bounded live backtrace report before the RTOS scheduler starts."""
-    from .backtrace.backtrace_gdb import live_boot_unwind
+    from .backtrace.unwind_gdb import live_boot_unwind
 
     if family not in ("arm", "riscv"):
         return BacktraceReport(

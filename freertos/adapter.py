@@ -50,7 +50,7 @@ from core.gdb_bridge import (
 from core.layout import read_field, value_at
 from core.stack_frame_parser import StackContextSelection
 from freertos import heap as heap_module
-from freertos.backtrace.backtrace import decode_saved_context
+from freertos.backtrace.unwind import decode_saved_context
 from freertos.diagnostics import system_checks
 from freertos.layout import (
     OBJECT_KIND_ORDER,
@@ -630,7 +630,7 @@ class FreeRtosAdapter(RtosAdapter):
         self, target: str | None = None, max_depth: int = 32
     ) -> BacktraceReport:
         """Unwind one FreeRTOS task or the current halted core context."""
-        from freertos.backtrace.backtrace_gdb import (
+        from freertos.backtrace.unwind_gdb import (
             backtrace as run_backtrace,
         )
 

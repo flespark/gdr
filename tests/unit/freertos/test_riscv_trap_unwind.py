@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import freertos.backtrace.backtrace_gdb as bridge
+import freertos.backtrace.unwind_gdb as bridge
 from core.backtrace.unwind import SeedFrame, UnwindMetadata
 from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
 from core.backtrace.unwind_riscv import (
@@ -21,7 +21,7 @@ from core.backtrace.unwind_riscv import (
 from core.elf import CodeSymbol, ElfImage, ElfSection
 from core.stack_frame_parser import StackContextSelection
 from freertos.adapter import FreeRtosTask
-from freertos.backtrace.backtrace import RISCV32_INTEGER
+from freertos.backtrace.unwind import RISCV32_INTEGER
 from freertos.layout import FreeRtosConfig, build_layout
 from freertos.stack_frame_profile import analyze_riscv_trap_profile
 

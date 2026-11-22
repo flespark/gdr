@@ -197,7 +197,7 @@ def test_basic_arm_saved_and_initial_contexts_match_raw_port_frames(
         gdb_session.run_python(
             f"""
 import json
-from rtthread.backtrace.backtrace import ARMV6M_INTEGER, ARMV7M_INTEGER, decode_saved_context
+from rtthread.backtrace.unwind import ARMV6M_INTEGER, ARMV7M_INTEGER, decode_saved_context
 
 thread = gdb.lookup_static_symbol('{symbol}').value()
 top = int(thread['sp'])
@@ -324,7 +324,7 @@ def test_armv8m_mainline_saved_frames_match_raw_memory(gdb_session, symbol, sour
         gdb_session.run_python(
             f"""
 import json
-from rtthread.backtrace.backtrace import ARMV8M_MAINLINE_INTEGER, decode_saved_context
+from rtthread.backtrace.unwind import ARMV8M_MAINLINE_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('{symbol}_thread').value()
 top = int(thread['sp'])
 low = int(thread['stack_addr'])
@@ -375,7 +375,7 @@ import json
 from dataclasses import replace
 from core.backtrace.unwind import UnwindMetadata, unwind_chain
 from core.elf import ElfImage
-from rtthread.backtrace.backtrace import ARMV8M_MAINLINE_INTEGER, decode_saved_context
+from rtthread.backtrace.unwind import ARMV8M_MAINLINE_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('worker1_thread').value()
 low = int(thread['stack_addr'])
 high = low + int(thread['stack_size'])
@@ -474,7 +474,7 @@ def test_rv32_saved_frames_match_raw_memory(gdb_session, symbol, source):
         gdb_session.run_python(
             f"""
 import json
-from rtthread.backtrace.backtrace import RISCV32_INTEGER, decode_saved_context
+from rtthread.backtrace.unwind import RISCV32_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('{symbol}_thread').value()
 top = int(thread['sp'])
 low = int(thread['stack_addr'])
@@ -519,7 +519,7 @@ import json
 from dataclasses import replace
 from core.backtrace.unwind import UnwindMetadata, unwind_chain
 from core.elf import ElfImage
-from rtthread.backtrace.backtrace import RISCV32_INTEGER, decode_saved_context
+from rtthread.backtrace.unwind import RISCV32_INTEGER, decode_saved_context
 thread = gdb.lookup_static_symbol('worker1_thread').value()
 low = int(thread['stack_addr'])
 high = low + int(thread['stack_size'])

@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-import freertos.backtrace.backtrace_gdb as bridge
+import freertos.backtrace.unwind_gdb as bridge
 import freertos.stack_frame_profile as ports
 from core.backtrace.unwind import SeedFrame, UnwindFrame, UnwindResult, unwind_chain
 from core.backtrace.unwind_arm import (
@@ -19,7 +19,7 @@ from core.backtrace.unwind_segments import StackSegment
 from core.elf import Cpu
 from core.stack_frame_parser import StackContextSelection
 from freertos.adapter import FreeRtosTask
-from freertos.backtrace.backtrace import (
+from freertos.backtrace.unwind import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,

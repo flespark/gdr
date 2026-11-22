@@ -18,7 +18,7 @@ subpackages (`core/backtrace/`, `freertos/backtrace/`, `rtthread/backtrace/`)).
 Direct `gdb.Value` / DWARF / target-memory traversal modules
 (`core/gdb_bridge.py`, `core/layout.py`,
 `rtthread/navigation.py`, `freertos/navigation.py`) and all three
-`backtrace/backtrace_gdb.py` orchestration modules are verified via focused
+`backtrace/unwind_gdb.py` orchestration modules are verified via focused
 orchestration unit tests and closed-loop QEMU suites.
 
 In addition to functional unit tests, `tests/unit/core/test_boundary.py`

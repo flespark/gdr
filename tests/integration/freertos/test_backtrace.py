@@ -204,7 +204,7 @@ def _trace_active(session, task: str) -> dict:
 def _internal_reason(session, body: str) -> str:
     output = session.run_python(
         f"""
-import freertos.backtrace.backtrace_gdb as bt
+import freertos.backtrace.unwind_gdb as bt
 from core.adapter import active
 {body}
 """
@@ -1488,7 +1488,7 @@ def test_ehabi_only_isr_entry_leaf_fallback_and_elf_vector_fallback(gdb_session)
                 """
 import dataclasses, json
 from core.adapter import active
-import freertos.backtrace.backtrace_gdb as bt
+import freertos.backtrace.unwind_gdb as bt
 
 orig_meta = bt._unwind_metadata
 def ehabi_only(adapter):
@@ -1942,7 +1942,7 @@ def test_riscv_scheduler_profile_and_sync_fault_fail_closed(gdb_session):
                 f"""
 import json
 from core.adapter import active
-import freertos.backtrace.backtrace_gdb as bt
+import freertos.backtrace.unwind_gdb as bt
 
 original = bt.build_riscv_scheduler_profile
 bt.build_riscv_scheduler_profile = lambda _elf: (None, "scheduler-profile-mismatch:test")
@@ -1969,7 +1969,7 @@ print(json.dumps({{"complete": report.complete, "stop_reason": report.stop_reaso
                 f"""
 import dataclasses, json
 from core.adapter import active
-import freertos.backtrace.backtrace_gdb as bt
+import freertos.backtrace.unwind_gdb as bt
 
 original = bt._riscv_snapshot
 def forced_cause(cause):
@@ -2023,7 +2023,7 @@ print(json.dumps({{
                 f"""
 import dataclasses, json
 from core.adapter import active
-import freertos.backtrace.backtrace_gdb as bt
+import freertos.backtrace.unwind_gdb as bt
 
 original = bt._riscv_snapshot
 def forced_illegal(*, xlen=32):

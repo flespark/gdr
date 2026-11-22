@@ -7,7 +7,7 @@ import pytest
 import freertos.adapter as adapter_module
 import freertos.navigation as navigation
 from core.stack_frame_parser import StackContextSelection
-from freertos.backtrace.backtrace import ARMV8M_MAINLINE_MPU_INTEGER
+from freertos.backtrace.unwind import ARMV8M_MAINLINE_MPU_INTEGER
 from freertos.layout import (
     FreeRtosConfig,
     FreeRtosLayout,

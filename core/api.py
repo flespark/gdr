@@ -559,7 +559,7 @@ def _parse_backtrace_args(args: Sequence[str]) -> tuple[str | None, int]:
 
 def _pre_init_backtrace_verb(args: Sequence[str]) -> _VerbResult:
     """Adaptive non-RTOS current-PC backtrace before any RTOS adapter is active."""
-    from .backtrace.backtrace_gdb import live_backtrace
+    from .backtrace.unwind_gdb import live_backtrace
 
     target, max_depth = _parse_backtrace_args(args)
     if target is not None:
@@ -574,7 +574,7 @@ def _pre_init_backtrace_verb(args: Sequence[str]) -> _VerbResult:
 
 def live_backtrace_envelope(max_depth: int = 32) -> dict[str, object]:
     """Run RTOS-agnostic live backtrace and wrap the result in a GDR envelope."""
-    from .backtrace.backtrace_gdb import live_backtrace
+    from .backtrace.unwind_gdb import live_backtrace
 
     start = time.monotonic()
     rtos, rtos_version = session_meta()

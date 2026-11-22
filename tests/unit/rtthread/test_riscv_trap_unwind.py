@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import rtthread.backtrace.backtrace_gdb as bridge
+import rtthread.backtrace.unwind_gdb as bridge
 from core.backtrace.unwind import SeedFrame, UnwindMetadata
 from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
 from core.backtrace.unwind_riscv import (
@@ -20,7 +20,7 @@ from core.backtrace.unwind_riscv import (
 from core.elf import CodeSymbol, ElfImage, ElfSection
 from core.stack_frame_parser import StackContextSelection
 from rtthread.adapter import Thread
-from rtthread.backtrace.backtrace import RISCV32_INTEGER, RISCV64_INTEGER
+from rtthread.backtrace.unwind import RISCV32_INTEGER, RISCV64_INTEGER
 from rtthread.layout import RtConfig, build_layouts
 from rtthread.stack_frame_profile import analyze_riscv_trap_profile
 

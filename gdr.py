@@ -507,7 +507,7 @@ def _backtrace_command(argv: list[str]) -> None:
     import shlex
 
     from core.api import live_backtrace_envelope
-    from core.backtrace.backtrace_gdb import live_backtrace
+    from core.backtrace.unwind_gdb import live_backtrace
     from core.commands import parse_backtrace_max_depth, render_backtrace_report
 
     json_mode = "--json" in argv
@@ -578,7 +578,7 @@ def _reset_command() -> None:
     """
     from core.adapter import active, is_initialized, reset
     from core.api import next_generation
-    from core.backtrace.backtrace_gdb import reset_boot_metadata_cache
+    from core.backtrace.unwind_gdb import reset_boot_metadata_cache
     from core.commands import clear as clear_watches
     from core.gdb_bridge import reset_loadable_ranges
     from core.layout import unregister_printers
@@ -634,7 +634,7 @@ def _register_session_events() -> None:
         try:
             from core.adapter import active
             from core.api import next_generation
-            from core.backtrace.backtrace_gdb import reset_boot_metadata_cache
+            from core.backtrace.unwind_gdb import reset_boot_metadata_cache
             from core.gdb_bridge import reset_loadable_ranges
 
             next_generation()

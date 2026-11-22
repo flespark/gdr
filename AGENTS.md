@@ -30,7 +30,7 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   stack_frame_parser.py validated task-frame profiles and bounded slot readers
   backtrace/           task/exception unwind subpackage
     unwind.py          pure bounded task unwind driver (seed, stack/PC validation, stop reasons)
-    backtrace_gdb.py   GDB live-register seed, ELF metadata cache, and standalone ``live_backtrace``
+    unwind_gdb.py      GDB live-register seed, ELF metadata cache, and standalone ``live_backtrace``
     unwind_leaf.py     bounded instruction proofs for stack-neutral scalar leaf returns
     unwind_cfi.py      bounded DWARF CFI tables and encoded-pointer decoding
     unwind_expr.py     bounded integer CFI expressions and guarded memory reads
@@ -48,8 +48,8 @@ rtthread/              RT-Thread 3.1.x/4.x adapter
   diagnostics.py       bounded raw-memory walks (IPC, heap) + `rtt check`
   commands.py          routing, completion, and structured help tree
   backtrace/           RT-Thread backtrace subpackage
-    backtrace.py       saved-context layouts and seed decoding (pure)
-    backtrace_gdb.py   GDB-facing thread backtrace orchestration
+    unwind.py          saved-context layouts and seed decoding (pure)
+    unwind_gdb.py      GDB-facing thread backtrace orchestration
     arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
     riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
     scheduler_seed.py         owner-consistent seeds from classified M-profile/RISC-V stages
@@ -65,8 +65,8 @@ freertos/              FreeRTOS adapter
   diagnostics.py       bounded consistency checks + `frt check`
   commands.py          routing, completion, and structured help tree
   backtrace/           FreeRTOS backtrace subpackage
-    backtrace.py       saved-context layouts and seed decoding (pure)
-    backtrace_gdb.py   GDB-facing task backtrace orchestration
+    unwind.py          saved-context layouts and seed decoding (pure)
+    unwind_gdb.py      GDB-facing task backtrace orchestration
     arm_scheduler_switch.py   compiled M-profile transition profiles and stage classification
     riscv_scheduler_switch.py compiled RISC-V scheduler/trap profiles and stage classification
     scheduler_seed.py         owner-consistent seeds from classified stages (basic/FPU geometry)

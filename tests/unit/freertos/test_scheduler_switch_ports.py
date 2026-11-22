@@ -10,13 +10,13 @@ from freertos.backtrace.arm_scheduler_switch import (
     build_profile,
     classify_stage,
 )
-from freertos.backtrace.backtrace import (
+from freertos.backtrace.scheduler_seed import build_stage_seed
+from freertos.backtrace.unwind import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV8M_MAINLINE_INTEGER,
 )
-from freertos.backtrace.scheduler_seed import build_stage_seed
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 # Compiled GCC port sequences captured from the FreeRTOS fixtures.

@@ -22,7 +22,7 @@ from core.stack_frame_parser import (
     StackContextSelection,
 )
 
-from .backtrace.backtrace import (
+from .backtrace.unwind import (
     ARMV6M_INTEGER,
     ARMV7A_LWP_INTEGER,
     ARMV7EM_FPU,

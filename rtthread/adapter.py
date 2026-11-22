@@ -1111,13 +1111,13 @@ class RtThreadAdapter(RtosAdapter):
 
     def _saved_pc_setup(self) -> tuple[SavedPcLayout, int] | None:
         """Return the image-proven saved-PC layout and switch address."""
-        from rtthread.backtrace.backtrace_gdb import saved_pc_setup
+        from rtthread.backtrace.unwind_gdb import saved_pc_setup
 
         return saved_pc_setup(self, gdb is not None)
 
     def reset(self) -> None:
         """Drop image-derived backtrace and last-PC decisions."""
-        from rtthread.backtrace.backtrace_gdb import reset_adapter
+        from rtthread.backtrace.unwind_gdb import reset_adapter
 
         reset_adapter(self)
 
@@ -1157,7 +1157,7 @@ class RtThreadAdapter(RtosAdapter):
         self, target: str | None = None, max_depth: int = 32
     ) -> BacktraceReport:
         """Unwind one RT-Thread thread or the current halted core context."""
-        from rtthread.backtrace.backtrace_gdb import (
+        from rtthread.backtrace.unwind_gdb import (
             backtrace as run_backtrace,
         )
 

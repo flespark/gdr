@@ -32,7 +32,11 @@ from core.stack_frame_parser import (
 )
 
 from .arm_scheduler_switch import SchedulerProfile, SchedulerStage, classify_stage
-from .backtrace import (
+from .riscv_scheduler_switch import (
+    RiscvSchedulerProfile,
+    RiscvSchedulerStage,
+)
+from .unwind import (
     ARMV7EM_EXC_RETURN_SLOT,
     ARMV8M_MAINLINE_BASIC_EXC_RETURN,
     ARMV8M_MAINLINE_EXTENDED_EXC_RETURN,
@@ -40,10 +44,6 @@ from .backtrace import (
     decode_armv7em_saved_context,
     decode_armv8m_mainline_saved_context,
     decode_saved_context,
-)
-from .riscv_scheduler_switch import (
-    RiscvSchedulerProfile,
-    RiscvSchedulerStage,
 )
 
 _XPSR_T_BIT = 1 << 24

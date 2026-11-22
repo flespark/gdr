@@ -261,7 +261,7 @@ def test_live_backtrace_handles_missing_symbol_file_and_caches_boot_elf(
     monkeypatch, tmp_path
 ):
     from core.adapter import BacktraceReport
-    from core.backtrace import backtrace_gdb as bt_gdb
+    from core.backtrace import unwind_gdb as bt_gdb
     from core.elf import EM_ARM, SHT_ATTRIBUTES
     from tests.unit.core.test_cpus import _attributes
     from tests.unit.core.test_unwind import _elf

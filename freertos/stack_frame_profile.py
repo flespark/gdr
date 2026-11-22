@@ -32,7 +32,7 @@ from core.stack_frame_parser import (
     StackContextSelection,
 )
 
-from .backtrace.backtrace import (
+from .backtrace.unwind import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,

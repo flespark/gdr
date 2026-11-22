@@ -12,7 +12,8 @@ from rtthread.backtrace.arm_scheduler_switch import (
     build_profile,
     classify_stage,
 )
-from rtthread.backtrace.backtrace import (
+from rtthread.backtrace.scheduler_seed import SchedulerSeed, build_stage_seed
+from rtthread.backtrace.unwind import (
     ARMV6M_INTEGER,
     ARMV7EM_FPU,
     ARMV7EM_INTEGER,
@@ -20,7 +21,6 @@ from rtthread.backtrace.backtrace import (
     ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
 )
-from rtthread.backtrace.scheduler_seed import SchedulerSeed, build_stage_seed
 from tests.support.loader import cached_elfs, fixture_cache_root
 from tests.unit.core.oracle_support import attributes_blob
 

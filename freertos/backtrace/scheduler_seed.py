@@ -36,8 +36,8 @@ from core.elf import RISCV_CONVENTION, ElfImage, Endian, Reader
 from core.stack_frame_parser import SavedStackContext, read_slot
 
 from .arm_scheduler_switch import SchedulerProfile, SchedulerStage
-from .backtrace import CM4F_EXC_RETURN_SLOT, decode_saved_context
 from .riscv_scheduler_switch import RiscvSchedulerProfile, RiscvSchedulerStage
+from .unwind import CM4F_EXC_RETURN_SLOT, decode_saved_context
 
 EXC_RETURN_THREAD_PROCESS = 0xFFFFFFFD
 XPSR_T_BIT = 1 << 24

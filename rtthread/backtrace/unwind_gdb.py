@@ -1,6 +1,6 @@
 """GDB-facing RT-Thread backtrace orchestration (no target writes).
 
-Pure saved-context and metadata parsing lives in :mod:`rtthread.backtrace.backtrace`
+Pure saved-context and metadata parsing lives in :mod:`rtthread.backtrace.unwind`
 and :mod:`core.backtrace.unwind`; this module resolves one thread, reads live or saved
 registers through GDB and converts the bounded result to the adapter model.
 """
@@ -15,13 +15,6 @@ from core.adapter import (
     build_backtrace_report,
     live_boot_backtrace_report,
 )
-from core.backtrace.backtrace_gdb import (
-    cached_unwind_metadata,
-)
-from core.backtrace.backtrace_gdb import (
-    live_seed as _core_live_seed,
-)
-from core.backtrace.backtrace_gdb import live_seed_detail as _core_live_seed_detail
 from core.backtrace.unwind import (
     ElfImage,
     SeedFrame,
@@ -45,6 +38,13 @@ from core.backtrace.unwind_arm import (
     arm_snapshot as _core_arm_snapshot,
 )
 from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_gdb import (
+    cached_unwind_metadata,
+)
+from core.backtrace.unwind_gdb import (
+    live_seed as _core_live_seed,
+)
+from core.backtrace.unwind_gdb import live_seed_detail as _core_live_seed_detail
 from core.backtrace.unwind_riscv import (
     RiscvSnapshot,
     prepare_riscv_handler_unwind,
@@ -82,14 +82,6 @@ from rtthread.backtrace.arm_scheduler_switch import (
 from rtthread.backtrace.arm_scheduler_switch import (
     classify_stage as classify_scheduler_stage,
 )
-from rtthread.backtrace.backtrace import (
-    _armv8m_psplim_valid,
-    decode_armv7em_saved_context,
-    decode_armv8m_mainline_saved_context,
-)
-from rtthread.backtrace.backtrace import (
-    decode_saved_context as decode_backtrace_context,
-)
 from rtthread.backtrace.riscv_scheduler_switch import (
     build_riscv_profile as build_riscv_scheduler_profile,
 )
@@ -100,6 +92,14 @@ from rtthread.backtrace.scheduler_seed import (
     SchedulerSeed,
     build_riscv_stage_seed,
     build_stage_seed,
+)
+from rtthread.backtrace.unwind import (
+    _armv8m_psplim_valid,
+    decode_armv7em_saved_context,
+    decode_armv8m_mainline_saved_context,
+)
+from rtthread.backtrace.unwind import (
+    decode_saved_context as decode_backtrace_context,
 )
 from rtthread.layout import RT_THREAD_STACK_FILL
 from rtthread.navigation import find_thread, get_current_thread, iter_threads

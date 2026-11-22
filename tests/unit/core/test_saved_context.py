@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 
 from core.stack_frame_parser import SavedStackContext
-from freertos.backtrace import backtrace as frt
-from rtthread.backtrace import backtrace as rtt
+from freertos.backtrace import unwind as frt
+from rtthread.backtrace import unwind as rtt
 
 
 def _profile(**changes):

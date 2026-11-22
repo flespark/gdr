@@ -690,7 +690,7 @@ def test_gdr_backtrace_command_supports_text_json_and_arg_guards(monkeypatch, ca
     monkeypatch.setattr("core.gdb_bridge.terminal_width", lambda: 120)
     monkeypatch.setattr("core.commands.warn", warnings.append)
     monkeypatch.setattr(
-        "core.backtrace.backtrace_gdb.live_backtrace",
+        "core.backtrace.unwind_gdb.live_backtrace",
         lambda max_depth=32: depths.append(max_depth) or report,
     )
 

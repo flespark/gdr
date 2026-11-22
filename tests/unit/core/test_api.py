@@ -458,7 +458,7 @@ def test_probe_and_current_backtrace_answer_before_init(monkeypatch):
     )
     recorded_depths: list[int] = []
     monkeypatch.setattr(
-        "core.backtrace.backtrace_gdb.live_backtrace",
+        "core.backtrace.unwind_gdb.live_backtrace",
         lambda max_depth=32: recorded_depths.append(max_depth) or report,
     )
     bt_env = api.api_call("backtrace", "--max-depth", "8")

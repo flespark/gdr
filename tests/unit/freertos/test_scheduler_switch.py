@@ -25,8 +25,8 @@ from freertos.backtrace.arm_scheduler_switch import (
     build_profile,
     classify_stage,
 )
-from freertos.backtrace.backtrace import ARMV7M_INTEGER
 from freertos.backtrace.scheduler_seed import build_stage_seed
+from freertos.backtrace.unwind import ARMV7M_INTEGER
 from tests.support.loader import cached_elfs, fixture_cache_root
 
 PENDSV = bytes.fromhex(
