@@ -156,7 +156,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | `<rtos> <object> <name-or-address>` | Show one object's details as a vertical `Key: Value` block |
 | `<rtos> backtrace [<task>] [--max-depth N]` | Unwind one task's (or the current PC's) saved or live stack through EHABI, DWARF CFI, instruction-proven leaf returns or a validated frame-pointer chain; prints frame PC, symbol/source, method, completeness and stop reason |
 | `<rtos> check [scope] [name]` | Run complete consistency checks (`rtt help check`) |
-| `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | Print watched kinds/objects on every stop, like `display` of gdb but never stops the target |
+| `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | Print watched kinds/objects on every stop |
 | `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG |
 
 ## Convenience functions
@@ -198,12 +198,6 @@ build settings:
   GDB `.elf`, retain unwind sections under `--gc-sections` (`KEEP(*(.eh_frame))` /
   `*(.ARM.exidx*)`), enable `configRECORD_STACK_HIGH_ADDRESS=1` (FreeRTOS), and
   export MSP/ISR stack bounds for cross-stack IRQ/trap unwinding.
-
-Cross-stack Arm M-profile IRQ unwinding resolves MSP bounds and Armv6-M vector
-capacity from linker symbols/sections; precise SCB faults end with
-`synchronous-fault` while imprecise ones report `fault-frame-imprecise`. See
-[docs/backtrace.md](docs/backtrace.md) for the full unwind pipeline, linker
-override symbols, and build details.
 
 ## Contribute
 

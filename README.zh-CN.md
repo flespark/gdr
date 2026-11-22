@@ -43,7 +43,7 @@ GDR 运行在 GDB Python 解释器中，提供三层调试支持，思路参考
    - 另见：[Installing GDB for ARM | Interrupt](https://interrupt.memfault.com/blog/installing-gdb#summary-of-strategies)
 
 2. **调试符号** — 确保被调试的 RTOS 镜像包含 DWARF / ELF 符号
-   （不要 strip 你用 GDB 附加的 `.elf`）。
+   （确保 GDB 加载了未 strip 的 `.elf` ）。
 
 ### 下载
 
@@ -152,7 +152,7 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | `<rtos> <object> <name-or-address>` | 以纵向 `Key: Value` 显示指定对象的详情 |
 | `<rtos> backtrace [<task>] [--max-depth N]` | 通过 EHABI、DWARF CFI、指令证明的叶子返回或验证过的帧指针链回溯指定任务或当前 PC 的栈；输出帧 PC、符号/源码、方法、完整性和停止原因 |
 | `<rtos> check [scope] [name]` | 显式运行完整一致性检查 |
-| `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | 每次停机打印被 watch 的对象，类似gdb的 `display` 但不会使目标停下 |
+| `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | 每次停机时打印被 watch 的对象 |
 | `<rtos> heap dump [path]` | 绘制堆占用位图，iTerm2 或 Kitty 中内联显示，否则写入 PNG |
 
 ## 便捷函数
@@ -181,7 +181,7 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
 ## 注意
 
 使用 GDR 时需显式指定 RTOS 与版本（**不自动检测**），内核特性在初始化时通过符号
-探测。GDR 依赖与源码一致的内存布局并通过未裁剪的 ELF 读取 DWARF 宏与栈回溯表；
+探测。GDR 依赖与源码一致的内存布局并通过未 strip 的 ELF 读取 DWARF 宏与栈回溯表；
 固件构建须满足以下配置：
 
 - **编译选项（必需）**：明确架构/ABI 参数（如 Arm `-mcpu`/`-mfloat-abi` 或
@@ -192,10 +192,6 @@ $3 = Thread(name="pm_task", sp=<pm_task_entry+0x12c>, entry=<pm_task_entry>, sta
   （在 `--gc-sections` 下通过 `KEEP(*(.eh_frame))` / `*(.ARM.exidx*)` 保留），
   FreeRTOS 启用 `configRECORD_STACK_HIGH_ADDRESS=1`，并导出 MSP/ISR 栈边界以
   支持跨栈 IRQ/Trap 回溯。
-
-Arm M-profile 跨栈 IRQ 回溯自动从链接符号或段解析中断栈与向量容量；精确 SCB Fault
-结束于 `synchronous-fault`，非精确 Fault 返回 `fault-frame-imprecise`。完整回溯
-流程、覆盖符号及构建细节见 [docs/backtrace.md](docs/backtrace.md)。
 
 ## 贡献
 
