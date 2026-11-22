@@ -30,76 +30,76 @@ from rtthread.navigation import find_thread
 # ---------------------------------------------------------------------------
 
 SEMAPHORE_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="object name"),
+    ColumnSpec("Name", elastic="left", doc="object name"),
     ColumnSpec("Value", kind="int", align="right"),
     ColumnSpec("Policy", kind="enum"),
-    ColumnSpec("Waiters", kind="waiters", elastic=True),
+    ColumnSpec("Waiters", kind="waiters", elastic="left"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 MUTEX_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="object name"),
+    ColumnSpec("Name", elastic="left", doc="object name"),
     ColumnSpec("Value", kind="int", align="right"),
     ColumnSpec("Hold", kind="int", align="right"),
     ColumnSpec("OrigPrio", kind="int", align="right"),
-    ColumnSpec("Owner", elastic=True),
+    ColumnSpec("Owner", elastic="left"),
     ColumnSpec("Policy", kind="enum"),
-    ColumnSpec("Waiters", kind="waiters", elastic=True),
+    ColumnSpec("Waiters", kind="waiters", elastic="left"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 EVENT_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="object name"),
+    ColumnSpec("Name", elastic="left", doc="object name"),
     ColumnSpec("Set", kind="hex", doc="current bit set"),
     ColumnSpec("Policy", kind="enum"),
-    ColumnSpec("Waiters", kind="waiters", elastic=True),
+    ColumnSpec("Waiters", kind="waiters", elastic="left"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 MAILBOX_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="object name"),
+    ColumnSpec("Name", elastic="left", doc="object name"),
     ColumnSpec("Entry", kind="int", align="right", doc="entry count"),
     ColumnSpec("Size", kind="int", align="right", doc="slot count"),
     ColumnSpec("Free", kind="int", align="right"),
     ColumnSpec("In", kind="int", align="right"),
     ColumnSpec("Out", kind="int", align="right"),
     ColumnSpec("Policy", kind="enum"),
-    ColumnSpec("RecvWait", kind="waiters", elastic=True),
-    ColumnSpec("SendWait", kind="waiters", elastic=True),
+    ColumnSpec("RecvWait", kind="waiters", elastic="left"),
+    ColumnSpec("SendWait", kind="waiters", elastic="left"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 MSGQUEUE_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="object name"),
+    ColumnSpec("Name", elastic="left", doc="object name"),
     ColumnSpec("Entry", kind="int", align="right", doc="entry count"),
     ColumnSpec("MsgSize", kind="int", align="right", doc="message bytes"),
     ColumnSpec("MaxMsgs", kind="int", align="right", doc="message slots"),
     ColumnSpec("Free", kind="int", align="right"),
     ColumnSpec("Policy", kind="enum"),
-    ColumnSpec("RecvWait", kind="waiters", elastic=True),
-    ColumnSpec("SendWait", kind="waiters", elastic=True),
+    ColumnSpec("RecvWait", kind="waiters", elastic="left"),
+    ColumnSpec("SendWait", kind="waiters", elastic="left"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 MEMPOOL_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="object name"),
+    ColumnSpec("Name", elastic="left", doc="object name"),
     ColumnSpec("BlockSize", kind="int", align="right", doc="block size in bytes"),
     ColumnSpec("Total", kind="int", align="right", doc="block count"),
     ColumnSpec("Free", kind="int", align="right"),
     ColumnSpec("Used", kind="int", align="right"),
-    ColumnSpec("Waiters", kind="waiters", elastic=True),
+    ColumnSpec("Waiters", kind="waiters", elastic="left"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 TIMER_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="timer name"),
+    ColumnSpec("Name", elastic="left", doc="timer name"),
     ColumnSpec("State"),
     ColumnSpec("Mode"),
     ColumnSpec("TimerType", doc="soft timer thread vs hard interrupt callback"),
     ColumnSpec("InitTick", kind="int", align="right"),
     ColumnSpec("TimeoutTick", kind="int", align="right"),
     ColumnSpec("ExpiresIn", kind="int", align="right"),
-    ColumnSpec("Callback", kind="symbol", elastic=True),
+    ColumnSpec("Callback", kind="symbol", elastic="left"),
     ColumnSpec("Src", doc="registry and/or active-list evidence"),
     ColumnSpec("Addr", kind="addr"),
 )
@@ -132,7 +132,9 @@ def task_specs(smp: bool) -> tuple[ColumnSpec, ...]:
     block address and the row identity; it has no property meaning to a reader.
     """
     specs = [
-        ColumnSpec("Name", elastic=True, doc="thread name; '*' marks the running one"),
+        ColumnSpec(
+            "Name", elastic="left", doc="thread name; '*' marks the running one"
+        ),
         ColumnSpec("State"),
         ColumnSpec("Prio", kind="int", align="right"),
         ColumnSpec("BasePrio", kind="int", align="right"),
@@ -147,7 +149,7 @@ def task_specs(smp: bool) -> tuple[ColumnSpec, ...]:
         ColumnSpec(
             "HighWater", kind="int", align="right", doc="peak stack bytes in use"
         ),
-        ColumnSpec("Entry", kind="symbol", elastic=True),
+        ColumnSpec("Entry", kind="symbol", elastic="left"),
     ]
     if smp:
         specs += [

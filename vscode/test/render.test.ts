@@ -35,13 +35,13 @@ function panelSnapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
 			messages: ['high-water gated by config'],
 			elastic: ['Name'],
 			columns: [
-				{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: 'task name', group: 'basic' },
-				{ key: 'State', kind: 'text', align: 'left', elastic: false, doc: '', group: 'basic' },
-				{ key: 'Prio', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-				{ key: 'Stack', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-				{ key: 'Used', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-				{ key: 'Waiters', kind: 'waiters', align: 'left', elastic: true, doc: '', group: 'basic' },
-				{ key: 'Addr', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
+				{ key: 'Name', kind: 'text', align: 'left', elastic: 'left', doc: 'task name', group: 'basic' },
+				{ key: 'State', kind: 'text', align: 'left', elastic: 'full', doc: '', group: 'basic' },
+				{ key: 'Prio', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' },
+				{ key: 'Stack', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' },
+				{ key: 'Used', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' },
+				{ key: 'Waiters', kind: 'waiters', align: 'left', elastic: 'left', doc: '', group: 'basic' },
+				{ key: 'Addr', kind: 'addr', align: 'left', elastic: 'full', doc: '', group: 'basic' }
 			],
 			value_rows: [
 				['main *', 'running', 10, 2048, 512, ['alpha', 'beta', 'gamma'], 0x20001234],
@@ -57,10 +57,10 @@ function panelSnapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
 				elastic: ['Name'],
 				kind: 'semaphore',
 				columns: [
-					{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: '', group: 'basic' },
-					{ key: 'Address', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' },
-					{ key: 'Value', kind: 'text', align: 'left', elastic: false, doc: '', group: 'basic' },
-					{ key: 'OffsetCheck', kind: 'text', align: 'left', elastic: false, doc: '', group: 'diag' }
+					{ key: 'Name', kind: 'text', align: 'left', elastic: 'left', doc: '', group: 'basic' },
+					{ key: 'Address', kind: 'addr', align: 'left', elastic: 'full', doc: '', group: 'basic' },
+					{ key: 'Value', kind: 'text', align: 'left', elastic: 'full', doc: '', group: 'basic' },
+					{ key: 'OffsetCheck', kind: 'text', align: 'left', elastic: 'full', doc: '', group: 'diag' }
 				],
 				ids: ['0x2000']
 			}
@@ -309,10 +309,10 @@ test('the high-water column shares the stack bar', () => {
 			messages: [],
 			elastic: ['Name'],
 			columns: [
-				{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: '', group: 'basic' },
-				{ key: 'Stack', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-				{ key: 'Used', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-				{ key: 'HighWater', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' }
+				{ key: 'Name', kind: 'text', align: 'left', elastic: 'left', doc: '', group: 'basic' },
+				{ key: 'Stack', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' },
+				{ key: 'Used', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' },
+				{ key: 'HighWater', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' }
 			],
 			value_rows: [['worker', 4096, 1024, 3072]]
 		})

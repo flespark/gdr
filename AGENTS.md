@@ -16,6 +16,7 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   gdb_bridge.py        GDB API wrappers, ELF/DWARF macro walk, error/output guards
   constants.py         shared traversal, string/table defaults, envelope schema
   formatting.py        pure value/table formatting + derived diagnostics helpers
+  source_paths.py      ELF/DWARF prefix-map detection, SDK root inference, and path shortening
   version.py           version parsing/decoding + probe registry and verdicts
   layout.py            generic StructLayout + accessors + pretty-printer registration
   help.py              structured help schema + terminal/Markdown renderers

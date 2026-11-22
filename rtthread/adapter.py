@@ -669,7 +669,7 @@ class RtThreadAdapter(RtosAdapter):
         specs = (
             ColumnSpec("Kind", doc="semantic object kind"),
             ColumnSpec("Count", kind="int", align="right"),
-            ColumnSpec("Sources", elastic=True, doc="provenance channel"),
+            ColumnSpec("Sources", elastic="left", doc="provenance channel"),
         )
         rows: list[list[Cell]] = []
         for type_code, info in self.layout.object_types.items():

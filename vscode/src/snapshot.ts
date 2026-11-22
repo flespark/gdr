@@ -18,11 +18,14 @@ import type { GdrEnvelope } from './transport.ts';
 /** How a column is grouped in the panel's child checkboxes. */
 export type ColumnGroup = 'basic' | 'diag';
 
+/** Compression mode on narrow terminals (`full` = never shrink). */
+export type ElasticMode = 'full' | 'left' | 'right';
+
 export interface ColumnSpec {
 	key: string;
 	kind: string;
 	align: 'left' | 'right';
-	elastic: boolean;
+	elastic: ElasticMode;
 	doc: string;
 	group: ColumnGroup;
 }
@@ -228,7 +231,12 @@ function parseColumnSpecs(value: unknown): ColumnSpec[] | undefined {
 			key: item.key,
 			kind: typeof item.kind === 'string' ? item.kind : 'text',
 			align: item.align === 'right' ? 'right' : 'left',
-			elastic: item.elastic === true,
+			elastic:
+				item.elastic === 'left' || item.elastic === true
+					? 'left'
+					: item.elastic === 'right'
+						? 'right'
+						: 'full',
 			doc: typeof item.doc === 'string' ? item.doc : '',
 			group: item.group === 'diag' ? 'diag' : 'basic'
 		});

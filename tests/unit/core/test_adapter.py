@@ -92,20 +92,21 @@ def test_from_cells_splits_text_and_values_and_omits_untyped_rows():
 def test_from_specs_derives_headers_and_elastic_priority():
     """The spec list is the single source for headers and shrink flags."""
     specs = (
-        ColumnSpec("Name", elastic=True),
+        ColumnSpec("Name", elastic="left"),
         ColumnSpec("Count", kind="int", align="right"),
-        ColumnSpec("Addr", kind="addr", elastic=True),
+        ColumnSpec("Source", kind="file", elastic="right"),
     )
     table = ObjectTable.from_specs(
         specs,
-        [[text_cell("w"), number_cell(1), address_cell(0x10)]],
-        elastic=("Addr", "Name"),
-        id_key="Addr",
+        [[text_cell("w"), number_cell(1), text_cell("src/main.c:10")]],
+        elastic=("Source", "Name"),
+        id_key="Name",
     )
 
-    assert table.headers == ["Name", "Count", "Addr"]
-    assert table.elastic == ("Addr", "Name")
-    assert table.value_rows == [[None, 1, 0x10]]
+    assert table.headers == ["Name", "Count", "Source"]
+    assert table.elastic == ("Source", "Name")
+    assert table.elastic_modes() == {"Name": "left", "Source": "right"}
+    assert table.value_rows == [[None, 1, None]]
 
 
 def test_table_assembly_rejects_drift_between_text_and_values():

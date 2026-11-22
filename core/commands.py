@@ -14,6 +14,7 @@ except ImportError:
 from core import heapmap
 from core.adapter import (
     BacktraceReport,
+    ColumnSpec,
     HeapReport,
     ObjectDetail,
     ObjectTable,
@@ -21,6 +22,8 @@ from core.adapter import (
 )
 from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
+    display_path,
+    format_source_loc,
     gdb_command_guard,
     gdb_function_guard,
     info,
@@ -33,6 +36,37 @@ from core.gdb_bridge import (
     write_stdout,
 )
 
+BACKTRACE_COLUMN_SPECS: tuple[ColumnSpec, ...] = (
+    ColumnSpec("#", align="right"),
+    ColumnSpec("PC", kind="addr"),
+    ColumnSpec("Function", kind="symbol"),
+    ColumnSpec("Source", kind="file", elastic="right"),
+    ColumnSpec("Method"),
+)
+
+
+def _render_object_table(table: ObjectTable) -> None:
+    """Render one :class:`ObjectTable`, shortening file-path columns."""
+    for message in table.messages:
+        info(message)
+    rows = table.rows
+    file_indexes = [
+        index for index, spec in enumerate(table.column_specs) if spec.kind == "file"
+    ]
+    if file_indexes:
+        rows = [
+            [
+                display_path(cell) if index in file_indexes and cell else cell
+                for index, cell in enumerate(row)
+            ]
+            for row in rows
+        ]
+    modes = table.elastic_modes()
+    if any(mode != "left" for mode in modes.values()):
+        print_table(rows, table.headers, elastic=table.elastic, elastic_modes=modes)
+    else:
+        print_table(rows, table.headers, elastic=table.elastic)
+
 
 @gdb_command_guard
 def render_tasks() -> None:
@@ -41,10 +75,7 @@ def render_tasks() -> None:
     if adapter is None:
         warn("run `gdr init <rtos> <version>` first")
         return
-    table = collect_task_table(adapter)
-    for message in table.messages:
-        info(message)
-    print_table(table.rows, table.headers, elastic=table.elastic)
+    _render_object_table(collect_task_table(adapter))
 
 
 def render_backtrace_report(report: BacktraceReport) -> None:
@@ -52,24 +83,18 @@ def render_backtrace_report(report: BacktraceReport) -> None:
     if is_debug():
         for message in report.messages:
             info(message)
-    headers = ["#", "PC", "Function", "Source", "Method"]
-    rows: list[list[str]] = []
-    for frame in report.frames:
-        source = (
-            f"{frame.source.name}:{frame.source.line}"
-            if frame.source is not None
-            else ""
-        )
-        rows.append(
-            [
-                str(frame.index),
-                hex(frame.pc),
-                frame.symbol or hex(frame.pc),
-                source,
-                frame.method,
-            ]
-        )
-    print_table(rows, headers, elastic=("Function", "Source"))
+    headers = [spec.key for spec in BACKTRACE_COLUMN_SPECS]
+    rows = [
+        [
+            str(frame.index),
+            hex(frame.pc),
+            frame.symbol or hex(frame.pc),
+            format_source_loc(frame.source),
+            frame.method,
+        ]
+        for frame in report.frames
+    ]
+    print_table(rows, headers, elastic={"Source": "right"})
     state = "complete" if report.complete else "partial"
     print(
         f"{report.task}: {report.architecture}, "
@@ -208,9 +233,7 @@ def render_objects(kind: str = "") -> None:
         # per-object source channels); otherwise fall back to the plain
         # Kind/Count table so every RTOS shares one renderer.
         table = collect_object_overview(adapter)
-    for message in table.messages:
-        info(message)
-    print_table(table.rows, table.headers, elastic=table.elastic)
+    _render_object_table(table)
 
 
 @dataclass(frozen=True)
@@ -376,11 +399,7 @@ def render_heap() -> None:
     for message in report.messages:
         info(message)
     if report.table is not None:
-        for message in report.table.messages:
-            info(message)
-        print_table(
-            report.table.rows, report.table.headers, elastic=report.table.elastic
-        )
+        _render_object_table(report.table)
 
 
 def collect_task_table(adapter) -> ObjectTable:
@@ -652,9 +671,7 @@ def _render_entry(adapter, entry: Watch) -> None:
             info(f"[gdr watch: {entry.label}] skipped: kind not enumerable now")
             return
         info(f"[gdr watch: {entry.label}]")
-        for message in table.messages:
-            info(message)
-        print_table(table.rows, table.headers, elastic=table.elastic)
+        _render_object_table(table)
         return
     detail = collect_object_detail(adapter, entry.kind, entry.target)
     if detail is None:

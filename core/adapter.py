@@ -10,6 +10,7 @@ from typing import Literal, Protocol
 from .backtrace.unwind_segments import SegmentTransition, StackSegment
 from .elf import Arch
 from .formatting import (
+    ElasticMode,
     SourceLoc,
     format_address,
     format_optional_int,
@@ -253,9 +254,12 @@ class ColumnSpec:
     Attributes:
         key: Column header (matches ``ObjectTable.headers``).
         kind: Value semantics: ``text``/``int``/``hex``/``addr``/
-            ``percent``/``waiters``/``symbol``/``pc``/``enum``/``addresses``.
+            ``percent``/``waiters``/``symbol``/``pc``/``enum``/``addresses``/
+            ``file``.
         align: ``left`` or ``right`` for the plugin grid.
-        elastic: Whether the plugin may shrink this column on narrow widths.
+        elastic: Compression mode on narrow terminals: ``full`` keeps full
+            length, ``left`` truncates on the right, ``right`` truncates on
+            the left (recommended for file paths).
         doc: One-line column meaning (tooltip source).
         group: ``basic`` for an identity/state property, ``diag`` for a
             consistency verdict column (the panel's child checkboxes group on it).
@@ -264,7 +268,7 @@ class ColumnSpec:
     key: str
     kind: str = "text"
     align: str = "left"
-    elastic: bool = False
+    elastic: ElasticMode = "full"
     doc: str = ""
     group: str = "basic"
 
@@ -408,11 +412,19 @@ class ObjectTable:
             elastic=(
                 tuple(elastic)
                 if elastic is not None
-                else tuple(spec.key for spec in specs if spec.elastic)
+                else tuple(spec.key for spec in specs if spec.elastic != "full")
             ),
             column_specs=tuple(specs),
             id_key=id_key,
         )
+
+    def elastic_modes(self) -> dict[str, ElasticMode]:
+        """Return per-column compression modes declared in ``column_specs``."""
+        return {
+            spec.key: spec.elastic
+            for spec in self.column_specs
+            if spec.elastic != "full"
+        }
 
     @classmethod
     def from_cells(
@@ -438,7 +450,7 @@ class ObjectTable:
                 f"headers ({len(headers)})"
             )
         if column_specs and elastic:
-            flagged = {spec.key for spec in column_specs if spec.elastic}
+            flagged = {spec.key for spec in column_specs if spec.elastic != "full"}
             unflagged = [key for key in elastic if key not in flagged]
             if unflagged:
                 raise RuntimeError(
@@ -648,7 +660,13 @@ def merged_detail_table(
             else "text",
             align=declared[stem].align if stem in declared else "left",
             doc=declared[stem].doc if stem in declared else "",
-            elastic=stem == "Name",
+            elastic=(
+                "left"
+                if stem == "Name"
+                else "right"
+                if stem in declared and declared[stem].kind == "file"
+                else "full"
+            ),
             group="diag" if severities[stem] != "info" else "basic",
         )
         for stem in order

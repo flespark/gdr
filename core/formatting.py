@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from io import StringIO
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from .constants import (
     GDR_DEFAULT_TERMINAL_WIDTH,
@@ -12,6 +12,8 @@ from .constants import (
     GDR_TABLE_COLUMN_GAP,
     GDR_TABLE_TRUNCATION_SUFFIX,
 )
+
+ElasticMode = Literal["full", "left", "right"]
 
 
 class SourceLoc(NamedTuple):
@@ -117,19 +119,21 @@ def _shrink_to_fit(
     return widths
 
 
-def _truncate_cell(text: str, width: int) -> str:
-    if len(text) <= width:
+def _truncate_cell(text: str, width: int, mode: ElasticMode = "left") -> str:
+    if len(text) <= width or mode == "full":
         return text
-    return (
-        text[: width - len(GDR_TABLE_TRUNCATION_SUFFIX)] + GDR_TABLE_TRUNCATION_SUFFIX
-    )
+    suffix = GDR_TABLE_TRUNCATION_SUFFIX
+    keep = max(0, width - len(suffix))
+    if mode == "right":
+        return suffix + text[len(text) - keep :]
+    return text[:keep] + suffix
 
 
 def _render_table(
     rows: Sequence[Sequence[str]],
     headers: Sequence[str],
     widths: Sequence[int],
-    elastic_indexes: set[int],
+    elastic_modes: Mapping[int, ElasticMode],
 ) -> str:
     output = StringIO()
     row_format = "  ".join(f"{{:<{width}}}" for width in widths)
@@ -138,33 +142,60 @@ def _render_table(
     for row in rows:
         cells = [str(cell) for cell in row]
         cells += [""] * (len(headers) - len(cells))
-        for index in elastic_indexes:
-            cells[index] = _truncate_cell(cells[index], widths[index])
+        for index, mode in elastic_modes.items():
+            cells[index] = _truncate_cell(cells[index], widths[index], mode)
         output.write(f"{row_format.format(*cells)}\n")
     return output.getvalue()
+
+
+def _resolve_elastic(
+    headers: Sequence[str],
+    elastic: Sequence[str] | Mapping[str, ElasticMode],
+    elastic_modes: Mapping[str, ElasticMode] | None,
+) -> tuple[tuple[str, ...], dict[int, ElasticMode]]:
+    if isinstance(elastic, Mapping):
+        mode_map: dict[str, ElasticMode] = {
+            key: val for key, val in elastic.items() if val != "full"
+        }
+    else:
+        mode_map = {}
+        for key in elastic:
+            selected: ElasticMode = (
+                elastic_modes.get(key, "left") if elastic_modes else "left"
+            )
+            if selected != "full":
+                mode_map[key] = selected
+    order = tuple(mode_map)
+    if elastic_modes:
+        for key, mode in elastic_modes.items():
+            if mode != "full" and key in mode_map:
+                mode_map[key] = mode
+    index_modes: dict[int, ElasticMode] = {
+        index: mode_map[header]
+        for index, header in enumerate(headers)
+        if header in mode_map
+    }
+    return order, index_modes
 
 
 def format_table(
     rows: Sequence[Sequence[str]],
     headers: Sequence[str],
     *,
-    elastic: Sequence[str] = (),
+    elastic: Sequence[str] | Mapping[str, ElasticMode] = (),
+    elastic_modes: Mapping[str, ElasticMode] | None = None,
     width: int = GDR_DEFAULT_TERMINAL_WIDTH,
 ) -> str:
     """Format rows as a fixed-column ASCII table within a target width."""
     if not rows:
         return "(empty)\n"
     widths = _natural_widths(rows, headers)
-    if _total_width(widths) > width and elastic:
-        fitted = _shrink_to_fit(widths, headers, elastic, width)
+    order, index_modes = _resolve_elastic(headers, elastic, elastic_modes)
+    if _total_width(widths) > width and order:
+        fitted = _shrink_to_fit(widths, headers, order, width)
         if fitted is not None:
             widths = fitted
-    return _render_table(
-        rows,
-        headers,
-        widths,
-        set(_elastic_indexes(headers, elastic)),
-    )
+    return _render_table(rows, headers, widths, index_modes)
 
 
 # ---------------------------------------------------------------------------

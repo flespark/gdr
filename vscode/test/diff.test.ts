@@ -17,10 +17,10 @@ function tasks(rows: string[][], ids: string[]): ObjectTableData {
 		messages: [],
 		elastic: ['Name'],
 		columns: [
-			{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: '', group: 'basic' },
-			{ key: 'State', kind: 'text', align: 'left', elastic: false, doc: '', group: 'basic' },
-			{ key: 'Prio', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-			{ key: 'Addr', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
+			{ key: 'Name', kind: 'text', align: 'left', elastic: 'left', doc: '', group: 'basic' },
+			{ key: 'State', kind: 'text', align: 'left', elastic: 'full', doc: '', group: 'basic' },
+			{ key: 'Prio', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' },
+			{ key: 'Addr', kind: 'addr', align: 'left', elastic: 'full', doc: '', group: 'basic' }
 		],
 		ids
 	};

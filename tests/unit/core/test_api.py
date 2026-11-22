@@ -694,7 +694,7 @@ def test_object_table_serializes_column_specs_and_value_rows():
             "key": "Addr",
             "kind": "addr",
             "align": "right",
-            "elastic": False,
+            "elastic": "full",
             "doc": "",
             "group": "basic",
         }

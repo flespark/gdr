@@ -307,6 +307,81 @@ def test_system_columns_returns_none_when_terminal_probe_fails():
         assert bridge._system_columns() is None
 
 
+def test_configure_non_tty_width_clears_pipe_fallback(monkeypatch):
+    """Non-TTY MI sessions clear GDB's 80-column pipe fallback."""
+    executed: list[str] = []
+    monkeypatch.setattr(bridge, "gdb", _WidthGdb(80))
+    monkeypatch.setattr(bridge, "_has_tty", lambda: False)
+    monkeypatch.setattr(bridge, "_gdb_execute", executed.append)
+    monkeypatch.setenv("COLUMNS", "80")
+
+    bridge.configure_non_tty_width()
+
+    assert executed == ["set width 0"]
+    assert "COLUMNS" not in bridge.os.environ
+    assert bridge._gdb_width() is None
+
+    monkeypatch.setenv("COLUMNS", "160")
+    monkeypatch.setattr(bridge, "gdb", _WidthGdb(100))
+    assert bridge._gdb_width() == 100
+
+    executed.clear()
+    monkeypatch.setattr(bridge, "gdb", _WidthGdb(80))
+    monkeypatch.setattr(bridge, "_has_tty", lambda: True)
+    bridge.configure_non_tty_width()
+    assert executed == []
+    assert bridge._gdb_width() == 80
+    assert bridge.os.environ.get("COLUMNS") == "160"
+
+
+def test_source_roots_extract_launch_json_cwd_and_gdb_cwd(monkeypatch, tmp_path):
+    """Relative path resolution prefers ELF-matched ``launch.json`` cwd, then GDB cwd."""
+    ws = tmp_path / "FreeRTOS-Kernel"
+    elf = ws / "build" / "an505" / "app.elf"
+    sub_cwd = ws / "app"
+    src_in_ws = ws / "portable" / "port.c"
+    src_in_cwd = sub_cwd / "main.c"
+    for folder in (ws / ".vscode", elf.parent, sub_cwd, src_in_ws.parent):
+        folder.mkdir(parents=True, exist_ok=True)
+    elf.write_bytes(b"")
+    src_in_ws.write_text("", encoding="utf-8")
+    src_in_cwd.write_text("", encoding="utf-8")
+    (ws / ".vscode" / "launch.json").write_text(
+        """
+        {
+          // JSONC comment should be tolerated
+          "version": "0.2.0",
+          "configurations": [
+            {
+              "name": "other",
+              "executable": "${workspaceFolder}/other.elf",
+              "cwd": "${workspaceFolder}/other_dir",
+            },
+            {
+              "name": "an505",
+              "executable": "${workspaceFolder}/build/an505/app.elf",
+              "cwd": "${workspaceFolder}/app", /* trailing comma below */
+            },
+          ],
+        }
+        """,
+        encoding="utf-8",
+    )
+    other_dir = tmp_path / "unrelated"
+    other_dir.mkdir()
+    monkeypatch.setattr(bridge, "loaded_object_path", lambda: str(elf))
+    monkeypatch.setattr(bridge, "_current_cwd", lambda: str(other_dir))
+    monkeypatch.setattr(bridge, "_STARTUP_CWD", str(other_dir))
+    bridge._source_roots_cache.clear()
+
+    assert bridge.display_path(str(src_in_cwd)) == "main.c"
+    assert bridge.display_path(str(src_in_ws)) == "portable/port.c"
+    assert (
+        bridge.format_source_loc(bridge.SourceLoc(str(src_in_ws), 42, str(src_in_ws)))
+        == "portable/port.c:42"
+    )
+
+
 def test_print_table_honors_explicit_width_with_elastic_columns(monkeypatch):
     """Elastic columns shrink and truncate when the natural width exceeds."""
     fake_gdb = _TableGdb()

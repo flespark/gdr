@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import json
+import os
 import platform
 import re
 import shutil
 import struct
 import sys
 import traceback as _traceback
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
@@ -36,7 +38,22 @@ from core.constants import (
     GDR_PROPAGATE_EXCEPTION,
 )
 from core.elf import iter_elf_section_headers
-from core.formatting import SourceLoc, format_table
+from core.formatting import ElasticMode, SourceLoc, format_table
+from core.source_paths import (
+    ElfSourceInfo,
+    SourcePathResolver,
+    collect_local_source_files,
+    infer_elf_prefix_mappings,
+    inspect_elf_sources,
+    is_abs_path,
+    normalize_path,
+    relative_under_root,
+)
+
+try:
+    _STARTUP_CWD = os.getcwd()
+except OSError:
+    _STARTUP_CWD = ""
 
 
 @dataclass(frozen=True)
@@ -425,9 +442,15 @@ def loaded_object_path() -> str | None:
     """Path of the loaded object file, or ``None`` when GDB has none."""
     if gdb is None:
         return None
+    gdb_error = getattr(gdb, "error", None)
+    caught: tuple[type[BaseException], ...] = (
+        (gdb_error, AttributeError, RuntimeError)
+        if isinstance(gdb_error, type) and issubclass(gdb_error, BaseException)
+        else (AttributeError, RuntimeError)
+    )
     try:
         filename = getattr(gdb.current_progspace(), "filename", None)
-    except (gdb.error, AttributeError, RuntimeError):
+    except caught:
         return None
     return filename if isinstance(filename, str) and filename else None
 
@@ -689,6 +712,12 @@ def loadable_ranges() -> tuple[tuple[int, int], ...]:
     return _loadable_ranges_cache
 
 
+_source_roots_cache: dict[tuple[str | None, str], tuple[str, ...]] = {}
+_source_resolver_cache: dict[
+    tuple[str | None, str, tuple[str, ...]], SourcePathResolver
+] = {}
+
+
 def reset_loadable_ranges() -> None:
     """Clear the cached loadable-section map (reconnect / new image)."""
     global _loadable_ranges_cache
@@ -696,6 +725,8 @@ def reset_loadable_ranges() -> None:
     # NOTE: a new image means new macro definitions; the table is keyed by the
     # objfile path, which a reflash may reuse.
     _elf_macro_cache.clear()
+    _source_roots_cache.clear()
+    _source_resolver_cache.clear()
 
 
 def array_item(value, index):
@@ -823,12 +854,33 @@ def make_pointer_array(values: list[gdb.Value]) -> gdb.Value:
     return gdb.Value(buf, elem_type.array(len(pointers) - 1))  # type: ignore[arg-type]
 
 
+def _has_tty() -> bool:
+    """Return whether standard output is attached to a controlling TTY."""
+    with contextlib.suppress(OSError):
+        return os.isatty(1)
+    return False
+
+
+def configure_non_tty_width() -> None:
+    """Clear GDB's 80-column non-TTY fallback on MI/pipe sessions."""
+    if gdb is None or _has_tty():
+        return
+    if os.environ.get("COLUMNS") == "80":
+        os.environ.pop("COLUMNS", None)
+    with contextlib.suppress(Exception):
+        if gdb.parameter("width") == 80:
+            _gdb_execute("set width 0")
+
+
 def _gdb_width() -> int | None:
     """Return GDB's ``width`` parameter when it is a positive int.
 
     ``gdb.parameter("width")`` reports ``0`` for ``unlimited``; ``None`` or a
     non-positive value means "no explicit width", so callers fall through to
-    terminal probing.
+    terminal probing.  On non-TTY pipes (such as VSCode MI sessions), GDB
+    pins ``width`` to ``80`` even after ``set width 0``; ignore that pipe
+    default so :func:`terminal_width` uses ``COLUMNS`` or the 120-column
+    default instead.
     """
     if gdb is None:
         return None
@@ -836,7 +888,11 @@ def _gdb_width() -> int | None:
         value = gdb.parameter("width")
     except Exception:
         return None
-    return value if isinstance(value, int) and value > 0 else None
+    if not isinstance(value, int) or value <= 0:
+        return None
+    if value == 80 and not _has_tty():
+        return None
+    return value
 
 
 def _system_columns() -> int | None:
@@ -866,11 +922,217 @@ def terminal_width() -> int:
     return _system_columns() or GDR_DEFAULT_TERMINAL_WIDTH
 
 
+def _strip_jsonc(text: str) -> str:
+    """Strip ``//`` comments, ``/* */`` comments and trailing commas from JSONC."""
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    in_string = False
+    while index < length:
+        ch = text[index]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if ch == '"':
+                in_string = False
+            index += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            index += 1
+        elif ch == "/" and index + 1 < length and text[index + 1] == "/":
+            index += 2
+            while index < length and text[index] not in "\r\n":
+                index += 1
+        elif ch == "/" and index + 1 < length and text[index + 1] == "*":
+            index += 2
+            while index + 1 < length and text[index : index + 2] != "*/":
+                index += 1
+            index += 2
+        else:
+            out.append(ch)
+            index += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def _resolve_workspace_expr(value: object, workspace: Path) -> str | None:
+    """Expand ``${workspaceFolder}`` in a launch attribute when fully concrete."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    expanded = value.replace("${workspaceFolder}", str(workspace)).replace(
+        "${workspaceRoot}", str(workspace)
+    )
+    if "${" in expanded:
+        return None
+    return os.path.normpath(expanded)
+
+
+def _launch_json_roots(
+    start_dirs: Sequence[Path], *, elf_path: str | None
+) -> tuple[str, ...]:
+    """Extract resolved ``cwd`` and workspace roots from ancestor ``launch.json``."""
+    elf_real = os.path.realpath(elf_path) if elf_path else None
+    seen_files: set[Path] = set()
+    matched: list[str] = []
+    fallback: list[str] = []
+    workspaces: list[str] = []
+    for base in start_dirs:
+        for candidate in (base, *base.parents):
+            launch = candidate / ".vscode" / "launch.json"
+            if not launch.is_file():
+                continue
+            resolved = launch.resolve()
+            if resolved in seen_files:
+                continue
+            seen_files.add(resolved)
+            workspaces.append(str(candidate))
+            try:
+                raw = json.loads(_strip_jsonc(launch.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                continue
+            configs = raw.get("configurations") if isinstance(raw, dict) else None
+            if not isinstance(configs, list):
+                continue
+            for cfg in configs:
+                if not isinstance(cfg, dict):
+                    continue
+                cwd = _resolve_workspace_expr(cfg.get("cwd"), candidate)
+                if cwd is None:
+                    continue
+                exe = _resolve_workspace_expr(
+                    cfg.get("executable") or cfg.get("program"), candidate
+                )
+                is_match = (
+                    elf_real is not None
+                    and exe is not None
+                    and os.path.realpath(exe) == elf_real
+                )
+                (matched if is_match else fallback).append(cwd)
+    ordered = [*matched, *fallback, *workspaces]
+    return tuple(dict.fromkeys(ordered))
+
+
+def _current_cwd() -> str:
+    try:
+        return os.getcwd()
+    except OSError:
+        return _STARTUP_CWD
+
+
+def source_roots() -> tuple[str, ...]:
+    """Ordered workspace/cwd roots used to turn DWARF paths into relative paths."""
+    elf_path = loaded_object_path()
+    cwd = _current_cwd()
+    key = (elf_path, cwd)
+    cached = _source_roots_cache.get(key)
+    if cached is not None:
+        return cached
+    starts: list[Path] = []
+    if elf_path:
+        starts.append(Path(os.path.abspath(elf_path)).parent)
+    if cwd:
+        starts.append(Path(cwd))
+    if _STARTUP_CWD and cwd != _STARTUP_CWD:
+        starts.append(Path(_STARTUP_CWD))
+    roots: list[str] = list(_launch_json_roots(starts, elf_path=elf_path))
+    roots.extend(dir_path for dir_path in (cwd, _STARTUP_CWD) if dir_path)
+    deduped: list[str] = []
+    seen_real: set[str] = set()
+    for root in roots:
+        real = os.path.realpath(root)
+        if real not in seen_real:
+            seen_real.add(real)
+            deduped.append(os.path.normpath(root))
+    result = tuple(deduped)
+    _source_roots_cache[key] = result
+    return result
+
+
+def _build_search_dirs(
+    roots: tuple[str, ...], elf_path: str | None, cwd: str
+) -> tuple[str, ...]:
+    """Collect candidate local base directories for expanding ``../`` paths."""
+    dirs: list[str] = []
+    if elf_path:
+        dirs.append(str(Path(os.path.abspath(elf_path)).parent))
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        dirs.append(root)
+        try:
+            with os.scandir(root) as entries:
+                subdirs = sorted(
+                    entry.path
+                    for entry in entries
+                    if entry.is_dir(follow_symlinks=False)
+                    and not entry.name.startswith(".")
+                )
+        except OSError:
+            subdirs = []
+        dirs.extend(subdirs[:32])
+    if cwd:
+        dirs.append(cwd)
+    if _STARTUP_CWD and cwd != _STARTUP_CWD:
+        dirs.append(_STARTUP_CWD)
+    return tuple(dict.fromkeys(dirs))
+
+
+def source_path_resolver() -> SourcePathResolver:
+    """Return a cached :class:`SourcePathResolver` for the active ELF and workspace."""
+    elf_path = loaded_object_path()
+    cwd = _current_cwd()
+    roots = source_roots()
+    key = (elf_path, cwd, roots)
+    cached = _source_resolver_cache.get(key)
+    if cached is not None:
+        return cached
+    elf_info = inspect_elf_sources(elf_path) if elf_path else ElfSourceInfo()
+    mappings: tuple[tuple[str, str], ...] = ()
+    if not elf_info.file_prefix_map and elf_info.paths:
+        unmatched = [
+            path
+            for path in elf_info.paths
+            if is_abs_path(normalize_path(path))
+            and not any(relative_under_root(path, root) is not None for root in roots)
+        ]
+        if unmatched:
+            basenames = frozenset(
+                Path(path.replace("\\", "/")).name for path in unmatched if path
+            )
+            local_files = collect_local_source_files(roots, target_basenames=basenames)
+            mappings = infer_elf_prefix_mappings(unmatched, local_files, roots)
+    resolver = SourcePathResolver(
+        roots,
+        mappings,
+        search_dirs=_build_search_dirs(roots, elf_path, cwd),
+        file_prefix_map=elf_info.file_prefix_map,
+    )
+    _source_resolver_cache[key] = resolver
+    return resolver
+
+
+def display_path(path: str) -> str:
+    """Shorten *path* via workspace roots, remote SDK matching, and ``../`` expansion."""
+    return source_path_resolver().resolve_path(path)
+
+
+def format_source_loc(source: SourceLoc | None) -> str:
+    """Render *source* concisely using relative workspace paths when available."""
+    if source is None:
+        return ""
+    return source_path_resolver().resolve_source_location(source)
+
+
 def print_table(
     rows: list[list[str]],
     headers: list[str],
     *,
-    elastic: Sequence[str] = (),
+    elastic: Sequence[str] | Mapping[str, ElasticMode] = (),
+    elastic_modes: Mapping[str, ElasticMode] | None = None,
     width: int | None = None,
 ) -> None:
     """Print a formatted ASCII table to GDB stdout in one write.
@@ -878,15 +1140,25 @@ def print_table(
     Args:
         rows: List of row lists; each row should have ``len(headers)`` cells.
         headers: Column header strings.
-        elastic: Headers of elastic text columns that may shrink when the
-            natural table width exceeds the terminal ``width``.
+        elastic: Elastic headers or priority mapping from header to mode
+            (``full`` / ``left`` / ``right``).
+        elastic_modes: Optional per-header modes overriding ``elastic``'s
+            default ``left`` mode when ``elastic`` is a sequence.
         width: Explicit terminal width; ``None`` probes the active width.
     """
     _ensure_gdb()
     if width is None:
         width = terminal_width()
     # NOTE: one write prevents asynchronous GDB output from splitting rows.
-    gdb.write(format_table(rows, headers, elastic=elastic, width=width))
+    gdb.write(
+        format_table(
+            rows,
+            headers,
+            elastic=elastic,
+            elastic_modes=elastic_modes,
+            width=width,
+        )
+    )
 
 
 def print_detail(pairs: Sequence[tuple[str, str]]) -> None:
@@ -1022,9 +1294,12 @@ def gdb_command_guard(func):
     The wrapped function's return value is preserved on success and
     discarded on error (commands are void-returning by convention).
     """
-    target_errors: tuple[type[BaseException], ...] = ()
-    if gdb is not None:
-        target_errors = (gdb.error, gdb.MemoryError)
+    target_errors: tuple[type[BaseException], ...] = tuple(
+        exc
+        for name in ("error", "MemoryError")
+        if isinstance((exc := getattr(gdb, name, None)), type)
+        and issubclass(exc, BaseException)
+    )
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):

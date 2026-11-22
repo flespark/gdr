@@ -184,3 +184,16 @@ def test_waiter_cell_count_always_leads():
     assert waiter_cell(["a", "b"]) == "2@a,b"
     # unavailable list must not fabricate 0
     assert waiter_cell(None, available=False) == "N/A"
+
+
+def test_right_compressed_and_full_elastic_modes_preserve_file_tails():
+    """Right-aligned compression elides leading directories; full mode stays untruncated."""
+    rows = [["SysTick_Handler", "portable/GCC/ARM_CM33_NTZ/non_secure/port.c:1078"]]
+    out = format_table(
+        rows,
+        ["Function", "Source"],
+        elastic={"Function": "full", "Source": "right"},
+        width=40,
+    )
+    assert "SysTick_Handler" in out
+    assert "..on_secure/port.c:1078" in out

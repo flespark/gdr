@@ -34,6 +34,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from core.gdb_bridge import (  # noqa: E402
+    configure_non_tty_width,
     gdb_command_guard,
     info,
     print_table,
@@ -864,6 +865,7 @@ def initialize() -> None:
         print("GDR must be sourced inside GDB.", file=sys.stderr)
         raise SystemExit(1)
 
+    configure_non_tty_width()
     GdrCommand()
     _register_probes()
     _register_transport_functions()

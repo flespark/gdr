@@ -29,10 +29,10 @@ const TASKS = {
 	elastic: ['Name'],
 	kind: 'task',
 	columns: [
-		{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: 'thread name', group: 'basic' },
-		{ key: 'Prio', kind: 'int', align: 'right', elastic: false, doc: '', group: 'basic' },
-		{ key: 'PC', kind: 'pc', align: 'left', elastic: false, doc: 'last PC', group: 'basic' },
-		{ key: 'Addr', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' }
+		{ key: 'Name', kind: 'text', align: 'left', elastic: 'left', doc: 'thread name', group: 'basic' },
+		{ key: 'Prio', kind: 'int', align: 'right', elastic: 'full', doc: '', group: 'basic' },
+		{ key: 'PC', kind: 'pc', align: 'left', elastic: 'full', doc: 'last PC', group: 'basic' },
+		{ key: 'Addr', kind: 'addr', align: 'left', elastic: 'full', doc: '', group: 'basic' }
 	],
 	value_rows: [
 		['main *', 10, '<rt_schedule+584>', 0x20001234],
@@ -48,10 +48,10 @@ const SEMAPHORE_TABLE = {
 	elastic: ['Name'],
 	kind: 'semaphore',
 	columns: [
-		{ key: 'Name', kind: 'text', align: 'left', elastic: true, doc: '', group: 'basic' },
-		{ key: 'Address', kind: 'addr', align: 'left', elastic: false, doc: '', group: 'basic' },
-		{ key: 'Value', kind: 'text', align: 'left', elastic: false, doc: '', group: 'basic' },
-		{ key: 'OffsetCheck', kind: 'text', align: 'left', elastic: false, doc: '', group: 'diag' }
+		{ key: 'Name', kind: 'text', align: 'left', elastic: 'left', doc: '', group: 'basic' },
+		{ key: 'Address', kind: 'addr', align: 'left', elastic: 'full', doc: '', group: 'basic' },
+		{ key: 'Value', kind: 'text', align: 'left', elastic: 'full', doc: '', group: 'basic' },
+		{ key: 'OffsetCheck', kind: 'text', align: 'left', elastic: 'full', doc: '', group: 'diag' }
 	],
 	ids: ['0x2000']
 };

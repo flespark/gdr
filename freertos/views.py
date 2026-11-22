@@ -73,7 +73,7 @@ def task_specs(
 ) -> tuple[ColumnSpec, ...]:
     """The task table contract; optional columns follow the same order."""
     specs = [
-        ColumnSpec("Name", elastic=True, doc="task name; '*' marks the running one"),
+        ColumnSpec("Name", elastic="left", doc="task name; '*' marks the running one"),
         ColumnSpec("State", doc="scheduler state derived from the list it is on"),
         ColumnSpec("Prio", kind="int", align="right"),
     ]
@@ -114,18 +114,18 @@ def task_specs(
 SUMMARY_SPECS = (
     ColumnSpec("Kind", doc="semantic object kind"),
     ColumnSpec("Count", kind="int", align="right"),
-    ColumnSpec("Sources", elastic=True, doc="discovery channels that found it"),
+    ColumnSpec("Sources", elastic="left", doc="discovery channels that found it"),
 )
 
 QUEUE_SPECS_HEAD = (
-    ColumnSpec("Name", elastic=True, doc="queue name from the registry"),
+    ColumnSpec("Name", elastic="left", doc="queue name from the registry"),
     ColumnSpec("Type", kind="enum", doc="ucQueueType, or inferred from pcHead"),
     ColumnSpec("Items", kind="int", align="right", doc="queued items"),
     ColumnSpec("Length", kind="int", align="right", doc="capacity"),
     ColumnSpec("ItemSize", kind="int", align="right", doc="bytes per item"),
     ColumnSpec("Free", kind="int", align="right"),
-    ColumnSpec("SendWait", kind="waiters", elastic=True),
-    ColumnSpec("RecvWait", kind="waiters", elastic=True),
+    ColumnSpec("SendWait", kind="waiters", elastic="left"),
+    ColumnSpec("RecvWait", kind="waiters", elastic="left"),
     ColumnSpec("Locks", doc="rx/tx lock counters from a critical section"),
 )
 
@@ -146,41 +146,41 @@ def queue_specs(queue_sets: bool) -> tuple[ColumnSpec, ...]:
 
 
 SEMAPHORE_SPECS = (
-    ColumnSpec("Name", elastic=True),
+    ColumnSpec("Name", elastic="left"),
     ColumnSpec("Type", kind="enum"),
     ColumnSpec("Count", kind="int", align="right", doc="available count"),
     ColumnSpec("Max", kind="int", align="right", doc="upper bound"),
-    ColumnSpec("Waiters", kind="waiters", elastic=True),
+    ColumnSpec("Waiters", kind="waiters", elastic="left"),
     ColumnSpec("Src"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 MUTEX_SPECS = (
-    ColumnSpec("Name", elastic=True),
+    ColumnSpec("Name", elastic="left"),
     ColumnSpec("Type", kind="enum"),
     ColumnSpec("Held", kind="enum", doc="'yes' when taken; value is the count"),
     ColumnSpec("Owner", kind="symbol", doc="holder task address, '-' when free"),
     ColumnSpec("Recursive", kind="int", align="right", doc="nested take count"),
-    ColumnSpec("Waiters", kind="waiters", elastic=True),
+    ColumnSpec("Waiters", kind="waiters", elastic="left"),
     ColumnSpec("Src"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 TIMER_SPECS = (
-    ColumnSpec("Name", elastic=True, doc="pcTimerName"),
+    ColumnSpec("Name", elastic="left", doc="pcTimerName"),
     ColumnSpec("State", doc="list-derived state; '?' marks a transition"),
     ColumnSpec("Mode", doc="auto-reload vs one-shot"),
     ColumnSpec("Period", kind="int", align="right", doc="ticks"),
     ColumnSpec("Expiry", kind="int", align="right", doc="absolute tick"),
     ColumnSpec("ExpiresIn", kind="int", align="right", doc="wrap-safe ticks left"),
-    ColumnSpec("Callback", kind="symbol", elastic=True),
+    ColumnSpec("Callback", kind="symbol", elastic="left"),
     ColumnSpec("ID", kind="symbol", doc="pvTimerID, '-' when NULL"),
     ColumnSpec("Src"),
     ColumnSpec("Addr", kind="addr"),
 )
 
 EVENT_GROUP_SPECS = (
-    ColumnSpec("Name", elastic=True),
+    ColumnSpec("Name", elastic="left"),
     ColumnSpec("Bits", kind="hex", doc="current event bits"),
     ColumnSpec("Waiters", kind="int", align="right"),
     ColumnSpec("Src"),
@@ -196,12 +196,12 @@ HEAP_LINEAR_SPECS = (
 HEAP_FREE_LIST_SPECS = (
     ColumnSpec("Address", kind="addr"),
     ColumnSpec("Size", kind="int", align="right", doc="block size in bytes"),
-    ColumnSpec("Next", kind="addr", elastic=True, doc="next free block, '-' at end"),
+    ColumnSpec("Next", kind="addr", elastic="left", doc="next free block, '-' at end"),
 )
 
 
 STREAM_BUFFER_SPECS = (
-    ColumnSpec("Name", elastic=True),
+    ColumnSpec("Name", elastic="left"),
     ColumnSpec("Type", doc="byte stream vs message buffer"),
     ColumnSpec("Bytes", kind="int", align="right", doc="bytes stored"),
     ColumnSpec("Space", kind="int", align="right", doc="free bytes"),

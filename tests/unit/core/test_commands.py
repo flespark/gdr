@@ -740,11 +740,38 @@ def test_render_backtrace_report_gates_logs_on_debug(monkeypatch, capsys):
     )
     infos: list[str] = []
     monkeypatch.setattr(commands, "info", infos.append)
-    monkeypatch.setattr(commands, "print_table", lambda *_a, **_kw: None)
+    tables: list[tuple[list[list[str]], list[str], dict[str, object]]] = []
+    monkeypatch.setattr(
+        commands,
+        "print_table",
+        lambda rows, headers, **kwargs: tables.append((rows, headers, kwargs)),
+    )
+    monkeypatch.setattr(
+        commands,
+        "format_source_loc",
+        lambda source: (
+            f"portable/GCC/ARM_CM33_NTZ/non_secure/port.c:{source.line}"
+            if source is not None
+            else ""
+        ),
+    )
 
     monkeypatch.setattr(commands, "is_debug", lambda: False)
     commands.render_backtrace_report(report)
     assert infos == []
+    assert tables[-1] == (
+        [
+            [
+                "0",
+                "0x10002910",
+                "SysTick_Handler",
+                "portable/GCC/ARM_CM33_NTZ/non_secure/port.c:1078",
+                "seed",
+            ]
+        ],
+        ["#", "PC", "Function", "Source", "Method"],
+        {"elastic": {"Source": "right"}},
+    )
     assert "gdr_spin: armv8-m.mainline, current, exception, complete (task-exit)" in (
         capsys.readouterr().out
     )
@@ -753,4 +780,36 @@ def test_render_backtrace_report_gates_logs_on_debug(monkeypatch, capsys):
     commands.render_backtrace_report(report)
     assert infos == [
         "exception transition exception:15 -> task:0x280033a0 at 0x100028bc"
+    ]
+
+
+def test_render_object_table_shortens_file_columns_and_passes_modes(monkeypatch):
+    from core.adapter import ColumnSpec, ObjectTable, text_cell
+
+    tables: list[tuple[list[list[str]], list[str], dict[str, object]]] = []
+    monkeypatch.setattr(
+        commands, "display_path", lambda path: "src/" + path.rsplit("/", 1)[-1]
+    )
+    monkeypatch.setattr(
+        commands,
+        "print_table",
+        lambda rows, headers, **kwargs: tables.append((rows, headers, kwargs)),
+    )
+    table = ObjectTable.from_specs(
+        (
+            ColumnSpec("Name", elastic="left"),
+            ColumnSpec("File", kind="file", elastic="right"),
+        ),
+        [[text_cell("worker"), text_cell("/abs/ws/src/main.c")]],
+    )
+    commands._render_object_table(table)
+    assert tables == [
+        (
+            [["worker", "src/main.c"]],
+            ["Name", "File"],
+            {
+                "elastic": ("Name", "File"),
+                "elastic_modes": {"Name": "left", "File": "right"},
+            },
+        )
     ]
