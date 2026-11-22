@@ -108,7 +108,11 @@ from freertos.backtrace.scheduler_seed import (
     build_stage_seed,
     riscv_interrupted_frame_matches,
 )
-from freertos.backtrace.unwind import decode_cm4f_saved_context
+from freertos.backtrace.unwind import (
+    decode_cm4f_saved_context,
+    decode_cm33_saved_context,
+    validate_armv8m_live_registers,
+)
 from freertos.backtrace.unwind import (
     decode_saved_context as decode_backtrace_context,
 )
@@ -560,6 +564,15 @@ def _scheduler_live_decision(
             message="pxCurrentTCB is not readable at a scheduler transition",
         )
 
+    live_psplim: int | None = None
+    if isa == "armv8-m.mainline":
+        live_psplim, _control = _read_armv8m_regs()
+        if live_psplim is None:
+            return _SchedulerDecision(
+                reason="live-registers-unavailable",
+                message="PSPLIM is not readable on Armv8-M Mainline",
+            )
+
     def _is_entry(address: int) -> bool:
         symbol = elf.function_containing(address)
         return symbol is not None and symbol.start == address
@@ -582,6 +595,7 @@ def _scheduler_live_decision(
         exit_pc=_exit_pc(),
         is_entry=_is_entry,
         fpu_context=fpu_context,
+        live_psplim=live_psplim,
     )
     if isinstance(outcome, str):
         return _SchedulerDecision(
@@ -797,42 +811,32 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
         selection = adapter._context_selection()
     context = selection.context
     if context is None or not context.verified:
-        return BacktraceReport(
-            task="<current>",
-            address=0,
-            architecture=selection.isa or "unknown",
-            method="none",
-            source="current",
-            complete=False,
-            stop_reason=selection.reason,
-            truncated=False,
-            max_depth=max_depth,
+        return _stop_report(
+            None,
+            selection.isa or "unknown",
+            selection.abi,
+            max_depth,
+            selection.reason,
+            "no verified save profile matches the image/configuration evidence",
             bounds="unknown",
-            frames=[],
-            messages=[
-                "no verified save profile matches the image/configuration evidence"
-            ],
-            abi=selection.abi,
+            target="<current>",
         )
     architecture = selection.isa or "unknown"
     if current_addr is not None or _scheduler_running() is True:
-        return BacktraceReport(
-            task="<current>",
-            address=current_addr or 0,
-            architecture=architecture,
-            method="none",
-            source="current",
-            complete=False,
-            stop_reason="scheduler-current-tcb-unavailable",
-            truncated=False,
-            max_depth=max_depth,
+        return _stop_report(
+            None,
+            architecture,
+            selection.abi,
+            max_depth,
+            "scheduler-current-tcb-unavailable",
+            "pxCurrentTCB is unavailable or invalid on the selected core",
             bounds="unknown",
-            frames=[],
-            messages=["pxCurrentTCB is unavailable or invalid on the selected core"],
-            abi=selection.abi,
+            target="<current>",
+            address=current_addr or 0,
         )
     metadata = _unwind_metadata(adapter)
     if metadata is not None:
+        halted_early = False
         if selection.family == "arm" and selection.isa in (
             "armv6-m",
             "armv7-m",
@@ -842,47 +846,24 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
             snapshot, _reason = _arm_snapshot()
             if snapshot is not None:
                 symbol = metadata.elf.function_containing(snapshot.pc & ~1)
-                if symbol is not None and symbol.name in _SCHEDULER_SYMBOLS:
-                    return BacktraceReport(
-                        task="<current>",
-                        address=0,
-                        architecture=architecture,
-                        method="none",
-                        source="current",
-                        complete=False,
-                        stop_reason="scheduler-not-running",
-                        truncated=False,
-                        max_depth=max_depth,
-                        bounds="unknown",
-                        frames=[],
-                        messages=[
-                            "a scheduler transition is halted before xSchedulerRunning"
-                        ],
-                        abi=selection.abi,
-                    )
+                halted_early = symbol is not None and symbol.name in _SCHEDULER_SYMBOLS
         elif selection.family == "riscv" and selection.isa in ("riscv32", "riscv64"):
             xlen = 64 if selection.isa == "riscv64" else 32
             rv_snapshot, _reason = _riscv_snapshot(xlen=xlen)
-            if rv_snapshot is not None and _riscv_pc_in_scheduler_symbol(
+            halted_early = rv_snapshot is not None and _riscv_pc_in_scheduler_symbol(
                 metadata.elf, rv_snapshot.pc
-            ):
-                return BacktraceReport(
-                    task="<current>",
-                    address=0,
-                    architecture=architecture,
-                    method="none",
-                    source="current",
-                    complete=False,
-                    stop_reason="scheduler-not-running",
-                    truncated=False,
-                    max_depth=max_depth,
-                    bounds="unknown",
-                    frames=[],
-                    messages=[
-                        "a scheduler transition is halted before xSchedulerRunning"
-                    ],
-                    abi=selection.abi,
-                )
+            )
+        if halted_early:
+            return _stop_report(
+                None,
+                architecture,
+                selection.abi,
+                max_depth,
+                "scheduler-not-running",
+                "a scheduler transition is halted before xSchedulerRunning",
+                bounds="unknown",
+                target="<current>",
+            )
     return live_boot_backtrace_report(
         architecture=architecture,
         abi=selection.abi,
@@ -906,19 +887,16 @@ def backtrace(
         return _current_pc_backtrace(adapter, max_depth)
     value = find_task(target, adapter.layout)
     if value is None:
-        return BacktraceReport(
-            task=target,
-            address=0,
-            architecture="unknown",
-            method="none",
+        return _stop_report(
+            None,
+            "unknown",
+            None,
+            max_depth,
+            "task-not-found",
+            f"task {target!r} was not found in the scheduler lists",
             source="none",
-            complete=False,
-            stop_reason="task-not-found",
-            truncated=False,
-            max_depth=max_depth,
             bounds="unknown",
-            frames=[],
-            messages=[f"task {target!r} was not found in the scheduler lists"],
+            target=target,
         )
     return _backtrace_task_value(adapter, value, target, max_depth)
 
@@ -996,10 +974,11 @@ def _stop_report(
     source: str = "current",
     bounds: str = "recorded",
     target: str = "",
+    address: int | None = None,
 ) -> BacktraceReport:
     return BacktraceReport(
-        task=task.name or target,
-        address=task.address,
+        task=(task.name or target) if task is not None else target,
+        address=address if address is not None else (task.address if task else 0),
         architecture=architecture,
         method="none",
         source=source,
@@ -1077,6 +1056,32 @@ def _resolve_live_seed(
         fault = decision.fault
     if seed is None:
         seed, live_reason = _live_seed_detail(ctx.selection.family, ctx.architecture)
+        if seed is not None and ctx.architecture == "armv8-m.mainline":
+            psplim, control = _read_armv8m_regs()
+            if psplim is None or control is None:
+                return ctx.stop(
+                    "live-registers-unavailable",
+                    "PSPLIM/CONTROL are not readable on Armv8-M Mainline",
+                    source="current",
+                )
+            ext_err = validate_armv8m_live_registers(
+                psplim,
+                control,
+                mpu=bool(
+                    ctx.selection.context and ctx.selection.context.context_in_tcb
+                ),
+                exception_number=seed.exception_number or 0,
+                sp=seed.sp,
+                process_sp=seed.process_sp,
+                stack_low=ctx.low,
+                stack_high=ctx.high,
+            )
+            if ext_err is not None:
+                return ctx.stop(
+                    ext_err,
+                    "live Armv8-M Mainline PSPLIM or CONTROL is unsupported",
+                    source="current",
+                )
     else:
         live_reason = "ok"
     if seed is None:
@@ -1087,6 +1092,17 @@ def _resolve_live_seed(
             source="current",
         )
     return seed, scheduler_note, fault
+
+
+def _read_armv8m_regs() -> tuple[int | None, int | None]:
+    """Read Armv8-M Mainline ``psplim`` and ``control`` from the active GDB frame."""
+    if gdb is None:
+        return None, None
+    try:
+        frame = gdb.newest_frame()
+        return int(frame.read_register("psplim")), int(frame.read_register("control"))
+    except (KeyError, gdb.error, AttributeError, RuntimeError, TypeError, ValueError):
+        return None, None
 
 
 def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
@@ -1100,8 +1116,15 @@ def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
         if context.context_in_tcb
         else (None, None)
     )
-    if ctx.selection.alt_context is not None:
-        seed, reason = decode_cm4f_saved_context(
+    if ctx.selection.alt_context is not None or (
+        ctx.architecture == "armv8-m.mainline" and not context.context_in_tcb
+    ):
+        decoder = (
+            decode_cm33_saved_context
+            if ctx.architecture == "armv8-m.mainline"
+            else decode_cm4f_saved_context
+        )
+        seed, reason = decoder(
             ctx.task.top_of_stack,
             read_bytes,
             basic=context,

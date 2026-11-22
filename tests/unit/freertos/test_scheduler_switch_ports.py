@@ -15,6 +15,7 @@ from freertos.backtrace.unwind import (
     ARMV6M_INTEGER,
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
+    ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
 )
 from tests.support.loader import cached_elfs, fixture_cache_root
@@ -66,6 +67,11 @@ CM33_PENDSV = bytes.fromhex(
     "eff30980eff30b82734620e9fc0f0d4a116808604ff0040080f31188bff34f8f"
     "bff36f8ffef762fa4ff0000080f31188044a11680868b0e8fc0f82f30b8880f3"
     "09881847"
+)
+CM33_FPU_PENDSV = bytes.fromhex(
+    "eff309801ef0100f08bf20ed108aeff30b82734620e9fc0f0f4a116808604ff0"
+    "040080f31188bff34f8fbff36f8ffef703fb4ff0000080f31188074a11680868"
+    "b0e8fc0f13f0100f08bfb0ec108a82f30b8880f309881847"
 )
 CM33_SVC = bytes.fromhex(
     "0a4a1168086806c881f30b88eff3148151f0020181f31488203080f30988bff3"
@@ -162,6 +168,32 @@ def _cm33_image(*, pendsv: bytes = CM33_PENDSV, svc: bytes = CM33_SVC) -> ElfIma
     )
 
 
+def _cm33_fpu_image(*, pendsv: bytes = CM33_FPU_PENDSV) -> ElfImage:
+    text_base = 0x10000000
+    base = bytearray(0x4000)
+    base[0x11E8 : 0x11E8 + len(CM33_SWITCH)] = CM33_SWITCH
+    base[0x2C14 : 0x2C14 + len(CM33_SVC)] = CM33_SVC
+    base[0x2C40:0x2C44] = (0x280001B8).to_bytes(4, "little")
+    base[0x2C44 : 0x2C44 + len(CM33_START)] = CM33_START
+    base[0x2C60:0x2C64] = (0xE000ED08).to_bytes(4, "little")
+    base[0x2BB0 : 0x2BB0 + len(pendsv)] = pendsv
+    base[0x2C08:0x2C0C] = (0x280001B8).to_bytes(4, "little")
+    return ElfImage(
+        pointer_size=4,
+        endian="little",
+        machine=40,
+        sections=(ElfSection(".text", text_base, bytes(base), SHF_EXECINSTR, 1),),
+        symbols=(
+            CodeSymbol("vTaskSwitchContext", text_base + 0x11E8, len(CM33_SWITCH)),
+            CodeSymbol("vRestoreContextOfFirstTask", text_base + 0x2C14, len(CM33_SVC)),
+            CodeSymbol("vStartFirstTask", text_base + 0x2C44, len(CM33_START)),
+            CodeSymbol("PendSV_Handler", text_base + 0x2BB0, len(pendsv)),
+            CodeSymbol("task_entry", text_base + ENTRY_PC, 0x20),
+        ),
+        anchors=(("pxCurrentTCB", 0x280001B8),),
+    )
+
+
 class _Memory(dict[int, int]):
     def read(self, address: int, size: int) -> bytes | None:
         chunks = []
@@ -187,12 +219,110 @@ def _write_basic_frame(
         mem[base + idx * 4] = word
 
 
+def test_cm33_fpu_pendsv_and_live_psplim_gates():
+    profile, reason = build_profile(_cm33_fpu_image())
+    assert reason == "ok" and profile is not None
+    assert profile.port == "arm-cm33-fpu"
+    assert profile.pendsv_save_pending is not None
+
+    entry = 0x10000000 + ENTRY_PC
+    core = ARMV8M_MAINLINE_FPU.initial_registers or ()
+    top = 0x20002100
+    mem = _Memory()
+    mem[top] = TASK_LOW
+    mem[top + 4] = 0xFFFFFFED
+    words = [core[i] for i in range(8)] + [0] * 16
+    for idx, word in enumerate(words):
+        mem[top + 8 + idx * 4] = word
+    _write_basic_frame(mem, top + 104, core=(), pc=entry, lr=EXIT_PC | 1, exc=None)
+
+    save_stage = classify_stage(profile, profile.pendsv_save_pending)
+    assert (
+        isinstance(save_stage, SchedulerStage)
+        and save_stage.name == "pendsv-save-pending"
+    )
+    save_regs = {r: core[r - 4] for r in range(4, 12)}
+    save_regs.update({0: top + 104, 13: 0x20004000, 14: 0xFFFFFFED})
+    save_seed = build_stage_seed(
+        profile,
+        save_stage,
+        read=mem.read,
+        context=ARMV8M_MAINLINE_INTEGER,
+        fpu_context=ARMV8M_MAINLINE_FPU,
+        task_tcb=TASK_TCB,
+        task_top=top,
+        task_low=TASK_LOW,
+        task_high=TASK_HIGH,
+        psp=top + 104,
+        msp=0x20004000,
+        registers=save_regs,
+        xpsr=0x0100000E,
+        stkalign=True,
+        current_tcb=TASK_TCB,
+        exit_pc=EXIT_PC,
+        is_entry=lambda pc: pc == entry,
+        live_psplim=TASK_LOW,
+    )
+    assert not isinstance(save_seed, str) and save_seed.seed.pc == entry
+
+    restored_stage = classify_stage(profile, profile.pendsv_restored_pending_psp)
+    assert isinstance(restored_stage, SchedulerStage)
+    restored_regs = {r: core[r - 4] for r in range(4, 12)}
+    restored_regs.update(
+        {0: top + 104, 2: TASK_LOW, 3: 0xFFFFFFED, 13: 0x20004000, 14: 0xFFFFFFB8}
+    )
+    bad_psplim = build_stage_seed(
+        profile,
+        restored_stage,
+        read=mem.read,
+        context=ARMV8M_MAINLINE_INTEGER,
+        fpu_context=ARMV8M_MAINLINE_FPU,
+        task_tcb=TASK_TCB,
+        task_top=top,
+        task_low=TASK_LOW,
+        task_high=TASK_HIGH,
+        psp=top + 104,
+        msp=0x20004000,
+        registers=restored_regs,
+        xpsr=0x0100000E,
+        stkalign=True,
+        current_tcb=TASK_TCB,
+        exit_pc=EXIT_PC,
+        is_entry=lambda pc: pc == entry,
+        live_psplim=TASK_LOW + 8,
+    )
+    assert bad_psplim == "unsupported-extension-context"
+
+    good_restored = build_stage_seed(
+        profile,
+        restored_stage,
+        read=mem.read,
+        context=ARMV8M_MAINLINE_INTEGER,
+        fpu_context=ARMV8M_MAINLINE_FPU,
+        task_tcb=TASK_TCB,
+        task_top=top,
+        task_low=TASK_LOW,
+        task_high=TASK_HIGH,
+        psp=top + 104,
+        msp=0x20004000,
+        registers=restored_regs,
+        xpsr=0x0100000E,
+        stkalign=True,
+        current_tcb=TASK_TCB,
+        exit_pc=EXIT_PC,
+        is_entry=lambda pc: pc == entry,
+        live_psplim=TASK_LOW,
+    )
+    assert not isinstance(good_restored, str) and good_restored.seed.pc == entry
+
+
 @pytest.mark.parametrize(
     ("builder", "expected_port", "expected_svc", "has_psp_written"),
     [
         (_cm0_image, "arm-cm0", "vRestoreContextOfFirstTask", True),
         (_cm4f_image, "arm-cm4f", "SVC_Handler", True),
         (_cm33_image, "arm-cm33", "vRestoreContextOfFirstTask", False),
+        (_cm33_fpu_image, "arm-cm33-fpu", "vRestoreContextOfFirstTask", False),
     ],
 )
 def test_build_profile_and_classify_ports(
@@ -219,7 +349,8 @@ def test_build_profile_and_classify_ports(
         assert not isinstance(stage, str) and stage is not None
         assert stage.name == expected_name
 
-    ambiguous = classify_stage(profile, profile.pendsv_entry + 4)
+    ambig_offset = 8 if expected_port == "arm-cm33-fpu" else 4
+    ambiguous = classify_stage(profile, profile.pendsv_entry + ambig_offset)
     assert isinstance(ambiguous, str) and ambiguous.startswith(
         "scheduler-stage-ambiguous:"
     )

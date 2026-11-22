@@ -64,7 +64,8 @@ _XLEN = 64 if _ISA == "riscv64" else 32
 _M_FULL_TARGETS = {"microbit", "mps2-an385", "mps2-an386", "mps2-an505"}
 _HAS_FULL_BACKTRACE = SPEC.target in _M_FULL_TARGETS and (
     (SPEC.target == "mps2-an386" and SPEC.variant in {"fpu", "soft", "softfp"})
-    or (SPEC.target != "mps2-an386" and SPEC.variant == "full")
+    or (SPEC.target == "mps2-an505" and SPEC.variant in {"full", "fpu"})
+    or (SPEC.target not in {"mps2-an386", "mps2-an505"} and SPEC.variant == "full")
 )
 _ABI = "aapcs32-vfp" if SPEC.variant == "fpu" else "aapcs32"
 _TIMER0_EXC = 19 if SPEC.target == "mps2-an505" else 24
@@ -83,7 +84,11 @@ _PORT_SPECS = {
         else ("arm-cm4f", 0x24, 0x00, False)
     ),
     "microbit": ("arm-cm0", 0x24, 0x04, True),
-    "mps2-an505": ("arm-cm33", 0x28, 0x08, True),
+    "mps2-an505": (
+        ("arm-cm33-fpu", 0x28, 0x08, True)
+        if SPEC.variant in {"fpu", "softfp"}
+        else ("arm-cm33", 0x28, 0x08, True)
+    ),
 }
 _PORT, _SW_SIZE, _R4_OFF, _EXC_RET_IN_R3 = _PORT_SPECS.get(
     SPEC.target, _PORT_SPECS["mps2-an385"]
@@ -483,7 +488,7 @@ def test_fpu_context_registers_are_enabled_on_target(gdb_session):
 @_fpu_skip()
 def test_fpu_task_saved_chain_is_complete(gdb_session):
     data = _backtrace(gdb_session, "gdr_fpu")
-    assert data["architecture"] == "armv7e-m", data
+    assert data["architecture"] == _ISA, data
     assert data["abi"] == _ABI, data
     assert data["source"] == "saved", data
     assert data["bounds"] == "recorded", data
@@ -498,8 +503,13 @@ def test_fpu_task_saved_chain_is_complete(gdb_session):
 def test_fpu_saved_slot_names_the_extended_frame(gdb_session):
     top = task_top_of_stack(gdb_session, "gdr_fpu")
     words = read_u32_words(gdb_session, top, 36)
-    assert words[8] == 0xFFFFFFED, [f"{w:#x}" for w in words[8:9]]
-    assert words[32] & _T_BIT != 0, f"xPSR={words[32]:#x}"
+    if SPEC.target == "mps2-an505":
+        assert words[0] & 0x7 == 0, f"PSPLIM={words[0]:#x}"
+        assert words[1] == 0xFFFFFFED, [f"{w:#x}" for w in words[1:2]]
+        assert words[33] & _T_BIT != 0, f"xPSR={words[33]:#x}"
+    else:
+        assert words[8] == 0xFFFFFFED, [f"{w:#x}" for w in words[8:9]]
+        assert words[32] & _T_BIT != 0, f"xPSR={words[32]:#x}"
     data = _backtrace(gdb_session, "gdr_fpu")
     assert data["source"] == "saved", data
 
@@ -1170,14 +1180,17 @@ def test_nested_irq_requesting_scheduling_keeps_the_interrupted_task_owner(
 def test_unsupported_and_mismatched_scheduler_stops_are_refused(gdb_session):
     """Verify live ambiguous-PC refusal plus synthetic profile-mismatch refusal."""
     prof = _profile()
+    ambig_pc = (
+        prof.pendsv_entry + 8 if _PORT == "arm-cm33-fpu" else prof.pendsv_entry + 4
+    )
     _set_gate(gdb_session, 1)
     try:
         state = _wait_stage(
             gdb_session,
-            prof.pendsv_entry + 4,
+            ambig_pc,
             lambda item: item["current"] == item["handles"]["gdr_sched_task_handle"],
         )
-        assert state["pc"] == prof.pendsv_entry + 4, state
+        assert state["pc"] == ambig_pc, state
         data = _backtrace(gdb_session, "gdr_sched")
         assert data["frames"] == [], data
         assert data["stop_reason"].startswith("scheduler-stage-ambiguous"), data
@@ -2053,6 +2066,122 @@ print(json.dumps({{
         assert trap_sync["frames"][1]["method"] == "exception", trap_sync
         assert trap_sync["frames"][1]["pc"] == trap_sync["mepc"], trap_sync
         assert any("Exception:IllegalInstruction" in m for m in trap_sync["messages"])
+    finally:
+        _clear_breakpoints(gdb_session)
+        gdb_session.run("set var gdr_irq_hold = 0")
+
+
+@pytest.mark.skipif(
+    SPEC.target != "mps2-an505",
+    reason="requires FreeRTOS Armv8-M Mainline PSPLIM fixture",
+)
+def test_armv8m_nonzero_psplim_admits_valid_and_refuses_invalid_bounds(gdb_session):
+    """Valid 8B-aligned PSPLIM passes saved and live unwinds; invalid bounds refuse."""
+    saved_probe = json_line(
+        gdb_session.run_python(
+            """
+import gdb, json
+from core.adapter import active
+from freertos.adapter import find_task
+import freertos.backtrace.unwind_gdb as bt
+
+tcb = find_task("gdr_ready", active().layout)
+sp = int(tcb["pxTopOfStack"])
+low = int(tcb["pxStack"])
+inf = gdb.selected_inferior()
+orig_psplim = bytes(inf.read_memory(sp, 4))
+valid_psplim = (low + 7) & ~7
+
+def _write_psplim(val):
+    inf.write_memory(sp, val.to_bytes(4, "little"))
+
+try:
+    _write_psplim(valid_psplim)
+    ok_rep = bt.backtrace(active(), "gdr_ready")
+    _write_psplim(valid_psplim + 1)
+    unaligned_rep = bt.backtrace(active(), "gdr_ready")
+    exc_ret = int.from_bytes(inf.read_memory(sp + 4, 4), "little")
+    caller_sp = sp + (208 if exc_ret == 0xFFFFFFED else 72)
+    _write_psplim(caller_sp + 8)
+    above_rep = bt.backtrace(active(), "gdr_ready")
+finally:
+    inf.write_memory(sp, orig_psplim)
+
+print(json.dumps({
+    "ok_complete": ok_rep.complete,
+    "ok_stop": ok_rep.stop_reason,
+    "unaligned_reason": unaligned_rep.stop_reason,
+    "above_reason": above_rep.stop_reason,
+}))
+"""
+        )
+    )
+    assert saved_probe == {
+        "ok_complete": True,
+        "ok_stop": "task-exit",
+        "unaligned_reason": "unsupported-extension-context",
+        "above_reason": "unsupported-extension-context",
+    }, saved_probe
+
+    _halt(gdb_session)
+    _write_u32(gdb_session, "gdr_irq_hold", 1)
+    try:
+        _stop_at(gdb_session, "gdr_rv_spin_leaf")
+        live_info = json_line(
+            gdb_session.run_python(
+                """
+import gdb, json
+from core.adapter import active
+from freertos.adapter import find_task
+frame = gdb.newest_frame()
+tcb = find_task("gdr_spin", active().layout)
+print(json.dumps({
+    "psplim": int(frame.read_register("psplim")),
+    "spin_low": int(tcb["pxStack"]),
+    "control": int(frame.read_register("control")),
+}))
+"""
+            )
+        )
+        assert live_info["psplim"] == live_info["spin_low"], live_info
+        assert (live_info["control"] & 2) == 2 and (live_info["psplim"] & 0x7) == 0, (
+            live_info
+        )
+        ok_live = _backtrace(gdb_session, "gdr_spin")
+        assert ok_live["complete"] is True and ok_live["stop_reason"] == "task-exit", (
+            ok_live
+        )
+        live_neg = json_line(
+            gdb_session.run_python(
+                f"""
+import gdb, json
+from core.adapter import active
+import freertos.backtrace.unwind_gdb as bt
+
+sp_now = int(gdb.newest_frame().read_register("psp"))
+orig = bt._read_armv8m_regs
+try:
+    bt._read_armv8m_regs = lambda: ((sp_now + 0x100) & ~7, {live_info["control"]})
+    above_rep = bt.backtrace(active(), "gdr_spin")
+    bt._read_armv8m_regs = lambda: ({live_info["psplim"]}, {live_info["control"] | 1})
+    unpriv_rep = bt.backtrace(active(), "gdr_spin")
+finally:
+    bt._read_armv8m_regs = orig
+print(json.dumps({{
+    "above_complete": above_rep.complete,
+    "above_reason": above_rep.stop_reason,
+    "unpriv_complete": unpriv_rep.complete,
+    "unpriv_reason": unpriv_rep.stop_reason,
+}}))
+"""
+            )
+        )
+        assert live_neg == {
+            "above_complete": False,
+            "above_reason": "unsupported-extension-context",
+            "unpriv_complete": False,
+            "unpriv_reason": "unsupported-extension-context",
+        }, live_neg
     finally:
         _clear_breakpoints(gdb_session)
         gdb_session.run("set var gdr_irq_hold = 0")

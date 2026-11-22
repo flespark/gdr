@@ -37,7 +37,12 @@ from core.stack_frame_parser import SavedStackContext, read_slot
 
 from .arm_scheduler_switch import SchedulerProfile, SchedulerStage
 from .riscv_scheduler_switch import RiscvSchedulerProfile, RiscvSchedulerStage
-from .unwind import CM4F_EXC_RETURN_SLOT, decode_saved_context
+from .unwind import (
+    CM4F_EXC_RETURN_SLOT,
+    CM33_EXC_RETURN_SLOT,
+    decode_saved_context,
+    validate_cm33_stage_psplim,
+)
 
 EXC_RETURN_THREAD_PROCESS = 0xFFFFFFFD
 XPSR_T_BIT = 1 << 24
@@ -431,18 +436,24 @@ def _live_extended(lr_value: int) -> bool | None:
 
 
 def _saved_slot_extended(
-    *, top: int, read: Reader, low: int, high: int, fpu: bool
+    *,
+    top: int,
+    read: Reader,
+    low: int,
+    high: int,
+    fpu: bool,
+    slot: int = CM4F_EXC_RETURN_SLOT,
 ) -> bool | str:
     """Extended-ness of a saved task from its EXC_RETURN slot.
 
-    The slot is exact EXC_RETURN only for CM4F-family layouts; basic
+    The slot is exact EXC_RETURN only for CM4F/CM33 FPU layouts; basic
     layouts keep task R0 there, so a non-magic word falls through to
     basic and downstream xPSR/PC guards.  An FPU layout requires its
     exact word because its geometry derives from it.
     """
     word = read_slot(
         read,
-        top + CM4F_EXC_RETURN_SLOT,
+        top + slot,
         4,
         "little",
         stack_low=low,
@@ -503,7 +514,7 @@ def _check_pendsv_exc_return(
             return _require_exception_return(lr, "thread", "process")
         return None
     if stage_name in ("pendsv-restored-pending-psp", "pendsv-psp-written"):
-        if port == "arm-cm33":
+        if port in ("arm-cm33", "arm-cm33-fpu"):
             return _require_exception_return(
                 registers.get(3, 0) & 0xFFFFFFFF, "thread", "process"
             )
@@ -516,7 +527,7 @@ def _check_pendsv_exc_return(
             return _require_exception_return(slot, "thread", "process")
         return _require_exception_return(lr, "thread", "process")
     if stage_name == "pendsv-exception-return":
-        reg = 3 if port in ("arm-cm0", "arm-cm33") else 14
+        reg = 3 if port in ("arm-cm0", "arm-cm33", "arm-cm33-fpu") else 14
         return _require_exception_return(
             registers.get(reg, 0) & 0xFFFFFFFF, "thread", "process"
         )
@@ -530,7 +541,7 @@ def _check_svc_exc_return(
 ) -> str | None:
     """Validate EXC_RETURN for the active first-start restore stage and port."""
     lr = registers.get(14, 0) & 0xFFFFFFFF
-    if port in ("arm-cm0", "arm-cm33"):
+    if port in ("arm-cm0", "arm-cm33", "arm-cm33-fpu"):
         if stage_name in (
             "svc-restored-pending-psp",
             "svc-psp-written",
@@ -556,7 +567,7 @@ def _check_svc_exc_return(
 def _stage_live_core_regs(port: str, seed_kind: str) -> tuple[int, ...]:
     """Return callee-saved core registers already live in CPU regs at ``seed_kind``."""
     if seed_kind in ("first-start-buffer", "first-start-live"):
-        if port in ("arm-cm0", "arm-cm33"):
+        if port in ("arm-cm0", "arm-cm33", "arm-cm33-fpu"):
             return ()
         return _CORE_REGS
     if seed_kind in ("restore-buffer", "live-frame-new"):
@@ -575,7 +586,7 @@ def _live_core_mapping(
             return {r: registers[r] for r in (8, 9, 10, 11)}
         return {r: registers[r] for r in _CORE_REGS}
     if seed_kind in ("first-start-buffer", "first-start-live"):
-        if port in ("arm-cm0", "arm-cm33"):
+        if port in ("arm-cm0", "arm-cm33", "arm-cm33-fpu"):
             return {}
         return {r: registers[r] for r in _CORE_REGS}
     return {r: registers[r] for r in _CORE_REGS}
@@ -600,6 +611,7 @@ def build_stage_seed(
     exit_pc: int | None,
     is_entry: Callable[[int], bool] | None,
     fpu_context: SavedStackContext | None = None,
+    live_psplim: int | None = None,
 ) -> SchedulerSeed | str:
     """Build one owner-consistent seed from the stage's proven context.
 
@@ -646,15 +658,22 @@ def build_stage_seed(
         return "scheduler-stage-ambiguous"
     if current_tcb != task_tcb:
         return "scheduler-current-tcb-mismatch"
+    is_cm33 = port in ("arm-cm33", "arm-cm33-fpu")
     if stage.seed in ("live-frame", "saved-buffer"):
         if live_extended is None:
             return "scheduler-fpu-context-unproven"
         evidenced: bool | str = live_extended
-    elif port in ("arm-cm0", "arm-cm33") and not context.fpu and fpu_context is None:
+    elif port == "arm-cm0" or (is_cm33 and not context.fpu and fpu_context is None):
         evidenced = False
     else:
+        slot = CM33_EXC_RETURN_SLOT if is_cm33 else CM4F_EXC_RETURN_SLOT
         evidenced = _saved_slot_extended(
-            top=task_top, read=read, low=task_low, high=task_high, fpu=context.fpu
+            top=task_top,
+            read=read,
+            low=task_low,
+            high=task_high,
+            fpu=context.fpu,
+            slot=slot,
         )
         if isinstance(evidenced, str):
             return evidenced
@@ -680,6 +699,24 @@ def build_stage_seed(
         else _stage_live_core_regs(port, stage.seed)
     )
 
+    def _admit(resolved: SeedFrame) -> SchedulerSeed | str:
+        psplim_error = validate_cm33_stage_psplim(
+            port,
+            stage.seed,
+            stage.owner,
+            read=read,
+            task_top=task_top,
+            psp=psp,
+            sw_size=sw_size,
+            task_low=task_low,
+            task_high=task_high,
+            seed_sp=resolved.sp,
+            live_psplim=live_psplim,
+        )
+        if psplim_error is not None:
+            return psplim_error
+        return SchedulerSeed(resolved, stage.name, stage.owner, evidence)
+
     if stage.seed == "live-frame":
         if not _in_bounds(task_low, task_high, psp, hw_size):
             return "scheduler-psp-outside-task-stack"
@@ -696,7 +733,7 @@ def build_stage_seed(
         )
         if seed is None:
             return reason
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        return _admit(seed)
 
     if stage.seed == "saved-buffer":
         saved_top = registers.get(0)
@@ -724,7 +761,7 @@ def build_stage_seed(
         )
         if seed is None:
             return reason
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        return _admit(seed)
 
     if stage.seed == "saved-tcb":
         if task_top <= 0:
@@ -749,7 +786,7 @@ def build_stage_seed(
         )
         if seed is None:
             return reason
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        return _admit(seed)
 
     if stage.seed == "restore-buffer":
         if registers.get(0) != task_top + sw_size:
@@ -781,7 +818,7 @@ def build_stage_seed(
         )
         if seed is None:
             return reason
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        return _admit(seed)
 
     if stage.seed == "live-frame-new":
         if psp != task_top + sw_size:
@@ -796,7 +833,7 @@ def build_stage_seed(
             core_regs=match_regs,
         ):
             return "scheduler-restore-window-inconsistent"
-        exc_reg = 3 if port in ("arm-cm0", "arm-cm33") else 14
+        exc_reg = 3 if port in ("arm-cm0", "arm-cm33", "arm-cm33-fpu") else 14
         if stage.name == "pendsv-exception-return" and registers.get(exc_reg) not in (
             EXC_RETURN_THREAD_PROCESS,
             EXC_RETURN_EXTENDED_THREAD_PROCESS,
@@ -819,7 +856,7 @@ def build_stage_seed(
         )
         if seed is None:
             return reason
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        return _admit(seed)
 
     if stage.seed == "first-start-saved":
         seed, reason = _saved_seed(
@@ -835,7 +872,7 @@ def build_stage_seed(
         )
         if seed is None:
             return reason
-        return SchedulerSeed(seed, stage.name, stage.owner, evidence)
+        return _admit(seed)
 
     if stage.seed == "first-start-buffer":
         if registers.get(0) != task_top + sw_size:
@@ -901,7 +938,7 @@ def build_stage_seed(
             core_regs=match_regs,
         ):
             return "scheduler-saved-buffer-inconsistent"
-        exc_reg = 2 if port in ("arm-cm0", "arm-cm33") else 14
+        exc_reg = 2 if port in ("arm-cm0", "arm-cm33", "arm-cm33-fpu") else 14
         if (
             stage.name == "svc-exception-return"
             and registers.get(exc_reg) != EXC_RETURN_THREAD_PROCESS

@@ -73,10 +73,17 @@ board_flags() {
     microbit)
         echo "-mcpu=cortex-m0 -mthumb"
         ;;
-    mps2-an521 | mps2-an505)
-        # NOTE: the AN521/AN505 run Cortex-M33s; pin the FPU off to match
-        # configENABLE_FPU 0 so the lazy-stacking path stays out of the build.
+    mps2-an521)
+        # NOTE: the AN521 dual-core SMP/MPU lanes stay integer-only to match
+        # configENABLE_FPU 0.
         echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=soft"
+        ;;
+    mps2-an505)
+        case "$VARIANT" in
+        fpu) echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=hard -mfpu=fpv5-sp-d16" ;;
+        softfp) echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=softfp -mfpu=fpv5-sp-d16" ;;
+        *) echo "-mcpu=cortex-m33 -mthumb -mfloat-abi=soft" ;;
+        esac
         ;;
     qemu-virt-rv32)
         # NOTE: RV32 uses the same integer-only RISC-V port with 4-byte words.
@@ -240,7 +247,8 @@ compile_fixture() {
     if [[ -n "$heap" ]]; then
         sources+=("$heap")
     fi
-    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit" || "$TARGET" == "mps2-an505") && "$VARIANT" == "full" ]] ||
+    if [[ ("$TARGET" == "mps2-an385" || "$TARGET" == "microbit") && "$VARIANT" == "full" ]] ||
+       [[ ("$TARGET" == "mps2-an505") && ("$VARIANT" == "full" || "$VARIANT" == "fpu" || "$VARIANT" == "softfp") ]] ||
        [[ "$TARGET" == "mps2-an386" && ("$VARIANT" == "fpu" || "$VARIANT" == "soft" || "$VARIANT" == "softfp") ]]; then
         sources+=("$board_dir/irq.c" "$board_dir/sched.c" "$board_dir/fault.c")
     fi

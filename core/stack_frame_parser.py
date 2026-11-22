@@ -388,6 +388,19 @@ def decode_profile_slots(
     )
 
 
+def armv8m_psplim_valid(
+    psplim: int | None, *, stack_low: int | None, sp: int | None
+) -> bool:
+    """Return whether an Armv8-M Mainline PSPLIM value is disabled or within stack bounds."""
+    if psplim is None or psplim < 0 or (psplim & 0x7) != 0:
+        return False
+    if psplim == 0:
+        return True
+    if stack_low is None or sp is None:
+        return False
+    return stack_low <= psplim <= sp
+
+
 __all__ = [
     "DecodedProfileSlots",
     "EvidenceError",
@@ -396,6 +409,7 @@ __all__ = [
     "StatusKind",
     "StackContextSelection",
     "ValidationLevel",
+    "armv8m_psplim_valid",
     "decode_profile_slots",
     "read_block",
     "read_slot",

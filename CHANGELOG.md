@@ -8,6 +8,9 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
+- FreeRTOS `ARM_CM33_NTZ` (`mps2-an505`) backtraces support extended FPU saved
+  frames, `FPCA` lazy IRQ stacking, `arm-cm33-fpu` PendSV transitions, and
+  strict live/saved `PSPLIM` and `CONTROL` bounds checks across Armv8-M Mainline ports.
 - `gdr backtrace [--max-depth N] [--json]` and pre-init `gdr api backtrace`
   unwind halted Arm and RISC-V targets using live registers and ELF metadata
   without requiring `gdr init`.

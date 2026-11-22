@@ -24,6 +24,7 @@ from freertos.backtrace.unwind import (
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
@@ -89,7 +90,15 @@ class _LiveFrame:
         self._pc = pc
         self._registers = {f"r{index}": index for index in range(13)}
         self._registers.update(
-            {"sp": sp, "lr": 0x1001, "xpsr": xpsr, "msp": msp, "psp": psp}
+            {
+                "sp": sp,
+                "lr": 0x1001,
+                "xpsr": xpsr,
+                "msp": msp,
+                "psp": psp,
+                "psplim": 0,
+                "control": 2,
+            }
         )
 
     def pc(self) -> int:
@@ -422,6 +431,98 @@ def test_unavailable_inputs_never_reach_the_unwinder(monkeypatch, case, reason):
     report = bridge.backtrace(adapter, "worker", 3)
     assert report.stop_reason == reason and report.frames == []
     assert not report.complete and not report.truncated
+
+
+def test_m33_fpu_profile_and_live_saved_gates(monkeypatch):
+    for abi in ("aapcs32-vfp", "aapcs32"):
+        monkeypatch.setattr(
+            ports,
+            "cpu_of",
+            lambda _elf, _abi=abi: Cpu("armv8-m.mainline", "arm", "ok", abi=_abi),
+        )
+        macros = {
+            "configENABLE_FPU": "1",
+            "configENABLE_TRUSTZONE": "0",
+            "configENABLE_MPU": "0",
+            "configENABLE_MVE": "0",
+        }
+        selected = ports.select_context(_elf(), macros=macros)
+        assert selected.reason == "ok"
+        assert selected.context == ARMV8M_MAINLINE_INTEGER
+        assert selected.alt_context == ARMV8M_MAINLINE_FPU
+
+        missing_sym = ports.select_context(
+            _elf(
+                lambda name: (
+                    None if name in ("vPortEnableVFP", "prvSetupFPU") else 0x1000
+                )
+            ),
+            macros=macros,
+        )
+        assert missing_sym.context is None
+        assert missing_sym.reason == "unrecognizable-stack-frame-layout"
+
+    adapter, task = _session(monkeypatch, isa="armv8-m.mainline")
+    monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [(0, task.address)])
+    monkeypatch.setattr(
+        bridge,
+        "gdb",
+        _live_gdb(
+            _LiveFrame(
+                pc=0x1004, sp=0x2080, xpsr=0x01000000, msp=0x203FF000, psp=0x2080
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bridge, "unwind_chain", lambda *_a, **_k: pytest.fail("unsafe unwind")
+    )
+
+    monkeypatch.setattr(bridge, "_read_armv8m_regs", lambda: (0x2004, 0x02))
+    bad_psplim = bridge.backtrace(adapter, "worker")
+    assert bad_psplim.stop_reason == "unsupported-extension-context"
+
+    monkeypatch.setattr(bridge, "_read_armv8m_regs", lambda: (0x2000, 0x03))
+    unpriv = bridge.backtrace(adapter, "worker")
+    assert unpriv.stop_reason == "unsupported-extension-context"
+
+    monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [])
+    adapter._context_selection = lambda: StackContextSelection(
+        "armv8-m.mainline",
+        "arm",
+        ARMV8M_MAINLINE_INTEGER,
+        "ok",
+        alt_context=ARMV8M_MAINLINE_FPU,
+    )
+    called: dict[str, Any] = {}
+
+    def fake_cm33(top, _read, **kwargs):
+        called["top"] = top
+        called["basic"] = kwargs["basic"]
+        called["fpu"] = kwargs["fpu"]
+        return SeedFrame(0x1004, 0x2150, {13: 0x2150}), "ok"
+
+    monkeypatch.setattr(bridge, "decode_cm33_saved_context", fake_cm33)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"fn_{pc:#x}")
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda seed, _meta, **_kwargs: UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),),
+            "task-exit",
+            True,
+            False,
+            "saved",
+            "cfi",
+        ),
+    )
+    saved = bridge.backtrace(adapter, "worker")
+    assert saved.complete and saved.source == "saved"
+    assert called == {
+        "top": task.top_of_stack,
+        "basic": ARMV8M_MAINLINE_INTEGER,
+        "fpu": ARMV8M_MAINLINE_FPU,
+    }
 
 
 def test_m33_profile_requires_explicit_configuration(monkeypatch):

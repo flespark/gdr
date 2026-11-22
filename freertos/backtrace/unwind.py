@@ -16,6 +16,7 @@ from core.backtrace.unwind_arm import BASIC_EXC_RETURNS, EXTENDED_EXC_RETURNS
 from core.elf import Endian, Isa, Reader
 from core.stack_frame_parser import (
     SavedStackContext,
+    armv8m_psplim_valid,
     decode_profile_slots,
     read_block,
     read_slot,
@@ -97,6 +98,46 @@ ARMV8M_MAINLINE_SMP_INTEGER = _armv8m_mainline_non_mpu(
     "freertos/armv8-m.mainline/non-mpu-smp"
 )
 
+# Armv8-M Mainline FPU port (ARM_CM33_NTZ, configENABLE_FPU == 1):
+# pxTopOfStack[0]=PSPLIM, [4]=EXC_RETURN, [8..36]=r4-r11, [40..100]=s16-s31,
+# followed by the 0x68-byte extended hardware frame at +104..+208.
+ARMV8M_MAINLINE_FPU = SavedStackContext(
+    profile_id="freertos/armv8-m.mainline/non-mpu-fpu",
+    validation="live",
+    pointer_size=4,
+    registers=tuple((register, 8 + (register - 4) * 4) for register in range(4, 12))
+    + ((0, 104), (1, 108), (2, 112), (3, 116), (12, 120)),
+    pc_offset=128,
+    lr_offset=124,
+    status_offset=132,
+    sp_offset=208,
+    context_span=(0, 208),
+    fill_word=_ARM_FILL,
+    fpu=True,
+    initial_registers=(
+        0x04040404,
+        0x05050505,
+        0x06060606,
+        0x07070707,
+        0x08080808,
+        0x09090909,
+        0x10101010,
+        0x11111111,
+    ),
+)
+
+CM33_PSPLIM_SLOT = 0
+CM33_EXC_RETURN_SLOT = 4
+_CM33_MPU_PSPLIM_OFFSET = -12
+_ARMV8M_MAINLINE_PROFILES = frozenset(
+    (
+        ARMV8M_MAINLINE_INTEGER.profile_id,
+        ARMV8M_MAINLINE_SMP_INTEGER.profile_id,
+        ARMV8M_MAINLINE_FPU.profile_id,
+        "freertos/armv8-m.mainline/mpu-v2",
+    )
+)
+
 # Armv8-M Mainline MPU wrappers v2: the port's context array ends at
 # pxTopOfStack.  The hardware frame copy is at -48..-21, PC at -24, and the
 # original PSP slot at -16; that PSP names the hardware frame, so the
@@ -172,7 +213,7 @@ def decode_cm4f_saved_context(
     read: Reader,
     *,
     basic: SavedStackContext,
-    fpu: SavedStackContext,
+    fpu: SavedStackContext | None = None,
     endian: Endian,
     stack_low: int | None = None,
     stack_high: int | None = None,
@@ -196,6 +237,8 @@ def decode_cm4f_saved_context(
     if saved_lr is None:
         return None, "saved-context-unreadable"
     if saved_lr in EXTENDED_EXC_RETURNS:
+        if fpu is None:
+            return None, "unsupported-extension-context"
         context = fpu
     elif saved_lr in BASIC_EXC_RETURNS:
         context = basic
@@ -247,6 +290,139 @@ RISCV32_INTEGER = build_riscv_saved_context("riscv32", 4)
 RISCV64_INTEGER = build_riscv_saved_context("riscv64", 8)
 
 
+def decode_cm33_saved_context(
+    top: int,
+    read: Reader,
+    *,
+    basic: SavedStackContext,
+    fpu: SavedStackContext | None = None,
+    endian: Endian,
+    stack_low: int | None = None,
+    stack_high: int | None = None,
+    context_low: int | None = None,
+    context_high: int | None = None,
+    exit_pc: int | None = None,
+    entry_pc: int | None = None,
+) -> tuple[SeedFrame | None, str]:
+    """Decode one ARM_CM33_NTZ task, enforcing PSPLIM and EXC_RETURN invariants."""
+    saved_lr = read_slot(
+        read,
+        top + CM33_EXC_RETURN_SLOT,
+        4,
+        endian,
+        stack_low=stack_low,
+        stack_high=stack_high,
+    )
+    if saved_lr is None:
+        return None, "saved-context-unreadable"
+    if saved_lr in EXTENDED_EXC_RETURNS:
+        if fpu is None:
+            return None, "unsupported-extension-context"
+        context = fpu
+    elif saved_lr in BASIC_EXC_RETURNS:
+        context = basic
+    elif (saved_lr & 0xF0000000) == 0xF0000000:
+        return None, "unsupported-extension-context"
+    else:
+        return None, "saved-context-exc-return-unproven"
+    return decode_saved_context(
+        context,
+        top,
+        read,
+        endian=endian,
+        stack_low=stack_low,
+        stack_high=stack_high,
+        context_low=context_low,
+        context_high=context_high,
+        exit_pc=exit_pc,
+        entry_pc=entry_pc,
+    )
+
+
+def validate_armv8m_live_registers(
+    psplim: int,
+    control: int,
+    *,
+    mpu: bool,
+    exception_number: int,
+    sp: int,
+    process_sp: int | None,
+    stack_low: int | None,
+    stack_high: int | None,
+) -> str | None:
+    """Validate Armv8-M Mainline hardware ``PSPLIM`` and ``CONTROL`` for a live seed."""
+    control_mask = ~0x7 if mpu else ~0x6
+    if (psplim & 0x7) != 0 or psplim < 0 or (control & control_mask) != 0:
+        return "unsupported-extension-context"
+    if not exception_number:
+        if (control & 0x2) != 0x2 or not armv8m_psplim_valid(
+            psplim, stack_low=stack_low, sp=sp
+        ):
+            return "unsupported-extension-context"
+        return None
+    if (
+        stack_low is None
+        or stack_high is None
+        or (process_sp is not None and stack_low <= process_sp <= stack_high)
+    ) and not armv8m_psplim_valid(psplim, stack_low=stack_low, sp=process_sp):
+        return "unsupported-extension-context"
+    return None
+
+
+def validate_cm33_stage_psplim(
+    port: str,
+    seed_kind: str,
+    stage_owner: str,
+    *,
+    read: Reader,
+    task_top: int,
+    psp: int,
+    sw_size: int,
+    task_low: int,
+    task_high: int,
+    seed_sp: int,
+    live_psplim: int | None,
+) -> str | None:
+    """Enforce CM33 hardware and saved PSPLIM invariants across switch stages."""
+    if not port.startswith("arm-cm33"):
+        return None
+    if live_psplim is not None and (live_psplim < 0 or (live_psplim & 0x7) != 0):
+        return "unsupported-extension-context"
+    if seed_kind == "live-frame":
+        if live_psplim is not None and not armv8m_psplim_valid(
+            live_psplim, stack_low=task_low, sp=seed_sp
+        ):
+            return "unsupported-extension-context"
+        return None
+    if seed_kind == "saved-tcb" and stage_owner == "old":
+        if live_psplim is not None and not armv8m_psplim_valid(
+            live_psplim, stack_low=task_low, sp=seed_sp
+        ):
+            return "unsupported-extension-context"
+        return None
+    if seed_kind in ("saved-tcb", "first-start-saved"):
+        return None
+    slot_base = psp - sw_size if seed_kind == "saved-buffer" else task_top
+    saved_psplim = read_slot(
+        read,
+        slot_base + CM33_PSPLIM_SLOT,
+        4,
+        "little",
+        stack_low=task_low,
+        stack_high=task_high,
+    )
+    if saved_psplim is None:
+        return "scheduler-context-unreadable"
+    if not armv8m_psplim_valid(saved_psplim, stack_low=task_low, sp=seed_sp):
+        return "unsupported-extension-context"
+    if live_psplim is not None and (
+        live_psplim != saved_psplim
+        or not armv8m_psplim_valid(live_psplim, stack_low=task_low, sp=seed_sp)
+    ):
+        return "unsupported-extension-context"
+    return None
+
+
 def decode_saved_context(
     context: SavedStackContext,
     top: int,
@@ -283,6 +459,24 @@ def decode_saved_context(
     lr = decoded.lr
     code_pc = decoded.code_pc
     sp = decoded.sp
+    if context.profile_id in _ARMV8M_MAINLINE_PROFILES:
+        psplim_off = (
+            _CM33_MPU_PSPLIM_OFFSET if context.context_in_tcb else CM33_PSPLIM_SLOT
+        )
+        psplim_low = context_low if context.context_in_tcb else stack_low
+        psplim_high = context_high if context.context_in_tcb else stack_high
+        saved_psplim = read_slot(
+            read,
+            top + psplim_off,
+            4,
+            endian,
+            stack_low=psplim_low,
+            stack_high=psplim_high,
+        )
+        if saved_psplim is None:
+            return None, "saved-context-unreadable"
+        if not armv8m_psplim_valid(saved_psplim, stack_low=stack_low, sp=sp):
+            return None, "unsupported-extension-context"
     unstarted = False
     if context.status_offset is not None:
         core = tuple(registers.get(register, 0) for register in range(4, 12))

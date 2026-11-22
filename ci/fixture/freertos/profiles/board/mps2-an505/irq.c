@@ -53,7 +53,23 @@ enum {
     GDR_IRQ_SCENARIO_SINGLE = 0,
     GDR_IRQ_SCENARIO_NESTED = 1,
     GDR_IRQ_SCENARIO_ALIGN = 2,
+    GDR_IRQ_SCENARIO_FP = 3,
 };
+
+static inline void gdr_irq_fpca_write(int set)
+{
+#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
+    uint32_t control;
+    __asm__ volatile("mrs %0, control" : "=r"(control) :: "memory");
+    if (set)
+        control |= 1U << 2;
+    else
+        control &= ~(1U << 2);
+    __asm__ volatile("msr control, %0" ::"r"(control) : "memory");
+#else
+    (void)set;
+#endif
+}
 
 static void gdr_irq_timer_stop(gdr_cmsdk_timer_t *timer)
 {
@@ -91,6 +107,11 @@ __attribute__((noinline, used)) void gdr_irq_nested_leaf(void)
 }
 
 __attribute__((noinline, used)) void gdr_irq_align_leaf(void)
+{
+    __asm__ volatile("" ::: "memory");
+}
+
+__attribute__((noinline, used)) void gdr_irq_fp_leaf(void)
 {
     __asm__ volatile("" ::: "memory");
 }
@@ -137,6 +158,10 @@ __attribute__((noinline, used)) void gdr_irq0_body(void)
         break;
     case GDR_IRQ_SCENARIO_ALIGN:
         gdr_irq_align_leaf();
+        gdr_irq_done = 1;
+        break;
+    case GDR_IRQ_SCENARIO_FP:
+        gdr_irq_fp_leaf();
         gdr_irq_done = 1;
         break;
     default:
@@ -221,11 +246,24 @@ static void gdr_irq_task(void *argument)
             continue;
         }
 
+        gdr_irq_fpca_write(0);
         gdr_irq_scenario = GDR_IRQ_SCENARIO_ALIGN;
         gdr_irq_done = 0;
         gdr_irq_timer_arm(gdr_timer0, 100000U);
         gdr_irq_misaligned_wait();
         vTaskDelay(pdMS_TO_TICKS(100));
+#if defined(configENABLE_FPU) && (configENABLE_FPU == 1)
+        if (gdr_irq_gate == 0U) {
+            continue;
+        }
+        gdr_irq_fpca_write(0);
+        gdr_irq_scenario = GDR_IRQ_SCENARIO_FP;
+        gdr_irq_done = 0;
+        gdr_irq_fpca_write(1);
+        gdr_irq_timer_arm(gdr_timer0, 100000U);
+        gdr_irq_wait();
+        vTaskDelay(pdMS_TO_TICKS(100));
+#endif
     }
 }
 

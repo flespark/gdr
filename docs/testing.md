@@ -211,9 +211,10 @@ Verification spans three complementary execution arms:
      (`soft`) on Cortex-M4; verifies `aapcs32` integer and `aapcs32`/`aapcs32-vfp`
      extended FPU task/handler frames (`0xFFFFFFE1/E9/ED`), synchronous faults,
      SysTick, and CM3/CM4F scheduler stages.
-   - **Single-core Armv8-M Mainline (`mps2-an505` / `11.3.1` / `full`)**: Builds
+   - **Single-core Armv8-M Mainline (`mps2-an505` / `11.3.1` / `full`, `fpu`)**: Builds
      single-core `ARM_CM33_NTZ/non_secure` with single-Secure-state QEMU execution;
-     verifies external IRQ `19`/`20`, SysTick, synchronous faults, and CM33 scheduler transitions.
+     verifies integer and FPU (`aapcs32-vfp`) saved frames (`0xFFFFFFFD`/`ED`),
+     external IRQ `19`/`20`, `FPCA` lazy stacking, SysTick, synchronous faults, and CM33 basic/FPU scheduler transitions.
    - **RISC-V (`qemu-virt-rv32` `10.3.1`/`10.4.6`/`11.1.0`/`11.3.1` `base`, `qemu-virt-rv64` `10.4.6`/`11.1.0`/`11.3.1` `rv64`)**:
      Builds `rv32imac_zicsr` (`ilp32`) and `rv64imac_zicsr` (`lp64`, 64-bit ticks);
      verifies saved/live CFI unwinding across `10.3.x–11.3.1` trap layouts, M-mode IRQ traps, synchronous `ecall` yield,
@@ -252,7 +253,7 @@ test rejection behavior, not live port support.
 | RTOS port | Proven task ownership and stack spans, target-specific capacity/vector evidence, ISA hook selection and fail-before-unwind refusals; actual IRQ, nested handler and handler C-call chains; raw frame oracles and unchanged target state. | `tests/unit/freertos/test_backtrace_armv6m.py`, `test_backtrace_gdb.py` and `tests/integration/freertos/test_backtrace.py`. |
 
 The live IRQ tests select `freertos/microbit/11.1.0/full`, `mps2-an385/full`,
-`mps2-an386/11.3.1/{fpu,softfp,soft}`, or `mps2-an505/11.3.1/full` (gated by `gdr_irq_gate`).
+`mps2-an386/11.3.1/{fpu,softfp,soft}`, or `mps2-an505/11.3.1/{full,fpu}` (gated by `gdr_irq_gate`).
 Their oracle reads GDB MSP/PSP, xPSR, CONTROL, raw hardware frames, task bounds
 and linker symbols independently of GDR's transition result. Register,
 task/IRQ-stack hashes, current TCB and tick snapshots must remain unchanged

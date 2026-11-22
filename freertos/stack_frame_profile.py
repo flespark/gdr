@@ -37,6 +37,7 @@ from .backtrace.unwind import (
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_FPU,
     ARMV8M_MAINLINE_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
@@ -1031,6 +1032,36 @@ def _select_arm_context(
                 (f"{cpu.abi} ABI", "port symbols"),
                 alt_context=ARMV7M_CM4F_FPU,
             )
+        if (
+            cpu.isa == "armv8-m.mainline"
+            and cpu.abi in ("aapcs32", "aapcs32-vfp")
+            and not smp
+            and not mpu
+            and (macros or {}).get("configENABLE_FPU") == "1"
+        ):
+            reason = _arm_configuration_evidence(
+                macros or {}, mpu=False, allow_fpu=True
+            )
+            if reason is not None:
+                return _selection_result(cpu, None, reason)
+            if not (ARMV8M_MAINLINE_INTEGER.verified and ARMV8M_MAINLINE_FPU.verified):
+                return _selection_result(cpu, None, "unverified-port")
+            if any(
+                elf.symbol_address(name) is None
+                for name in ("PendSV_Handler", "pxPortInitialiseStack", "prvSetupFPU")
+            ):
+                return _selection_result(cpu, None, "unrecognizable-stack-frame-layout")
+            return _selection_result(
+                cpu,
+                ARMV8M_MAINLINE_INTEGER,
+                "ok",
+                (
+                    f"{cpu.abi} ABI",
+                    "port symbols",
+                    "kernel configuration",
+                ),
+                alt_context=ARMV8M_MAINLINE_FPU,
+            )
         if cpu.abi == "aapcs32-vfp":
             return _selection_result(
                 cpu, None, "unsupported-extension-context", ("aapcs32-vfp ABI",)
@@ -1093,16 +1124,19 @@ def _arm_profile(isa: str | None, *, smp: bool, mpu: bool) -> SavedStackContext 
     return None
 
 
-def _arm_configuration_evidence(macros: Mapping[str, str], *, mpu: bool) -> str | None:
+def _arm_configuration_evidence(
+    macros: Mapping[str, str], *, mpu: bool, allow_fpu: bool = False
+) -> str | None:
     """Return a rejection reason for an unsupported Armv8-M Mainline configuration."""
     required = ("configENABLE_FPU", "configENABLE_TRUSTZONE", "configENABLE_MPU")
     if mpu:
         required += ("configUSE_MPU_WRAPPERS_V1",)
     if any(name not in macros for name in required):
         return "port-configuration-unavailable"
-    for name in ("configENABLE_FPU", "configENABLE_MVE"):
-        if macros.get(name, "0") != "0":
-            return "unsupported-extension-context"
+    if not allow_fpu and macros.get("configENABLE_FPU", "0") != "0":
+        return "unsupported-extension-context"
+    if macros.get("configENABLE_MVE", "0") != "0":
+        return "unsupported-extension-context"
     if macros["configENABLE_TRUSTZONE"] != "0":
         return "port-configuration-unavailable"
     if macros.get("configENABLE_MPU") != ("1" if mpu else "0") or (

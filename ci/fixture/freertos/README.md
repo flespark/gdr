@@ -12,7 +12,7 @@ are described in [testing](../../../docs/testing.md).
 | Live kernel-direct | `build.sh` | Clean `FreeRTOS-Kernel` tag, shared application, board and config headers. |
 | File-only `snapshot` | `build.sh` | Kernel headers and `profiles/config/snapshot/` data-only sources. |
 | Isolated `eh-frame` | `../../bare/eh-frame/build.sh` | GNU assembly and linker script; no kernel checkout. |
-| M-profile IRQ / sched / fault fixtures | `build.sh` | Board-specific `irq.c`, `sched.c` and `fault.c` under `profiles/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) plus linker-reserved `.irq_stack`, all linked into `full` (and `fpu`/`softfp`/`soft` on `mps2-an386`) under explicit runtime gate symbols. |
+| M-profile IRQ / sched / fault fixtures | `build.sh` | Board-specific `irq.c`, `sched.c` and `fault.c` under `profiles/board/<target>/` (`microbit`, `mps2-an385`, `mps2-an386`, `mps2-an505`) plus linker-reserved `.irq_stack`, all linked into `full` (`fpu`/`softfp`/`soft` on `mps2-an386`, `fpu` on `mps2-an505`) under explicit runtime gate symbols. |
 
 The shared runner supplies explicit source, build, compiler and install
 paths. `build.sh` rejects a modified or mismatched tag checkout and never
@@ -29,7 +29,7 @@ preparation.
 | `microbit` | Armv6-M | `11.1.0` | `full` | `portable/GCC/ARM_CM0`, `profiles/board/microbit/` | `sched` (PendSV/SVC stages), `irq` (single, nested, 4B `STKALIGN`), `fault` (`fault-frame-imprecise` on M0 `udf`), saved/live Thumb-1 + EHABI |
 | `mps2-an385` | Armv7-M | `10.3.1`, `10.4.6`, `10.5.1`, `11.1.0` | `10.3.1`: config matrix (`base`, `full`, `tick16`, heap/static/stream); `10.4.6–10.5.1`: `base`; `11.1.0`: `base`, `full`, `tick16`, `streams` | `portable/GCC/ARM_CM3`, `profiles/board/mps2-an385/` | `sched` (cooperative/tick/nested-IRQ PendSV & `vTaskSwitchContext`), `irq` (single, nested, 4B `STKALIGN`, SysTick `xTaskIncrementTick`), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`), EHABI `.ARM.exidx` |
 | `mps2-an386` | Armv7E-M | `11.3.1` | `fpu`, `softfp`, `soft` | `portable/GCC/ARM_CM4F` (`fpu`, `softfp`), `portable/GCC/ARM_CM3` (`soft`), `profiles/board/mps2-an386/` | `sched` (CM3 integer + CM4F basic/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking on `fpu`/`softfp`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`, `MemManage` `DACCVIOL`) |
-| `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an505/` | `sched` (single Secure state CM33 stages), `irq` (single, nested, 4B `STKALIGN`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
+| `mps2-an505` | Armv8-M Mainline | `11.3.1` | `full`, `fpu` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an505/` | `sched` (single Secure state CM33 integer/FPU stages), `irq` (single, nested, 4B `STKALIGN`, FP `FPCA` lazy stacking on `fpu`, SysTick), `fault` (`UNDEFINSTR`, precise `BusFault`; MemManage N/A on QEMU AN505); TZ dual-world unsupported |
 | `mps2-an521` | Armv8-M Mainline | `11.3.1`, `11.1.0` | `11.3.1`: `smp`, `mpu`; `11.1.0`: `snapshot` | `portable/GCC/ARM_CM33_NTZ/non_secure`, `profiles/board/mps2-an521/` | Saved/live task unwind on `smp` (with `smp-no-context` cross-core refusal) and `mpu` (`mpu-pool`); `snapshot` file-only negative ELF; SMP/MPU handler cross-stack unsupported |
 | — | Armv8-M Baseline | — | — | — | No QEMU Cortex-M23 CPU/machine model; verified in unit tests only |
 | `qemu-virt-rv32` | RV32 | `10.3.1`, `10.4.6`, `11.1.0`, `11.3.1` | `base` | `portable/GCC/RISC-V`, `profiles/board/qemu-virt-rv32/` | Saved/live CFI (`ilp32`), M-mode `freertos_risc_v_trap_handler` IRQs, `ecall` yield, `xPortStartFirstTask`, trap prologue, `vTaskSwitchContext`, `processed_source` restore stages across `10.3.x–11.3.1` trap layouts (non-`ecall` sync faults fail closed); no vendor IRQ/fault extensions |
@@ -158,8 +158,8 @@ Links `V11.3.1` `portable/GCC/ARM_CM4F` (`fpu`, `softfp`) or
 `.irq_stack`, CMSDK Timer0/1). Variants `fpu` and `softfp` enable `configENABLE_FPU 1`
 and add `gdr_fpu_task` executing VFP instructions before blocking; `soft` sets
 `configENABLE_FPU 0` because `ARM_CM4F/port.c` rejects integer-only builds without
-`__VFP_FP__`. All three link `irq.c`, `sched.c`, and `fault.c`; AN505/AN521 models
-lack FPU hardware so FPU coverage lives here.
+`__VFP_FP__`. All three link `irq.c`, `sched.c`, and `fault.c`; AN521 runs
+integer-only `smp`/`mpu` while AN505 covers CM33 FPU below.
 
 ### Build option
 
@@ -180,22 +180,24 @@ GDB uses `arm`.
 
 ```bash
 python3 ci/test.py run freertos mps2-an505 11.3.1 full
+python3 ci/test.py run freertos mps2-an505 11.3.1 fpu
 ```
 
 ### RTOS config
 
 Links `V11.3.1` `portable/GCC/ARM_CM33_NTZ/non_secure` single-core Secure-only
-(`configENABLE_TRUSTZONE=0`, `configENABLE_MPU=0`, `configENABLE_FPU=0`,
-`configRUN_FREERTOS_SECURE_ONLY=1`) with `profiles/board/mps2-an505/`
-(`configCPU_CLOCK_HZ=20000000`, `configPRIO_BITS=8`). Maps 4 MiB flash at
-`0x10000000` (Secure SSRAM alias), 2 MiB RAM at `0x28000000`, top 16 KiB
-`.irq_stack`, and Secure APB Timer0 (`0x50000000`, IRQ3 / exception 19) and
-Timer1 (`0x50001000`, IRQ4 / exception 20).
+(`configENABLE_TRUSTZONE=0`, `configENABLE_MPU=0`, `configENABLE_FPU=0` in `full`
+or `1` in `fpu`, `configRUN_FREERTOS_SECURE_ONLY=1`) with
+`profiles/board/mps2-an505/` (`configCPU_CLOCK_HZ=20000000`, `configPRIO_BITS=8`).
+Maps 4 MiB flash at `0x10000000` (Secure SSRAM alias), 2 MiB RAM at
+`0x28000000`, top 16 KiB `.irq_stack`, and Secure APB Timer0 (`0x50000000`,
+IRQ3 / exception 19) and Timer1 (`0x50001000`, IRQ4 / exception 20).
 
 ### Build option
 
-Built with `arm-none-eabi-*`, `-mcpu=cortex-m33 -mthumb -mfloat-abi=soft -Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`.
-Links `irq.c`, `sched.c`, and `fault.c` into `full`.
+Built with `arm-none-eabi-*`, `-mcpu=cortex-m33 -mthumb` plus `-mfloat-abi=soft`
+(`full`), `-mfloat-abi=hard -mfpu=fpv5-sp-d16` (`fpu`), or `-mfloat-abi=softfp -mfpu=fpv5-sp-d16` (`softfp`), and `-Og -g3 -ffunction-sections -fdata-sections -fno-lto -funwind-tables -Wall -Wextra -Werror -std=c11`.
+Links `irq.c`, `sched.c`, and `fault.c` into `full`, `fpu`, and `softfp`.
 
 ### QEMU boot
 
@@ -204,8 +206,8 @@ GDB uses `arm`.
 
 ### Unwind testcase
 
-- **Scheduled (`gdr_sched_gate`)**: `ARM_CM33` PendSV/SVC transition stages and `vTaskSwitchContext` ownership in single Secure state (dual-world TZ switching is unsupported).
-- **IRQ (`gdr_irq_gate`)**: `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, and SysTick cross-stack unwind using exceptions 19/20.
+- **Scheduled (`gdr_sched_gate`)**: `ARM_CM33` basic (`full`) and `arm-cm33-fpu` (`fpu`/`softfp`) PendSV/SVC transition stages (`s16-s31` / `EXC_RETURN`) and `vTaskSwitchContext` ownership in single Secure state (dual-world TZ switching is unsupported).
+- **IRQ (`gdr_irq_gate`)**: `GDR_IRQ_SCENARIO_SINGLE`, `GDR_IRQ_SCENARIO_NESTED`, `GDR_IRQ_SCENARIO_ALIGN`, `GDR_IRQ_SCENARIO_FP` (`FPCA` lazy stacking across MSP on `fpu`/`softfp`), and SysTick cross-stack unwind using exceptions 19/20.
 - **Fault (`gdr_fault_gate`)**: `GDR_FAULT_SCENARIO_UNDEFINSTR` and `GDR_FAULT_SCENARIO_BUS` (`0xA0000000` precise BusFault); MemManage `DACCVIOL` is omitted on AN505 (verified on AN385/AN386).
 
 ## `mps2-an521` (Armv8-M Mainline)

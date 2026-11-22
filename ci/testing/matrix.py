@@ -151,6 +151,7 @@ FREERTOS_PORTS = (
     Lane("freertos", "mps2-an386", "11.3.1", "soft"),
     Lane("freertos", "mps2-an386", "11.3.1", "softfp"),
     Lane("freertos", "mps2-an505", "11.3.1", "full"),
+    Lane("freertos", "mps2-an505", "11.3.1", "fpu"),
     Lane("freertos", "qemu-virt-rv64", "11.1.0", "rv64"),
     Lane("freertos", "microbit", "11.1.0", "full"),
     Lane("freertos", "qemu-virt-rv32", "11.1.0", "base"),

@@ -4,10 +4,11 @@
 #ifndef FREERTOS_CONFIG_H
 #define FREERTOS_CONFIG_H
 
+#define configENABLE_FPU 1
+
 #include "gdr_board.h"
 
 #define configNUMBER_OF_CORES 1
-#define configENABLE_FPU 1
 #define configENABLE_MPU 0
 #define configENABLE_TRUSTZONE 0
 #define configRECORD_STACK_HIGH_ADDRESS 1

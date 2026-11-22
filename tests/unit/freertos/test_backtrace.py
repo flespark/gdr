@@ -6,13 +6,17 @@ from freertos.backtrace.unwind import (
     ARMV7M_CM4F_BASIC,
     ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_FPU,
+    ARMV8M_MAINLINE_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
     RISCV32_INTEGER,
     RISCV64_INTEGER,
     decode_cm4f_saved_context,
+    decode_cm33_saved_context,
     decode_saved_context,
     initial_context,
+    validate_armv8m_live_registers,
 )
 
 
@@ -461,3 +465,173 @@ def test_cm4f_unreadable_exc_return_slot_is_refused():
 def test_cm4f_basic_and_fpu_profiles_have_distinct_ids():
     assert ARMV7M_CM4F_BASIC.profile_id != ARMV7M_CM4F_FPU.profile_id
     assert ARMV7M_CM4F_FPU.fpu and not ARMV7M_CM4F_BASIC.fpu
+
+
+def _write_cm33_hw_frame(
+    memory: _Memory, base: int, *, pc: int = 0x1001, r0: int = 0x55
+) -> None:
+    for idx, val in enumerate((r0, 0x2000, 0x100, 0x200, 0x300, 0x400, pc, 0x61000000)):
+        memory.word(base + idx * 4, val)
+
+
+def test_cm33_saved_context_basic_fpu_and_refusals():
+    memory = _Memory()
+    top = 0x2000
+    memory.word(top, 0x1000)  # PSPLIM
+    memory.word(top + 4, 0xFFFFFFFD)  # basic EXC_RETURN
+    for i in range(8):
+        memory.word(top + 8 + i * 4, 0x10 + i)
+    _write_cm33_hw_frame(memory, top + 40, r0=0x11)
+    seed, reason = decode_cm33_saved_context(
+        top,
+        memory,
+        basic=ARMV8M_MAINLINE_INTEGER,
+        fpu=ARMV8M_MAINLINE_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+        exit_pc=0x400,
+    )
+    assert reason == "ok"
+    assert seed is not None
+    assert seed.sp == top + 72
+    assert seed.regs[0] == 0x11
+
+    fpu_top = 0x2400
+    memory.word(fpu_top, 0x1000)  # PSPLIM
+    memory.word(fpu_top + 4, 0xFFFFFFED)  # FPU EXC_RETURN (bit4=0)
+    for i in range(8):
+        memory.word(fpu_top + 8 + i * 4, 0x20 + i)
+    for i in range(16):
+        memory.word(fpu_top + 40 + i * 4, 0x80 + i)
+    _write_cm33_hw_frame(memory, fpu_top + 104, r0=0x22)
+    fpu_seed, fpu_reason = decode_cm33_saved_context(
+        fpu_top,
+        memory,
+        basic=ARMV8M_MAINLINE_INTEGER,
+        fpu=ARMV8M_MAINLINE_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+        exit_pc=0x400,
+    )
+    assert fpu_reason == "ok"
+    assert fpu_seed is not None
+    assert fpu_seed.sp == fpu_top + 208
+    assert fpu_seed.regs[0] == 0x22
+
+    memory.word(top + 4, 0xFFFFFFBC)  # Non-Secure / invalid EXC_RETURN
+    ns_seed, ns_reason = decode_cm33_saved_context(
+        top,
+        memory,
+        basic=ARMV8M_MAINLINE_INTEGER,
+        fpu=ARMV8M_MAINLINE_FPU,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+    )
+    assert ns_seed is None
+    assert ns_reason == "unsupported-extension-context"
+
+    memory.word(top + 4, 0xFFFFFFFD)
+    for bad_psplim in (0x1004, 0x0FF8, 0x2050):
+        memory.word(top, bad_psplim)
+        bad_seed, bad_reason = decode_cm33_saved_context(
+            top,
+            memory,
+            basic=ARMV8M_MAINLINE_INTEGER,
+            fpu=ARMV8M_MAINLINE_FPU,
+            endian="little",
+            stack_low=0x1000,
+            stack_high=0x3000,
+        )
+        assert bad_seed is None
+        assert bad_reason == "unsupported-extension-context"
+
+
+def test_armv8m_saved_psplim_rejected_on_mpu_and_smp_and_live_registers():
+    memory = _Memory()
+    top = 0x2000
+    memory.word(top, 0x1004)  # misaligned PSPLIM
+    memory.word(top + 4, 0xFFFFFFFD)
+    _write_cm33_hw_frame(memory, top + 40)
+    smp_seed, smp_reason = decode_saved_context(
+        ARMV8M_MAINLINE_SMP_INTEGER,
+        top,
+        memory,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+    )
+    assert smp_seed is None
+    assert smp_reason == "unsupported-extension-context"
+
+    _write_cm33_hw_frame(memory, top - 48)
+    memory.word(top - 16, 0x2000)  # sp_slot
+    memory.word(top - 12, 0x0FF8)  # below stack_low at MPU -12 PSPLIM slot
+    memory.word(top - 8, 0xFFFFFFFD)
+    mpu_seed, mpu_reason = decode_saved_context(
+        ARMV8M_MAINLINE_MPU_INTEGER,
+        top,
+        memory,
+        endian="little",
+        stack_low=0x1000,
+        stack_high=0x3000,
+        context_low=0x1000,
+        context_high=0x3000,
+    )
+    assert mpu_seed is None
+    assert mpu_reason == "unsupported-extension-context"
+
+    assert (
+        validate_armv8m_live_registers(
+            0x1000,
+            0x02,
+            mpu=False,
+            exception_number=0,
+            sp=0x2000,
+            process_sp=0x2000,
+            stack_low=0x1000,
+            stack_high=0x3000,
+        )
+        is None
+    )
+    assert (
+        validate_armv8m_live_registers(
+            0x1004,
+            0x02,
+            mpu=False,
+            exception_number=0,
+            sp=0x2000,
+            process_sp=0x2000,
+            stack_low=0x1000,
+            stack_high=0x3000,
+        )
+        == "unsupported-extension-context"
+    )
+    assert (
+        validate_armv8m_live_registers(
+            0x1000,
+            0x03,
+            mpu=False,
+            exception_number=0,
+            sp=0x2000,
+            process_sp=0x2000,
+            stack_low=0x1000,
+            stack_high=0x3000,
+        )
+        == "unsupported-extension-context"
+    )
+    assert (
+        validate_armv8m_live_registers(
+            0x1000,
+            0x03,
+            mpu=True,
+            exception_number=0,
+            sp=0x2000,
+            process_sp=0x2000,
+            stack_low=0x1000,
+            stack_high=0x3000,
+        )
+        is None
+    )

@@ -40,6 +40,7 @@ PROFILE_ID = "freertos/armv7-m/arm-cm3-pendsv-v1"
 CM0_PROFILE_ID = "freertos/armv6-m/arm-cm0-pendsv-v1"
 CM4F_PROFILE_ID = "freertos/armv7e-m/arm-cm4f-pendsv-v1"
 CM33_PROFILE_ID = "freertos/armv8-m.mainline/arm-cm33-pendsv-v1"
+CM33_FPU_PROFILE_ID = "freertos/armv8-m.mainline/arm-cm33-fpu-pendsv-v1"
 
 _CORE_REGLIST = 0xFF0
 _CORE_LR_REGLIST = 0x4FF0
@@ -518,25 +519,54 @@ def _has_sized_symbol(elf: ElfImage, name: str) -> bool:
     return any(symbol.name == name and symbol.size > 0 for symbol in elf.symbols)
 
 
+def _stream_has_fpu_stacking(elf: ElfImage, symbol: str) -> bool:
+    span = _symbol_span(elf, symbol)
+    if not isinstance(span, tuple):
+        return False
+    code_end = _code_stream_end(elf, span[0], span[1])
+    addr = span[0]
+    count = 0
+    while addr < code_end and count < _MAX_PROFILE_INSTRUCTIONS:
+        decoded = _decode_thumb(elf, addr, code_end)
+        if isinstance(decoded, str):
+            break
+        if decoded.mnemonic in {"vstmdb", "vldmia"}:
+            return True
+        addr += decoded.size
+        count += 1
+    return False
+
+
 def _select_port(elf: ElfImage) -> str:
     """Identify which compiled FreeRTOS M-profile port the image carries."""
     if _has_sized_symbol(elf, "vStartFirstTask") or _has_sized_symbol(
         elf, "vRestoreContextOfFirstTask"
     ):
+        is_cm33 = False
         start_span = _symbol_span(elf, "vStartFirstTask")
         if isinstance(start_span, tuple):
             first = _decode_thumb(elf, start_span[0], start_span[1])
-            if not isinstance(first, str) and first.mnemonic == "ldr_literal":
-                return "arm-cm33"
-        pendsv_span = _symbol_span(elf, "PendSV_Handler")
-        if isinstance(pendsv_span, tuple):
-            second = _decode_thumb(elf, pendsv_span[0] + 4, pendsv_span[1])
-            if (
-                not isinstance(second, str)
-                and second.mnemonic == "mrs"
-                and second.operands.get("sysm") == _PSPLIM_SYSM
-            ):
-                return "arm-cm33"
+            is_cm33 = not isinstance(first, str) and first.mnemonic == "ldr_literal"
+        if not is_cm33:
+            pendsv_span = _symbol_span(elf, "PendSV_Handler")
+            if isinstance(pendsv_span, tuple):
+                for offset in (4, 14):
+                    if pendsv_span[0] + offset >= pendsv_span[1]:
+                        continue
+                    insn = _decode_thumb(elf, pendsv_span[0] + offset, pendsv_span[1])
+                    if (
+                        not isinstance(insn, str)
+                        and insn.mnemonic == "mrs"
+                        and insn.operands.get("sysm") == _PSPLIM_SYSM
+                    ):
+                        is_cm33 = True
+                        break
+        if is_cm33:
+            return (
+                "arm-cm33-fpu"
+                if _stream_has_fpu_stacking(elf, "PendSV_Handler")
+                else "arm-cm33"
+            )
         return "arm-cm0"
     for sym in ("PendSV_Handler", "SVC_Handler"):
         span = _symbol_span(elf, sym)
@@ -811,16 +841,44 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
             svc_exception_return_idx=9,
             start_first_svc_idx=3,
         )
-    if port == "arm-cm33":
+    if port in ("arm-cm33", "arm-cm33-fpu"):
+        fpu = port == "arm-cm33-fpu"
+        fpu_save = (
+            (
+                ("tst_imm", {"rn": 14, "imm": 16}),
+                ("it", {"firstcond": 0, "mask": 8}),
+                (
+                    "vstmdb",
+                    {"rn": 0, "single": True, "first": 16, "count": 16},
+                ),
+            )
+            if fpu
+            else ()
+        )
+        fpu_restore = (
+            (
+                ("tst_imm", {"rn": 3, "imm": 16}),
+                ("it", {"firstcond": 0, "mask": 8}),
+                (
+                    "vldmia",
+                    {"rn": 0, "single": True, "first": 16, "count": 16},
+                ),
+            )
+            if fpu
+            else ()
+        )
+        s_off = 3 if fpu else 0
+        r_off = 3 if fpu else 0
         return _PortSpec(
-            port="arm-cm33",
-            profile_id=CM33_PROFILE_ID,
+            port=port,
+            profile_id=CM33_FPU_PROFILE_ID if fpu else CM33_PROFILE_ID,
             pendsv_symbol="PendSV_Handler",
             svc_symbol="vRestoreContextOfFirstTask",
             start_first_symbol="vStartFirstTask",
             switch_symbol="vTaskSwitchContext",
             pendsv_expected=(
                 ("mrs", {"rd": 0, "sysm": _PSP_SYSM}),
+                *fpu_save,
                 ("mrs", {"rd": 2, "sysm": _PSPLIM_SYSM}),
                 ("mov", {"rd": 3, "rm": 14, "set_flags": False}),
                 (
@@ -856,6 +914,7 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                         reglist=_CM33_REGLIST,
                     ),
                 ),
+                *fpu_restore,
                 ("msr", {"rn": 2, "sysm": _PSPLIM_SYSM}),
                 ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
                 ("bx", {"rm": 3}),
@@ -897,21 +956,21 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("svc", {}),
                 ("nop", {}),
             ),
-            pendsv_tcb_literals=(4, 14),
+            pendsv_tcb_literals=(4 + s_off, 14 + s_off),
             svc_tcb_literals=(0,),
             start_vtor_literal=0,
-            basepri_mask_index=7,
+            basepri_mask_index=7 + s_off,
             pendsv_entry_idx=0,
-            pendsv_save_pending_idx=3,
-            pendsv_save_written_idx=6,
-            pendsv_writeback_idx=7,
-            pendsv_switch_call_idx=11,
-            pendsv_after_switch_idx=12,
-            pendsv_select_idx=16,
-            pendsv_saved_sp_idx=17,
-            pendsv_restored_pending_psp_idx=19,
+            pendsv_save_pending_idx=1 if fpu else 3,
+            pendsv_save_written_idx=6 + s_off,
+            pendsv_writeback_idx=7 + s_off,
+            pendsv_switch_call_idx=11 + s_off,
+            pendsv_after_switch_idx=12 + s_off,
+            pendsv_select_idx=16 + s_off,
+            pendsv_saved_sp_idx=17 + s_off,
+            pendsv_restored_pending_psp_idx=19 + s_off + r_off,
             pendsv_psp_written_idx=None,
-            pendsv_exception_return_idx=20,
+            pendsv_exception_return_idx=20 + s_off + r_off,
             svc_entry_idx=0,
             svc_saved_sp_idx=3,
             svc_restored_pending_psp_idx=9,
