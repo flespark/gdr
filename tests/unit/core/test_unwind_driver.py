@@ -326,15 +326,15 @@ def test_live_backtrace_handles_missing_symbol_file_and_caches_boot_elf(
     ],
 )
 def test_unavailable_register_drops_old_value_and_retains_failure(rule, reason):
-    options: dict[str, Any] = dict(
-        read=_Memory({}),
-        ptr_size=4,
-        endian="little",
-        return_register=14,
-        sp_register=13,
-        stack_low=0x2000,
-        stack_high=0x2200,
-    )
+    options: dict[str, Any] = {
+        "read": _Memory({}),
+        "ptr_size": 4,
+        "endian": "little",
+        "return_register": 14,
+        "sp_register": 13,
+        "stack_low": 0x2000,
+        "stack_high": 0x2200,
+    }
     original = {7: 0x2080, 13: 0x2040, 14: 0x1104}
     result = driver._unwind_cfi(
         CfiRow(CfaRule(13, 8), {7: rule}), regs=original, sp=0x2040, **options

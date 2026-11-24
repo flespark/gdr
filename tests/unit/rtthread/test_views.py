@@ -272,10 +272,10 @@ def test_scheduler_state_reports_the_nest_counters(monkeypatch, irq, lock, expec
 def test_system_summary_omits_scheduler_state_when_unreadable(monkeypatch):
     """A None state reaches the summary as None, so the row is not printed."""
     adapter = _heap_adapter()
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(adapter, "heap_info", lambda: HeapInfo(algorithm="none"))
 
     assert adapter.system_summary().scheduler_state is None

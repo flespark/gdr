@@ -728,12 +728,13 @@ def _wrap_label(text: str, capacity: int) -> list[str]:
             continue
         if current:
             lines.append(current)
-        while len(field) > capacity:
-            cut = field.rfind(" ", 0, capacity + 1)
+        part = field
+        while len(part) > capacity:
+            cut = part.rfind(" ", 0, capacity + 1)
             cut = cut if cut > 0 else capacity
-            lines.append(field[:cut])
-            field = field[cut:].lstrip(" ")
-        current = field
+            lines.append(part[:cut])
+            part = part[cut:].lstrip(" ")
+        current = part
     if current or not lines:
         lines.append(current)
     return lines

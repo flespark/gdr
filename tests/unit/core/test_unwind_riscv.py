@@ -285,16 +285,16 @@ def test_prepare_handler_refuses_bad_csrs_bounds_and_regions():
     base_regs = {2: 0x8001FFE0, 8: 0x80011E00, 1: 0x80001048}
 
     def _snap(**overrides) -> RiscvSnapshot:
-        defaults: dict[str, Any] = dict(
-            xlen=32,
-            pc=0x80002000,
-            sp=0x8001FFE0,
-            mstatus=MSTATUS_MPP_MACHINE,
-            mcause=0x80000007,
-            mepc=0x80003000,
-            mtvec=0x80001000,
-            registers=base_regs,
-        )
+        defaults: dict[str, Any] = {
+            "xlen": 32,
+            "pc": 0x80002000,
+            "sp": 0x8001FFE0,
+            "mstatus": MSTATUS_MPP_MACHINE,
+            "mcause": 0x80000007,
+            "mepc": 0x80003000,
+            "mtvec": 0x80001000,
+            "registers": base_regs,
+        }
         defaults.update(overrides)
         return RiscvSnapshot(**defaults)
 

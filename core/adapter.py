@@ -951,7 +951,7 @@ class RtosAdapter(Protocol):
         Called by ``gdr reset`` and the ``new_objfile`` event hook when a
         reflash/reset changed the symbol set.  No-op by default.
         """
-        return None
+        return
 
     def diagnostics_report(self) -> list[CheckFinding] | None:
         """System-wide consistency findings for the ``check`` verb.

@@ -681,10 +681,10 @@ def test_system_summary_copies_heap_snapshot_fields(monkeypatch):
             algorithm="small_mem", used=4096, total=65536
         ),
     )
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module.diagnostics, "walk_system_heap", lambda _t, _kl: None
     )
@@ -706,10 +706,10 @@ def test_system_summary_keeps_missing_heap_counters(monkeypatch):
         "get_heap_snapshot",
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
     )
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module.diagnostics, "walk_system_heap", lambda _t, _kl: None
     )
@@ -726,10 +726,10 @@ def test_system_summary_keeps_partial_heap_counters(monkeypatch):
     from rtthread.navigation import HeapSnapshot
 
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module.diagnostics, "walk_system_heap", lambda _t, _kl: None
     )
@@ -763,10 +763,10 @@ def test_system_summary_omits_none_heap_allocator(monkeypatch):
         "get_heap_snapshot",
         lambda _type, _layout: HeapSnapshot(algorithm="none"),
     )
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module.diagnostics, "walk_system_heap", lambda _t, _kl: None
     )
@@ -789,10 +789,10 @@ def test_system_summary_falls_back_to_a_closed_heap_walk(monkeypatch):
         "get_heap_snapshot",
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
     )
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module.diagnostics,
         "walk_system_heap",
@@ -822,10 +822,10 @@ def test_system_summary_does_not_use_truncated_or_slab_estimates(monkeypatch):
         "get_heap_snapshot",
         lambda _type, _layout: HeapSnapshot(algorithm="small_mem"),
     )
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module.diagnostics,
         "walk_system_heap",
@@ -858,10 +858,10 @@ def test_system_summary_reports_a_corrupt_heap_walk(monkeypatch):
             algorithm="small_mem", used=4096, total=65536
         ),
     )
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module.diagnostics,
         "walk_system_heap",
@@ -885,10 +885,10 @@ def test_system_summary_reports_overrun_when_used_exceeds_total(monkeypatch):
     from rtthread.navigation import HeapSnapshot
 
     adapter = adapter_module.RtThreadAdapter(KernelLayout(), heap_type="small_mem")
-    monkeypatch.setattr(adapter, "_task_views", lambda: [])
+    monkeypatch.setattr(adapter, "_task_views", list)
     monkeypatch.setattr(adapter, "scheduler_state", lambda: None)
     monkeypatch.setattr(adapter_module, "get_tick", lambda: None)
-    monkeypatch.setattr(adapter, "object_counts", lambda: {})
+    monkeypatch.setattr(adapter, "object_counts", dict)
     monkeypatch.setattr(
         adapter_module,
         "get_heap_snapshot",

@@ -655,7 +655,7 @@ def test_build_riscv_stage_seed_covers_all_rtthread_stages(xlen, epc_mode):
                 pc,
                 sp=sp_val,
                 mepc=_NEW_ENTRY,
-                regs={reg: ctx.fill_word for reg in (5, 6, 7, 8, 9, *range(18, 28))}
+                regs=dict.fromkeys((5, 6, 7, 8, 9, *range(18, 28)), ctx.fill_word)
                 if is_unstarted
                 else None,
             ),
@@ -878,9 +878,9 @@ def test_rtthread_riscv_bridge_routes_current_and_pending_trap_owner(monkeypatch
 
     def _find(spec, _layout):
         key = str(spec)
-        if key == "old_t" or key == f"{_OLD_ADDR:#x}":
+        if key in ("old_t", f"{_OLD_ADDR:#x}"):
             return tokens[_OLD_ADDR]
-        if key == "new_t" or key == f"{_NEW_ADDR:#x}":
+        if key in ("new_t", f"{_NEW_ADDR:#x}"):
             return tokens[_NEW_ADDR]
         return None
 

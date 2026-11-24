@@ -1392,7 +1392,7 @@ def _backtrace_thread(
             bounds="unknown",
             target=target,
         )
-    low = thread.stack_addr if thread.stack_addr else None
+    low = thread.stack_addr or None
     high = low + thread.stack_size if low is not None and thread.stack_size else None
     if low is None or high is None:
         return _stop_report(

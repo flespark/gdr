@@ -859,9 +859,9 @@ def _setup_rtos(
         The selected adapter's target verdict; an unsupported name yields a
         refusal verdict instead of raising, so callers can report one shape.
     """
-    if rtos == "rtthread" or rtos == "rt-thread" or rtos == "rtt":
+    if rtos in {"rtthread", "rt-thread", "rtt"}:
         return _setup_rtthread(version, allow_unverified=allow_unverified)
-    if rtos == "freertos" or rtos == "frt":
+    if rtos in {"freertos", "frt"}:
         return _setup_freertos(version, allow_unverified=allow_unverified)
     warn(f"unsupported RTOS: {rtos!r}")
     warn("currently supported: rtthread, freertos")

@@ -29,17 +29,17 @@ def _frame(*, xpsr=0x01000000, pc=0x1010, lr=0x1101):
 
 
 def _context(**overrides):
-    values: dict[str, Any] = dict(
-        value=0xFFFFFFFD,
-        registers={4: 0x44, 7: 0x77},
-        frame_sp=0x3010,
-        current_segment=IRQ,
-        segments={TASK.ident: TASK, IRQ.ident: IRQ},
-        process_sp=0x2100,
-        read=_Memory({0x2100: _frame()}),
-        stkalign=True,
-        remaining_exception_bytes=256,
-    )
+    values: dict[str, Any] = {
+        "value": 0xFFFFFFFD,
+        "registers": {4: 0x44, 7: 0x77},
+        "frame_sp": 0x3010,
+        "current_segment": IRQ,
+        "segments": {TASK.ident: TASK, IRQ.ident: IRQ},
+        "process_sp": 0x2100,
+        "read": _Memory({0x2100: _frame()}),
+        "stkalign": True,
+        "remaining_exception_bytes": 256,
+    }
     values.update(overrides)
     return ExceptionTransitionContext(**values)
 

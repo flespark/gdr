@@ -307,7 +307,7 @@ def task_state(tcb, layout: FreeRtosLayout) -> tuple[str, int | None]:
     # tasks.c:2610-2615). An unreadable container (None) is unknown: rendering
     # it as a definite Deleted would turn every read failure into a wrong,
     # confident answer, so it falls through to the default below.
-    if state_addr == 0 or state_addr == termination:
+    if state_addr == 0 or (state_addr is not None and state_addr == termination):
         return "Deleted", None
 
     # Step 6: default, SMP running check then ready.
@@ -1281,13 +1281,16 @@ def discover(
                 # NOTE: the address already refined to a different kind, so
                 # a later channel must not re-add it under the requested one.
                 continue
-            if kind in _QUEUE_FAMILY_KINDS:
-                obj = _refine_queue_object(obj, layout)
-            if obj.kind != kind:
-                filtered.add(obj.address)
+            candidate = (
+                _refine_queue_object(obj, layout)
+                if kind in _QUEUE_FAMILY_KINDS
+                else obj
+            )
+            if candidate.kind != kind:
+                filtered.add(candidate.address)
                 continue
-            index[obj.address] = len(found)
-            found.append(obj)
+            index[candidate.address] = len(found)
+            found.append(candidate)
     return found
 
 
@@ -1319,10 +1322,10 @@ def discover_all(layout: FreeRtosLayout) -> dict[str, list[DiscoveredObject]]:
                     groups[group][position], obj
                 )
                 continue
-            obj = _refine_queue_object(obj, layout)
-            bucket = groups.setdefault(obj.kind, [])
-            placed[obj.address] = (obj.kind, len(bucket))
-            bucket.append(obj)
+            refined = _refine_queue_object(obj, layout)
+            bucket = groups.setdefault(refined.kind, [])
+            placed[refined.address] = (refined.kind, len(bucket))
+            bucket.append(refined)
     return groups
 
 

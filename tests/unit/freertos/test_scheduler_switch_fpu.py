@@ -356,7 +356,7 @@ def test_cm4f_pendsv_admits_unstarted_basic_task_and_refuses_unproven():
     profile = _profile()
     memory = _Memory()
     _write_cm4f_initial(memory, TASK_TOP)
-    fill_regs = {r: 0xA5A5A5A5 for r in range(4, 12)}
+    fill_regs = dict.fromkeys(range(4, 12), 0xA5A5A5A5)
     for stage_name, psp, extra in (
         ("pendsv-saved-sp", TASK_LOW + 0x100, {0: TASK_TOP}),
         ("pendsv-restored-pending-psp", TASK_LOW + 0x100, {0: TASK_TOP + 36}),

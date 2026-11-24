@@ -11,16 +11,16 @@ from rtthread.backtrace import unwind as rtt
 
 
 def _profile(**changes):
-    defaults: dict[str, Any] = dict(
-        profile_id="test/integer",
-        pointer_size=4,
-        registers=((4, 0),),
-        pc_offset=4,
-        lr_offset=8,
-        status_offset=12,
-        sp_offset=16,
-        context_span=(0, 16),
-    )
+    defaults: dict[str, Any] = {
+        "profile_id": "test/integer",
+        "pointer_size": 4,
+        "registers": ((4, 0),),
+        "pc_offset": 4,
+        "lr_offset": 8,
+        "status_offset": 12,
+        "sp_offset": 16,
+        "context_span": (0, 16),
+    }
     defaults.update(changes)
     return SavedStackContext(**defaults)
 

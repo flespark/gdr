@@ -723,7 +723,7 @@ def _next_unblock_check(layout: FreeRtosLayout) -> tuple[str, str]:
     if running is None:
         return ("NextUnblockTime", "skipped: scheduler state unreadable")
     suspended = read_int(lookup_symbol(layout.symbols["scheduler_suspended"]))
-    if suspended not in (0,):
+    if suspended != 0:
         return ("NextUnblockTime", "skipped: scheduler suspended or state unreadable")
     expected = read_int(lookup_symbol(layout.symbols["next_unblock_time"]))
     delayed = safe_dereference(lookup_symbol(layout.lists["delayed_current"]))
@@ -1074,20 +1074,21 @@ def render_checks(arguments: list[str]) -> None:
                     else []
                 )
         for obj in objects:
+            item = obj
             if kind in ("queue", "semaphore", "mutex"):
-                obj = _refine_queue_object(obj, layout)
-                if obj.kind != kind and not obj.inferred_kind:
-                    warn(f"{name!r} is a {obj.kind}, not a {kind}")
+                item = _refine_queue_object(item, layout)
+                if item.kind != kind and not item.inferred_kind:
+                    warn(f"{name!r} is a {item.kind}, not a {kind}")
                     continue
-            value = _cast_object(obj.address, kind, layout)
+            value = _cast_object(item.address, kind, layout)
             results = (
-                queue_checks(value, obj.kind, layout)
+                queue_checks(value, item.kind, layout)
                 if kind in ("queue", "semaphore", "mutex")
                 else timer_checks(value, layout)
                 if kind == "timer"
                 else event_checks(value, layout)
             )
-            append(f"{obj.name or '-'}@{obj.address:#x}", results)
+            append(f"{item.name or '-'}@{item.address:#x}", results)
     if not rows:
         info(f"no {kind} objects matched {name!r}")
         return

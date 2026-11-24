@@ -734,6 +734,7 @@ def _task_state(
     notify_state: _Slots | int | None = None,
     notification_array: bool = False,
     current_tcbs: _Array | None = None,
+    has_termination_list: bool = True,
 ):
     """Drive task_state() against a controlled TCB/list world."""
     config = FreeRtosConfig(
@@ -774,8 +775,9 @@ def _task_state(
         plain = {
             "xPendingReadyList": PENDING,
             "xSuspendedTaskList": SUSPENDED,
-            "xTasksWaitingTermination": TERMINATION,
         }
+        if has_termination_list:
+            plain["xTasksWaitingTermination"] = TERMINATION
         if name in plain:
             return _Target(plain[name])
         if name == "pxDelayedTaskList":
@@ -842,6 +844,13 @@ def test_unreadable_container_is_not_reported_deleted(monkeypatch):
     """
     # container=None models the field being absent/unreadable from the value.
     assert _task_state(monkeypatch, state_container=None) == ("Ready", None)
+
+
+def test_unreadable_container_without_termination_list_is_not_deleted(monkeypatch):
+    """Without xTasksWaitingTermination (INCLUDE_vTaskDelete == 0), None == None must not report Deleted."""
+    assert _task_state(
+        monkeypatch, state_container=None, has_termination_list=False
+    ) == ("Ready", None)
 
 
 # --- suspended-list three-way split ------------------------------------------

@@ -568,7 +568,7 @@ def parse_eh_frame_hdr(
         eh_frame_ptr, index = decoded_ptr
         if eh_frame_ptr != eh_frame_address:
             return "eh-hdr-pointer-mismatch"
-    if fde_count_enc == DW_EH_PE_OMIT or table_enc == DW_EH_PE_OMIT:
+    if DW_EH_PE_OMIT in (fde_count_enc, table_enc):
         return "eh-hdr-no-table"
     if fde_count_enc & 0xF0:
         return "eh-hdr-malformed"

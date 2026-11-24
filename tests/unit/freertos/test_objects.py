@@ -856,6 +856,17 @@ def test_missing_bits_all_vs_any():
     assert done.missing == 0x0
 
 
+def test_unreadable_current_bits_reports_unknown_missing():
+    """Unreadable uxEventBits must leave missing as None / '-' rather than assuming 0."""
+    masks = events.event_bit_masks(32)
+    for raw in (0x3 | masks[2] | (1 << 31), 0x3 | (1 << 31)):
+        waiter = events.decode_waiter(raw, None, masks)
+        assert waiter is not None
+        assert waiter.satisfied is False
+        assert waiter.missing is None
+        assert "missing=-" in events.format_waiter_line(waiter)
+
+
 def test_satisfied_waiter_reports_mid_unblock():
     """A satisfied waiter still on the list renders the mid-unblock marker."""
     waiter = EventWaiter(
@@ -1119,7 +1130,7 @@ def test_deleted_buffer_detail_short_circuits(monkeypatch):
     obj = streams.value_to_stream_buffer_object(object(), found, layout)
     pairs = stream_buffer_detail(obj, object(), layout)
 
-    pairs_by_key = {key: value for key, value in pairs}
+    pairs_by_key = dict(pairs)
     assert pairs_by_key["Type"] == "deleted"
     assert "Bytes" not in pairs_by_key
     assert "Space" not in pairs_by_key
@@ -1199,7 +1210,7 @@ def test_notification_index_absent_before_11_1():
         name="g", address=0x10, kind="message", flags=1, source="symbol"
     )
     pairs = stream_buffer_detail(obj, object(), layout)
-    pairs_by_key = {key: value for key, value in pairs}
+    pairs_by_key = dict(pairs)
     assert pairs_by_key["NotificationIndex"] == "N/A (kernel < 11.1.0)"
 
 
@@ -1228,7 +1239,7 @@ def test_notification_index_renders_when_gated(monkeypatch):
 
     assert obj.notification_index == 7
     pairs = stream_buffer_detail(obj, object(), layout)
-    pairs_by_key = {key: value for key, value in pairs}
+    pairs_by_key = dict(pairs)
     assert pairs_by_key["NotificationIndex"] == "7"
 
 

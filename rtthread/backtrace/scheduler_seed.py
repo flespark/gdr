@@ -616,9 +616,8 @@ def _resolve_new_thread(
     if stage.name == "pendsv-restored-pending-psp":
         if live_regs.get(1) != expected_hw_sp:
             return "scheduler-restore-window-inconsistent"
-    else:
-        if live_psp != expected_hw_sp:
-            return "scheduler-psp-inconsistent"
+    elif live_psp != expected_hw_sp:
+        return "scheduler-psp-inconsistent"
     if not _saved_core_matches(
         read=read,
         top=thread_sp,
@@ -1167,8 +1166,7 @@ def build_riscv_stage_seed(
         if flag_value != 0:
             if (
                 from_ptr == 0
-                or to_ptr == 0
-                or from_ptr == to_ptr
+                or to_ptr in (0, from_ptr)
                 or current_addr is None
                 or current_addr + sp_offset != to_ptr
             ):
@@ -1372,8 +1370,7 @@ def build_riscv_stage_seed(
 
         if (
             from_ptr == 0
-            or to_ptr == 0
-            or from_ptr == to_ptr
+            or to_ptr in (0, from_ptr)
             or current_addr is None
             or current_addr + sp_offset != to_ptr
         ):

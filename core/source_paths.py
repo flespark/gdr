@@ -231,7 +231,7 @@ def _scan_debug_line_v2_v4(blob: bytes, endian: str) -> tuple[list[str], bool]:
     while offset + 10 <= len(blob) and units < _MAX_LINE_UNITS:
         units += 1
         (unit_len,) = struct.unpack_from(f"{endian_ch}I", blob, offset)
-        if unit_len == 0 or unit_len == 0xFFFFFFFF:
+        if unit_len in {0, 0xFFFFFFFF}:
             break
         unit_end = offset + 4 + unit_len
         if unit_end > len(blob) or offset + 12 > unit_end:
@@ -707,8 +707,7 @@ class SourcePathResolver:
                 if matched is not None:
                     sdk_rel, mapped_local_root = matched
         else:
-            if norm.startswith("./"):
-                norm = norm[2:]
+            norm = norm.removeprefix("./")
             if not norm.startswith(".."):
                 sdk_rel = norm
 

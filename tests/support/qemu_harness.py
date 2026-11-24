@@ -114,7 +114,7 @@ class QemuSession:
             value.format(serial_log=f"file:{self.serial_log}")
             for value in self.profile.serial_args
         ]
-        command = [
+        return [
             self.profile.qemu_binary,
             "-M",
             self.profile.machine,
@@ -128,7 +128,6 @@ class QemuSession:
             "-gdb",
             f"tcp::{self.gdb_port}",
         ]
-        return command
 
     def _logs(self) -> str:
         def read_log(path: Path) -> str:

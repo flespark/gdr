@@ -104,9 +104,11 @@ exclude = ["vscode/resources/gdr"]
 wrap = 88
 
 [tool.ruff.lint]
-# PEP8 + common-sense rules. E/W = pycodestyle, F = pyflakes, I = isort,
-# UP = pyupgrade, B = bugbear, SIM = simplify, ARG = unused arguments,
-# PERF = perflint, RUF059/RUF100 = unused unpacking/suppressions.
+# PEP8 + common-sense & code-smell rules. E/W = pycodestyle, F = pyflakes,
+# I = isort, UP = pyupgrade, B = bugbear, SIM = simplify, ARG = unused args,
+# PERF = perflint, C4 = comprehensions, PIE = misc lints, RET = return hygiene,
+# FURB = refurb idioms, PLE = pylint errors, PLR1714/PLR5501 = branch/compare
+# simplification, PLW0127/PLW1510/PLW2901 = pylint warnings, RUF* = ruff rules.
 select = [
     "E",
     "W",
@@ -117,11 +119,29 @@ select = [
     "SIM",
     "ARG",
     "PERF",
+    "C4",
+    "PIE",
+    "RET",
+    "FURB",
+    "PLE",
+    "PLR1714",
+    "PLR5501",
+    "PLW0127",
+    "PLW1510",
+    "PLW2901",
+    "RUF012",
+    "RUF013",
+    "RUF015",
+    "RUF022",
+    "RUF034",
     "RUF059",
     "RUF100",
 ]
 ignore = [
     "E501",  # line length handled by formatter
+]
+unfixable = [
+    "C420",  # autofix rewrites int literals (e.g. 0xA5A5A5A5) to decimal
 ]
 
 [tool.ruff.lint.isort]

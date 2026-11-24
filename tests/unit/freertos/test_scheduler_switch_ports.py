@@ -399,7 +399,7 @@ def test_cm0_and_cm33_first_start_buffer_accepts_thumb_entry_and_cm0_partial_res
         psp=0,
         msp=0x20004000,
         registers={
-            **{r: 0 for r in range(4, 12)},
+            **dict.fromkeys(range(4, 12), 0),
             0: top + 36,
             2: 0xFFFFFFFD,
             13: 0x20004000,
@@ -477,7 +477,7 @@ def test_cm0_and_cm33_first_start_buffer_accepts_thumb_entry_and_cm0_partial_res
         psp=0,
         msp=0x20004000,
         registers={
-            **{r: 0 for r in range(4, 12)},
+            **dict.fromkeys(range(4, 12), 0),
             0: cm33_top + 40,
             2: 0xFFFFFFFD,
             13: 0x20004000,
@@ -514,7 +514,7 @@ def test_cm0_and_cm33_first_start_buffer_accepts_thumb_entry_and_cm0_partial_res
         psp=cm4f_top + 36,
         msp=0x20004000,
         registers={
-            **{r: 0 for r in range(4, 12)},
+            **dict.fromkeys(range(4, 12), 0),
             13: 0x20004000,
             14: 0xFFFFFFFD,
         },  # basic live LR conflicts

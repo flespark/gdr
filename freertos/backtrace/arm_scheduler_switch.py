@@ -707,13 +707,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ),
                 (
                     "stmdb",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=False,
-                        direction="db",
-                        reglist=_CORE_LR_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": False,
+                        "direction": "db",
+                        "reglist": _CORE_LR_REGLIST,
+                    },
                 ),
                 ("str_imm", {"rt": 0, "rn": 2, "imm": 0}),
                 ("push", {"reglist": _R0_R3_REGLIST}),
@@ -729,13 +729,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
                 (
                     "ldmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=True,
-                        direction="ia",
-                        reglist=_CORE_LR_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": _CORE_LR_REGLIST,
+                    },
                 ),
                 ("tst_imm", {"rn": 14, "imm": 16}),
                 ("it", {"firstcond": 0, "mask": 8}),
@@ -758,13 +758,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
                 (
                     "ldmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=True,
-                        direction="ia",
-                        reglist=_CORE_LR_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": _CORE_LR_REGLIST,
+                    },
                 ),
                 ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
                 ("isb", {}),
@@ -825,13 +825,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("mov", {"rd": 3, "rm": 14, "set_flags": False}),
                 (
                     "stmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=False,
-                        direction="ia",
-                        reglist=_CM0_R3_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": False,
+                        "direction": "ia",
+                        "reglist": _CM0_R3_REGLIST,
+                    },
                 ),
                 ("mov", {"rd": 4, "rm": 8, "set_flags": False}),
                 ("mov", {"rd": 5, "rm": 9, "set_flags": False}),
@@ -839,13 +839,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("mov", {"rd": 7, "rm": 11, "set_flags": False}),
                 (
                     "stmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=False,
-                        direction="ia",
-                        reglist=_CM0_LOW_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": False,
+                        "direction": "ia",
+                        "reglist": _CM0_LOW_REGLIST,
+                    },
                 ),
                 ("cpsid", {"flag": "i"}),
                 ("bl", {"target": switch_start}),
@@ -856,13 +856,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("adds", {"rd": 0, "rn": 0, "imm": 20, "set_flags": True}),
                 (
                     "ldmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=True,
-                        direction="ia",
-                        reglist=_CM0_LOW_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": _CM0_LOW_REGLIST,
+                    },
                 ),
                 ("mov", {"rd": 8, "rm": 4, "set_flags": False}),
                 ("mov", {"rd": 9, "rm": 5, "set_flags": False}),
@@ -872,13 +872,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("subs", {"rd": 0, "rn": 0, "imm": 36, "set_flags": True}),
                 (
                     "ldmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=True,
-                        direction="ia",
-                        reglist=_CM0_R3_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": _CM0_R3_REGLIST,
+                    },
                 ),
                 ("bx", {"rm": 3}),
             ),
@@ -888,13 +888,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
                 (
                     "ldmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=True,
-                        direction="ia",
-                        reglist=_CM0_SVC_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": _CM0_SVC_REGLIST,
+                    },
                 ),
                 ("mov_imm", {"rd": 1, "imm": 2}),
                 ("msr", {"rn": 1, "sysm": _CONTROL_SYSM}),
@@ -973,13 +973,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("mov", {"rd": 3, "rm": 14, "set_flags": False}),
                 (
                     "stmdb",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=False,
-                        direction="db",
-                        reglist=_CM33_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": False,
+                        "direction": "db",
+                        "reglist": _CM33_REGLIST,
+                    },
                 ),
                 ("ldr_literal", {"rt": 2}),
                 ("ldr_imm", {"rt": 1, "rn": 2, "imm": 0}),
@@ -996,13 +996,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
                 (
                     "ldmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=True,
-                        direction="ia",
-                        reglist=_CM33_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": _CM33_REGLIST,
+                    },
                 ),
                 *fpu_restore,
                 ("msr", {"rn": 2, "sysm": _PSPLIM_SYSM}),
@@ -1015,13 +1015,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
                 ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
                 (
                     "ldmia",
-                    dict(
-                        rn=0,
-                        wback=True,
-                        load=True,
-                        direction="ia",
-                        reglist=_CM33_SVC_REGLIST,
-                    ),
+                    {
+                        "rn": 0,
+                        "wback": True,
+                        "load": True,
+                        "direction": "ia",
+                        "reglist": _CM33_SVC_REGLIST,
+                    },
                 ),
                 ("msr", {"rn": 1, "sysm": _PSPLIM_SYSM}),
                 ("mrs", {"rd": 1, "sysm": _CONTROL_SYSM}),
@@ -1082,9 +1082,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
             ("ldr_imm", {"rt": 2, "rn": 3, "imm": 0}),
             (
                 "stmdb",
-                dict(
-                    rn=0, wback=True, load=False, direction="db", reglist=_CORE_REGLIST
-                ),
+                {
+                    "rn": 0,
+                    "wback": True,
+                    "load": False,
+                    "direction": "db",
+                    "reglist": _CORE_REGLIST,
+                },
             ),
             ("str_imm", {"rt": 0, "rn": 2, "imm": 0}),
             ("push", {"reglist": _R3_LR_PUSH}),
@@ -1095,15 +1099,25 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
             ("msr", {"rn": 0, "sysm": _BASEPRI_SYSM}),
             (
                 "ldmia",
-                dict(rn=13, wback=True, load=True, direction="ia", reglist=_R3_LR_LDM),
+                {
+                    "rn": 13,
+                    "wback": True,
+                    "load": True,
+                    "direction": "ia",
+                    "reglist": _R3_LR_LDM,
+                },
             ),
             ("ldr_imm", {"rt": 1, "rn": 3, "imm": 0}),
             ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
             (
                 "ldmia",
-                dict(
-                    rn=0, wback=True, load=True, direction="ia", reglist=_CORE_REGLIST
-                ),
+                {
+                    "rn": 0,
+                    "wback": True,
+                    "load": True,
+                    "direction": "ia",
+                    "reglist": _CORE_REGLIST,
+                },
             ),
             ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
             ("isb", {}),
@@ -1115,9 +1129,13 @@ def _port_spec(port: str, switch_start: int) -> _PortSpec:
             ("ldr_imm", {"rt": 0, "rn": 1, "imm": 0}),
             (
                 "ldmia",
-                dict(
-                    rn=0, wback=True, load=True, direction="ia", reglist=_CORE_REGLIST
-                ),
+                {
+                    "rn": 0,
+                    "wback": True,
+                    "load": True,
+                    "direction": "ia",
+                    "reglist": _CORE_REGLIST,
+                },
             ),
             ("msr", {"rn": 0, "sysm": _PSP_SYSM}),
             ("isb", {}),

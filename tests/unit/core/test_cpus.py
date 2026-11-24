@@ -12,17 +12,17 @@ from tests.unit.core.test_unwind import _elf
 
 
 def test_saved_context_validates_width_registers_and_tcb_sp_proof():
-    base: dict[str, Any] = dict(
-        profile_id="test/armv7-m",
-        pointer_size=4,
-        registers=((4, 0),),
-        pc_offset=4,
-        lr_offset=8,
-        status_offset=12,
-        sp_offset=16,
-        context_span=(0, 16),
-        validation="live",
-    )
+    base: dict[str, Any] = {
+        "profile_id": "test/armv7-m",
+        "pointer_size": 4,
+        "registers": ((4, 0),),
+        "pc_offset": 4,
+        "lr_offset": 8,
+        "status_offset": 12,
+        "sp_offset": 16,
+        "context_span": (0, 16),
+        "validation": "live",
+    }
     assert SavedStackContext(**base).profile_id == "test/armv7-m"
     with pytest.raises(ValueError, match="invalid saved-context profile"):
         SavedStackContext(**cast(Any, base | {"pointer_size": 3}))

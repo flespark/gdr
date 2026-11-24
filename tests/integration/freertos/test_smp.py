@@ -69,7 +69,7 @@ def _row(output_lines: list[str], name: str) -> list[str]:
     """
     for line in output_lines:
         stripped = line.lstrip()
-        if not (stripped.startswith(name + " ") or stripped.startswith(name + "*")):
+        if not (stripped.startswith((name + " ", name + "*"))):
             continue
         cells = stripped.split()
         state_index = next(i for i, cell in enumerate(cells) if cell in _STATES)

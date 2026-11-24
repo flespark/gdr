@@ -594,7 +594,7 @@ class EventWaiter:
     wait_all: bool = False
     clear_on_exit: bool = False
     satisfied: bool = False
-    missing: int = 0
+    missing: int | None = 0
     in_use: bool = False
 
 
@@ -629,7 +629,7 @@ def decode_waiter(
             wait_all=wait_all,
             clear_on_exit=bool(raw & clear_on_exit),
             satisfied=False,
-            missing=wants if wait_all else wants,
+            missing=None,
             in_use=bool(raw & in_use_mask),
         )
     if wait_all:
@@ -652,7 +652,7 @@ def decode_waiter(
 
 def format_waiter_line(waiter: EventWaiter) -> str:
     """Render one waiter as ``wants=0x.. mode=ALL|ANY clearOnExit=yes|no
-    missing=0x..``, appending ``(satisfied — mid-unblock)`` when the bits are
+    missing=0x..|-``, appending ``(satisfied — mid-unblock)`` when the bits are
     already satisfied.
 
     The mid-unblock suffix is only possible while the item is still linked:
@@ -663,10 +663,8 @@ def format_waiter_line(waiter: EventWaiter) -> str:
     """
     mode = "ALL" if waiter.wait_all else "ANY"
     clear = "yes" if waiter.clear_on_exit else "no"
-    line = (
-        f"wants=0x{waiter.wants:x} mode={mode} clearOnExit={clear} "
-        f"missing=0x{waiter.missing:x}"
-    )
+    missing = "-" if waiter.missing is None else f"0x{waiter.missing:x}"
+    line = f"wants=0x{waiter.wants:x} mode={mode} clearOnExit={clear} missing={missing}"
     if waiter.satisfied:
         line += " (satisfied — mid-unblock)"
     if not waiter.in_use:

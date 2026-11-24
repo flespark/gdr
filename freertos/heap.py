@@ -250,7 +250,7 @@ def _macro_int_in_heap_cu(name: str) -> int | None:
     saved_listsize: str | None = None
     try:
         source_info = _gdb_execute("info source")
-        match = re.search(r"Current source file is (.+)$", source_info, re.M)
+        match = re.search(r"Current source file is (.+)$", source_info, re.MULTILINE)
         if match:
             saved_source = match.group(1).strip().removesuffix(".")
         saved_listsize = _gdb_execute("show listsize")

@@ -192,11 +192,7 @@ def _riscv_step(
         "csrr",
     }:
         register = instruction[1]
-        return (
-            (size, register if register else None, False)
-            if register not in (1, 2)
-            else None
-        )
+        return (size, register or None, False) if register not in (1, 2) else None
     return None
 
 

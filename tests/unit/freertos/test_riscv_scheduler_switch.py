@@ -493,7 +493,7 @@ def _synthetic_variant_freertos_elf(
         select_context as _,
     )  # keep import validated
 
-    _ = _
+    assert callable(_)
     word = xlen // 8
     load_fn = 3 if word == 8 else 2
     store_fn = 3 if word == 8 else 2

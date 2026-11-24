@@ -1246,11 +1246,10 @@ def build_riscv_stage_seed(
                 if val is None:
                     return "scheduler-context-unreadable"
                 regs[reg] = val
-            else:
-                if reg in snapshot.registers:
-                    regs[reg] = snapshot.registers[reg] & mask
-                elif reg in _REQUIRED_RISCV_LIVE_REGS:
-                    return "live-registers-unavailable"
+            elif reg in snapshot.registers:
+                regs[reg] = snapshot.registers[reg] & mask
+            elif reg in _REQUIRED_RISCV_LIVE_REGS:
+                return "live-registers-unavailable"
         regs[2] = restored_sp
         return SchedulerSeed(
             SeedFrame(pc=resume_pc, sp=restored_sp, regs=regs, source="current"),

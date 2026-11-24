@@ -516,7 +516,7 @@ def read_macro_text_in_source(name: str, source: str) -> str | None:
         # NOTE: GDB prints ``Current source file is <path>.`` with a
         # trailing sentence period; the path itself usually contains dots
         # (``main.c``), so a non-greedy stop-at-dot capture would truncate it.
-        match = re.search(r"Current source file is (.+)$", source_info, re.M)
+        match = re.search(r"Current source file is (.+)$", source_info, re.MULTILINE)
         if match:
             saved_source = match.group(1).strip().removesuffix(".")
         saved_listsize = _gdb_execute("show listsize")

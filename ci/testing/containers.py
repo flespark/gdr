@@ -74,6 +74,7 @@ def _run_quiet(
         capture_output=True,
         text=True,
         timeout=timeout,
+        check=False,
     )
 
 

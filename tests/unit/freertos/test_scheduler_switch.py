@@ -489,9 +489,7 @@ def test_first_start_requires_the_port_initial_context():
     memory = _Memory()
     fill = (0xA5A5A5A5,) * 8
     _write_context(memory, TASK_TOP, core=fill, pc=ENTRY_PC)
-    registers = _registers(
-        {**{register: 0xA5A5A5A5 for register in range(4, 12)}, 14: 0xFFFFFFF9}
-    )
+    registers = _registers({**dict.fromkeys(range(4, 12), 0xA5A5A5A5), 14: 0xFFFFFFF9})
     stage = _stage(profile, "svc-psp-written")
     seed = _build(
         profile, stage, memory, registers, psp=TASK_TOP + 0x20, xpsr=0x0100000B
@@ -574,9 +572,7 @@ def _first_start_inputs(stage_name):
     memory = _Memory()
     fill = (0xA5A5A5A5,) * 8
     _write_context(memory, TASK_TOP, core=fill, pc=ENTRY_PC)
-    registers = _registers(
-        {**{register: 0xA5A5A5A5 for register in range(4, 12)}, 14: 0xFFFFFFF9}
-    )
+    registers = _registers({**dict.fromkeys(range(4, 12), 0xA5A5A5A5), 14: 0xFFFFFFF9})
     psp = 0
     if stage_name in {"svc-restored-pending-psp", "svc-psp-written"}:
         registers[0] = TASK_TOP + 0x20
@@ -651,7 +647,7 @@ def test_pendsv_restore_proves_unstarted_entry_and_refuses_unproven(stage_name):
     memory = _Memory()
     fill = (0xA5A5A5A5,) * 8
     _write_context(memory, TASK_TOP, core=fill, pc=ENTRY_PC)
-    registers = _registers({**{register: 0xA5A5A5A5 for register in range(4, 12)}})
+    registers = _registers({**dict.fromkeys(range(4, 12), 0xA5A5A5A5)})
     if stage_name == "pendsv-restored-pending-psp":
         registers[0] = TASK_TOP + 0x20
         psp = TASK_LOW + 0x100
@@ -1070,9 +1066,7 @@ def test_first_start_software_frame_ignores_ccr_and_has_no_padding(
     memory = _Memory()
     fill = (0xA5A5A5A5,) * 8
     _write_context(memory, top, core=fill, pc=ENTRY_PC)
-    registers = _registers(
-        {**{register: 0xA5A5A5A5 for register in range(4, 12)}, 14: 0xFFFFFFF9}
-    )
+    registers = _registers({**dict.fromkeys(range(4, 12), 0xA5A5A5A5), 14: 0xFFFFFFF9})
     psp = 0
     if stage_name in {"svc-restored-pending-psp", "svc-psp-written"}:
         registers[0] = top + 0x20
@@ -1101,9 +1095,7 @@ def test_first_start_software_frame_refuses_a_stacked_padding_flag(stage_name):
     memory = _Memory()
     fill = (0xA5A5A5A5,) * 8
     _write_context(memory, top, core=fill, pc=ENTRY_PC, xpsr=0x01000200)
-    registers = _registers(
-        {**{register: 0xA5A5A5A5 for register in range(4, 12)}, 14: 0xFFFFFFF9}
-    )
+    registers = _registers({**dict.fromkeys(range(4, 12), 0xA5A5A5A5), 14: 0xFFFFFFF9})
     psp = 0
     if stage_name in {"svc-restored-pending-psp", "svc-psp-written"}:
         registers[0] = top + 0x20

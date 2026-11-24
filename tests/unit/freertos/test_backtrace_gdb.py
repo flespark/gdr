@@ -1358,7 +1358,7 @@ def test_scheduler_report_refuses_first_start_without_entry_evidence(
         memory[top + index * 4] = value
     registers = {index: 0x5000 + index for index in range(13)}
     registers.update({13: 0x203FF000, 14: 0xFFFFFFF9, 15: stage_pc})
-    registers.update({index: 0xA5A5A5A5 for index in range(4, 12)})
+    registers.update(dict.fromkeys(range(4, 12), 0xA5A5A5A5))
     psp = 0
     if stage_name in {"svc-restored-pending-psp", "svc-psp-written"}:
         registers[0] = top + 0x20

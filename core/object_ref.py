@@ -138,7 +138,7 @@ def symbol_value_address(
             code = None
         if code == gdb.TYPE_CODE_PTR:
             pointed = safe_int_fn(value)
-            return pointed if pointed else None
+            return pointed or None
         if code in (gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION):
             return value_address_fn(value) or None
         if code is not None:
