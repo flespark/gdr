@@ -118,7 +118,11 @@ from rtthread.stack_frame_profile import (
     analyze_riscv_trap_profile,
     select_context,
 )
-from rtthread.stackpc import SavedPcLayout, selected_saved_pc_layout
+from rtthread.stackpc import (
+    SavedPcLayout,
+    decode_verified_saved_pc,
+    selected_saved_pc_layout,
+)
 
 try:
     import gdb
@@ -216,6 +220,29 @@ def saved_pc_setup(adapter, gdb_available: bool) -> tuple[SavedPcLayout, int] | 
             )
         adapter._saved_pc_resolved = True
     return adapter._saved_pc
+
+
+def is_arm_pre_first_task(gdb_module: Any) -> bool:
+    """Return True when halted on M-profile Boot MSP before the first thread runs."""
+    selection = _backtrace_context()
+    return (
+        selection.family == "arm"
+        and arm_boot_state(selection.isa, gdb_module=gdb_module) == "pre-first-task"
+    )
+
+
+def verified_thread_pc(sp: int, entry: int, *, endian) -> int | None:
+    """Decode one non-running thread's PC from its verified M-profile/RV32 profile."""
+    selection = _backtrace_context()
+    decoded = decode_verified_saved_pc(
+        sp,
+        entry,
+        selection,
+        read=read_bytes,
+        symbolised=lambda address: lookup_symbol_at(address) is not None,
+        endian=endian,
+    )
+    return decoded.pc if decoded is not None else None
 
 
 def reset_adapter(adapter) -> None:

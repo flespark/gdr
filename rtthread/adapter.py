@@ -1131,17 +1131,24 @@ class RtThreadAdapter(RtosAdapter):
         if gdb is None:
             return None
         if is_current:
-            try:
-                return int(gdb.newest_frame().pc())
-            except (gdb.error, RuntimeError):
-                return None
-        if thread.oncpu is not None:
+            from rtthread.backtrace.unwind_gdb import is_arm_pre_first_task
+
+            if not is_arm_pre_first_task(gdb):
+                try:
+                    return int(gdb.newest_frame().pc())
+                except (gdb.error, RuntimeError):
+                    return None
+        if thread.oncpu is not None and not is_current:
             return None
-        setup = self._saved_pc_setup()
-        if setup is None or thread.sp == 0:
+        if thread.sp == 0:
             return None
-        layout, switch_addr = setup
         _pointer_size, endian = arch_or_default()
+        setup = self._saved_pc_setup()
+        if setup is None:
+            from rtthread.backtrace.unwind_gdb import verified_thread_pc
+
+            return verified_thread_pc(thread.sp, thread.entry, endian=endian)
+        layout, switch_addr = setup
         decoded = decode_saved_pc(
             thread.sp,
             thread.entry,

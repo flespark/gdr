@@ -233,3 +233,137 @@ def test_rv64_slot_is_eight_bytes_at_the_frame_base():
     )
     assert decoded is not None
     assert (decoded.pc, decoded.how) == (return_address, "switch")
+
+
+def test_verified_mprofile_and_rv32_saved_pc_handles_fpu_and_basic_frames():
+    """Verified M-profile (including FPU basic/extended) and RV32 decode saved PC."""
+    from core.stack_frame_parser import StackContextSelection
+    from rtthread.backtrace.unwind import (
+        ARMV7EM_FPU,
+        ARMV7EM_INTEGER,
+        ARMV7M_INTEGER,
+        ARMV8M_MAINLINE_FPU,
+        ARMV8M_MAINLINE_INTEGER,
+        RISCV32_INTEGER,
+    )
+    from rtthread.stackpc import decode_verified_saved_pc
+
+    sp = 0x2800_2000
+    pc = 0x1000_2400
+
+    # CM33 FPU extended (EXC_RETURN=0xFFFFFFED -> offset 136/140) and basic (72/76).
+    cm33_sel = StackContextSelection(
+        "armv8-m.mainline",
+        "arm",
+        ARMV8M_MAINLINE_INTEGER,
+        "ok",
+        alt_context=ARMV8M_MAINLINE_FPU,
+    )
+    cm33_fpu = _Memory(
+        {
+            sp + 4: struct.pack("<I", 0xFFFFFFED),
+            sp + 136: struct.pack("<I", pc),
+            sp + 140: struct.pack("<I", 0x6100_0000),
+        }
+    )
+    dec = decode_verified_saved_pc(
+        sp, 0, cm33_sel, read=cm33_fpu, symbolised=_symbolised({pc})
+    )
+    assert dec is not None and (dec.pc, dec.how) == (pc, "interrupt")
+
+    cm33_basic = _Memory(
+        {
+            sp + 4: struct.pack("<I", 0xFFFFFFFD),
+            sp + 72: struct.pack("<I", pc),
+            sp + 76: struct.pack("<I", 0x0100_0000),
+        }
+    )
+    dec_b = decode_verified_saved_pc(
+        sp, 0, cm33_sel, read=cm33_basic, symbolised=_symbolised({pc})
+    )
+    assert dec_b is not None and dec_b.pc == pc
+    assert (
+        decode_verified_saved_pc(
+            sp,
+            0,
+            cm33_sel,
+            read=_Memory({sp + 4: struct.pack("<I", 0xDEADBEEF)}),
+            symbolised=_symbolised({pc}),
+        )
+        is None
+    )
+
+    # CM4F FPU flag=1 (124/128), flag=0 (60/64), bad flag -> None.
+    cm4f_sel = StackContextSelection(
+        "armv7e-m", "arm", ARMV7EM_INTEGER, "ok", alt_context=ARMV7EM_FPU
+    )
+    cm4f_fpu = _Memory(
+        {
+            sp + 0: struct.pack("<I", 1),
+            sp + 124: struct.pack("<I", pc),
+            sp + 128: struct.pack("<I", 0x0100_0000),
+        }
+    )
+    assert (
+        decode_verified_saved_pc(
+            sp, 0, cm4f_sel, read=cm4f_fpu, symbolised=_symbolised({pc})
+        )
+        is not None
+    )
+    cm4f_basic = _Memory(
+        {
+            sp + 0: struct.pack("<I", 0),
+            sp + 60: struct.pack("<I", pc),
+            sp + 64: struct.pack("<I", 0x0100_0000),
+        }
+    )
+    assert (
+        decode_verified_saved_pc(
+            sp, 0, cm4f_sel, read=cm4f_basic, symbolised=_symbolised({pc})
+        )
+        is not None
+    )
+    assert (
+        decode_verified_saved_pc(
+            sp,
+            0,
+            cm4f_sel,
+            read=_Memory({sp: struct.pack("<I", 2)}),
+            symbolised=_symbolised({pc}),
+        )
+        is None
+    )
+
+    # CM3 integer without Thumb bit fails closed; entry match proves started.
+    cm3_sel = StackContextSelection("armv7-m", "arm", ARMV7M_INTEGER, "ok")
+    assert (
+        decode_verified_saved_pc(
+            sp,
+            0,
+            cm3_sel,
+            read=_Memory(
+                {sp + 56: struct.pack("<I", pc), sp + 60: struct.pack("<I", 0)}
+            ),
+            symbolised=_symbolised({pc}),
+        )
+        is None
+    )
+    started = decode_verified_saved_pc(
+        sp,
+        pc,
+        cm3_sel,
+        read=_Memory({sp + 56: struct.pack("<I", pc | 1)}),
+        symbolised=_symbolised(set()),
+    )
+    assert started is not None and (started.pc, started.how) == (pc, "started")
+
+    # RV32 verified integer context reads 4-byte PC at offset 0.
+    rv32_sel = StackContextSelection("riscv32", "riscv", RISCV32_INTEGER, "ok")
+    rv_dec = decode_verified_saved_pc(
+        sp,
+        0,
+        rv32_sel,
+        read=_Memory({sp: struct.pack("<I", pc)}),
+        symbolised=_symbolised({pc}),
+    )
+    assert rv_dec is not None and rv_dec.pc == pc

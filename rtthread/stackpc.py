@@ -29,6 +29,12 @@ from typing import Literal
 from core.insn_arm import decode_arm_word
 from core.insn_riscv import EvidenceError, riscv_code_decoder
 from core.stack_frame_parser import StackContextSelection
+from rtthread.backtrace.unwind import (
+    ARMV7EM_EXC_RETURN_SLOT,
+    ARMV8M_MAINLINE_BASIC_EXC_RETURN,
+    ARMV8M_MAINLINE_EXC_RETURN_SLOT,
+    ARMV8M_MAINLINE_EXTENDED_EXC_RETURN,
+)
 
 Reader = Callable[[int, int], "bytes | None"]
 
@@ -170,6 +176,57 @@ def decode_saved_pc(
     if symbolised(pc & ~1):
         return SavedPc(pc, "interrupt")
     return None
+
+
+def decode_verified_saved_pc(
+    sp: int,
+    entry: int,
+    selection: StackContextSelection,
+    *,
+    read: Reader,
+    symbolised: Callable[[int], bool],
+    endian: Literal["little", "big"] = "little",
+) -> SavedPc | None:
+    """Decode one thread's saved PC from a verified save profile (including FPU)."""
+    context = selection.context
+    if sp == 0 or context is None or not context.verified:
+        return None
+    if selection.alt_context is not None and selection.alt_context.verified:
+        if selection.isa == "armv7e-m":
+            raw_flag = read(sp + ARMV7EM_EXC_RETURN_SLOT, 4)
+            if raw_flag is None or len(raw_flag) != 4:
+                return None
+            flag = _word(raw_flag, endian)
+            if flag == 1:
+                context = selection.alt_context
+            elif flag != 0:
+                return None
+        elif selection.isa == "armv8-m.mainline":
+            raw_lr = read(sp + ARMV8M_MAINLINE_EXC_RETURN_SLOT, 4)
+            if raw_lr is None or len(raw_lr) != 4:
+                return None
+            exc_return = _word(raw_lr, endian)
+            if exc_return == ARMV8M_MAINLINE_EXTENDED_EXC_RETURN:
+                context = selection.alt_context
+            elif exc_return != ARMV8M_MAINLINE_BASIC_EXC_RETURN:
+                return None
+    raw = read(sp + context.pc_offset, context.pointer_size)
+    if raw is None or len(raw) != context.pointer_size:
+        return None
+    code = _word(raw, endian) & ~1
+    if code == 0:
+        return None
+    if entry != 0 and code == (entry & ~1):
+        return SavedPc(code, "started")
+    if not symbolised(code):
+        return None
+    if context.status_offset is not None and context.status_kind == "xpsr":
+        xpsr_raw = read(sp + context.status_offset, 4)
+        if xpsr_raw is None or len(xpsr_raw) != 4:
+            return None
+        if not (_word(xpsr_raw, endian) & (1 << 24)):
+            return None
+    return SavedPc(code, "interrupt")
 
 
 def pack_word(value: int, width: int, endian: Literal["little", "big"]) -> bytes:

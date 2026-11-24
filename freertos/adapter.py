@@ -33,6 +33,7 @@ from core.adapter import (
     waiters_cell,
 )
 from core.backtrace.unwind import ElfImage, UnwindMetadata
+from core.backtrace.unwind_gdb import arm_boot_state
 from core.formatting import fill_watermark, format_address
 from core.gdb_bridge import (
     TARGET_ACCESS_ERRORS,
@@ -92,7 +93,7 @@ from freertos.objects import (
     value_to_stream_buffer_object,
 )
 from freertos.stack_frame_profile import select_context
-from freertos.stackpc import decode_saved_pc, pc_layout
+from freertos.stackpc import decode_saved_pc, saved_pc_layout_for_task
 from freertos.views import (
     EVENT_GROUP_SPECS,
     MUTEX_SPECS,
@@ -601,24 +602,64 @@ class FreeRtosAdapter(RtosAdapter):
         """Return the shared ISA, save profile and evidence decision."""
         return _loaded_context(self.layout)
 
+    def _selected_core(self) -> int:
+        if gdb is not None:
+            try:
+                thread = gdb.selected_thread()
+                if thread is not None and int(thread.num) >= 1:
+                    return int(thread.num) - 1
+            except (gdb.error, AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+        return 0
+
     def _pc_cell(self, task: FreeRtosTask) -> Cell:
         """The task's last PC as a symbol cell, or N/A when no proof admits it.
 
-        Only the switched-frame proof is used at run time: the TCB keeps no task
-        entry, so the never-started proof has no independent source here. A task
-        without a proof reads N/A rather than an unverified address.
+        The task running on the selected halted core reports the newest frame's
+        live PC once the scheduler has entered task execution; a task running on
+        another SMP core has no valid saved frame and renders N/A. Non-running
+        tasks decode their saved context (selecting basic vs FPU extended frames
+        via the saved EXC_RETURN when the port carries an FPU alternate profile).
         """
-        context = self._context_selection().context
-        if context is None or not context.verified:
+        selection = self._context_selection()
+        if task.core is not None:
+            if gdb is None:
+                return text_cell("N/A")
+            running = system_value("scheduler_running", self.layout)
+            pre_first = (
+                selection.family == "arm"
+                and arm_boot_state(selection.isa, gdb_module=gdb) == "pre-first-task"
+            )
+            if running != 0 and not pre_first:
+                if task.core != self._selected_core():
+                    return text_cell("N/A")
+                try:
+                    live_pc = int(gdb.newest_frame().pc()) & ~1
+                except (gdb.error, AttributeError, RuntimeError, TypeError, ValueError):
+                    return text_cell("N/A")
+                if live_pc == 0:
+                    return text_cell("N/A")
+                return symbol_cell(
+                    live_pc, lookup_symbol_at(live_pc), source_location_at(live_pc)
+                )
+        if selection.context is None or not selection.context.verified:
             return text_cell("N/A")
-        layout = pc_layout(context)
+        endian = arch_or_default()[1]
+        layout = saved_pc_layout_for_task(
+            task.top_of_stack,
+            selection,
+            read=read_bytes,
+            endian=endian,
+        )
+        if layout is None:
+            return text_cell("N/A")
         decoded = decode_saved_pc(
             task.top_of_stack,
             None,
             layout,
             read=read_bytes,
             symbolised=lambda address: lookup_symbol_at(address) is not None,
-            endian=arch_or_default()[1],
+            endian=endian,
         )
         if decoded is None:
             return text_cell("N/A")

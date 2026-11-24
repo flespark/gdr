@@ -10,8 +10,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from core.backtrace.unwind_arm import BASIC_EXC_RETURNS, EXTENDED_EXC_RETURNS
 from core.elf import Reader
-from core.stack_frame_parser import SavedStackContext
+from core.stack_frame_parser import SavedStackContext, StackContextSelection
+from freertos.backtrace.unwind import CM4F_EXC_RETURN_SLOT, CM33_EXC_RETURN_SLOT
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,35 @@ Port = Literal["armv6-m", "armv7-m", "armv8-m.mainline", "riscv32", "riscv64"]
 def pc_layout(context: SavedStackContext) -> SavedPcLayout:
     """Project the PC-only view without another save-layout registry."""
     return SavedPcLayout(context.pc_offset, context.pointer_size, context.status_offset)
+
+
+def saved_pc_layout_for_task(
+    top_of_stack: int,
+    selection: StackContextSelection,
+    *,
+    read: Reader,
+    endian: Literal["little", "big"] = "little",
+) -> SavedPcLayout | None:
+    """Select one task's saved-PC layout, switching basic/FPU frames via EXC_RETURN."""
+    context = selection.context
+    if context is None or not context.verified or top_of_stack == 0:
+        return None
+    if selection.alt_context is not None and selection.alt_context.verified:
+        exc_slot = (
+            CM33_EXC_RETURN_SLOT
+            if selection.isa == "armv8-m.mainline"
+            else CM4F_EXC_RETURN_SLOT
+        )
+        raw_lr = read(top_of_stack + exc_slot, 4)
+        if raw_lr is None or len(raw_lr) != 4:
+            return None
+        saved_lr = int.from_bytes(raw_lr, byteorder=endian)
+        if saved_lr in EXTENDED_EXC_RETURNS:
+            return pc_layout(selection.alt_context)
+        if saved_lr in BASIC_EXC_RETURNS:
+            return pc_layout(context)
+        return None
+    return pc_layout(context)
 
 
 @dataclass(frozen=True)

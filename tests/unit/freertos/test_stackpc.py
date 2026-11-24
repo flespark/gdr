@@ -10,15 +10,24 @@ from __future__ import annotations
 
 import struct
 
-from core.stack_frame_parser import SavedStackContext
+from core.stack_frame_parser import SavedStackContext, StackContextSelection
 from freertos.backtrace.unwind import (
     ARMV6M_INTEGER,
+    ARMV7M_CM4F_BASIC,
+    ARMV7M_CM4F_FPU,
     ARMV7M_INTEGER,
+    ARMV8M_MAINLINE_FPU,
+    ARMV8M_MAINLINE_INTEGER,
     ARMV8M_MAINLINE_MPU_INTEGER,
     ARMV8M_MAINLINE_SMP_INTEGER,
     RISCV64_INTEGER,
 )
-from freertos.stackpc import SavedPcLayout, decode_saved_pc, pc_layout
+from freertos.stackpc import (
+    SavedPcLayout,
+    decode_saved_pc,
+    pc_layout,
+    saved_pc_layout_for_task,
+)
 
 # Real build-attribute sections of the fixtures (Tag_CPU_name is 7-M and 8-M.MAIN).
 M3_ATTRIBUTES = bytes.fromhex(
@@ -163,4 +172,53 @@ def test_missing_memory_and_zero_stacks_are_unproven():
     assert (
         decode_saved_pc(0x2000, None, layout, read=_Memory({}), symbolised=_code(set()))
         is None
+    )
+
+
+def test_fpu_selection_uses_exc_return_for_cm33_and_cm4f():
+    """FPU ports choose basic vs extended PC offsets from the saved EXC_RETURN slot."""
+    top = 0x2800_1000
+    cm33_sel = StackContextSelection(
+        "armv8-m.mainline",
+        "arm",
+        ARMV8M_MAINLINE_INTEGER,
+        "ok",
+        alt_context=ARMV8M_MAINLINE_FPU,
+    )
+    fpu_pc = 0x1000_28BC
+    cm33_fpu_mem = _Memory(
+        {
+            top + 4: struct.pack("<I", 0xFFFFFFED),
+            top + 128: struct.pack("<I", fpu_pc),
+            top + 132: struct.pack("<I", 0x6100_0000),
+        }
+    )
+    layout_fpu = saved_pc_layout_for_task(top, cm33_sel, read=cm33_fpu_mem)
+    assert layout_fpu is not None and layout_fpu == pc_layout(ARMV8M_MAINLINE_FPU)
+    decoded = decode_saved_pc(
+        top, None, layout_fpu, read=cm33_fpu_mem, symbolised=_code({fpu_pc})
+    )
+    assert decoded is not None and decoded.pc == fpu_pc
+
+    cm33_basic_mem = _Memory({top + 4: struct.pack("<I", 0xFFFFFFFD)})
+    assert saved_pc_layout_for_task(top, cm33_sel, read=cm33_basic_mem) == pc_layout(
+        ARMV8M_MAINLINE_INTEGER
+    )
+    cm33_bad_mem = _Memory({top + 4: struct.pack("<I", 0x1234_5678)})
+    assert saved_pc_layout_for_task(top, cm33_sel, read=cm33_bad_mem) is None
+
+    cm4f_sel = StackContextSelection(
+        "armv7e-m",
+        "arm",
+        ARMV7M_CM4F_BASIC,
+        "ok",
+        alt_context=ARMV7M_CM4F_FPU,
+    )
+    cm4f_fpu_mem = _Memory({top + 32: struct.pack("<I", 0xFFFFFFED)})
+    assert saved_pc_layout_for_task(top, cm4f_sel, read=cm4f_fpu_mem) == pc_layout(
+        ARMV7M_CM4F_FPU
+    )
+    cm4f_basic_mem = _Memory({top + 32: struct.pack("<I", 0xFFFFFFFD)})
+    assert saved_pc_layout_for_task(top, cm4f_sel, read=cm4f_basic_mem) == pc_layout(
+        ARMV7M_CM4F_BASIC
     )

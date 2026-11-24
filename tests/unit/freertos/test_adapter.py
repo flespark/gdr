@@ -987,3 +987,120 @@ def test_core_of_returns_none_outside_smp():
     config = FreeRtosConfig(number_of_cores=1)
     layout = build_layout(config, (10, 5, 1))
     assert navigation.core_of(_Target(CURRENT_TCB), layout) is None
+
+
+def test_pc_cell_decodes_running_live_pc_and_fpu_saved_frame(monkeypatch):
+    """Running task uses live PC on its core; FPU-blocked task uses extended frame."""
+    import struct
+    from types import SimpleNamespace
+
+    from core.stack_frame_parser import StackContextSelection
+    from freertos.backtrace.unwind import (
+        ARMV8M_MAINLINE_FPU,
+        ARMV8M_MAINLINE_INTEGER,
+    )
+
+    layout = build_layout(FreeRtosConfig(), (11, 1, 0))
+    adapter = adapter_module.FreeRtosAdapter(layout)
+    selection = StackContextSelection(
+        "armv8-m.mainline",
+        "arm",
+        ARMV8M_MAINLINE_INTEGER,
+        "ok",
+        alt_context=ARMV8M_MAINLINE_FPU,
+    )
+    monkeypatch.setattr(adapter, "_context_selection", lambda: selection)
+    monkeypatch.setattr(adapter_module, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(adapter_module, "source_location_at", lambda _pc: None)
+    symbols = {
+        0x1000_0400: "gdr_recm_task+12",
+        0x1000_28BC: "vPortYield+12",
+        0x1000_0500: "gdr_sched_first",
+    }
+    monkeypatch.setattr(adapter_module, "lookup_symbol_at", symbols.get)
+    monkeypatch.setattr(
+        adapter_module,
+        "system_value",
+        lambda key, _layout: 1 if key == "scheduler_running" else None,
+    )
+    monkeypatch.setattr(adapter_module, "arm_boot_state", lambda *_a, **_kw: "other")
+
+    class _FakeGdb:
+        error = RuntimeError
+
+        @staticmethod
+        def selected_thread():
+            return SimpleNamespace(num=1)
+
+        @staticmethod
+        def newest_frame():
+            return SimpleNamespace(pc=lambda: 0x1000_0401)
+
+    monkeypatch.setattr(adapter_module, "gdb", _FakeGdb)
+
+    # 1. Running task on selected core (core 0) reads live PC, not stale top_of_stack.
+    running = adapter_module.FreeRtosTask(
+        name="gdr_recm",
+        address=0x2800_2CC0,
+        state="Running",
+        top_of_stack=0x2800_2C00,
+        core=0,
+    )
+    monkeypatch.setattr(adapter_module, "read_bytes", lambda *_a: None)
+    cell_running = adapter._pc_cell(running)
+    assert (
+        cell_running.value == 0x1000_0400 and cell_running.text == "<gdr_recm_task+12>"
+    )
+
+    # 2. Task running on another SMP core renders N/A instead of stale stack.
+    other_core = adapter_module.FreeRtosTask(
+        name="peer",
+        address=0x2800_2D00,
+        state="Running",
+        top_of_stack=0x2800_2C00,
+        core=1,
+    )
+    assert adapter._pc_cell(other_core).text == "N/A"
+
+    # 3. Blocked FPU task decodes extended frame PC via EXC_RETURN = 0xFFFFFFED.
+    fpu_top = 0x2800_0E00
+    fpu_mem = {
+        (fpu_top + 4, 4): struct.pack("<I", 0xFFFFFFED),
+        (fpu_top + 128, 4): struct.pack("<I", 0x1000_28BC),
+        (fpu_top + 132, 4): struct.pack("<I", 0x6100_0000),
+    }
+    monkeypatch.setattr(
+        adapter_module, "read_bytes", lambda addr, size: fpu_mem.get((addr, size))
+    )
+    blocked_fpu = adapter_module.FreeRtosTask(
+        name="gdr_fpu",
+        address=0x2800_0F80,
+        state="Blocked",
+        top_of_stack=fpu_top,
+        core=None,
+    )
+    cell_fpu = adapter._pc_cell(blocked_fpu)
+    assert cell_fpu.value == 0x1000_28BC and cell_fpu.text == "<vPortYield+12>"
+
+    # 4. Pre-first-task stop falls back to the unstarted saved frame instead of boot PC.
+    monkeypatch.setattr(
+        adapter_module, "arm_boot_state", lambda *_a, **_kw: "pre-first-task"
+    )
+    init_top = 0x2800_4000
+    init_mem = {
+        (init_top + 4, 4): struct.pack("<I", 0xFFFFFFFD),
+        (init_top + 64, 4): struct.pack("<I", 0x1000_0500),
+        (init_top + 68, 4): struct.pack("<I", 0x0100_0000),
+    }
+    monkeypatch.setattr(
+        adapter_module, "read_bytes", lambda addr, size: init_mem.get((addr, size))
+    )
+    first_task = adapter_module.FreeRtosTask(
+        name="gdr_sched_first",
+        address=0x2800_4060,
+        state="Running",
+        top_of_stack=init_top,
+        core=0,
+    )
+    cell_first = adapter._pc_cell(first_task)
+    assert cell_first.value == 0x1000_0500 and cell_first.text == "<gdr_sched_first>"

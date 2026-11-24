@@ -618,6 +618,25 @@ def test_fpu_saved_slot_names_the_extended_frame(gdb_session):
         assert flag == 1, f"flag={flag:#x}"
     data = _backtrace(gdb_session, "worker_fpu")
     assert data["source"] == "saved", data
+    tasks_data = _envelope(gdb_session.run("gdr api tasks --json", timeout=30))
+    headers = tasks_data["headers"]
+    pc_idx = headers.index("PC")
+    name_idx = headers.index("Name")
+    state_idx = headers.index("State")
+    fpu_idx = next(
+        i for i, r in enumerate(tasks_data["rows"]) if r[name_idx] == "worker_fpu"
+    )
+    assert tasks_data["rows"][fpu_idx][pc_idx] != "N/A", tasks_data["rows"][fpu_idx]
+    assert tasks_data["value_rows"][fpu_idx][pc_idx] == data["frames"][0]["pc"], (
+        tasks_data["value_rows"][fpu_idx],
+        data,
+    )
+    w1_idx = next(
+        i for i, r in enumerate(tasks_data["rows"]) if r[name_idx] == "worker1"
+    )
+    assert tasks_data["rows"][w1_idx][pc_idx] != "N/A", tasks_data["rows"][w1_idx]
+    running_row = next(r for r in tasks_data["rows"] if r[state_idx] == "Running")
+    assert running_row[pc_idx] != "N/A", running_row
 
 
 @_fpu_skip()
