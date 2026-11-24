@@ -43,6 +43,32 @@ export interface SourceRef {
 	line: number;
 }
 
+/** One frame in a GDR `backtrace` envelope. */
+export interface BacktraceFrameData {
+	index: number;
+	pc: number;
+	symbol: string | null;
+	source: SourceRef | null;
+	method: string;
+}
+
+/** Parsed payload of `gdr api backtrace <task> --json`. */
+export interface BacktraceData {
+	task: string;
+	address: number;
+	architecture: string;
+	abi: string | null;
+	method: string;
+	source: string;
+	complete: boolean;
+	stopReason: string;
+	truncated: boolean;
+	maxDepth: number;
+	bounds: string;
+	frames: BacktraceFrameData[];
+	messages: string[];
+}
+
 export interface ObjectTableData {
 	buildHints?: string[];
 	headers: string[];
@@ -522,6 +548,40 @@ export function parseSnapshot(data: unknown): SnapshotData | null {
  * dropped even if it arrived later. A `null` generation (a runtime older than
  * the guard) is never considered stale on its own.
  */
+export function parseBacktrace(data: unknown): BacktraceData | null {
+	if (!isRecord(data) || typeof data.task !== 'string' || !Array.isArray(data.frames)) {
+		return null;
+	}
+	const frames: BacktraceFrameData[] = [];
+	for (const raw of data.frames) {
+		if (!isRecord(raw) || typeof raw.index !== 'number' || typeof raw.pc !== 'number') {
+			continue;
+		}
+		frames.push({
+			index: raw.index,
+			pc: raw.pc,
+			symbol: typeof raw.symbol === 'string' && raw.symbol !== '' ? raw.symbol : null,
+			source: parseSourceRef(raw.source),
+			method: typeof raw.method === 'string' ? raw.method : 'unknown'
+		});
+	}
+	return {
+		task: data.task,
+		address: typeof data.address === 'number' ? data.address : 0,
+		architecture: typeof data.architecture === 'string' ? data.architecture : 'unknown',
+		abi: typeof data.abi === 'string' ? data.abi : null,
+		method: typeof data.method === 'string' ? data.method : 'none',
+		source: typeof data.source === 'string' ? data.source : 'none',
+		complete: data.complete === true,
+		stopReason: typeof data.stop_reason === 'string' ? data.stop_reason : '',
+		truncated: data.truncated === true,
+		maxDepth: typeof data.max_depth === 'number' ? data.max_depth : frames.length,
+		bounds: typeof data.bounds === 'string' ? data.bounds : 'unknown',
+		frames,
+		messages: asStringList(data.messages)
+	};
+}
+
 export function isStale(lastGeneration: number | null, next: GdrEnvelope): boolean {
 	if (lastGeneration === null || typeof next.generation !== 'number') {
 		return false;

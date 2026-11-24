@@ -70,8 +70,8 @@ test('waiters show counts, preserve expansion on refresh/reorder, and do not lea
  apply(html(snapshot(0x1004)));
  fold = doc.querySelector<HTMLDetailsElement>('.gdr-waiter-fold')!;
  assert.ok(fold.open);
- assert.equal(fold.querySelector<HTMLElement>('ul')?.style.position ?? '', ''); // position is stylesheet-owned
- assert.ok(fold.querySelector<HTMLElement>('ul')?.style.top);
+ assert.equal(fold.querySelector<HTMLElement>('.gdr-waiter-menu')?.style.position ?? '', ''); // position is stylesheet-owned
+ assert.ok(fold.querySelector<HTMLElement>('.gdr-waiter-menu')?.style.top);
  (fold.querySelector('.gdr-source') as HTMLElement).click();
  assert.equal(messages.at(-1).type,'openSource');
  apply(html(snapshot(),undefined,'s2'));

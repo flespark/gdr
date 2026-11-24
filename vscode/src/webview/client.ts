@@ -18,10 +18,12 @@ declare function acquireVsCodeApi(): {
 };
 
 interface ClickMessage {
-	type: 'openMemory' | 'openSource' | 'heapDump' | 'layout' | 'refresh' | 'selectSession' | 'resizeHeap' | 'resetHeapSize';
+	type: 'openMemory' | 'openSource' | 'heapDump' | 'backtrace' | 'layout' | 'refresh' | 'selectSession' | 'resizeHeap' | 'resetHeapSize';
 	sessionId?: string;
 	columns?: number;
 	address?: string;
+	target?: string;
+	key?: string;
 	file?: string;
 	name?: string;
 	line?: number;
@@ -87,6 +89,25 @@ window.addEventListener('message', (event: MessageEvent) => {
 		heapMapData = payload.map;
 		drawHeapCanvas(root);
 	}
+	if (payload.type === 'backtrace') {
+		const bt = message as {
+			sessionId?: unknown;
+			key?: unknown;
+			bodyHtml?: unknown;
+			statusText?: unknown;
+			statusKind?: unknown;
+		};
+		if (bt.sessionId !== bodyOf(root)?.dataset.session) { return; }
+		if (typeof bt.key !== 'string' || typeof bt.bodyHtml !== 'string') { return; }
+		applyBacktraceUpdate(
+			root,
+			bt.key,
+			bt.bodyHtml,
+			typeof bt.statusText === 'string' ? bt.statusText : '',
+			typeof bt.statusKind === 'string' ? bt.statusKind : 'ok'
+		);
+		return;
+	}
 	if (payload.type === 'heapGrid') {
 		const sessionId = (message as { sessionId?: string }).sessionId;
 		if (sessionId !== bodyOf(root)?.dataset.session) { return; }
@@ -114,6 +135,7 @@ document.addEventListener('click', (event: MouseEvent) => {
 	const source = closestData(target, 'data-source-file');
 	if (source !== null) {
 		event.preventDefault();
+		event.stopPropagation();
 		const message: ClickMessage = {
 			type: 'openSource',
 			file: source.dataset.sourceFile ?? '',
@@ -130,6 +152,7 @@ document.addEventListener('click', (event: MouseEvent) => {
 		return;
 	}
 	event.preventDefault();
+	event.stopPropagation();
 	const message: ClickMessage = { type: 'openMemory', address };
 	withSession(message, target);
 	api.postMessage(message);
@@ -361,27 +384,266 @@ window.addEventListener('pointercancel', () => {
 	hideHeapResize(container);
 });
 
-/** Fixed overlays escape table clipping without changing row heights. */
+/** Per-session floating geometry and fixed height for expandable list popovers. */
+interface PopoverMemory {
+	detached: boolean;
+	left: number;
+	top: number;
+	fixedHeight: number | null;
+}
+const popoverMemory = new Map<string, PopoverMemory>();
+let popoverZ = 120;
+
+function popoverKey(container: HTMLElement, fold: HTMLDetailsElement): string {
+	return `${bodyOf(container)?.dataset.session ?? ''}:${fold.dataset.disclosure ?? ''}`;
+}
+
+/** Mark the bottom resize grip darker whenever list rows exceed the visible height. */
+function updatePopoverOverflow(menu: HTMLElement): void {
+	const body = menu.querySelector<HTMLElement>('.gdr-popover-body');
+	const grip = menu.querySelector<HTMLElement>('[data-popover-resize]');
+	if (body === null || grip === null) { return; }
+	const list = body.querySelector<HTMLElement>('.gdr-popover-list');
+	const extraPad = list !== null ? (Number.parseFloat(window.getComputedStyle(list).paddingBottom) || 0) : 0;
+	const overflow = body.scrollHeight - extraPad > body.clientHeight + 1;
+	grip.classList.toggle('gdr-popover-grip-overflow', overflow);
+}
+
+/** Position one expandable popover (anchored to its cell or detached/floating). */
+function placePopover(fold: HTMLDetailsElement, container: HTMLElement): void {
+	const menu = fold.querySelector<HTMLElement>('.gdr-waiter-menu');
+	const summary = fold.querySelector('summary');
+	if (!fold.open || menu === null || summary === null) { return; }
+	const mem = popoverMemory.get(popoverKey(container, fold));
+	const isBt = fold.classList.contains('gdr-bt-fold');
+	menu.style.width = '';
+	const width = Math.min(
+		window.innerWidth - 16,
+		Math.max(isBt ? 160 : 120, Math.ceil(menu.getBoundingClientRect().width))
+	);
+	if (mem?.detached) {
+		menu.classList.add('gdr-popover-detached');
+		const left = Math.max(8, Math.min(mem.left, Math.max(8, window.innerWidth - width - 8)));
+		const top = Math.max(8, Math.min(mem.top, Math.max(8, window.innerHeight - 40)));
+		menu.style.left = `${left}px`;
+		menu.style.top = `${top}px`;
+		menu.style.bottom = '';
+		if (mem.fixedHeight !== null) {
+			menu.classList.add('gdr-popover-fixed-height');
+			menu.style.height = `${mem.fixedHeight}px`;
+			menu.style.maxHeight = '';
+		} else {
+			menu.classList.remove('gdr-popover-fixed-height');
+			menu.style.height = '';
+			menu.style.maxHeight = `${Math.max(80, window.innerHeight - top - 8)}px`;
+		}
+		updatePopoverOverflow(menu);
+		return;
+	}
+	menu.classList.remove('gdr-popover-detached');
+	const bounds = summary.getBoundingClientRect();
+	menu.style.left = `${Math.max(8, Math.min(bounds.left, Math.max(8, window.innerWidth - width - 8)))}px`;
+	const below = window.innerHeight - bounds.bottom - 8;
+	const above = bounds.top - 8;
+	const putBelow = below >= 100 || below >= above;
+	menu.style.top = putBelow ? `${bounds.bottom}px` : '';
+	menu.style.bottom = putBelow ? '' : `${window.innerHeight - bounds.top}px`;
+	if (mem !== undefined && mem.fixedHeight !== null) {
+		menu.classList.add('gdr-popover-fixed-height');
+		menu.style.height = `${mem.fixedHeight}px`;
+		menu.style.maxHeight = '';
+	} else {
+		menu.classList.remove('gdr-popover-fixed-height');
+		menu.style.height = '';
+		menu.style.maxHeight = `${Math.max(80, putBelow ? below : above)}px`;
+	}
+	updatePopoverOverflow(menu);
+}
+
+function applyBacktraceUpdate(
+	container: HTMLElement,
+	key: string,
+	bodyHtml: string,
+	statusText: string,
+	statusKind: string
+): void {
+	const folds = Array.from(container.querySelectorAll<HTMLDetailsElement>('.gdr-bt-fold'));
+	const fold = folds.find((node) => node.dataset.btKey === key);
+	if (fold === undefined) { return; }
+	const body = fold.querySelector<HTMLElement>('.gdr-popover-body');
+	if (body !== null) {
+		const fragment = document.createRange().createContextualFragment(bodyHtml);
+		body.replaceChildren(fragment);
+	}
+	const badge = fold.querySelector<HTMLElement>('[data-bt-status]');
+	if (badge !== null && statusText !== '') {
+		badge.textContent = statusText;
+		badge.className = `gdr-bt-status gdr-bt-status-${statusKind}`;
+	}
+	fold.dataset.btLoaded = '1';
+	placePopover(fold, container);
+}
+
+function maybeRequestBacktrace(fold: HTMLDetailsElement): void {
+	if (!fold.open || !fold.classList.contains('gdr-bt-fold') || fold.dataset.btLoaded === '1') {
+		return;
+	}
+	const target = fold.dataset.btTarget;
+	const key = fold.dataset.btKey;
+	if (target === undefined || target === '' || key === undefined || key === '') { return; }
+	const message: ClickMessage = { type: 'backtrace', target, key };
+	withSession(message, fold);
+	api.postMessage(message);
+}
+
+window.addEventListener('resize', () => {
+	root.querySelectorAll<HTMLDetailsElement>('[data-popover-fold]').forEach((fold) => {
+		if (fold.open) { placePopover(fold, root); }
+	});
+});
+
+/** Fixed overlays escape table clipping; support knob-detach floating and bottom height resize. */
 function wireWaiters(container: HTMLElement): void {
-	container.querySelectorAll<HTMLDetailsElement>('.gdr-waiter-fold').forEach((fold) => {
+	container.querySelectorAll<HTMLDetailsElement>('[data-popover-fold]').forEach((fold) => {
 		const menu = fold.querySelector<HTMLElement>('.gdr-waiter-menu');
 		const summary = fold.querySelector('summary');
 		if (menu === null || summary === null) { return; }
-		const place = (): void => {
-			if (!fold.open) { return; }
-			const bounds = summary.getBoundingClientRect();
-			const width = Math.min(360, Math.max(160, window.innerWidth - 16));
-			menu.style.width = `${width}px`;
-			menu.style.left = `${Math.max(8, Math.min(bounds.left, window.innerWidth - width - 8))}px`;
-			const below = window.innerHeight - bounds.bottom - 8;
-			menu.style.maxHeight = `${Math.max(40, below >= 80 ? Math.min(240, below) : Math.min(240, bounds.top - 8))}px`;
-			menu.style.top = below >= 80 ? `${bounds.bottom}px` : '';
-			menu.style.bottom = below >= 80 ? '' : `${window.innerHeight - bounds.top}px`;
+		const fullKey = popoverKey(container, fold);
+		const place = (): void => { placePopover(fold, container); };
+		const placeOnScroll = (): void => {
+			if (popoverMemory.get(fullKey)?.detached) { return; }
+			place();
 		};
-		fold.addEventListener('toggle', place);
-		bodyOf(container)?.addEventListener('scroll', place);
-		fold.closest('.gdr-scroll')?.addEventListener('scroll', place);
-		place();
+		fold.addEventListener('toggle', () => {
+			disclosureMemory.set(fullKey, fold.open);
+			if (!fold.open) {
+				const existing = popoverMemory.get(fullKey);
+				if (existing !== undefined) { existing.detached = false; }
+				return;
+			}
+			place();
+			maybeRequestBacktrace(fold);
+		});
+		bodyOf(container)?.addEventListener('scroll', placeOnScroll);
+		fold.closest('.gdr-scroll')?.addEventListener('scroll', placeOnScroll);
+
+		menu.addEventListener('pointerdown', () => {
+			if (popoverMemory.get(fullKey)?.detached) {
+				menu.style.zIndex = String(++popoverZ);
+			}
+		});
+
+		const closeBtn = menu.querySelector<HTMLElement>('[data-popover-close]');
+		closeBtn?.addEventListener('click', (event: MouseEvent) => {
+			event.preventDefault();
+			event.stopPropagation();
+			fold.open = false;
+			disclosureMemory.set(fullKey, false);
+			const existing = popoverMemory.get(fullKey);
+			if (existing !== undefined) { existing.detached = false; }
+		});
+
+		const dragHandle = menu.querySelector<HTMLElement>('[data-popover-drag]');
+		dragHandle?.addEventListener('pointerdown', (event: PointerEvent) => {
+			if (event.button !== 0) { return; }
+			if ((event.target as HTMLElement | null)?.closest('[data-popover-close]')) { return; }
+			event.preventDefault();
+			event.stopPropagation();
+			const rect = menu.getBoundingClientRect();
+			const startX = event.clientX;
+			const startY = event.clientY;
+			const startLeft = rect.left;
+			const startTop = rect.top;
+			const existing = popoverMemory.get(fullKey);
+			const mem: PopoverMemory = {
+				detached: true,
+				left: startLeft,
+				top: startTop,
+				fixedHeight: existing?.fixedHeight ?? null
+			};
+			popoverMemory.set(fullKey, mem);
+			menu.style.zIndex = String(++popoverZ);
+			place();
+			const pointerId = event.pointerId;
+			dragHandle.setPointerCapture?.(pointerId);
+			const move = (next: PointerEvent): void => {
+				if (next.pointerId !== pointerId) { return; }
+				mem.left = startLeft + (next.clientX - startX);
+				mem.top = startTop + (next.clientY - startY);
+				place();
+			};
+			const end = (next: PointerEvent): void => {
+				if (next.pointerId !== pointerId) { return; }
+				window.removeEventListener('pointermove', move);
+				window.removeEventListener('pointerup', end);
+				window.removeEventListener('pointercancel', end);
+				if (dragHandle.hasPointerCapture?.(pointerId)) { dragHandle.releasePointerCapture(pointerId); }
+			};
+			window.addEventListener('pointermove', move);
+			window.addEventListener('pointerup', end);
+			window.addEventListener('pointercancel', end);
+		});
+
+		const grip = menu.querySelector<HTMLElement>('[data-popover-resize]');
+		const setFixedHeight = (nextHeight: number): void => {
+			const existing = popoverMemory.get(fullKey);
+			const mem: PopoverMemory = existing ?? {
+				detached: false,
+				left: 8,
+				top: 8,
+				fixedHeight: null
+			};
+			mem.fixedHeight = Math.max(72, Math.min(Math.max(120, window.innerHeight - 16), Math.round(nextHeight)));
+			popoverMemory.set(fullKey, mem);
+			place();
+		};
+		grip?.addEventListener('dblclick', (event: MouseEvent) => {
+			event.preventDefault();
+			event.stopPropagation();
+			const existing = popoverMemory.get(fullKey);
+			if (existing !== undefined) {
+				existing.fixedHeight = null;
+				place();
+			}
+		});
+		grip?.addEventListener('keydown', (event: KeyboardEvent) => {
+			if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') { return; }
+			event.preventDefault();
+			const current = popoverMemory.get(fullKey)?.fixedHeight ?? (menu.getBoundingClientRect().height || 160);
+			setFixedHeight(current + (event.key === 'ArrowDown' ? 24 : -24));
+		});
+		grip?.addEventListener('pointerdown', (event: PointerEvent) => {
+			if (event.button !== 0) { return; }
+			event.preventDefault();
+			event.stopPropagation();
+			const startY = event.clientY;
+			const measured = menu.getBoundingClientRect().height;
+			const startHeight = measured > 0 ? measured : (popoverMemory.get(fullKey)?.fixedHeight ?? 160);
+			const pointerId = event.pointerId;
+			grip.setPointerCapture?.(pointerId);
+			const move = (next: PointerEvent): void => {
+				if (next.pointerId !== pointerId) { return; }
+				setFixedHeight(startHeight + (next.clientY - startY));
+			};
+			const end = (next: PointerEvent): void => {
+				if (next.pointerId !== pointerId) { return; }
+				window.removeEventListener('pointermove', move);
+				window.removeEventListener('pointerup', end);
+				window.removeEventListener('pointercancel', end);
+				if (grip.hasPointerCapture?.(pointerId)) { grip.releasePointerCapture(pointerId); }
+			};
+			window.addEventListener('pointermove', move);
+			window.addEventListener('pointerup', end);
+			window.addEventListener('pointercancel', end);
+		});
+
+		if (fold.open) {
+			if (popoverMemory.get(fullKey)?.detached) {
+				menu.style.zIndex = String(++popoverZ);
+			}
+			place();
+			maybeRequestBacktrace(fold);
+		}
 	});
 }
 

@@ -19,13 +19,20 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { describeFailure, type GdrEnvelope } from './transport.ts';
-import { isStale, parseHeapMap, parseSnapshot, type CostOptions, type HeapMapData, type PanelSnapshot } from './snapshot.ts';
+import { isStale, parseBacktrace, parseHeapMap, parseSnapshot, type CostOptions, type HeapMapData, type PanelSnapshot } from './snapshot.ts';
 import {
 	MEMORY_VIEW_EXTENSION_ID,
 	memoryViewMissingHint,
 	memoryViewUri
 } from './memoryNav.ts';
-import { renderApp, renderShell, type ShellArgs } from './webview/render.ts';
+import {
+	backtraceStatus,
+	renderApp,
+	renderBacktraceBody,
+	renderShell,
+	type BacktraceEntry,
+	type ShellArgs
+} from './webview/render.ts';
 import { planHeapGrid } from './webview/heapCanvas.ts';
 import { decodeWebviewMessage, type PanelLayout } from './webview/messages.ts';
 import { changedKeys } from './diff.ts';
@@ -48,6 +55,9 @@ export type SnapshotFetcher = (sessionId: string, frameId: number) => Promise<Gd
 /** The heap block layout for one session's current stop (the `heap-dump` verb). */
 export type HeapMapFetcher = (sessionId: string, frameId: number) => Promise<GdrEnvelope | null>;
 
+/** One task's call stack at the current stop (the `backtrace` verb). */
+export type BacktraceFetcher = (sessionId: string, frameId: number, target: string) => Promise<GdrEnvelope | null>;
+
 export interface PanelOptions {
 	log: (message: string) => void;
 	extensionUri: vscode.Uri;
@@ -57,6 +67,8 @@ export interface PanelOptions {
 	fetchSnapshot: SnapshotFetcher;
 	/** The heap block layout for a session's stop; the canvas draws it. */
 	fetchHeapMap: HeapMapFetcher;
+	/** On-demand task stack unwind for the Tasks table PC popover. */
+	fetchBacktrace?: BacktraceFetcher;
 	/**
 	 * The panel's saved layout, kept per workspace. Injected so the panel never
 	 * touches the VS Code memento itself; the extension supplies the store.
@@ -87,6 +99,10 @@ interface SessionEntry {
 	heapMap: HeapMapData | null;
 	/** Drag-resized bitmap columns; null follows the envelope grid. */
 	viewColumns: number | null;
+	/** Cached on-demand task backtraces for the current stop, keyed by changeKey. */
+	backtraces: Map<string, BacktraceEntry>;
+	/** Backtrace keys currently being fetched for this stop, mapped to refreshSeq. */
+	backtraceInFlight: Map<string, number>;
 }
 
 export class RtosViewsPanel implements vscode.WebviewViewProvider {
@@ -160,7 +176,9 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			changed: new Set<string>(),
 			heapRequested: false,
 			heapMap: null,
-			viewColumns: null
+			viewColumns: null,
+			backtraces: new Map<string, BacktraceEntry>(),
+			backtraceInFlight: new Map<string, number>()
 		};
 		this.sessions.set(sessionId, entry);
 		this.activate(sessionId);
@@ -327,6 +345,8 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		};
 		const previous = entry.state.snapshot ?? null;
 		entry.changed = changedKeys(previous, snapshot);
+		entry.backtraces.clear();
+		entry.backtraceInFlight.clear();
 		entry.state.snapshot = snapshot;
 		entry.state.status = 'ok';
 		entry.state.message = null;
@@ -426,6 +446,11 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 				// answered by the heap-map fetch wired in the canvas step.
 				void this.heapDumpRequested(decoded.sessionId).catch((error) => this.notify(decoded.sessionId, 'error', `heap map request failed: ${String(error)}`));
 				return;
+			case 'backtrace':
+				void this.backtraceRequested(decoded.sessionId, decoded.target, decoded.key).catch((error) => {
+					this.options.log(`panel: backtrace failed for ${decoded.target}: ${String(error)}`);
+				});
+				return;
 			case 'resizeHeap':
 				this.resizeHeapMap(decoded.sessionId, decoded.columns);
 				return;
@@ -492,6 +517,93 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 		const found = await vscode.workspace.findFiles(`**/${basename}`, '**/node_modules/**', 200);
 		const candidates = found.map((uri) => uri.fsPath);
 		return resolveSourceFile(name, file, candidates, (candidate) => fs.existsSync(candidate));
+	}
+
+	/** Fetch one task's call stack on demand and push its rendered popover body. */
+	private async backtraceRequested(
+		sessionId: string | undefined,
+		target: string,
+		key: string
+	): Promise<void> {
+		const id = sessionId ?? this.activeId;
+		if (id === null) {
+			return;
+		}
+		const entry = this.sessions.get(id);
+		const frameId = entry?.frameId;
+		if (entry === undefined || frameId === undefined) {
+			return;
+		}
+		const cached = entry.backtraces.get(key);
+		if (cached !== undefined) {
+			this.postBacktrace(id, key, entry.lastGeneration, cached);
+			return;
+		}
+		if (entry.backtraceInFlight.has(key)) {
+			return;
+		}
+		const fetcher = this.options.fetchBacktrace;
+		if (fetcher === undefined) {
+			const fallback: BacktraceEntry = { error: 'backtrace is not available in this session' };
+			entry.backtraces.set(key, fallback);
+			this.postBacktrace(id, key, entry.lastGeneration, fallback);
+			return;
+		}
+		const generation = entry.lastGeneration;
+		const seq = entry.refreshSeq;
+		entry.backtraceInFlight.set(key, seq);
+		try {
+			const envelope = await fetcher(id, frameId, target);
+			if (this.sessions.get(id) !== entry || entry.refreshSeq !== seq || entry.lastGeneration !== generation) {
+				return;
+			}
+			let result: BacktraceEntry;
+			if (envelope === null) {
+				result = { error: 'the session did not answer the backtrace request' };
+			} else if (!envelope.ok) {
+				result = { error: describeFailure(envelope) };
+			} else {
+				const report = parseBacktrace(envelope.data);
+				result = report !== null ? { report } : { error: 'malformed backtrace payload' };
+			}
+			if (result.error !== undefined) {
+				this.options.log(`panel: backtrace failed for ${target}: ${result.error}`);
+			} else if (result.report !== undefined && result.report.messages.length > 0) {
+				this.options.log(`panel: backtrace ${target}: ${result.report.messages.join('; ')}`);
+			}
+			entry.backtraces.set(key, result);
+			this.postBacktrace(id, key, generation, result);
+		} catch (error) {
+			if (this.sessions.get(id) !== entry || entry.refreshSeq !== seq || entry.lastGeneration !== generation) {
+				return;
+			}
+			const failed: BacktraceEntry = { error: `backtrace request failed: ${String(error)}` };
+			this.options.log(`panel: backtrace failed for ${target}: ${failed.error}`);
+			entry.backtraces.set(key, failed);
+			this.postBacktrace(id, key, generation, failed);
+		} finally {
+			if (entry.backtraceInFlight.get(key) === seq) {
+				entry.backtraceInFlight.delete(key);
+			}
+		}
+	}
+
+	private postBacktrace(
+		sessionId: string,
+		key: string,
+		generation: number | null,
+		entry: BacktraceEntry
+	): void {
+		const status = backtraceStatus(entry);
+		void this.view?.webview.postMessage({
+			type: 'backtrace',
+			sessionId,
+			key,
+			generation,
+			statusText: status.text,
+			statusKind: status.kind,
+			bodyHtml: renderBacktraceBody(entry)
+		});
 	}
 
 	/** A heap-dump request from the heap card: fetch the block layout and draw it. */
@@ -637,12 +749,25 @@ export class RtosViewsPanel implements vscode.WebviewViewProvider {
 			})),
 			activeId: this.activeId
 		};
+		const backtraces = this.backtracesFor(this.activeId);
 		void this.view.webview.postMessage({
 			type: 'state',
 			layout: this.layout,
 			map: this.activeId === null ? null : this.sessions.get(this.activeId)?.heapMap ?? null,
-			html: renderApp(state, { layout: this.layout, changed: this.changedFor(this.activeId), heapCanvas: this.heapRequestedFor(this.activeId) })
+			html: renderApp(state, {
+				layout: this.layout,
+				changed: this.changedFor(this.activeId),
+				heapCanvas: this.heapRequestedFor(this.activeId),
+				...(backtraces !== undefined ? { backtraces } : {})
+			})
 		});
+	}
+
+	private backtracesFor(sessionId: string | null): ReadonlyMap<string, BacktraceEntry> | undefined {
+		if (sessionId === null) {
+			return undefined;
+		}
+		return this.sessions.get(sessionId)?.backtraces;
 	}
 
 	/** Whether the active session has asked for its heap bitmap. */

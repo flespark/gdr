@@ -457,8 +457,9 @@ body {
 .gdr-pointer-label[hidden] { display: none; }
 .gdr-pointer-label code { user-select: text; overflow-wrap: anywhere; }
 
-/* --- waiters ----------------------------------------------------------- */
+/* --- waiters & backtrace popovers -------------------------------------- */
 
+[data-popover-fold] summary,
 .gdr-waiter-fold summary {
 	cursor: pointer;
 }
@@ -466,16 +467,203 @@ body {
 .gdr-waiter-menu {
 	position: fixed;
 	z-index: 100;
+	display: flex;
+	flex-direction: column;
+	width: max-content;
+	min-width: 120px;
+	max-width: min(320px, calc(100vw - 16px));
 	box-sizing: border-box;
 	margin: 0;
-	padding: 8px 8px 8px 24px;
+	padding: 0;
 	white-space: normal;
-	overflow: auto;
+	overflow: hidden;
 	background: var(--gdr-bg);
 	color: var(--gdr-fg);
 	border: 1px solid var(--gdr-border);
-	border-radius: 4px;
+	border-radius: 5px;
 	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.2));
+}
+
+.gdr-bt-menu {
+	min-width: 160px;
+	max-width: min(440px, calc(100vw - 16px));
+}
+
+.gdr-popover-detached {
+	border-color: var(--vscode-focusBorder, var(--gdr-accent));
+	box-shadow: 0 6px 20px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.28));
+}
+
+.gdr-popover-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 4px 6px 4px 10px;
+	border-bottom: 1px solid var(--gdr-border);
+	background: var(--vscode-sideBarSectionHeader-background, var(--vscode-sideBar-background, var(--gdr-bg)));
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
+}
+
+.gdr-popover-head:active {
+	cursor: grabbing;
+}
+
+.gdr-popover-title {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 600;
+	font-size: 0.92em;
+}
+
+.gdr-popover-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gdr-popover-actions {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+}
+
+.gdr-popover-close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--gdr-muted);
+	font: inherit;
+	font-size: 15px;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.gdr-popover-close:hover {
+	color: var(--gdr-fg);
+	background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.gdr-popover-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 6px 10px;
+}
+
+/* NOTE: one trailing row of breathing room makes it obvious when every item fits. */
+.gdr-popover-list {
+	list-style: none;
+	margin: 0;
+	padding: 0 0 1.6em;
+}
+
+.gdr-popover-list li {
+	padding: 2px 0;
+}
+
+.gdr-popover-grip {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 11px;
+	cursor: ns-resize;
+	touch-action: none;
+	user-select: none;
+	border-top: 1px solid var(--gdr-border);
+	color: var(--gdr-muted);
+	background: var(--vscode-sideBar-background, var(--gdr-bg));
+}
+
+.gdr-popover-grip-overflow {
+	background: var(--vscode-scrollbarSlider-background, rgba(100, 100, 100, 0.42));
+	color: var(--gdr-fg);
+}
+
+.gdr-popover-grip-overflow:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.6));
+}
+
+.gdr-popover-grip svg {
+	display: block;
+}
+
+.gdr-popover-grip:hover {
+	color: var(--gdr-fg);
+}
+
+.gdr-popover-grip:focus-visible {
+	outline: 1px solid var(--gdr-accent);
+	outline-offset: -1px;
+}
+
+.gdr-bt-row {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.92em;
+}
+
+.gdr-bt-idx {
+	flex: none;
+	min-width: 2.5ch;
+	color: var(--gdr-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.gdr-bt-sym {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.gdr-bt-status {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	font-size: 10px;
+	font-weight: normal;
+	line-height: 1.25;
+	border: 1px solid var(--gdr-border);
+	border-radius: 999px;
+	padding: 1px 6px;
+	color: var(--gdr-muted);
+}
+
+.gdr-bt-status-ok {
+	color: var(--vscode-testing-iconPassed, #4ca34c);
+	border-color: var(--vscode-testing-iconPassed, #4ca34c);
+}
+
+.gdr-bt-status-partial {
+	color: var(--vscode-editorWarning-foreground, #d19a00);
+	border-color: var(--vscode-editorWarning-foreground, #d19a00);
+}
+
+.gdr-bt-status-error {
+	color: var(--vscode-testing-iconFailed, #d14d4d);
+	border-color: var(--vscode-testing-iconFailed, #d14d4d);
+}
+
+.gdr-bt-loading,
+.gdr-bt-empty {
+	margin: 2px 0;
+	color: var(--gdr-muted);
 }
 
 /* --- checks ------------------------------------------------------------ */

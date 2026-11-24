@@ -40,6 +40,7 @@ export type WebviewMessage =
 	  }
 	| { type: 'selectSession'; sessionId: string }
 	| { type: 'heapDump'; sessionId?: string }
+	| { type: 'backtrace'; target: string; key: string; sessionId?: string }
 	| { type: 'resizeHeap'; columns: number; sessionId?: string }
 	| { type: 'resetHeapSize'; sessionId?: string }
 	| { type: 'layout'; layout: PanelLayout }
@@ -131,6 +132,15 @@ export function decodeWebviewMessage(value: unknown): WebviewMessage | null {
 	}
 	if (value.type === 'heapDump') {
 		return { type: 'heapDump', ...session };
+	}
+	if (
+		value.type === 'backtrace' &&
+		typeof value.target === 'string' &&
+		value.target.trim() !== '' &&
+		typeof value.key === 'string' &&
+		value.key.trim() !== ''
+	) {
+		return { type: 'backtrace', target: value.target.trim(), key: value.key.trim(), ...session };
 	}
 	if (value.type === 'resizeHeap' && typeof value.columns === 'number' && Number.isInteger(value.columns) && value.columns > 0) {
 		return { type: 'resizeHeap', columns: value.columns, ...session };

@@ -25,7 +25,7 @@ import {
 	trackedDebugTypes,
 	unsupportedReason
 } from './inject.ts';
-import { RtosViewsPanel, type HeapMapFetcher, type LayoutStore, type SnapshotFetcher } from './panel.ts';
+import { RtosViewsPanel, type BacktraceFetcher, type HeapMapFetcher, type LayoutStore, type SnapshotFetcher } from './panel.ts';
 import { GdrCache, GdrSession, runtimeFor } from './session.ts';
 import { costArgs, parseSnapshotTransport, type CostOptions } from './snapshot.ts';
 import { decodeLayout, type PanelLayout } from './webview/messages.ts';
@@ -195,6 +195,14 @@ export function activate(context: vscode.ExtensionContext): void {
 		return gs.fetch('heap-dump', [], frameId);
 	};
 
+	const backtraceFetcher: BacktraceFetcher = async (sessionId, frameId, target) => {
+		const gs = sessions.get(sessionId);
+		if (gs === undefined) {
+			return null;
+		}
+		return gs.fetch('backtrace', [target], frameId);
+	};
+
 	const panel = new RtosViewsPanel({
 		log,
 		extensionUri: context.extensionUri,
@@ -202,6 +210,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		recordDir,
 		fetchSnapshot: snapshotFetcher,
 		fetchHeapMap: heapMapFetcher,
+		fetchBacktrace: backtraceFetcher,
 		layoutStore: workspaceLayoutStore(context.workspaceState)
 	});
 	context.subscriptions.push(

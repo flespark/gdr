@@ -20,12 +20,19 @@ import { TABLE_KINDS, buildTableTree, type TableNode } from './checkboxes.ts';
 import type { PanelLayout } from './messages.ts';
 import type { PanelState } from './panelState.ts';
 import type {
+	BacktraceData,
 	ColumnSpec,
 	HeapData,
 	ObjectTableData,
 	PanelSnapshot,
 	SourceRef
 } from '../snapshot.ts';
+
+/** Cached backtrace state for one task row at the current stop. */
+export interface BacktraceEntry {
+	report?: BacktraceData;
+	error?: string;
+}
 /** One adapter-owned actionable build configuration hint. */
 export interface Hint {
 	text: string;
@@ -63,6 +70,8 @@ export interface RenderOptions {
 	changed?: ReadonlySet<string>;
 	/** Heap dump is shown in the heap card once requested, keyed by session. */
 	heapCanvas?: boolean;
+	/** Per-task cached backtraces for the active stop, keyed by changeKey. */
+	backtraces?: ReadonlyMap<string, BacktraceEntry>;
 }
 
 /**
@@ -344,11 +353,18 @@ function renderTableRows(
 	options: RenderOptions
 ): string {
 	const stackIndex = table.headers.indexOf(STACK_COLUMN);
+	const addrIndex = table.headers.indexOf('Addr');
+	const nameIndex = table.headers.indexOf('Name');
 	return table.rows
 		.map((row, rowIndex) => {
 			const values = table.value_rows?.[rowIndex] ?? [];
 			const sources = table.source_rows?.[rowIndex] ?? [];
 			const id = String(table.ids?.[rowIndex] ?? '');
+			const taskLabel = (nameIndex >= 0 ? (row[nameIndex] ?? '') : '').replace(/\s*\*$/, '').trim() || id || 'task';
+			const taskTarget =
+				(addrIndex >= 0 ? addressLiteral(values[addrIndex]) : undefined) ??
+				addressLiteral(Number(id)) ??
+				taskLabel;
 			const cells = indexes
 				.map((columnIndex): string => {
 					const text = row[columnIndex] ?? '';
@@ -368,6 +384,17 @@ function renderTableRows(
 						return `<td${classAttr([align, changed])}>${renderAddressList(values[columnIndex] as unknown[])}</td>`;
 					}
 					const source = sources[columnIndex];
+					if (kind === 'task' && spec?.kind === 'pc') {
+						const pcAddr = addressLiteral(values[columnIndex]);
+						const inner =
+							source !== undefined && source !== null
+								? renderSourceLink(text, source, pcAddr)
+								: pcAddr !== undefined
+									? renderAddress(text, pcAddr)
+									: escapeHtml(text);
+						const btKey = changeKey(kind, id || taskLabel, table.headers[columnIndex] ?? 'PC');
+						return `<td${classAttr([align, 'gdr-pc', pcAddr !== undefined && source == null ? 'gdr-addr' : '', changed])}>${renderTaskBacktrace(inner, taskLabel, taskTarget, btKey, options.backtraces?.get(btKey))}</td>`;
+					}
 					if (source !== undefined && source !== null) {
 						// NOTE: a PC or Entry cell is a source link when GDR resolved a line;
 						// the text stays the symbol the table shows.
@@ -425,6 +452,39 @@ function renderAddressList(entries: unknown[]): string {
 	}).join('<br>');
 }
 
+interface PopoverShellArgs {
+	foldClass: string;
+	menuClass: string;
+	disclosureKey: string;
+	summaryHtml: string;
+	title: string;
+	badgeHtml?: string;
+	bodyHtml: string;
+	extraAttrs?: string;
+}
+
+/** Reusable floating list popover with draggable title bar, close button, and bottom height grip. */
+function renderPopoverShell(args: PopoverShellArgs): string {
+	const menuClasses = args.menuClass !== '' ? `gdr-waiter-menu gdr-popover ${args.menuClass}` : 'gdr-waiter-menu gdr-popover';
+	return (
+		`<details class="${args.foldClass}" data-popover-fold="1" data-disclosure="${escapeHtml(args.disclosureKey)}"${args.extraAttrs ?? ''}>` +
+		`<summary>${args.summaryHtml}</summary>` +
+		`<div class="${menuClasses}" data-popover="${escapeHtml(args.disclosureKey)}">` +
+		`<div class="gdr-popover-head" data-popover-drag="1" title="Drag to detach and float">` +
+		`<span class="gdr-popover-title"><span class="gdr-popover-name">${escapeHtml(args.title)}</span>${args.badgeHtml ?? ''}</span>` +
+		`<span class="gdr-popover-actions">` +
+		`<button type="button" class="gdr-popover-close" data-popover-close="1" title="Close" aria-label="Close">×</button>` +
+		`</span>` +
+		`</div>` +
+		`<div class="gdr-popover-body">${args.bodyHtml}</div>` +
+		`<div class="gdr-popover-grip" data-popover-resize="1" role="separator" tabindex="0" aria-orientation="horizontal" aria-label="Resize list height" title="Drag to set fixed height; double-click to auto-fit">` +
+		`<svg width="9" height="5" viewBox="0 0 9 5" aria-hidden="true"><path d="M1 1L4.5 4L8 1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>` +
+		`</div>` +
+		`</div>` +
+		`</details>`
+	);
+}
+
 /** The count stays compact; every known waiter is available in the overlay. */
 export function renderWaiters(text: string, value: unknown, key: string = ''): string {
 	if (!Array.isArray(value)) { return escapeHtml(text); }
@@ -437,7 +497,87 @@ export function renderWaiters(text: string, value: unknown, key: string = ''): s
 		const address = addressLiteral(waiter.address);
 		return `<li>${waiter.source ? renderSourceLink(name, waiter.source, address) : address !== undefined ? renderAddress(name, address) : escapeHtml(name)}</li>`;
 	}).join('');
-	return `<details class="gdr-waiter-fold" data-disclosure="waiters:${escapeHtml(key)}"><summary>${value.length}</summary><ul class="gdr-waiter-menu">${items}</ul></details>`;
+	return renderPopoverShell({
+		foldClass: 'gdr-waiter-fold',
+		menuClass: '',
+		disclosureKey: `waiters:${key}`,
+		summaryHtml: String(value.length),
+		title: `Waiters (${value.length})`,
+		bodyHtml: `<ul class="gdr-popover-list">${items}</ul>`
+	});
+}
+
+/** Compact badge summary for a task backtrace popover header. */
+export function backtraceStatus(entry: BacktraceEntry | undefined): { text: string; kind: 'ok' | 'partial' | 'error' | 'loading' } {
+	if (entry === undefined) {
+		return { text: 'loading', kind: 'loading' };
+	}
+	if (entry.error !== undefined) {
+		return { text: 'error', kind: 'error' };
+	}
+	if (entry.report !== undefined) {
+		return entry.report.complete
+			? { text: `${entry.report.frames.length} frames`, kind: 'ok' }
+			: { text: `partial`, kind: 'partial' };
+	}
+	return { text: 'loading', kind: 'loading' };
+}
+
+/** Render the inner body of a task backtrace popover (frames only, no diagnostic logs). */
+export function renderBacktraceBody(entry: BacktraceEntry | undefined): string {
+	if (entry === undefined) {
+		return `<p class="gdr-bt-loading">Loading…</p>`;
+	}
+	if (entry.error !== undefined) {
+		return `<p class="gdr-bt-empty">(empty)</p>`;
+	}
+	const report = entry.report;
+	if (report === undefined) {
+		return `<p class="gdr-bt-loading">Loading…</p>`;
+	}
+	if (report.frames.length === 0) {
+		return `<p class="gdr-bt-empty">(empty)</p>`;
+	}
+	return (
+		`<ul class="gdr-popover-list gdr-bt-list">` +
+		report.frames.map((frame) => {
+			const hexPc = `0x${frame.pc.toString(16)}`;
+			const label = frame.symbol ?? hexPc;
+			const link = frame.source !== null
+				? renderSourceLink(label, frame.source, hexPc)
+				: renderAddress(label, hexPc);
+			return (
+				`<li class="gdr-bt-row">` +
+				`<span class="gdr-bt-idx">#${frame.index}</span>` +
+				`<span class="gdr-bt-sym">${link}</span>` +
+				`</li>`
+			);
+		}).join('') +
+		`</ul>`
+	);
+}
+
+/** Wrap one task's PC cell with an expandable call-stack popover. */
+export function renderTaskBacktrace(
+	summaryHtml: string,
+	taskLabel: string,
+	target: string,
+	key: string,
+	entry?: BacktraceEntry
+): string {
+	const status = backtraceStatus(entry);
+	const loaded = entry !== undefined && (entry.report !== undefined || entry.error !== undefined) ? '1' : '0';
+	const badgeHtml = `<span class="gdr-bt-status gdr-bt-status-${status.kind}" data-bt-status="1">${escapeHtml(status.text)}</span>`;
+	return renderPopoverShell({
+		foldClass: 'gdr-bt-fold',
+		menuClass: 'gdr-bt-menu',
+		disclosureKey: `bt:${key}`,
+		summaryHtml,
+		title: taskLabel,
+		badgeHtml,
+		bodyHtml: renderBacktraceBody(entry),
+		extraAttrs: ` data-bt-key="${escapeHtml(key)}" data-bt-target="${escapeHtml(target)}" data-bt-loaded="${loaded}"`
+	});
 }
 
 /**
