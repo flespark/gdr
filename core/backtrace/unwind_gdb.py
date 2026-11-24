@@ -160,6 +160,47 @@ def live_seed(
     return seed
 
 
+def arm_boot_state(
+    isa: str | None,
+    *,
+    metadata: UnwindMetadata | None = None,
+    scheduler_symbols: frozenset[str] = frozenset(),
+    snapshot_reader: Callable[[], tuple[Any, str]] | None = None,
+    gdb_module: Any = None,
+) -> str:
+    """Classify an Arm M-profile stop as ``scheduler-symbol``, ``pre-first-task``, or ``other``."""
+    if isa not in (
+        "armv6-m",
+        "armv7-m",
+        "armv7e-m",
+        "armv8-m.baseline",
+        "armv8-m.mainline",
+    ):
+        return "other"
+    from .unwind_arm import XPSR_IPSR_MAX_MASK, arm_snapshot
+
+    active_gdb = gdb if gdb_module is None else gdb_module
+    snapshot, _reason = (
+        snapshot_reader()
+        if snapshot_reader is not None
+        else arm_snapshot(gdb_module=active_gdb)
+    )
+    if snapshot is None:
+        return "other"
+    if metadata is not None and scheduler_symbols:
+        symbol = metadata.elf.function_containing(snapshot.pc & ~1)
+        if symbol is not None and symbol.name in scheduler_symbols:
+            return "scheduler-symbol"
+    if (
+        not (snapshot.xpsr & XPSR_IPSR_MAX_MASK)
+        and snapshot.msp > 0
+        and snapshot.sp == snapshot.msp
+        and snapshot.psp <= 0
+    ):
+        return "pre-first-task"
+    return "other"
+
+
 def _resolve_boot_riscv_bounds(
     *,
     seed: SeedFrame,

@@ -1543,3 +1543,27 @@ def test_current_pc_backtrace_delegates_to_running_task_and_handles_boot(monkeyp
     )
     irq_boot = bridge.backtrace(adapter)
     assert not irq_boot.complete and irq_boot.stop_reason == "scheduler-not-running"
+
+    # Pre-scheduler boot unwinds MSP even when xTaskCreate already populated pxCurrentTCB.
+    monkeypatch.setattr(bridge, "current_tasks", lambda _layout: [(0, task.address)])
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x1004, 0x20001FE0, 0x20001FE0, 0, 0x01000000, boot_regs),
+            "ok",
+        ),
+    )
+    boot_with_tcb = bridge.backtrace(adapter)
+    assert boot_with_tcb.task == "<current>"
+    assert boot_with_tcb.source == "current"
+    assert boot_with_tcb.bounds == "recorded"
+    assert [frame.pc for frame in boot_with_tcb.frames] == [0x1004]
+    assert boot_with_tcb.stop_reason == "return-address-zero"
+
+    # Early vTaskStartScheduler window (xSchedulerRunning=True, PSP still 0 on Thread MSP).
+    monkeypatch.setattr(bridge, "_scheduler_running", lambda: True)
+    boot_before_svc = bridge.backtrace(adapter)
+    assert boot_before_svc.task == "<current>"
+    assert [frame.pc for frame in boot_before_svc.frames] == [0x1004]
+    assert boot_before_svc.stop_reason == "return-address-zero"

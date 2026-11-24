@@ -56,6 +56,7 @@ from core.backtrace.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
 )
 from core.backtrace.unwind_gdb import (
+    arm_boot_state,
     cached_unwind_metadata,
 )
 from core.backtrace.unwind_gdb import (
@@ -102,7 +103,10 @@ from freertos.backtrace.arm_scheduler_switch import classify_stage
 from freertos.backtrace.riscv_scheduler_switch import (
     build_riscv_profile as build_riscv_scheduler_profile,
 )
-from freertos.backtrace.riscv_scheduler_switch import classify_riscv_stage
+from freertos.backtrace.riscv_scheduler_switch import (
+    classify_riscv_stage,
+    riscv_pc_in_scheduler_symbol,
+)
 from freertos.backtrace.scheduler_seed import (
     build_riscv_stage_seed,
     build_stage_seed,
@@ -319,33 +323,6 @@ _SCHEDULER_SYMBOLS = frozenset(
     )
 )
 
-_RISCV_SCHEDULER_SYMBOLS = frozenset(
-    (
-        "xPortStartFirstTask",
-        "freertos_risc_v_trap_handler",
-        "asynchronous_interrupt",
-        "synchronous_exception",
-        "handle_interrupt",
-        "handle_exception",
-        "processed_source",
-        "vTaskSwitchContext",
-    )
-)
-
-
-def _riscv_pc_in_scheduler_symbol(elf: ElfImage, pc: int) -> bool:
-    symbol = elf.function_containing(pc)
-    if symbol is not None and symbol.name in _RISCV_SCHEDULER_SYMBOLS:
-        return True
-    trap_span = analyze_riscv_trap_profile(elf)
-    if trap_span is not None and trap_span.entry <= pc < trap_span.exit_end:
-        return True
-    start_first = elf.symbol_address("xPortStartFirstTask")
-    if start_first is not None and start_first <= pc < start_first + 0x100:
-        return True
-    trap_entry = elf.symbol_address("freertos_risc_v_trap_handler")
-    return trap_entry is not None and trap_entry <= pc < trap_entry + 0x200
-
 
 def _riscv_scheduler_live_decision(
     elf: ElfImage,
@@ -362,7 +339,7 @@ def _riscv_scheduler_live_decision(
     if snapshot is None:
         if snap_reason == "exception-registers-unavailable":
             live, _ = _live_seed_detail("riscv", isa)
-            if live is not None and _riscv_pc_in_scheduler_symbol(elf, live.pc):
+            if live is not None and riscv_pc_in_scheduler_symbol(elf, live.pc):
                 return _SchedulerDecision(
                     reason="exception-registers-unavailable",
                     message="the live RISC-V exception CSRs are not readable",
@@ -370,7 +347,7 @@ def _riscv_scheduler_live_decision(
         return None
     profile, profile_reason = build_riscv_scheduler_profile(elf)
     if profile is None:
-        if _riscv_pc_in_scheduler_symbol(elf, snapshot.pc):
+        if riscv_pc_in_scheduler_symbol(elf, snapshot.pc):
             return _SchedulerDecision(
                 reason=profile_reason,
                 message=(
@@ -796,19 +773,30 @@ def _riscv_active_isr_owner(
 
 def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
     selected = _selected_core()
+    running = _scheduler_running()
     current_addr = next(
         (addr for core, addr in current_tasks(adapter.layout) if core == selected),
         None,
     )
-    if current_addr is not None:
-        selection = adapter._context_selection()
-        owner = _riscv_active_isr_owner(adapter, selection, _unwind_metadata(adapter))
+    selection = adapter._context_selection()
+    metadata = _unwind_metadata(adapter)
+    boot_state = (
+        arm_boot_state(
+            selection.isa,
+            metadata=metadata,
+            scheduler_symbols=_SCHEDULER_SYMBOLS,
+            snapshot_reader=_arm_snapshot,
+        )
+        if selection.family == "arm"
+        else "other"
+    )
+    active_scheduler = running is not False and boot_state != "pre-first-task"
+    if current_addr is not None and active_scheduler:
+        owner = _riscv_active_isr_owner(adapter, selection, metadata)
         target_addr = owner[0] if isinstance(owner, tuple) else current_addr
         value = _task_value_by_address(adapter, target_addr)
         if value is not None:
             return _backtrace_task_value(adapter, value, f"{target_addr:#x}", max_depth)
-    else:
-        selection = adapter._context_selection()
     context = selection.context
     if context is None or not context.verified:
         return _stop_report(
@@ -822,7 +810,7 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
             target="<current>",
         )
     architecture = selection.isa or "unknown"
-    if current_addr is not None or _scheduler_running() is True:
+    if active_scheduler and (current_addr is not None or running is True):
         return _stop_report(
             None,
             architecture,
@@ -834,36 +822,28 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
             target="<current>",
             address=current_addr or 0,
         )
-    metadata = _unwind_metadata(adapter)
-    if metadata is not None:
-        halted_early = False
-        if selection.family == "arm" and selection.isa in (
-            "armv6-m",
-            "armv7-m",
-            "armv7e-m",
-            "armv8-m.mainline",
-        ):
-            snapshot, _reason = _arm_snapshot()
-            if snapshot is not None:
-                symbol = metadata.elf.function_containing(snapshot.pc & ~1)
-                halted_early = symbol is not None and symbol.name in _SCHEDULER_SYMBOLS
-        elif selection.family == "riscv" and selection.isa in ("riscv32", "riscv64"):
-            xlen = 64 if selection.isa == "riscv64" else 32
-            rv_snapshot, _reason = _riscv_snapshot(xlen=xlen)
-            halted_early = rv_snapshot is not None and _riscv_pc_in_scheduler_symbol(
-                metadata.elf, rv_snapshot.pc
-            )
-        if halted_early:
-            return _stop_report(
-                None,
-                architecture,
-                selection.abi,
-                max_depth,
-                "scheduler-not-running",
-                "a scheduler transition is halted before xSchedulerRunning",
-                bounds="unknown",
-                target="<current>",
-            )
+    halted_early = boot_state == "scheduler-symbol"
+    if (
+        not halted_early
+        and metadata is not None
+        and selection.family == "riscv"
+        and selection.isa in ("riscv32", "riscv64")
+    ):
+        rv_snap, _ = _riscv_snapshot(xlen=64 if selection.isa == "riscv64" else 32)
+        halted_early = rv_snap is not None and riscv_pc_in_scheduler_symbol(
+            metadata.elf, rv_snap.pc
+        )
+    if halted_early:
+        return _stop_report(
+            None,
+            architecture,
+            selection.abi,
+            max_depth,
+            "scheduler-not-running",
+            "a scheduler transition is halted before xSchedulerRunning",
+            bounds="unknown",
+            target="<current>",
+        )
     return live_boot_backtrace_report(
         architecture=architecture,
         abi=selection.abi,

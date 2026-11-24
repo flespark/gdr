@@ -29,6 +29,7 @@ from ..stack_frame_profile import (
     RiscvTrapAnalysis,
     _riscv_slots_include,
     analyze_riscv_trap_blocks,
+    analyze_riscv_trap_profile,
 )
 
 RV32_PROFILE_ID = "freertos/rv32/riscv-mtvec-v1"
@@ -757,3 +758,32 @@ def classify_riscv_stage(
         if start <= pc < end:
             return f"scheduler-stage-ambiguous:{name}"
     return None
+
+
+_RISCV_SCHEDULER_SYMBOLS = frozenset(
+    (
+        "xPortStartFirstTask",
+        "freertos_risc_v_trap_handler",
+        "asynchronous_interrupt",
+        "synchronous_exception",
+        "handle_interrupt",
+        "handle_exception",
+        "processed_source",
+        "vTaskSwitchContext",
+    )
+)
+
+
+def riscv_pc_in_scheduler_symbol(elf: ElfImage, pc: int) -> bool:
+    """Return whether *pc* lies within any RISC-V FreeRTOS scheduler/trap entry."""
+    symbol = elf.function_containing(pc)
+    if symbol is not None and symbol.name in _RISCV_SCHEDULER_SYMBOLS:
+        return True
+    trap_span = analyze_riscv_trap_profile(elf)
+    if trap_span is not None and trap_span.entry <= pc < trap_span.exit_end:
+        return True
+    start_first = elf.symbol_address("xPortStartFirstTask")
+    if start_first is not None and start_first <= pc < start_first + 0x100:
+        return True
+    trap_entry = elf.symbol_address("freertos_risc_v_trap_handler")
+    return trap_entry is not None and trap_entry <= pc < trap_entry + 0x200
