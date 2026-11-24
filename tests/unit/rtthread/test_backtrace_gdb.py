@@ -1194,6 +1194,7 @@ def test_pendsv_scheduler_stages_bridge_only_active_owner(monkeypatch):
         {"__StackLimit": 0x203FC000, "__StackTop": 0x20400000}.get,
     )
     monkeypatch.setattr(bridge, "arm_ccr_stkalign", lambda **_kw: True)
+    monkeypatch.setattr(bridge, "member_offset", lambda _t, _f: 8)
     monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "little"))
     monkeypatch.setattr(bridge, "read_bytes", mem.read)
     monkeypatch.setattr(bridge, "read_int", lambda val: val)
@@ -1310,3 +1311,283 @@ def test_pendsv_scheduler_stages_bridge_only_active_owner(monkeypatch):
         (0x3100, "seed"),
         (0x1100, "exception"),
     ]
+
+
+def test_pre_first_task_boot_msp_and_rt_schedule_c_window(monkeypatch):
+    from core.backtrace.unwind_arm import ArmSnapshot
+    from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+    from core.elf import EM_ARM, CodeSymbol, ElfImage, ElfSection
+    from rtthread.backtrace.arm_scheduler_switch import SchedulerProfile
+
+    class _Mem:
+        def __init__(self) -> None:
+            self.data = bytearray(0x6000)
+
+        def write32(self, addr: int, val: int) -> None:
+            off = addr - 0x20000000
+            self.data[off : off + 4] = (val & 0xFFFFFFFF).to_bytes(4, "little")
+
+        def read(self, addr: int, size: int) -> bytes | None:
+            off = addr - 0x20000000
+            if off >= 0 and off + size <= len(self.data):
+                return bytes(self.data[off : off + size])
+            return None
+
+    mem = _Mem()
+    old_t = Thread(
+        name="old",
+        address=0x20004000,
+        sp=0x20002880,
+        entry=0x1020,
+        stack_addr=0x20002800,
+        stack_size=0x400,
+        stack_grows_up=False,
+    )
+    new_t = Thread(
+        name="new",
+        address=0x20004100,
+        sp=0x20002080,
+        entry=0x1100,
+        stack_addr=0x20002000,
+        stack_size=0x400,
+        stack_grows_up=False,
+    )
+    old_val, new_val = object(), object()
+    threads = {"old": (old_val, old_t), "new": (new_val, new_t)}
+    addr_map = {f"{t.address:#x}": val for val, t in threads.values()}
+
+    def _write_saved(sp: int, *, pc: int, fill: int = 0x11223344) -> None:
+        for i in range(8):
+            mem.write32(sp + 4 * i, fill)
+        mem.write32(sp + 52, 0x1200)
+        mem.write32(sp + 56, pc)
+        mem.write32(sp + 60, 0x01000000)
+
+    _write_saved(new_t.sp, pc=0x1100, fill=0xDEADBEEF)
+    mem.write32(0x20001FE0, 0x00000000)
+
+    leaf_row = CfiRow(cfa=CfaRule(13, 0), return_register=14)
+    meta = UnwindMetadata(
+        elf=ElfImage(
+            pointer_size=4,
+            endian="little",
+            machine=EM_ARM,
+            sections=(
+                ElfSection(
+                    name=".text",
+                    address=0x1000,
+                    data=b"\x70\x47" * 0x300,
+                    flags=0x6,
+                    section_type=1,
+                ),
+            ),
+            symbols=(
+                CodeSymbol("rt_system_scheduler_start", 0x1004, 0x20),
+                CodeSymbol("rt_hw_context_switch_to", 0x1080, 0x20),
+                CodeSymbol("rt_schedule_remove_thread", 0x1480, 0x20),
+                CodeSymbol("worker_fn", 0x1500, 0x20),
+                CodeSymbol("rt_thread_exit", 0x1200, 4),
+            ),
+        ),
+        arch="arm",
+        cfi_tables=(
+            CfiTable.from_rows(
+                (
+                    (
+                        0x1004,
+                        0x1024,
+                        CfiRow(
+                            CfaRule(13, 4),
+                            {14: RegisterRule("offset", -4)},
+                            return_register=14,
+                        ),
+                    ),
+                    (0x1100, 0x1104, leaf_row),
+                    (0x1480, 0x14A0, leaf_row),
+                    (0x1500, 0x1520, leaf_row),
+                ),
+                address_size=4,
+                endian="little",
+            ),
+        ),
+        ehabi=None,
+        return_register=14,
+        frame_pointer_register=7,
+    )
+    profile = SchedulerProfile(
+        port="armv7-m",
+        isa="armv7-m",
+        fpu=False,
+        switch_start=0x3000,
+        switch_end=0x3010,
+        switch_return=0x300E,
+        pendsv_start=0x3100,
+        pendsv_end=0x3140,
+        switch_to_start=0x1080,
+        switch_to_end=0x10A0,
+        pendsv_entry=0x3100,
+        pendsv_save_pending=0x3110,
+        pendsv_save_written=0x3120,
+        pendsv_switch_to=0x3124,
+        pendsv_saved_sp=0x3128,
+        pendsv_restored_pending_psp=0x3130,
+        pendsv_psp_written=0x3134,
+        pendsv_exception_return=0x313C,
+        flag_symbol=0x20000100,
+        from_symbol=0x20000104,
+        to_symbol=0x20000108,
+        trustzone_symbol=None,
+        stages={},
+    )
+
+    monkeypatch.setattr(
+        bridge,
+        "_backtrace_context",
+        lambda: StackContextSelection("armv7-m", "arm", ARMV7M_INTEGER, "ok"),
+    )
+    monkeypatch.setattr(bridge, "get_current_thread", lambda: new_val)
+    monkeypatch.setattr(
+        bridge,
+        "value_address",
+        lambda v: (
+            v
+            if isinstance(v, int)
+            else next(t.address for val, t in threads.values() if val is v)
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "find_thread",
+        lambda target, _layout: (
+            threads[target][0] if target in threads else addr_map.get(target)
+        ),
+    )
+    monkeypatch.setattr(bridge, "iter_threads", lambda _layout: [old_val, new_val])
+    monkeypatch.setattr(
+        bridge,
+        "value_to_thread",
+        lambda v, *_args, **_kwargs: next(t for val, t in threads.values() if val is v),
+    )
+    monkeypatch.setattr(bridge, "_unwind_metadata", lambda _adapter: meta)
+    monkeypatch.setattr(bridge, "build_scheduler_profile", lambda _elf: profile)
+    monkeypatch.setattr(
+        bridge,
+        "linker_symbol_address",
+        lambda name: {"_sstack": 0x20001000, "_estack": 0x20002000}.get(name),
+    )
+    monkeypatch.setattr(bridge, "arm_ccr_stkalign", lambda **_kw: True)
+    monkeypatch.setattr(bridge, "member_offset", lambda _t, _f: 8)
+    monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(bridge, "read_bytes", mem.read)
+    monkeypatch.setattr(bridge, "read_int", lambda val: val)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"sym_{pc:#x}")
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: {
+            "rt_thread_switch_interrupt_flag": 0,
+            "rt_interrupt_from_thread": 0,
+            "rt_interrupt_to_thread": new_t.address + 8,
+            "rt_thread_exit": 0x1200,
+        }.get(name),
+    )
+    adapter = SimpleNamespace(layout=object())
+
+    # 1. Pre-first-task Boot MSP when rt_current_thread already points to new_t.
+    boot_regs = {i: i for i in range(13)} | {13: 0x20001FE0, 14: 0x0, 15: 0x1014}
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x1014, 0x20001FE0, 0x20001FE0, 0, 0x01000000, boot_regs),
+            "ok",
+        ),
+    )
+    boot_report = bridge.backtrace(adapter)
+    assert boot_report.task == "<current>"
+    assert [f.pc for f in boot_report.frames] == [0x1014]
+    assert boot_report.stop_reason == "return-address-zero"
+    unstarted_new = bridge.backtrace(adapter, "new")
+    assert unstarted_new.complete and unstarted_new.source == "unstarted"
+
+    # Inside rt_hw_context_switch_to keeps scheduler-stage-ambiguous contract.
+    sw_regs = boot_regs | {15: 0x1080}
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x1080, 0x20001FE0, 0x20001FE0, 0, 0x01000000, sw_regs),
+            "ok",
+        ),
+    )
+    sw_report = bridge.backtrace(adapter)
+    assert sw_report.complete is False
+    assert sw_report.stop_reason == "scheduler-stage-ambiguous:rt_hw_context_switch_to"
+
+    # 2. Mid-rt_schedule() window after rt_current_thread = new_t with flag == 0.
+    _write_saved(new_t.sp, pc=0x1102, fill=0x11223344)
+    old_live_seed = SeedFrame(
+        0x1490,
+        0x200028A0,
+        {i: i for i in range(13)} | {13: 0x200028A0, 14: 0x1200},
+        source="current",
+        process_sp=0x200028A0,
+        exception_number=0,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(
+                0x1490,
+                0x200028A0,
+                0x20001F00,
+                0x200028A0,
+                0x01000000,
+                {i: i for i in range(13)} | {13: 0x200028A0, 14: 0x1200, 15: 0x1490},
+            ),
+            "ok",
+        ),
+    )
+    monkeypatch.setattr(
+        bridge, "_live_seed_detail", lambda *_args: (old_live_seed, "ok")
+    )
+    sched_cur = bridge.backtrace(adapter)
+    assert sched_cur.task == "old" and sched_cur.source == "current"
+    assert sched_cur.complete and [f.pc for f in sched_cur.frames] == [0x1490, 0x1200]
+    assert bridge.backtrace(adapter, "old").source == "current"
+    new_saved = bridge.backtrace(adapter, "new")
+    assert new_saved.complete and new_saved.source == "saved"
+    assert [f.pc for f in new_saved.frames] == [0x1102, 0x1200]
+
+    # Outside _RT_SCHEDULE_ACTIVE_SYMBOLS, mismatched SP still fails closed.
+    bad_live_seed = SeedFrame(
+        0x1510,
+        0x200028A0,
+        {i: i for i in range(13)} | {13: 0x200028A0, 14: 0x1200},
+        source="current",
+        process_sp=0x200028A0,
+        exception_number=0,
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(
+                0x1510,
+                0x200028A0,
+                0x20001F00,
+                0x200028A0,
+                0x01000000,
+                {i: i for i in range(13)} | {13: 0x200028A0, 14: 0x1200, 15: 0x1510},
+            ),
+            "ok",
+        ),
+    )
+    monkeypatch.setattr(
+        bridge, "_live_seed_detail", lambda *_args: (bad_live_seed, "ok")
+    )
+    overflow = bridge.backtrace(adapter)
+    assert overflow.complete is False and overflow.task == "new"
+    assert overflow.stop_reason == "seed-stack-overflow"

@@ -10,7 +10,15 @@ a guessed context.
 
 from __future__ import annotations
 
-from core.backtrace.unwind import SeedFrame
+from dataclasses import replace
+
+from core.backtrace.unwind import SeedFrame, UnwindMetadata
+from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
+from core.backtrace.unwind_segments import (
+    ExceptionHook,
+    ExceptionTransitionContext,
+    ExceptionTransitionResult,
+)
 from core.elf import Endian, Isa, Reader
 from core.stack_frame_parser import (
     SavedStackContext,
@@ -366,3 +374,117 @@ def decode_saved_context(
         ),
         "ok",
     )
+
+
+def apply_hardfault_trampoline(
+    seed: SeedFrame,
+    metadata: UnwindMetadata | None,
+    exception_ident: str,
+    base_hook: ExceptionHook,
+    *,
+    analyzer,
+) -> tuple[UnwindMetadata | None, ExceptionHook]:
+    """Attach HardFault_Handler CFI rows and PSP software-frame compensation."""
+    if seed.exception_number != 3 or metadata is None:
+        return metadata, base_hook
+    trampoline = analyzer(metadata.elf)
+    if trampoline is None:
+        return metadata, base_hook
+    unpushed = CfiRow(cfa=CfaRule(register=13, offset=0), return_register=14)
+    pushed = CfiRow(
+        cfa=CfaRule(register=13, offset=4),
+        registers={14: RegisterRule(kind="offset", value=-4)},
+        return_register=14,
+    )
+    trampoline_table = CfiTable.from_rows(
+        (
+            (trampoline.start, trampoline.push_lr_after_pc, unpushed),
+            (trampoline.push_lr_after_pc, trampoline.pop_lr_after_pc, pushed),
+            (trampoline.pop_lr_after_pc, trampoline.end, unpushed),
+        ),
+        address_size=metadata.elf.pointer_size,
+        endian=metadata.elf.endian,
+    )
+    updated_metadata = replace(
+        metadata,
+        cfi_tables=(trampoline_table, *metadata.cfi_tables),
+    )
+
+    def hook(
+        context: ExceptionTransitionContext,
+    ) -> ExceptionTransitionResult | str | None:
+        if (
+            context.current_segment.ident != exception_ident
+            or context.process_sp is None
+            or trampoline.start <= (seed.pc & ~1) < trampoline.msr_psp_after_pc
+        ):
+            return base_hook(context)
+        task_segments = [
+            segment
+            for segment in context.segments.values()
+            if segment.stack == "process" and segment.kind == "task"
+        ]
+        if len(task_segments) != 1:
+            return "exception-target-segment-missing"
+        if not task_segments[0].contains(context.process_sp, trampoline.software_bytes):
+            return "exception-frame-outside-bounds"
+        if trampoline.software_bytes > context.remaining_exception_bytes:
+            return "exception-read-budget-exceeded"
+        raw = context.read(context.process_sp, trampoline.software_bytes)
+        if raw is None or len(raw) != trampoline.software_bytes:
+            return "exception-frame-unreadable"
+        marker = int.from_bytes(raw[:4], "little")
+        if marker != (context.value & 0xFFFFFFFF):
+            return "exception-context-unproven"
+        saved_r4_r11 = {
+            4 + index: int.from_bytes(
+                raw[
+                    trampoline.r4_offset + 4 * index : trampoline.r4_offset
+                    + 4 * (index + 1)
+                ],
+                "little",
+            )
+            for index in range(8)
+        }
+        adjusted = replace(
+            context,
+            registers={**context.registers, **saved_r4_r11},
+            process_sp=context.process_sp + trampoline.software_bytes,
+            remaining_exception_bytes=(
+                context.remaining_exception_bytes - trampoline.software_bytes
+            ),
+        )
+        result = base_hook(adjusted)
+        if isinstance(result, ExceptionTransitionResult):
+            return replace(
+                result,
+                bytes_read=result.bytes_read + trampoline.software_bytes,
+                evidence=(
+                    *result.evidence,
+                    f"rtthread-hardfault-software-frame={trampoline.software_bytes}B",
+                ),
+            )
+        return result
+
+    return updated_metadata, hook
+
+
+def apply_switch_return_cfi(
+    metadata: UnwindMetadata | None,
+    scheduler_decision,
+) -> UnwindMetadata | None:
+    """Attach return-via-LR CFI for the proven ``rt_hw_context_switch`` exit."""
+    if (
+        metadata is None
+        or scheduler_decision is None
+        or scheduler_decision.stage != "switch-return"
+    ):
+        return metadata
+    pc = scheduler_decision.seed.pc & ~1
+    row = CfiRow(cfa=CfaRule(register=13, offset=0), return_register=14)
+    switch_table = CfiTable.from_rows(
+        ((pc, pc + 2, row),),
+        address_size=metadata.elf.pointer_size,
+        endian=metadata.elf.endian,
+    )
+    return replace(metadata, cfi_tables=(switch_table, *metadata.cfi_tables))

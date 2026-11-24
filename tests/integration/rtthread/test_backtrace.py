@@ -1807,3 +1807,109 @@ def test_mprofile_nmi_and_debug_monitor_cross_stack():
             )
             exc_dm = next(f for f in dm_bt["frames"] if f["method"] == "exception")
             assert exc_dm["pc"] == pre["pc"], (exc_dm, pre)
+
+
+@_sched_skip()
+def test_boot_after_current_thread_and_rt_schedule_c_window():
+    """Boot MSP after rt_current_thread assignment and mid-rt_schedule C window unwind cleanly."""
+    with _isolated_mprofile_session() as gdb:
+        # 1. Pre-first-task: rt_system_scheduler_start already set rt_current_thread, SP still MSP.
+        _stop_symbol(gdb, "rt_schedule_remove_thread")
+        boot_probe = _json_line(
+            gdb.run_python(
+                """
+import gdb, json
+frame = gdb.newest_frame()
+cur = int(gdb.parse_and_eval("rt_current_thread"))
+print(json.dumps({
+    "current": cur,
+    "cur_name": gdb.parse_and_eval("rt_current_thread->name").string().rstrip("\\x00") if cur else "",
+    "flag": int(gdb.parse_and_eval("rt_thread_switch_interrupt_flag")),
+    "ipsr": int(frame.read_register("xpsr")) & 0x1FF,
+    "psp": int(frame.read_register("psp")),
+}))
+"""
+            )
+        )
+        assert boot_probe["current"] != 0 and boot_probe["flag"] == 0, boot_probe
+        assert boot_probe["ipsr"] == 0 and boot_probe["psp"] == 0, boot_probe
+
+        boot_bt = _backtrace(gdb)
+        boot_syms = [f["symbol"] or "" for f in boot_bt["frames"]]
+        assert boot_bt["task"] == "<current>" and boot_bt["source"] == "current", (
+            boot_bt
+        )
+        assert "rt_schedule_remove_thread" in boot_syms[0], boot_bt
+        assert any("rt_system_scheduler_start" in s for s in boot_syms), boot_bt
+        assert any("Reset_Handler" in s for s in boot_syms), boot_bt
+        assert boot_bt["complete"] is True or boot_bt["stop_reason"] in {
+            "cfi-missing",
+            "no-unwind-info",
+            "return-address-zero",
+        }, (boot_bt["complete"], boot_bt["stop_reason"], boot_syms)
+
+        to_bt = _backtrace(gdb, boot_probe["cur_name"])
+        assert to_bt["complete"] is True and to_bt["source"] == "unstarted", to_bt
+
+        # 2. Mid-rt_schedule C switch window: rt_current_thread swapped to to_thread while flag == 0.
+        prof = _profile()
+        _stop_at_address(gdb, prof.pendsv_exception_return)
+        _clear_breakpoints(gdb)
+        sched_probe = None
+        for _ in range(30):
+            _stop_symbol(gdb, "rt_schedule_remove_thread")
+            probe_src = """
+import gdb, json
+from core.adapter import active
+from rtthread.adapter import value_to_thread
+from rtthread.navigation import get_current_thread, iter_threads
+
+frame = gdb.newest_frame()
+cur = get_current_thread()
+layout = active().layout
+cur_t = value_to_thread(cur, layout, collect_stack_metrics=False)
+xpsr = int(frame.read_register("xpsr"))
+sp = int(frame.read_register("psp" if (xpsr & 0x1FF) else "sp"))
+owner = None
+for v in iter_threads(layout):
+    t = value_to_thread(v, layout, collect_stack_metrics=False)
+    if t.stack_addr <= sp <= t.stack_addr + t.stack_size:
+        owner = t
+        break
+print(json.dumps({
+    "cur_name": cur_t.name,
+    "cur_addr": cur_t.address,
+    "owner_name": owner.name if owner else None,
+    "owner_addr": owner.address if owner else 0,
+    "flag": int(gdb.parse_and_eval("rt_thread_switch_interrupt_flag")),
+}))
+"""
+            cand = _json_line(gdb.run_python(probe_src))
+            if (
+                cand["owner_addr"]
+                and cand["owner_addr"] != cand["cur_addr"]
+                and cand["flag"] == 0
+            ):
+                sched_probe = cand
+                break
+        assert sched_probe is not None, "did not observe rt_schedule owner handoff"
+
+        from_name = sched_probe["owner_name"]
+        to_name = sched_probe["cur_name"]
+        cur_bt = _backtrace(gdb)
+        assert cur_bt["complete"] is True and cur_bt["source"] == "current", cur_bt
+        assert cur_bt["task"] == from_name, (cur_bt, sched_probe)
+        cur_syms = [f["symbol"] or "" for f in cur_bt["frames"]]
+        assert "rt_schedule_remove_thread" in cur_syms[0], cur_syms
+        assert any("rt_schedule" in s for s in cur_syms), cur_syms
+
+        from_bt = _backtrace(gdb, from_name)
+        assert from_bt["frames"] == cur_bt["frames"], (from_bt, cur_bt)
+
+        to_saved = _backtrace(gdb, to_name)
+        assert to_saved["complete"] is True, to_saved
+        assert to_saved["source"] in {"saved", "unstarted"}, to_saved
+        assert not any(
+            "rt_schedule_remove_thread" in (f["symbol"] or "")
+            for f in to_saved["frames"]
+        ), to_saved

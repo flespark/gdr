@@ -24,6 +24,8 @@ from core.insn_riscv import (
     riscv_written_register,
 )
 
+from ..stack_frame_profile import analyze_riscv_trap_profile
+
 RV32_PROFILE_ID = "rtthread/rv32/riscv-mtvec-v1"
 RV64_PROFILE_ID = "rtthread/rv64/riscv-mtvec-v1"
 
@@ -815,3 +817,14 @@ def classify_riscv_stage(
         if start <= pc < end:
             return f"scheduler-stage-ambiguous:{name}"
     return None
+
+
+def riscv_pc_in_scheduler_symbol(elf: ElfImage | None, pc: int) -> bool:
+    """Return True if ``pc`` lies in a known RISC-V switch or trap routine."""
+    if elf is None:
+        return False
+    sym = elf.function_containing(pc)
+    if sym is not None and sym.name in RISCV_SCHEDULER_SYMBOLS:
+        return True
+    trap_span = analyze_riscv_trap_profile(elf)
+    return trap_span is not None and trap_span.entry <= pc < trap_span.exit_end
