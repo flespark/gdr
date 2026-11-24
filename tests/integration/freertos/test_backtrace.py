@@ -923,6 +923,33 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
         assert data["source"] == "saved" and data["complete"], data
         assert "stage=switch-entry" in " ".join(data["messages"]), data
 
+        # Single-step inside vTaskSwitchContext body before pxCurrentTCB update
+        # (including C body statements such as xYieldPendings[0] = pdFALSE).
+        for _ in range(4):
+            gdb_session.run("stepi", timeout=10)
+            mid_state = _state(gdb_session)
+            if (
+                prof.switch_start < mid_state["pc"] < prof.switch_update
+                and mid_state["current"]
+                == mid_state["handles"]["gdr_sched_task_handle"]
+            ):
+                mid_data = _backtrace(gdb_session)
+                assert mid_data["complete"] and mid_data["source"] == "saved", mid_data
+                assert mid_data["frames"][0]["pc"] == mid_state["pc"], (
+                    mid_data,
+                    mid_state,
+                )
+                assert "vTaskSwitchContext" in (
+                    mid_data["frames"][0]["symbol"] or ""
+                ), mid_data
+                assert "PendSV_Handler" in (mid_data["frames"][1]["symbol"] or ""), (
+                    mid_data
+                )
+                assert mid_data["frames"][2]["method"] == "exception", mid_data
+                assert "stage=switch-before-update" in " ".join(mid_data["messages"]), (
+                    mid_data
+                )
+
         state = _wait_stage(
             gdb_session,
             prof.switch_update,

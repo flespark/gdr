@@ -281,9 +281,19 @@ def test_ambiguous_instruction_inside_a_verified_range_is_refused():
     assert isinstance(pendsv_hit, str) and pendsv_hit.startswith(
         "scheduler-stage-ambiguous"
     )
-    switch_hit = classify_stage(profile, profile.switch_start + 2)
-    assert isinstance(switch_hit, str) and switch_hit.startswith(
-        "scheduler-stage-ambiguous"
+    switch_mid = classify_stage(profile, profile.switch_start + 2)
+    assert isinstance(switch_mid, SchedulerStage)
+    assert switch_mid.name == "switch-before-update" and switch_mid.owner == "old"
+    # Cold block immediately after `pop {r4, pc}` in V10.3.1 branches back before store.
+    switch_cold = classify_stage(profile, profile.switch_after_update + 2)
+    assert isinstance(switch_cold, SchedulerStage)
+    assert switch_cold.name == "switch-before-update" and switch_cold.owner == "old"
+    switch_after = classify_stage(profile, profile.switch_after_update)
+    assert isinstance(switch_after, SchedulerStage)
+    assert switch_after.name == "switch-after-update" and switch_after.owner == "new"
+    switch_hit = classify_stage(profile, profile.switch_end - 2)
+    assert isinstance(switch_hit, str) and switch_hit == (
+        "scheduler-stage-ambiguous:vTaskSwitchContext"
     )
     assert classify_stage(profile, 0xDEAD) is None
 

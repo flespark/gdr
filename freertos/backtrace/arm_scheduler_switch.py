@@ -11,6 +11,7 @@ fixture's link address.  Owner-consistent seeds for classified stages live in
 from __future__ import annotations
 
 import hashlib
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -131,6 +132,8 @@ class SchedulerProfile:
     port: str = "arm-cm3"
     svc_symbol: str = "SVC_Handler"
     start_first_symbol: str = "prvPortStartFirstTask"
+    switch_pre_pcs: frozenset[int] = frozenset()
+    switch_post_pcs: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -488,6 +491,82 @@ def _find_switch_update(
         f":after={following_mnemonic}"
     )
     return store, signature
+
+
+def _switch_cfg_partition(
+    instructions: tuple[ThumbInstruction, ...],
+    store_address: int,
+) -> tuple[frozenset[int], frozenset[int]]:
+    """Partition ``vTaskSwitchContext`` PCs relative to the unique TCB store.
+
+    Follows intra-function Thumb control flow so cold blocks placed after the
+    normal return (such as ready-list wrap-around or assert paths that branch
+    back before ``store_address``) keep their true pre-update ownership, while
+    excluding any instruction reachable on both sides of the store.
+    """
+    by_addr = {instruction.address for instruction in instructions}
+    edges: dict[int, list[int]] = {
+        instruction.address: [] for instruction in instructions
+    }
+    it_remaining = 0
+    for instruction in instructions:
+        in_it = it_remaining > 0
+        if instruction.mnemonic == "it":
+            it_remaining = int(instruction.operands.get("count", 1))
+        elif in_it:
+            it_remaining -= 1
+        mnemonic = instruction.mnemonic
+        next_addr = instruction.address + instruction.size
+        fallthrough = next_addr if next_addr in by_addr else None
+        reglist = instruction.operands.get("reglist")
+        reglist_int = int(reglist) if isinstance(reglist, int) else 0
+        pop_pc = (
+            mnemonic == "pop" and instruction.size == 2 and bool(reglist_int & (1 << 8))
+        ) or (mnemonic in {"pop", "ldmia", "ldmdb"} and bool(reglist_int & (1 << 15)))
+        is_ret = (mnemonic == "bx" and instruction.operands.get("rm") == 14) or pop_pc
+        target = instruction.operands.get("target")
+        target_addr = target if isinstance(target, int) and target in by_addr else None
+        if mnemonic == "b":
+            if target_addr is not None:
+                edges[instruction.address].append(target_addr)
+            if in_it and fallthrough is not None:
+                edges[instruction.address].append(fallthrough)
+        elif mnemonic in {"b_cond", "cbz", "cbnz"}:
+            if fallthrough is not None:
+                edges[instruction.address].append(fallthrough)
+            if target_addr is not None:
+                edges[instruction.address].append(target_addr)
+        elif is_ret or mnemonic == "bx":
+            if in_it and fallthrough is not None:
+                edges[instruction.address].append(fallthrough)
+        elif fallthrough is not None:
+            edges[instruction.address].append(fallthrough)
+
+    pre: set[int] = set()
+    queue = deque([instructions[0].address])
+    while queue:
+        addr = queue.popleft()
+        if addr in pre:
+            continue
+        pre.add(addr)
+        if addr == store_address:
+            continue
+        for nxt in edges[addr]:
+            if nxt not in pre:
+                queue.append(nxt)
+
+    post: set[int] = set()
+    queue = deque(edges.get(store_address, ()))
+    while queue:
+        addr = queue.popleft()
+        if addr in post:
+            continue
+        post.add(addr)
+        for nxt in edges[addr]:
+            if nxt not in post:
+                queue.append(nxt)
+
+    return frozenset(pre - post), frozenset(post - pre)
 
 
 @dataclass(frozen=True)
@@ -1205,6 +1284,12 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
     if isinstance(update, str):
         return None, update
     store, switch_signature = update
+    switch_insns, switch_reason = _decode_switch_instructions(
+        elf, switch_start, switch_end
+    )
+    if switch_insns is None:
+        return None, switch_reason
+    switch_pre_pcs, switch_post_pcs = _switch_cfg_partition(switch_insns, store.address)
 
     fingerprint = hashlib.sha256(
         "\n".join(
@@ -1268,6 +1353,8 @@ def build_profile(elf: ElfImage) -> tuple[SchedulerProfile | None, str]:
             port=spec.port,
             svc_symbol=spec.svc_symbol,
             start_first_symbol=spec.start_first_symbol,
+            switch_pre_pcs=switch_pre_pcs,
+            switch_post_pcs=switch_post_pcs,
         ),
         "ok",
     )
@@ -1350,6 +1437,10 @@ def classify_stage(profile: SchedulerProfile, pc: int) -> SchedulerStage | str |
         )
     if pc in exact:
         return exact[pc]
+    if pc in profile.switch_pre_pcs:
+        return SchedulerStage("switch-before-update", "old", "saved-tcb", pc)
+    if pc in profile.switch_post_pcs:
+        return SchedulerStage("switch-after-update", "new", "saved-tcb", pc)
     if pc == profile.start_first_svc:
         return SchedulerStage(
             "start-first-svc-pending", "pending", "none", profile.start_first_svc

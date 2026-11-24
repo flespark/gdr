@@ -349,6 +349,10 @@ def test_build_profile_and_classify_ports(
         assert not isinstance(stage, str) and stage is not None
         assert stage.name == expected_name
 
+    switch_mid = classify_stage(profile, profile.switch_start + 2)
+    assert not isinstance(switch_mid, str) and switch_mid is not None
+    assert switch_mid.name == "switch-before-update"
+
     ambig_offset = 8 if expected_port == "arm-cm33-fpu" else 4
     ambiguous = classify_stage(profile, profile.pendsv_entry + ambig_offset)
     assert isinstance(ambiguous, str) and ambiguous.startswith(
