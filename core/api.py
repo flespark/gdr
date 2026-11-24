@@ -572,12 +572,23 @@ def _pre_init_backtrace_verb(args: Sequence[str]) -> _VerbResult:
     return backtrace_to_dict(report), list(report.messages)
 
 
-def live_backtrace_envelope(max_depth: int = 32) -> dict[str, object]:
-    """Run RTOS-agnostic live backtrace and wrap the result in a GDR envelope."""
+def live_backtrace_envelope(
+    max_depth: int = 32,
+    *,
+    rtos_command: str | None = None,
+) -> dict[str, object]:
+    """Run bare-metal live backtrace and wrap the result in a GDR envelope."""
     from .backtrace.unwind_gdb import live_backtrace
 
     start = time.monotonic()
     rtos, rtos_version = session_meta()
+    if active() is not None:
+        target_cmd = rtos_command or (f"{rtos} bt" if rtos else "<rtos> bt")
+        return _error_envelope(
+            "bare_metal_only",
+            f"`gdr bt` is for bare-metal targets only; use `{target_cmd}` in RTOS sessions",
+            _elapsed_ms(start),
+        )
     note = verification_note()
     try:
         report = live_backtrace(max_depth)

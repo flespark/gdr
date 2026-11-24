@@ -16,7 +16,7 @@ backtrace runs through three sequential phases.
 ### 1. Seed, ABI, and Stack-Segment Validation
 
 Before stepping any caller frame, GDR resolves the halted core or target task
-(`core/backtrace/unwind_gdb.py` for pre-init/bare-metal `gdr backtrace` and
+(`core/backtrace/unwind_gdb.py` for bare-metal `gdr backtrace` / pre-init `gdr api backtrace`, and
 `<rtos>/backtrace/unwind_gdb.py` when an adapter is active) and validates the
 seed ([`core/backtrace/unwind.py`](../core/backtrace/unwind.py)):
 

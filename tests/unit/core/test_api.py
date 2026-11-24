@@ -883,3 +883,8 @@ def test_backtrace_verb_accepts_omitted_target_for_current_pc(session):
 
     err_env = api.api_call("backtrace", "")
     assert err_env["ok"] is False and _error(err_env)["code"] == "empty_name"
+
+    bare_env = api.live_backtrace_envelope()
+    assert bare_env["ok"] is False
+    assert _error(bare_env)["code"] == "bare_metal_only"
+    assert "bare-metal" in str(_error(bare_env)["message"])

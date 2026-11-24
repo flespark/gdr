@@ -100,11 +100,11 @@ unambiguous result.",
         ),
         CommandHelp(
             "backtrace",
-            "Unwind the halted core from ELF metadata without an RTOS adapter",
-            "Inspects loaded ELF CPU attributes, unwind tables and live target registers for bare-metal, pre-init or pre-scheduler stops.",
+            "Unwind the halted core from ELF metadata on bare-metal targets",
+            "Inspects loaded ELF CPU attributes, unwind tables and live target registers for bare-metal stops (no active RTOS adapter).",
             usage=("gdr backtrace [--max-depth N] [--json]",),
             tips=(
-                "Use `<rtos> backtrace [<task>]` after `gdr init` to unwind RTOS task or exception stacks.",
+                "Refused once an RTOS adapter is initialized; use `rtt bt` or `frt bt` in RTOS sessions.",
                 "`--json` writes one GDR API envelope (`live_backtrace_envelope`).",
             ),
             configuration=(
@@ -503,15 +503,27 @@ def _probe_command(argv: list[str]) -> None:
             info(f"{candidate.get('rtos')}: {candidate['detail']}")
 
 
+_RTOS_CLI_PREFIX = {"rtthread": "rtt", "freertos": "frt"}
+
+
 def _backtrace_command(argv: list[str]) -> None:
-    """``gdr backtrace [--max-depth N] [--json]``: non-RTOS live stack backtrace."""
+    """``gdr backtrace [--max-depth N] [--json]``: bare-metal live stack backtrace."""
     import shlex
 
+    from core.adapter import is_initialized, session_meta
     from core.api import live_backtrace_envelope
     from core.backtrace.unwind_gdb import live_backtrace
     from core.commands import parse_backtrace_max_depth, render_backtrace_report
 
     json_mode = "--json" in argv
+    if is_initialized():
+        rtos, _version = session_meta()
+        cmd = f"{_RTOS_CLI_PREFIX.get(rtos or '', rtos or '<rtos>')} bt"
+        if json_mode:
+            _write_json(live_backtrace_envelope(rtos_command=cmd))
+            return
+        warn(f"`gdr bt` is for bare-metal targets only; use `{cmd}` in RTOS sessions")
+        return
     rest = [token for token in argv if token != "--json"]
     parsed = parse_backtrace_max_depth(
         " ".join(shlex.quote(token) for token in rest),

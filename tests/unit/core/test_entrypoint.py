@@ -707,3 +707,55 @@ def test_gdr_backtrace_command_supports_text_json_and_arg_guards(monkeypatch, ca
 
     entrypoint._invoke_command("backtrace worker1")
     assert warnings == ["usage: gdr backtrace [--max-depth N] [--json]"]
+
+
+def test_gdr_backtrace_refused_when_rtos_adapter_is_active(monkeypatch, capsys):
+    """``gdr bt`` refuses RTOS sessions and directs the user to ``<rtos> bt``."""
+    import json
+    import sys
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    import core.adapter as adapter_api
+
+    entrypoint = _load_entrypoint()
+    adapter_api.reset()
+    warnings: list[str] = []
+    fake_gdb = SimpleNamespace(
+        STDERR=2,
+        write=lambda text, _stream=None: sys.stdout.write(text),
+    )
+    monkeypatch.setattr("core.gdb_bridge.gdb", fake_gdb)
+    monkeypatch.setattr(entrypoint, "warn", warnings.append)
+    monkeypatch.setattr(
+        "core.backtrace.unwind_gdb.live_backtrace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("live_backtrace must not run when an RTOS adapter is active")
+        ),
+    )
+
+    try:
+        adapter_api.register(
+            cast(Any, SimpleNamespace()), rtos="freertos", version="11.1.0"
+        )
+        entrypoint._invoke_command("bt")
+        assert warnings == [
+            "`gdr bt` is for bare-metal targets only; use `frt bt` in RTOS sessions"
+        ]
+        entrypoint._invoke_command("bt --json")
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "bare_metal_only"
+        assert "`frt bt`" in payload["error"]["message"]
+
+        adapter_api.reset()
+        warnings.clear()
+        adapter_api.register(
+            cast(Any, SimpleNamespace()), rtos="rtthread", version="4.0.5"
+        )
+        entrypoint._invoke_command("backtrace")
+        assert warnings == [
+            "`gdr bt` is for bare-metal targets only; use `rtt bt` in RTOS sessions"
+        ]
+    finally:
+        adapter_api.reset()
