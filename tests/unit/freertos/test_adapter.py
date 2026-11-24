@@ -1129,3 +1129,57 @@ def test_find_task_matches_name_hex_and_decimal_tcb_address(monkeypatch):
     assert adapter_module.find_task("0X28000F80", layout) is tcb_fpu
     assert adapter_module.find_task(str(0x2800_0F80), layout) is tcb_fpu
     assert adapter_module.find_task("0xdeadbeef", layout) is None
+
+
+def test_resolve_task_accepts_symbols_and_flags_duplicate_names_or_symbols(monkeypatch):
+    layout = build_layout(FreeRtosConfig(), (11, 1, 0))
+    t1 = {"pcTaskName": "worker", "_addr": 0x2800_1000}
+    t2 = {"pcTaskName": "worker", "_addr": 0x2800_2000}
+    t3 = {"pcTaskName": "solo", "_addr": 0x2800_3000}
+
+    monkeypatch.setattr(
+        adapter_module,
+        "iter_tasks",
+        lambda _layout: [
+            (t1, "Ready", None),
+            (t2, "Blocked", None),
+            (t3, "Running", 0),
+        ],
+    )
+    monkeypatch.setattr(
+        adapter_module, "read_field", lambda value, _sl, _field: value["pcTaskName"]
+    )
+    monkeypatch.setattr(adapter_module, "read_cstring", lambda value: value)
+    monkeypatch.setattr(adapter_module, "value_address", lambda value: value["_addr"])
+    monkeypatch.setattr(
+        adapter_module,
+        "symbol_object_addresses",
+        lambda kind, name, _l: {
+            ("task", "g_worker1"): [0x2800_1000],
+            ("task", "dup_static_tcb"): [0x2800_1000, 0x2800_2000],
+        }.get((kind, name), []),
+    )
+
+    # Duplicate task name returns ambiguous with disambiguation hint.
+    dup = adapter_module.resolve_task("worker", layout)
+    assert dup.status == "ambiguous"
+    assert dup.message is not None
+    assert "0x28001000" in dup.message and "0x28002000" in dup.message
+    assert "unique symbol or address" in dup.message
+    assert adapter_module.find_task("worker", layout) is None
+
+    # Static/dynamic symbol disambiguates duplicate task name cleanly.
+    by_sym = adapter_module.resolve_task("g_worker1", layout)
+    assert by_sym.status == "found" and by_sym.value is t1
+
+    # Duplicate file-static symbol returns ambiguous and suggests explicit address.
+    dup_sym = adapter_module.resolve_task("dup_static_tcb", layout)
+    assert dup_sym.status == "ambiguous"
+    assert dup_sym.message is not None
+    assert "explicit address" in dup_sym.message
+
+    # Adapter object_detail surfaces the ambiguity message directly.
+    adapter = adapter_module.FreeRtosAdapter(layout)
+    detail = adapter.object_detail("task", "worker")
+    assert detail is not None and detail.found is False
+    assert detail.message is not None and "ambiguous task name" in detail.message

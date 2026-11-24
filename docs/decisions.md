@@ -63,6 +63,25 @@ encodings, target symbols, and object-registry traversal. The core only
 consumes generic layout metadata, so another RTOS can use different wrappers
 and object types without changing `core/`.
 
+## Kernel object references accept name, symbol, or address
+
+RT-Thread embeds a `name` field in every kernel object, whereas FreeRTOS and
+Zephyr do not guarantee kernel-stored names across object kinds. Command,
+watch, convenience-function, and API parameters that identify a kernel object
+therefore follow a three-tier compatibility contract:
+
+- Every parameter that accepts an object's **name** must also accept a C
+  **symbol** naming either a statically defined object struct or a
+  pointer/handle variable holding a dynamically allocated object.
+- Every parameter that accepts a **symbol** must also accept an explicit
+  **address** (`0x`-hex or decimal) of a static or dynamic object.
+- All RTOS adapters resolve object references through the shared core resolver
+  (`core/object_ref.py`) using identifier-only symbol lookup without driving
+  the target. When a name or symbol matches more than one distinct object, GDR
+  refuses to pick arbitrarily and reports the conflicting addresses with a
+  prompt to use a more specific reference (a unique symbol or an explicit
+  address).
+
 ## Coupling is explicit and localised
 
 All RT-Thread coupling lives under `rtthread/` (ABI field paths and state

@@ -21,19 +21,23 @@ Direct `gdb.Value` / DWARF / target-memory traversal modules
 `backtrace/unwind_gdb.py` orchestration modules are verified via focused
 orchestration unit tests and closed-loop QEMU suites.
 
-In addition to functional unit tests, `tests/unit/core/test_boundary.py`
-enforces repository-wide structural invariants on every run:
+In addition to functional unit tests, two static-invariant test modules run on
+every unit suite invocation:
 
-- `core/` contains zero RTOS-specific identifiers and never imports
-  an adapter package.
-- Production modules stay within the 1,500-line ceiling.
-- Kernel symbol/type literals stay inside their owning domain modules
-  (`layout.py`, `navigation.py`, `diagnostics.py`, `objects.py`, `heap.py`).
-- Adapter code uses `read_field` / `value_at` / bridge primitives rather than
-  inline `read_path`, raw `gdb.lookup_type`, or raw DWARF `.sizeof` /
-  `.fields()` access.
-- The runtime has zero third-party dependencies and never imports the dev-only
-  oracle packages `pyelftools` or `capstone`.
+- `tests/unit/core/test_boundary.py` enforces architecture and dependency
+  boundaries: `core/` contains zero RTOS-specific identifiers and never imports
+  an adapter package; kernel symbol/type literals stay inside their owning
+  domain modules (`layout.py`, `navigation.py`, `diagnostics.py`, `objects.py`,
+  `heap.py`); adapter code uses `read_field` / `value_at` / bridge primitives
+  rather than inline `read_path`, raw `gdb.lookup_type`, or raw DWARF `.sizeof`
+  / `.fields()` access; and the runtime has zero third-party dependencies and
+  never imports the dev-only oracle packages `pyelftools` or `capstone`.
+- `tests/unit/core/test_code_hygiene.py` enforces code-hygiene and module-layout
+  rules: production modules stay within the 1,500-line ceiling, cells use `N/A`
+  rather than bare `"unavailable"`, adapter error handling uses
+  `TARGET_ACCESS_ERRORS` without bare `except Exception:` outside completion,
+  and data models / non-dunder constants do not trail after module functions at
+  EOF.
 
 `tests/unit/core/test_oracle_*.py` cross-check the bounded ELF/section, CFI,
 EHABI, DWARF-expression and Thumb/A32/RISC-V decoders against those two

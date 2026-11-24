@@ -97,8 +97,10 @@ from core.gdb_bridge import (
     type_size,
     value_address,
 )
+from core.object_ref import resolve_or_legacy
 from core.stack_frame_parser import StackContextSelection
-from freertos.adapter import FreeRtosTask, find_task, value_to_task
+from freertos.adapter import FreeRtosTask, find_task, resolve_task, value_to_task
+from freertos.adapter import find_task as _adapter_find_task
 from freertos.backtrace.arm_scheduler_switch import (
     ARM_SCHEDULER_SYMBOLS,
     classify_stage,
@@ -856,20 +858,26 @@ def backtrace(
     """Unwind one FreeRTOS task (or the current halted core context)."""
     if target is None:
         return _current_pc_backtrace(adapter, max_depth)
-    value = find_task(target, adapter.layout)
-    if value is None:
+    res = resolve_or_legacy(
+        lambda: resolve_task(target, adapter.layout),
+        lambda: find_task(target, adapter.layout),
+        find_task is not _adapter_find_task,
+    )
+    if res.status != "found" or res.value is None:
+        reason = "ambiguous-target" if res.ambiguous else "task-not-found"
+        msg = res.message or f"task {target!r} was not found in the scheduler lists"
         return _stop_report(
             None,
             "unknown",
             None,
             max_depth,
-            "task-not-found",
-            f"task {target!r} was not found in the scheduler lists",
+            reason,
+            msg,
             source="none",
             bounds="unknown",
             target=target,
         )
-    return _backtrace_task_value(adapter, value, target, max_depth)
+    return _backtrace_task_value(adapter, res.value, target, max_depth)
 
 
 @dataclass(frozen=True)

@@ -24,10 +24,9 @@ from core.gdb_bridge import (
     array_bound,
     array_item,
     get_arch_info,
-    is_plain_identifier,
     loadable_ranges,
     lookup_symbol,
-    parse_user_address,
+    lookup_symbols,
     read_bytes,
     read_cstring,
     read_int,
@@ -38,6 +37,11 @@ from core.gdb_bridge import (
     warn,
 )
 from core.layout import member_offset, read_field, value_at
+from core.object_ref import (
+    ObjectResolution,
+    resolve_object_ref,
+    symbol_addresses_for,
+)
 from freertos.layout import (
     KIND_BY_HANDLE_TYPE,
     KIND_BY_STATIC_TYPE,
@@ -721,49 +725,35 @@ def _timer_name_at(address: int, layout: FreeRtosLayout) -> str | None:
 
 def _scan_symbol_objects(layout: FreeRtosLayout):
     """One pass of the symbol channel; the caller caches its result."""
+    seen: set[tuple[str, int]] = set()
     for type_name, symbol_name in _iter_declared_variables(_info_variables_text()):
         kind = KIND_BY_STATIC_TYPE.get(type_name)
         if kind is None:
             kind = KIND_BY_HANDLE_TYPE.get(type_name)
         if kind is None:
             continue
-        value = lookup_symbol(symbol_name)
-        if value is None:
-            continue
-        # NOTE: a Static*_t variable IS the object buffer (tasks.c passes
-        # pxTaskBuffer straight to the TCB), so its symbol address is the
-        # object address; a *Handle_t variable holds a pointer to the object,
-        # so the pointer value is. Mixing the two up yields fake objects in
-        # .bss that still cast and read plausibly.  On an MPU build the
-        # *Handle_t value is additionally an opaque pool index (see
-        # _opaque_mpu_symbol_address), never a pointer.
-        if type_name in KIND_BY_STATIC_TYPE:
-            address = value_address(value)
-        else:
-            address = safe_int(value)
-            if address and layout.config.mpu_object_pool:
-                address = _opaque_mpu_symbol_address(address, layout)
-                if address is None:
-                    continue
-        if not address:
-            continue
-        if kind == "timer":
-            # NOTE: a timer's canonical name is the pcTimerName passed to
-            # xTimerCreate / xTimerCreateStatic (timers.c); the symbol (a
-            # TimerHandle_t variable or a StaticTimer_t buffer) is an
-            # implementation detail.  Naming dormant timers by their symbol
-            # would make ``frt timer <name>`` unreachable by the name the
-            # firmware itself uses, so the real name is preferred when it
-            # reads (a freed/unlinked timer falls back to the symbol name).
-            timer_name = _timer_name_at(address, layout)
-            if timer_name:
-                yield DiscoveredObject(
-                    kind=kind, address=address, name=timer_name, source="symbol"
-                )
+        for value in lookup_symbols(symbol_name, single_lookup=lookup_symbol):
+            if type_name in KIND_BY_STATIC_TYPE:
+                address = value_address(value)
+            else:
+                address = safe_int(value)
+                if address and layout.config.mpu_object_pool:
+                    address = _opaque_mpu_symbol_address(address, layout)
+                    if address is None:
+                        continue
+            if not address or (symbol_name, address) in seen:
                 continue
-        yield DiscoveredObject(
-            kind=kind, address=address, name=symbol_name, source="symbol"
-        )
+            seen.add((symbol_name, address))
+            if kind == "timer":
+                timer_name = _timer_name_at(address, layout)
+                if timer_name:
+                    yield DiscoveredObject(
+                        kind=kind, address=address, name=timer_name, source="symbol"
+                    )
+                    continue
+            yield DiscoveredObject(
+                kind=kind, address=address, name=symbol_name, source="symbol"
+            )
 
 
 _SYMBOL_OBJECT_CACHE: tuple[DiscoveredObject, ...] | None = None
@@ -1336,24 +1326,97 @@ def discover_all(layout: FreeRtosLayout) -> dict[str, list[DiscoveredObject]]:
     return groups
 
 
-def _address_from_symbol(value, layout: FreeRtosLayout | None = None) -> int | None:
-    """Return the object address a Static*_t / *Handle_t symbol refers to.
+_STRUCT_TAG_KIND: dict[str, str] = {
+    "tskTaskControlBlock": "task",
+    "QueueDefinition": "queue",
+    "tmrTimerControl": "timer",
+    "EventGroupDef_t": "eventgroup",
+    "StreamBufferDef_t": "streambuffer",
+}
 
-    Static buffers are the object itself (symbol address); handles hold a
-    pointer to the object (pointer value).  With *layout* given, a handle
-    value on an MPU build is translated through the kernel object pool first
-    (wrappers v2 opaque indices), so ``frt <kind> <name>`` resolves an MPU
-    handle to its real address too.
-    """
-    type_name = getattr(value.type, "name", None)
+
+def _kind_compatible(expected: str | None, actual: str | None) -> bool:
+    if expected is None or actual is None or expected == actual:
+        return True
+    return expected in _QUEUE_FAMILY_KINDS and actual in _QUEUE_FAMILY_KINDS
+
+
+def _address_from_symbol(
+    value,
+    layout: FreeRtosLayout | None = None,
+    *,
+    expected_kind: str | None = None,
+) -> int | None:
+    """Return the object address a static-struct or handle symbol refers to."""
+    vtype = getattr(value, "type", None)
+    unqualified = (
+        vtype.unqualified() if callable(getattr(vtype, "unqualified", None)) else vtype
+    )
+    type_name = getattr(unqualified, "name", None) or getattr(vtype, "name", None)
     if type_name in KIND_BY_STATIC_TYPE:
+        if not _kind_compatible(expected_kind, KIND_BY_STATIC_TYPE[type_name]):
+            return None
         return value_address(value)
     if type_name in KIND_BY_HANDLE_TYPE:
+        if not _kind_compatible(expected_kind, KIND_BY_HANDLE_TYPE[type_name]):
+            return None
         address = safe_int(value)
         if address and layout is not None and layout.config.mpu_object_pool:
             return _opaque_mpu_symbol_address(address, layout)
-        return address
+        return address or None
+    if (
+        gdb is not None
+        and vtype is not None
+        and callable(getattr(vtype, "strip_typedefs", None))
+    ):
+        try:
+            stripped = vtype.strip_typedefs().unqualified()
+        except _TRAVERSAL_ERRORS:
+            return None
+        if stripped.code == gdb.TYPE_CODE_STRUCT:
+            sym_kind = _STRUCT_TAG_KIND.get(stripped.tag or "")
+            if sym_kind and _kind_compatible(expected_kind, sym_kind):
+                return value_address(value) or None
+        elif stripped.code == gdb.TYPE_CODE_PTR:
+            try:
+                target_type = stripped.target().strip_typedefs().unqualified()
+            except _TRAVERSAL_ERRORS:
+                return None
+            sym_kind = _STRUCT_TAG_KIND.get(target_type.tag or "")
+            if sym_kind and _kind_compatible(expected_kind, sym_kind):
+                address = safe_int(value)
+                if address and layout is not None and layout.config.mpu_object_pool:
+                    return _opaque_mpu_symbol_address(address, layout)
+                return address or None
     return None
+
+
+def symbol_object_addresses(kind: str, text: str, layout: FreeRtosLayout) -> list[int]:
+    """Return every non-zero object address resolved from symbol *text*."""
+    return symbol_addresses_for(
+        text,
+        address_of=lambda v: _address_from_symbol(v, layout, expected_kind=kind),
+        single_lookup=lookup_symbol,
+    )
+
+
+def resolve_object_status(
+    kind: str,
+    text: str,
+    layout: FreeRtosLayout,
+) -> ObjectResolution[DiscoveredObject]:
+    """Resolve an explicit address or symbol name, flagging duplicate symbols."""
+    normalized = kind.strip().lower()
+    return resolve_object_ref(
+        normalized,
+        text,
+        (),
+        symbol_addresses=lambda sym: symbol_object_addresses(normalized, sym, layout),
+        synthesize_address=lambda addr, name: DiscoveredObject(
+            kind=normalized, address=addr, name=name, source="user"
+        ),
+        allow_numeric_symbol=True,
+    )
 
 
 def resolve_object(
@@ -1361,35 +1424,9 @@ def resolve_object(
     text: str,
     layout: FreeRtosLayout,
 ) -> DiscoveredObject | None:
-    """Resolve an explicit address or symbol name to a discovered object.
-
-    Accepts ``0x``/``0X`` hexadecimal addresses, plain decimal addresses and
-    plain C identifiers (looked up as a symbol, never evaluated as an
-    expression, so the inferior stays halted).
-    """
-    kind = kind.strip().lower()
-    text = text.strip()
-    if not text:
-        return None
-    # NOTE: address parsing is shared with the other adapters through
-    # parse_user_address so `<name-or-address>` means the same everywhere;
-    # a name still wins over a decimal reading -- a numeric object name
-    # (e.g. ``"42"``) is looked up as a symbol first, and digits only fall
-    # back to an address when that lookup fails.
-    address = parse_user_address(text)
-    if address is not None and text.lower().startswith("0x"):
-        return DiscoveredObject(kind=kind, address=address, source="user")
-    if is_plain_identifier(text) or text.isdecimal():
-        value = lookup_symbol(text)
-        if value is not None:
-            resolved = _address_from_symbol(value, layout)
-            if resolved:
-                return DiscoveredObject(
-                    kind=kind, address=resolved, name=text, source="user"
-                )
-    if address is not None:
-        return DiscoveredObject(kind=kind, address=address, source="user")
-    return None
+    """Resolve an explicit address or symbol name to a discovered object."""
+    resolution = resolve_object_status(kind, text, layout)
+    return resolution.value if resolution.status == "found" else None
 
 
 def iter_queue_items(

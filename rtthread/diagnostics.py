@@ -50,10 +50,11 @@ from core.layout import (
     read_field,
     read_field_at,
 )
+from core.object_ref import ObjectCandidate, resolve_object_ref
 from rtthread.layout import RT_TIMER_FLAG_ACTIVATED, ThreadState
 from rtthread.navigation import (
+    _symbol_object_addresses,
     active_timer_addresses,
-    find_object,
     get_current_thread,
     get_tick,
     iter_objects,
@@ -1165,12 +1166,29 @@ def render_check(arguments: list[str]) -> None:
             append("heap", [(finding.name, status)])
     elif scope == "thread":
         thread_code = layout.object_codes.get("thread")
+        threads = list(iter_threads(layout))
         names = {value_address(value): name for value, name in _thread_names(layout)}
-        for value in iter_threads(layout):
+        if target:
+            res = resolve_object_ref(
+                "thread",
+                target,
+                [
+                    ObjectCandidate(
+                        value_address(v), v, names.get(value_address(v)) or None
+                    )
+                    for v in threads
+                ],
+                symbol_addresses=_symbol_object_addresses,
+            )
+            if res.status == "ambiguous":
+                warn(res.message or f"ambiguous thread reference {target!r}")
+                return
+            threads = (
+                [res.value] if res.status == "found" and res.value is not None else []
+            )
+        for value in threads:
             address = value_address(value)
             name = names.get(address, "")
-            if target and target != name and target != f"{address:#x}":
-                continue
             results = thread_checks(value, layout)
             results += object_identity_checks(
                 value, layout, "struct rt_thread", thread_code
@@ -1187,14 +1205,29 @@ def render_check(arguments: list[str]) -> None:
             if timer_code is not None
             else set()
         )
-        names = {}
-        for value in iter_timers(layout):
-            names[value_address(value)] = value_to_timer(value, layout).name
-        for value in iter_timers(layout):
+        timers = list(iter_timers(layout))
+        names = {value_address(v): value_to_timer(v, layout).name for v in timers}
+        if target:
+            res = resolve_object_ref(
+                "timer",
+                target,
+                [
+                    ObjectCandidate(
+                        value_address(v), v, names.get(value_address(v)) or None
+                    )
+                    for v in timers
+                ],
+                symbol_addresses=_symbol_object_addresses,
+            )
+            if res.status == "ambiguous":
+                warn(res.message or f"ambiguous timer reference {target!r}")
+                return
+            timers = (
+                [res.value] if res.status == "found" and res.value is not None else []
+            )
+        for value in timers:
             address = value_address(value)
             name = names.get(address, "")
-            if target and target != name and target != f"{address:#x}":
-                continue
             in_active: bool | None = address in active_addrs
             if address not in active_addrs and address not in registered_addrs:
                 # NOTE: the two walks raced a live update (a detach between
@@ -1216,23 +1249,31 @@ def render_check(arguments: list[str]) -> None:
             return
         struct_name = _IPC_STRUCTS[scope]
         sl = layout.structs.get(struct_name)
+        objects = list(iter_objects(type_code, layout))
         names: dict[int, str] = {}
         if sl is not None:
-            for value in iter_objects(type_code, layout):
+            for value in objects:
                 names[value_address(value)] = (
                     read_cstring(read_field(value, sl, "name")) or ""
                 )
-        objects = list(iter_objects(type_code, layout))
         if target:
-            objects = [
-                obj
-                for obj in objects
-                if names.get(value_address(obj), "") == target
-                or f"{value_address(obj):#x}" == target
-            ]
-            if not objects:
-                obj = find_object(type_code, target, layout)
-                objects = [obj] if obj is not None else []
+            res = resolve_object_ref(
+                scope,
+                target,
+                [
+                    ObjectCandidate(
+                        value_address(v), v, names.get(value_address(v)) or None
+                    )
+                    for v in objects
+                ],
+                symbol_addresses=_symbol_object_addresses,
+            )
+            if res.status == "ambiguous":
+                warn(res.message or f"ambiguous {scope} reference {target!r}")
+                return
+            objects = (
+                [res.value] if res.status == "found" and res.value is not None else []
+            )
         for obj in objects:
             address = value_address(obj)
             name = names.get(address, "")

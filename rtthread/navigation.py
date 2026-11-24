@@ -17,9 +17,7 @@ except ImportError:
     gdb = None  # type: ignore[assignment]
 
 from core.gdb_bridge import (
-    is_plain_identifier,
     lookup_symbol,
-    parse_user_address,
     read_cstring,
     read_int,
     safe_int,
@@ -32,6 +30,13 @@ from core.layout import (
     iter_list,
     read_field,
     resolve_list_head,
+)
+from core.object_ref import (
+    ObjectCandidate,
+    ObjectResolution,
+    resolve_object_ref,
+    symbol_addresses_for,
+    symbol_value_address,
 )
 from rtthread.layout import object_information_layout
 
@@ -107,49 +112,47 @@ def iter_objects(type_code: int, kl: KernelLayout) -> Iterator[gdb.Value]:
     yield from iter_list(object_list, hook)
 
 
-def find_object(type_code: int, name: str, kl: KernelLayout) -> gdb.Value | None:
-    """Find an RT-Thread object by name, address or symbol.
+def _symbol_object_addresses(name: str) -> list[int]:
+    """Return every non-zero object address resolved from symbol *name*."""
+    return symbol_addresses_for(
+        name,
+        address_of=lambda v: symbol_value_address(
+            v, safe_int_fn=safe_int, value_address_fn=value_address
+        ),
+        single_lookup=lookup_symbol,
+    )
 
-    A registry name wins; an explicit ``0x``-hex or decimal literal and a
-    plain C identifier (looked up as a symbol, never evaluated, so the
-    inferior stays halted) then match against live registry addresses.
-    Anonymous or duplicate-named objects are therefore reachable by the
-    ``Addr`` column their list row prints.
-    """
+
+def resolve_object(
+    type_code: int, name: str, kl: KernelLayout, *, kind: str | None = None
+) -> ObjectResolution[gdb.Value]:
+    """Resolve an RT-Thread object by name, symbol, or address."""
     type_info = kl.object_types.get(type_code)
     if type_info is None:
-        return None
+        return ObjectResolution(status="not_found")
     layout = kl.structs.get(type_info.struct_name)
     if layout is None:
-        return None
-
-    target = name.strip()
-    if target:
-        for obj in iter_objects(type_code, kl):
-            object_name = read_cstring(read_field(obj, layout, "name"))
-            if object_name == target:
-                return obj
-    address = parse_user_address(target)
-    if address is None and is_plain_identifier(target):
-        address = _symbol_object_address(lookup_symbol(target))
-    if address is None:
-        return None
-    for obj in iter_objects(type_code, kl):
-        if value_address(obj) == address:
-            return obj
-    return None
+        return ObjectResolution(status="not_found")
+    candidates = [
+        ObjectCandidate(
+            address=value_address(obj),
+            value=obj,
+            name=read_cstring(read_field(obj, layout, "name")) or None,
+        )
+        for obj in iter_objects(type_code, kl)
+    ]
+    return resolve_object_ref(
+        kind or type_info.name,
+        name,
+        candidates,
+        symbol_addresses=_symbol_object_addresses,
+    )
 
 
-def _symbol_object_address(value) -> int | None:
-    """Return the registry address a data symbol refers to, or ``None``.
-
-    A struct instance symbol contributes its own address; a pointer/handle
-    symbol contributes the address it holds. Anything else (scalars,
-    unreadable values) is not an object selector.
-    """
-    if value is None:
-        return None
-    return safe_int(value) or value_address(value) or None
+def find_object(type_code: int, name: str, kl: KernelLayout) -> gdb.Value | None:
+    """Find an RT-Thread object by name, symbol, or address."""
+    resolution = resolve_object(type_code, name, kl)
+    return resolution.value if resolution.status == "found" else None
 
 
 MAX_SUSPEND_THREADS = 256
@@ -211,41 +214,78 @@ def iter_threads(kl: KernelLayout) -> Iterator[gdb.Value]:
         yield from iter_objects(type_code, kl)
 
 
-def find_thread(name: str, kl: KernelLayout) -> gdb.Value | None:
-    """Find an RT-Thread thread by name, address or symbol.
+def resolve_thread(name: str, kl: KernelLayout) -> ObjectResolution[gdb.Value]:
+    """Resolve an RT-Thread thread by name, symbol, or address."""
+    type_code = _object_code(kl, "thread")
+    if type_code is None:
+        return ObjectResolution(status="not_found")
+    return resolve_object(type_code, name, kl, kind="thread")
 
-    Name lookup comes first; :func:`find_object` then matches an explicit
-    address literal or a plain-C-identifier symbol against registry
-    addresses, so the ``Addr`` column stays a valid selector.
-    """
+
+def find_thread(name: str, kl: KernelLayout) -> gdb.Value | None:
+    """Find an RT-Thread thread by name, symbol, or address."""
     type_code = _object_code(kl, "thread")
     return find_object(type_code, name, kl) if type_code is not None else None
 
 
-def find_timer_by_target(text: str, kl: KernelLayout) -> gdb.Value | None:
-    """Find an RT-Thread timer by name, address or symbol.
-
-    Timers live on the active timer lists as well as the registry, so the
-    address/symbol fallback scans :func:`iter_timers` (the union of both)
-    instead of one registry route.
-    """
-    target = text.strip()
+def resolve_timer(text: str, kl: KernelLayout) -> ObjectResolution[gdb.Value]:
+    """Resolve an RT-Thread timer by name, symbol, or address."""
     timer_layout = kl.structs.get("struct rt_timer")
     if timer_layout is None:
-        return None
-    if target:
-        for value in iter_timers(kl):
-            if read_cstring(read_field(value, timer_layout, "name")) == target:
-                return value
-    address = parse_user_address(target)
-    if address is None and is_plain_identifier(target):
-        address = _symbol_object_address(lookup_symbol(target))
-    if address is None:
-        return None
-    for value in iter_timers(kl):
-        if value_address(value) == address:
-            return value
-    return None
+        return ObjectResolution(status="not_found")
+    candidates = [
+        ObjectCandidate(
+            address=value_address(value),
+            value=value,
+            name=read_cstring(read_field(value, timer_layout, "name")) or None,
+        )
+        for value in iter_timers(kl)
+    ]
+    return resolve_object_ref(
+        "timer", text, candidates, symbol_addresses=_symbol_object_addresses
+    )
+
+
+def find_timer_by_target(text: str, kl: KernelLayout) -> gdb.Value | None:
+    """Find an RT-Thread timer by name, symbol, or address."""
+    resolution = resolve_timer(text, kl)
+    return resolution.value if resolution.status == "found" else None
+
+
+def resolve_adapter_target(
+    kind: str,
+    target: str,
+    kl: KernelLayout,
+    *,
+    find_thread_fn=find_thread,
+    find_timer_fn=find_timer_by_target,
+    find_object_fn=find_object,
+    type_code_resolver=None,
+) -> ObjectResolution[gdb.Value]:
+    """Resolve one RT-Thread target across task/timer/IPC kinds."""
+    from core.object_ref import resolve_or_legacy
+
+    requested = kind.strip().lower()
+    if requested in ("task", "thread"):
+        return resolve_or_legacy(
+            lambda: resolve_thread(target, kl),
+            lambda: find_thread_fn(target, kl),
+            find_thread_fn is not find_thread,
+        )
+    if requested == "timer":
+        return resolve_or_legacy(
+            lambda: resolve_timer(target, kl),
+            lambda: find_timer_fn(target, kl),
+            find_timer_fn is not find_timer_by_target,
+        )
+    type_code = type_code_resolver(requested, kl) if type_code_resolver else None
+    if type_code is None:
+        return ObjectResolution("not_found")
+    return resolve_or_legacy(
+        lambda: resolve_object(type_code, target, kl, kind=requested),
+        lambda: find_object_fn(type_code, target, kl),
+        find_object_fn is not find_object,
+    )
 
 
 def iter_object_names(kind: str, kl: KernelLayout) -> Iterator[str]:

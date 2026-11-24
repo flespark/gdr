@@ -1441,3 +1441,44 @@ def test_check_help_topic_documents_usage(capsys):
     commands._invoke_command("help check")
     output = capsys.readouterr().out
     assert "rtt check [system|heap|thread|" in output
+
+
+def test_render_check_thread_accepts_symbol_and_warns_on_duplicate_name(monkeypatch):
+    adapter = _adapter()
+    captured: list[tuple[list[list[str]], list[str]]] = []
+    warnings: list[str] = []
+    t1, t2 = object(), object()
+    addrs = {id(t1): 0x1000, id(t2): 0x2000}
+    monkeypatch.setattr(checks_module, "active", lambda: adapter)
+    monkeypatch.setattr(checks_module, "info", lambda _message: None)
+    monkeypatch.setattr(checks_module, "warn", warnings.append)
+    monkeypatch.setattr(
+        checks_module,
+        "print_table",
+        lambda rows, headers: captured.append((rows, headers)),
+    )
+    monkeypatch.setattr(checks_module, "iter_threads", lambda _l: [t1, t2])
+    monkeypatch.setattr(
+        checks_module, "_thread_names", lambda _l: [(t1, "worker"), (t2, "worker")]
+    )
+    monkeypatch.setattr(checks_module, "value_address", lambda v: addrs[id(v)])
+    monkeypatch.setattr(
+        checks_module,
+        "_symbol_object_addresses",
+        lambda name: [0x2000] if name == "g_worker2" else [],
+    )
+    monkeypatch.setattr(
+        checks_module, "thread_checks", lambda _v, _l: [("SpBounds", "ok")]
+    )
+    monkeypatch.setattr(
+        checks_module,
+        "object_identity_checks",
+        lambda _v, _l, _s, _c: [("ObjectType", "ok")],
+    )
+
+    checks_module.render_check(["thread", "worker"])
+    assert not captured
+    assert len(warnings) == 1 and "ambiguous thread name 'worker'" in warnings[0]
+
+    checks_module.render_check(["thread", "g_worker2"])
+    assert captured[0][0][0][:3] == ["worker@0x2000", "SpBounds", "ok"]

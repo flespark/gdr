@@ -20,7 +20,7 @@ import shutil
 import struct
 import sys
 import traceback as _traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
@@ -291,28 +291,52 @@ def _lookup_gdb_symbol(name: str):
     return symbol
 
 
-def lookup_symbol(name: str) -> gdb.Value | None:
-    """Look up a global or file-static data symbol by identifier.
-
-    Args:
-        name: A single C identifier. Call expressions, GDB convenience
-            variables, and field/index paths are rejected so kernel
-            collection cannot resume the inferior.
-
-    Returns:
-        The ``gdb.Value`` or ``None`` if *name* is not a plain identifier,
-        the symbol is missing, or its value is unreadable.
-    """
-    if not is_plain_identifier(name):
-        return None
-    _ensure_gdb()
-    symbol = _lookup_gdb_symbol(name)
-    if symbol is None:
-        return None
+def _read_symbol_value(symbol) -> gdb.Value | None:
     try:
         return symbol.value()
     except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
         return None
+
+
+def lookup_symbol(name: str) -> gdb.Value | None:
+    """Look up a global or file-static data symbol by identifier."""
+    if not is_plain_identifier(name):
+        return None
+    _ensure_gdb()
+    symbol = _lookup_gdb_symbol(name)
+    return _read_symbol_value(symbol) if symbol is not None else None
+
+
+def lookup_symbols(name: str, *, single_lookup=None) -> list[gdb.Value]:
+    """Return every global and file-static data symbol matching *name*."""
+    if single_lookup is not None and single_lookup is not lookup_symbol:
+        value = single_lookup(name)
+        return [value] if value is not None else []
+    if not is_plain_identifier(name):
+        return []
+    _ensure_gdb()
+    symbols = []
+    try:
+        global_sym = gdb.lookup_global_symbol(name)
+    except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
+        global_sym = None
+    if global_sym is not None:
+        symbols.append(global_sym)
+    static_all = getattr(gdb, "lookup_static_symbols", None)
+    if callable(static_all):
+        try:
+            found = static_all(name)
+        except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
+            found = None
+        if isinstance(found, Iterable):
+            symbols.extend(found)
+    values = [v for sym in symbols if (v := _read_symbol_value(sym)) is not None]
+    if not values:
+        fallback = _lookup_gdb_symbol(name)
+        val = _read_symbol_value(fallback) if fallback is not None else None
+        if val is not None:
+            values.append(val)
+    return values
 
 
 def lookup_symbol_at(addr: int) -> str | None:

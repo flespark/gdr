@@ -76,6 +76,7 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.layout import member_offset
+from core.object_ref import resolve_or_legacy
 from core.stack_frame_parser import StackContextSelection
 from rtthread.adapter import Thread, value_to_thread
 from rtthread.backtrace.arm_scheduler_switch import (
@@ -112,7 +113,15 @@ from rtthread.backtrace.unwind import (
     decode_saved_context as decode_backtrace_context,
 )
 from rtthread.layout import RT_THREAD_STACK_FILL
-from rtthread.navigation import find_thread, get_current_thread, iter_threads
+from rtthread.navigation import (
+    find_thread,
+    get_current_thread,
+    iter_threads,
+    resolve_thread,
+)
+from rtthread.navigation import (
+    find_thread as _nav_find_thread,
+)
 from rtthread.stack_frame_profile import (
     analyze_hardfault_trampoline,
     analyze_riscv_trap_profile,
@@ -982,8 +991,14 @@ def backtrace(
     """Unwind one RT-Thread thread (or the current halted core context)."""
     if target is None:
         return _current_pc_backtrace(adapter, max_depth)
-    value = find_thread(target, adapter.layout)
-    if value is None:
+    res = resolve_or_legacy(
+        lambda: resolve_thread(target, adapter.layout),
+        lambda: find_thread(target, adapter.layout),
+        find_thread is not _nav_find_thread,
+    )
+    if res.status != "found" or res.value is None:
+        reason = "ambiguous-target" if res.ambiguous else "task-not-found"
+        msg = res.message or f"thread {target!r} was not found in the registry"
         return BacktraceReport(
             task=target,
             address=0,
@@ -991,14 +1006,14 @@ def backtrace(
             method="none",
             source="none",
             complete=False,
-            stop_reason="task-not-found",
+            stop_reason=reason,
             truncated=False,
             max_depth=max_depth,
             bounds="unknown",
             frames=[],
-            messages=[f"thread {target!r} was not found in the registry"],
+            messages=[msg],
         )
-    return _backtrace_thread(adapter, value, target, max_depth)
+    return _backtrace_thread(adapter, res.value, target, max_depth)
 
 
 def _resolve_live_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:

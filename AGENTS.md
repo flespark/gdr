@@ -21,6 +21,7 @@ core/                  RTOS-agnostic core (bounded modules; adapters mirror its 
   layout.py            generic StructLayout + accessors + pretty-printer registration
   help.py              structured help schema + terminal/Markdown renderers
   adapter.py           adapter protocol, tables, details and active session
+  object_ref.py        shared kernel object reference resolver (name, symbol, address, ambiguity)
   api.py               neutral verb layer + JSON envelope and chunked transport
   commands.py          shared collectors/renderers, watch set, convenience functions
   heapmap.py           heap grid, owner palette, PNG/inline frames, legend lettering

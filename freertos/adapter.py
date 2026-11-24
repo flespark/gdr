@@ -41,7 +41,6 @@ from core.gdb_bridge import (
     loaded_object_path,
     lookup_symbol_at,
     macro_definitions_from_elf,
-    parse_user_address,
     read_bytes,
     read_cstring,
     read_int,
@@ -50,6 +49,12 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.layout import read_field, value_at
+from core.object_ref import (
+    ObjectCandidate,
+    ObjectResolution,
+    resolve_object_ref,
+    resolve_or_legacy,
+)
 from core.stack_frame_parser import StackContextSelection
 from freertos import heap as heap_module
 from freertos.backtrace.unwind import decode_saved_context
@@ -71,11 +76,16 @@ from freertos.navigation import (
     iter_tasks,
     list_count,
     resolve_object,
+    resolve_object_status,
     saved_context_bounds,
     source_label,
+    symbol_object_addresses,
     system_value,
     task_name_at,
     task_state,
+)
+from freertos.navigation import (
+    resolve_object as _nav_resolve_object,
 )
 from freertos.objects import (
     DAEMON_CURRENT_MESSAGE,
@@ -84,6 +94,7 @@ from freertos.objects import (
     event_group_table,
     id_cell,
     mode_cell,
+    resolve_discovered_object,
     state_cell,
     stream_buffer_table,
     timer_epoch,
@@ -92,6 +103,12 @@ from freertos.objects import (
     timer_subsystem_ready,
     value_to_event_group_object,
     value_to_stream_buffer_object,
+)
+from freertos.objects import (
+    FreeRtosQueueObject as FreeRtosQueueObject,
+)
+from freertos.objects import (
+    FreeRtosTimerObject as FreeRtosTimerObject,
 )
 from freertos.stack_frame_profile import select_context
 from freertos.stackpc import decode_saved_pc, saved_pc_layout_for_task
@@ -149,38 +166,6 @@ class FreeRtosTask:
     statically_allocated: int | None = None
     tls_present: bool | None = None
     is_idle: bool = False
-
-
-@dataclass
-class FreeRtosQueueObject:
-    """Display model for one queue-family object (queue/semaphore/mutex).
-
-    Scalar fields that are unreadable stay ``None`` and render as ``N/A``;
-    ``free`` is ``max(length - count, 0)`` and only set when both are known.
-    Mutex-only fields (``holder``/``recursive_count``) are decoded strictly
-    for ``kind == "mutex"`` -- a semaphore's ``u`` union member holds
-    QueuePointers_t and must never be read as SemaphoreData_t.
-    """
-
-    name: str = "-"
-    address: int = 0
-    kind: str = "queue"
-    inferred_kind: bool = False
-    type_code: int | None = None
-    source: str = ""
-    extra_sources: tuple[str, ...] = ()
-    length: int | None = None
-    item_size: int | None = None
-    count: int | None = None
-    free: int | None = None
-    send_waiters: list[str] | None = None
-    recv_waiters: list[str] | None = None
-    rx_lock: int | None = None
-    tx_lock: int | None = None
-    set_container: int | None = None
-    holder: str | None = None
-    holder_address: int | None = None
-    recursive_count: int | None = None
 
 
 def _stack_type_size(layout=None) -> int:
@@ -340,22 +325,32 @@ def iter_task_names(layout: FreeRtosLayout):
             yield name
 
 
-def find_task(name: str, layout: FreeRtosLayout):
-    """Return the TCB whose name or address matches across the scheduler lists."""
+def resolve_task(target: str, layout: FreeRtosLayout) -> ObjectResolution:
+    """Resolve one scheduler-list task by name, symbol, or address."""
     sl = layout.structs["struct tskTaskControlBlock"]
-    target = name.strip()
-    tasks = list(iter_tasks(layout))
-    if target:
-        for value, _state, _core in tasks:
-            task_name = read_cstring(read_field(value, sl, "name")) or ""
-            if task_name == target:
-                return value
-    address = parse_user_address(target)
-    if address is not None:
-        for value, _state, _core in tasks:
-            if value_address(value) == address:
-                return value
-    return None
+    candidates = [
+        ObjectCandidate(
+            address=value_address(value),
+            value=value,
+            name=read_cstring(read_field(value, sl, "name")) or None,
+        )
+        for value, _state, _core in iter_tasks(layout)
+    ]
+    return resolve_object_ref(
+        "task",
+        target,
+        candidates,
+        symbol_addresses=lambda sym: symbol_object_addresses("task", sym, layout),
+    )
+
+
+def find_task(name: str, layout: FreeRtosLayout):
+    """Return the TCB whose name, symbol, or address matches in scheduler lists."""
+    res = resolve_task(name, layout)
+    return res.value if res.status == "found" else None
+
+
+_mod_find_task = find_task
 
 
 def _cast_object(address: int, kind: str, layout: FreeRtosLayout) -> gdb.Value | None:
@@ -500,44 +495,10 @@ def value_to_queue_object(
     return obj
 
 
-@dataclass
-class FreeRtosTimerObject:
-    """Display model for one software timer (struct tmrTimerControl).
-
-    ``expiry`` is the list item's xItemValue (the absolute expiry tick); it
-    is only meaningful while the timer is linked into an active list -- a
-    dormant timer keeps a stale value, so the renderer shows ``N/A``.
-    ``container``/``owner`` are the list item's membership fields; the owner
-    is heap garbage on a never-linked timer, so the OwnerCheck is decided by
-    the container (freertos.timers.owner_check) and never by the owner value
-    itself.
-    """
-
-    name: str = "-"
-    address: int = 0
-    source: str = ""
-    extra_sources: tuple[str, ...] = ()
-    period: int | None = None
-    status: int | None = None
-    expiry: int | None = None
-    callback: int | None = None
-    id: int | None = None
-    timer_number: int | None = None
-    owner: int | None = None
-    container: int | None = None
-
-
 def value_to_timer_object(
-    value,
-    found: DiscoveredObject,
-    layout: FreeRtosLayout,
+    value, found: DiscoveredObject, layout: FreeRtosLayout
 ) -> FreeRtosTimerObject:
-    """Convert a discovered timer address into the display model.
-
-    ``uxTimerNumber`` is only read under the trace facility -- the member
-    does not exist in a trace-off build (timers.c) -- and is not usable as
-    an identifier anyway, because prvInitialiseNewTimer never writes it.
-    """
+    """Convert a discovered timer address into the display model."""
     obj = FreeRtosTimerObject(
         name=found.name or "-",
         address=found.address,
@@ -549,10 +510,6 @@ def value_to_timer_object(
     tl = layout.structs["struct tmrTimerControl"]
     obj.period = read_int(read_field(value, tl, "period"))
     obj.status = read_int(read_field(value, tl, "status"))
-    # The list-item membership fields are nested struct paths declared in
-    # the layout (they compose through the ListItem layout); the container
-    # member name follows the probed spelling (pvContainer / pxContainer)
-    # inside layout.py, so no re-probe here.
     obj.expiry = read_int(read_field(value, tl, "expiry"))
     obj.callback = read_int(read_field(value, tl, "callback"))
     obj.id = read_int(read_field(value, tl, "id"))
@@ -695,33 +652,51 @@ class FreeRtosAdapter(RtosAdapter):
         _context_cache = None
         self._unwind_cache = None
 
+    def _resolve_task(self, target: str) -> ObjectResolution[gdb.Value]:
+        return resolve_or_legacy(
+            lambda: resolve_task(target, self.layout),
+            lambda: find_task(target, self.layout),
+            find_task is not _mod_find_task,
+        )
+
+    def _resolve_discovered(
+        self, kind: str, target: str
+    ) -> ObjectResolution[DiscoveredObject]:
+        return resolve_discovered_object(
+            kind,
+            target,
+            self.layout,
+            discover_fn=discover,
+            resolve_object_fn=resolve_object,
+            default_resolve_fn=_nav_resolve_object,
+        )
+
+    def resolve_target(self, kind: str, target: str) -> ObjectResolution[gdb.Value]:
+        """Resolve one FreeRTOS object by name, symbol, or address."""
+        requested = kind.strip().lower()
+        if requested == "task":
+            res = self._resolve_task(target)
+            if res.status != "not_found":
+                return res
+        found = self._resolve_discovered(requested, target)
+        if found.status == "found" and found.value is not None:
+            obj = found.value
+            return ObjectResolution(
+                "found",
+                _cast_object(obj.address, obj.kind, self.layout),
+                obj.address,
+                found.matched_by,
+            )
+        return ObjectResolution(
+            found.status, matches=found.matches, message=found.message
+        )
+
     def find_task(self, target: str) -> gdb.Value | None:
         return find_task(target, self.layout)
 
     def find_object(self, kind: str, target: str) -> gdb.Value | None:
-        """Return the native object value for a name, address or symbol.
-
-        First tries the discovery channels by name (registry names, static
-        symbol names, active timer names), then falls back to resolving the
-        argument as an explicit ``0x`` address, decimal address or symbol
-        name.  Returns the object struct value, or ``None``.
-        """
-        layout = self.layout
-        requested = kind.strip().lower()
-        # NOTE: tasks stay on the scheduler-list lookup so
-        # $gdr_object("task", "IDLE") agrees with the task table instead of
-        # requiring a static symbol for the task.
-        if requested == "task":
-            task = find_task(target, self.layout)
-            if task is not None:
-                return task
-        for found in discover(requested, layout):
-            if found.name == target:
-                return _cast_object(found.address, requested, layout)
-        resolved = resolve_object(requested, target, layout)
-        if resolved is None:
-            return None
-        return _cast_object(resolved.address, requested, layout)
+        res = self.resolve_target(kind, target)
+        return res.value if res.status == "found" else None
 
     def object_counts(self) -> dict[str, int]:
         """Return per-kind object counts for reliably enumerable kinds."""
@@ -1052,66 +1027,83 @@ class FreeRtosAdapter(RtosAdapter):
 
     def object_detail(self, kind: str, target: str) -> ObjectDetail | None:
         """Return one object's vertical detail (task, timer, event group,
-        stream buffer or queue family).
-
-        *target* is a registry name, an explicit ``0x``-hex or decimal
-        address, or a plain C identifier naming the static symbol or handle.
-        """
+        stream buffer or queue family)."""
         kind = kind.strip().lower()
         if kind == "task":
-            value = find_task(target, self.layout)
+            res = self._resolve_task(target)
+            if res.ambiguous:
+                return ObjectDetail(found=False, message=res.message)
+            value = res.value if res.status == "found" else None
             if value is None:
-                resolved = resolve_object("task", target, self.layout)
+                fb = resolve_or_legacy(
+                    lambda: resolve_object_status("task", target, self.layout),
+                    lambda: resolve_object("task", target, self.layout),
+                    resolve_object is not _nav_resolve_object,
+                )
+                if fb.ambiguous:
+                    return ObjectDetail(found=False, message=fb.message)
                 value = (
-                    _cast_object(resolved.address, "task", self.layout)
-                    if resolved is not None
+                    _cast_object(fb.value.address, "task", self.layout)
+                    if fb.value
                     else None
                 )
             if value is None:
                 return ObjectDetail(found=False)
             task = value_to_task(value, *task_state(value, self.layout), self.layout)
             return _detail(task_detail(task, self.layout, tcb_value=value))
-        if kind == "timer":
-            found, value = self._find_named_object(kind, target)
-            if found is None or value is None:
-                return ObjectDetail(found=False)
-            obj = value_to_timer_object(value, found, self.layout)
-            return _detail(timer_detail(obj, value, self.layout))
-        if kind == "eventgroup":
-            found, value = self._find_named_object(kind, target)
-            if found is None or value is None:
-                return ObjectDetail(found=False)
-            obj = value_to_event_group_object(value, found, self.layout)
-            return _detail(event_group_detail(obj, value, self.layout))
-        if kind == "streambuffer":
-            found, value = self._find_named_object(kind, target)
-            if found is None or value is None:
-                return ObjectDetail(found=False)
-            obj = value_to_stream_buffer_object(value, found, self.layout)
-            return _detail(stream_buffer_detail(obj, value, self.layout))
-        if kind not in _QUEUE_FAMILY_KINDS:
+        if kind not in ("timer", "eventgroup", "streambuffer", *_QUEUE_FAMILY_KINDS):
             return None
-        found, value = self._find_named_object(kind, target)
-        if found is None or value is None:
-            return ObjectDetail(found=False)
-        # NOTE: refine through the Queue_t discriminator and redirect on a
-        # proven wrong kind; an inferred kind renders with the `?` marker.
+        if (
+            type(self)._find_named_object is not FreeRtosAdapter._DEFAULT_FIND_NAMED
+            or "_find_named_object" in self.__dict__
+        ):
+            found, value = self._find_named_object(kind, target)
+            if found is None or value is None:
+                return ObjectDetail(found=False)
+        else:
+            res = self._resolve_discovered(kind, target)
+            if res.ambiguous:
+                return ObjectDetail(found=False, message=res.message)
+            if res.status != "found" or res.value is None:
+                return ObjectDetail(found=False)
+            found = res.value
+            value = _cast_object(found.address, found.kind, self.layout)
+        if kind == "timer":
+            return _detail(
+                timer_detail(
+                    value_to_timer_object(value, found, self.layout), value, self.layout
+                )
+            )
+        if kind == "eventgroup":
+            return _detail(
+                event_group_detail(
+                    value_to_event_group_object(value, found, self.layout),
+                    value,
+                    self.layout,
+                )
+            )
+        if kind == "streambuffer":
+            return _detail(
+                stream_buffer_detail(
+                    value_to_stream_buffer_object(value, found, self.layout),
+                    value,
+                    self.layout,
+                )
+            )
         actual = _refine_queue_object(found, self.layout)
         if actual.kind != kind and not actual.inferred_kind:
             return ObjectDetail(
                 found=False,
-                message=(
-                    f"{target!r} is a {actual.kind}, not a {kind}; "
-                    f"try `freertos {actual.kind} {target}`"
-                ),
+                message=f"{target!r} is a {actual.kind}, not a {kind}; try `freertos {actual.kind} {target}`",
             )
         obj = value_to_queue_object(value, found, self.layout)
-        if kind == "queue":
-            pairs = queue_detail(obj, value, self.layout)
-        elif kind == "semaphore":
-            pairs = semaphore_detail(obj, value, self.layout)
-        else:
-            pairs = mutex_detail(obj, value, self.layout)
+        pairs = (
+            queue_detail(obj, value, self.layout)
+            if kind == "queue"
+            else semaphore_detail(obj, value, self.layout)
+            if kind == "semaphore"
+            else mutex_detail(obj, value, self.layout)
+        )
         return _detail(pairs)
 
     def detail_table(self, kind: str) -> ObjectTable | None:
@@ -1121,20 +1113,13 @@ class FreeRtosAdapter(RtosAdapter):
         return detail_table(self, kind)
 
     def _find_named_object(self, kind: str, target: str):
-        """Return ``(DiscoveredObject, native value)`` for a name or address.
-
-        Mirrors :meth:`find_object`: discovery names first, then the explicit
-        address/symbol/decimal fallback -- but keeps the found object so the
-        detail builder can render its provenance and inferred kind.  Kind-
-        agnostic: timers and the queue family both resolve through it.
-        """
-        for found in discover(kind, self.layout):
-            if found.name == target:
-                return found, _cast_object(found.address, found.kind, self.layout)
-        resolved = resolve_object(kind, target, self.layout)
-        if resolved is None:
+        """Return ``(DiscoveredObject, native value)`` for a name, symbol, or address."""
+        res = self._resolve_discovered(kind, target)
+        if res.status != "found" or res.value is None:
             return None, None
-        return resolved, _cast_object(resolved.address, resolved.kind, self.layout)
+        return res.value, _cast_object(res.value.address, res.value.kind, self.layout)
+
+    _DEFAULT_FIND_NAMED = _find_named_object
 
     def iter_tasks(self):
         for value, _state, _core in iter_tasks(self.layout):

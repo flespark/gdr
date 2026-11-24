@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, cast
 
 try:
     import gdb
@@ -35,6 +36,7 @@ from core.gdb_bridge import (
     warn,
     write_stdout,
 )
+from core.object_ref import ObjectResolution
 
 BACKTRACE_COLUMN_SPECS: tuple[ColumnSpec, ...] = (
     ColumnSpec("#", align="right"),
@@ -80,6 +82,9 @@ def render_tasks() -> None:
 
 def render_backtrace_report(report: BacktraceReport) -> None:
     """Format and print one bounded :class:`BacktraceReport` as a frame table."""
+    if report.stop_reason == "ambiguous-target" and report.messages:
+        warn(report.messages[0])
+        return
     if is_debug():
         for message in report.messages:
             info(message)
@@ -572,13 +577,23 @@ def clear() -> None:
     _watches.clear()
 
 
+def _resolve_adapter_target(
+    adapter: object, kind: str, target: str
+) -> ObjectResolution[Any] | None:
+    """Call ``adapter.resolve_target`` when the adapter implements it."""
+    resolver = getattr(adapter, "resolve_target", None)
+    if not callable(resolver):
+        return None
+    return cast(ObjectResolution[Any], resolver(kind, target))
+
+
 def add_watch(label: str, kind: str, target: str | None) -> str | None:
     """Record one watch after validating it against the live target.
 
     Returns ``None`` when the watch was added, else the reason it was
-    refused (unknown kind, missing object, unreadable target). A singleton
-    must exist now; it is re-resolved on every stop, so a later detach
-    renders as ``gone`` instead of a stale address.
+    refused (unknown kind, missing object, ambiguous target, unreadable
+    target). A singleton must exist now; it is re-resolved on every stop,
+    so a later detach renders as ``gone`` instead of a stale address.
     """
     adapter = active()
     if adapter is None:
@@ -587,15 +602,25 @@ def add_watch(label: str, kind: str, target: str | None) -> str | None:
         return f"object kind {kind!r} is not reliably enumerable"
     if target is not None:
         try:
-            found = (
-                adapter.find_task(target)
-                if kind == "task"
-                else adapter.find_object(kind, target)
-            )
+            resolution = _resolve_adapter_target(adapter, kind, target)
+            if resolution is not None:
+                if resolution.status == "ambiguous":
+                    return (
+                        resolution.message
+                        or f"{kind} {target!r}: ambiguous reference; specify a unique symbol or address"
+                    )
+                if resolution.status != "found":
+                    return f"{kind} {target!r}: not found or type not enabled"
+            else:
+                found = (
+                    adapter.find_task(target)
+                    if kind == "task"
+                    else adapter.find_object(kind, target)
+                )
+                if found is None:
+                    return f"{kind} {target!r}: not found or type not enabled"
         except TARGET_ACCESS_ERRORS:
             return f"{kind} {target!r}: unreadable (target halted?)"
-        if found is None:
-            return f"{kind} {target!r}: not found or type not enabled"
     if any(entry.kind == kind and entry.target == target for entry in _watches):
         return f"already watching {label}"
     _watches.append(Watch(kind=kind, target=target, label=label))
@@ -678,7 +703,7 @@ def _render_entry(adapter, entry: Watch) -> None:
         info(f"[gdr watch: {entry.label}] skipped: kind not enumerable now")
         return
     if not detail.found:
-        info(f"[gdr watch: {entry.label}] gone (detached?)")
+        info(f"[gdr watch: {entry.label}] {detail.message or 'gone (detached?)'}")
         return
     info(f"[gdr watch: {entry.label}]")
     print_detail(detail.pairs)
@@ -709,7 +734,17 @@ if gdb is not None:  # pragma: no cover - gdb.Function exists only in GDB
             adapter = active()
             if adapter is None:
                 return gdb.Value(0)
-            return adapter.find_task(read_cstring(name) or "") or gdb.Value(0)
+            target = read_cstring(name) or ""
+            resolution = _resolve_adapter_target(adapter, "task", target)
+            if resolution is not None:
+                if resolution.status == "ambiguous" and resolution.message:
+                    warn(resolution.message)
+                return (
+                    resolution.value
+                    if resolution.status == "found" and resolution.value is not None
+                    else gdb.Value(0)
+                )
+            return adapter.find_task(target) or gdb.Value(0)
 
     class GdrTasksFunction(gdb.Function):
         """Return a target-native pointer array for all task values.
@@ -745,9 +780,18 @@ if gdb is not None:  # pragma: no cover - gdb.Function exists only in GDB
             adapter = active()
             if adapter is None:
                 return gdb.Value(0)
-            result = adapter.find_object(
-                read_cstring(kind) or "", read_cstring(name) or ""
-            )
+            kind_text = read_cstring(kind) or ""
+            target = read_cstring(name) or ""
+            resolution = _resolve_adapter_target(adapter, kind_text, target)
+            if resolution is not None:
+                if resolution.status == "ambiguous" and resolution.message:
+                    warn(resolution.message)
+                return (
+                    resolution.value
+                    if resolution.status == "found" and resolution.value is not None
+                    else gdb.Value(0)
+                )
+            result = adapter.find_object(kind_text, target)
             return result if result is not None else gdb.Value(0)
 
     class GdrJsonFunction(gdb.Function):

@@ -66,6 +66,7 @@ from core.gdb_bridge import (
     value_address,
 )
 from core.layout import KernelLayout, read_field
+from core.object_ref import ObjectResolution
 from rtthread import diagnostics
 from rtthread.layout import (
     RT_EVENT_FLAG_AND,
@@ -93,6 +94,7 @@ from rtthread.navigation import (
     iter_timers,
     read_irq_nest,
     read_scheduler_lock_nest,
+    resolve_adapter_target,
     suspend_thread_names,
 )
 from rtthread.navigation import (
@@ -626,28 +628,25 @@ class RtThreadAdapter(RtosAdapter):
             if policy is not None:
                 policy.formatter = _ipc_policy
 
+    def resolve_target(self, kind: str, target: str) -> ObjectResolution[gdb.Value]:
+        """Resolve one RT-Thread object by name, symbol, or address."""
+        return resolve_adapter_target(
+            kind,
+            target,
+            self.layout,
+            find_thread_fn=find_thread,
+            find_timer_fn=find_timer_by_target,
+            find_object_fn=find_rt_object,
+            type_code_resolver=resolve_object_type_code,
+        )
+
     def find_task(self, target: str) -> gdb.Value | None:
-        """Return the native thread for a name, address or symbol."""
-        return find_thread(target, self.layout)
+        res = self.resolve_target("task", target)
+        return res.value if res.status == "found" else None
 
     def find_object(self, kind: str, target: str) -> gdb.Value | None:
-        """Return the native object for a name, address or symbol.
-
-        A registry name wins; an explicit address literal or a plain C
-        identifier then matches against live registry addresses, so objects
-        with a duplicate, truncated or missing name stay reachable by the
-        ``Addr`` column their list row prints.
-        """
-        if kind.strip().lower() == "task":
-            kind = "thread"
-        if kind.strip().lower() == "timer":
-            return find_timer_by_target(target, self.layout)
-        type_code = resolve_object_type_code(kind, self.layout)
-        return (
-            find_rt_object(type_code, target, self.layout)
-            if type_code is not None
-            else None
-        )
+        res = self.resolve_target(kind, target)
+        return res.value if res.status == "found" else None
 
     def object_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -966,33 +965,20 @@ class RtThreadAdapter(RtosAdapter):
         return None
 
     def object_detail(self, kind: str, target: str) -> ObjectDetail | None:
-        """Return vertical detail pairs for one named or addressed object.
-
-        ``None`` means the kind is not reliably enumerable; ``ObjectDetail``
-        carries ``found=False`` when the object is missing or its type is not
-        enabled.
-        """
-        if kind == "task":
-            value = find_thread(target, self.layout)
-            if value is None:
-                return ObjectDetail(found=False)
-            return _detail(self._detail_pairs_for("task", value) or [])
-        if kind == "timer":
-            value = find_timer_by_target(target, self.layout)
-            if value is None:
-                return ObjectDetail(found=False)
-            return _detail(self._detail_pairs_for("timer", value) or [])
-
-        type_code = resolve_object_type_code(kind, self.layout)
-        if type_code is None:
+        """Return vertical detail pairs for one named, symbolized, or addressed object."""
+        requested = kind.strip().lower()
+        if (
+            requested not in ("task", "timer")
+            and resolve_object_type_code(requested, self.layout) is None
+        ):
             return None
-        value = find_rt_object(type_code, target, self.layout)
-        if value is None:
+        res = self.resolve_target(requested, target)
+        if res.status == "ambiguous":
+            return ObjectDetail(found=False, message=res.message)
+        if res.status != "found" or res.value is None:
             return ObjectDetail(found=False)
-        pairs = self._detail_pairs_for(kind, value)
-        if pairs is None:
-            return None
-        return _detail(pairs)
+        pairs = self._detail_pairs_for(requested, res.value)
+        return _detail(pairs) if pairs is not None else None
 
     def _detail_pairs_for(
         self, kind: str, value: gdb.Value

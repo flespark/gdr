@@ -809,3 +809,27 @@ def test_find_timer_by_target_matches_name_then_address(monkeypatch):
     assert navigation.find_timer_by_target("heartbeat", layout) is first
     assert navigation.find_timer_by_target("0x2000", layout) is second
     assert navigation.find_timer_by_target("missing", layout) is None
+
+
+def test_resolve_object_reports_duplicate_name_and_duplicate_symbol(monkeypatch):
+    layout = _registry_layout()
+    _install_registry(monkeypatch, {0x1000: "dup_sem", 0x2000: "dup_sem"})
+    monkeypatch.setattr(navigation, "lookup_symbol", lambda _name: None)
+
+    ambiguous = navigation.resolve_object(1, "dup_sem", layout)
+    assert ambiguous.status == "ambiguous"
+    assert ambiguous.message is not None
+    assert "0x1000" in ambiguous.message and "0x2000" in ambiguous.message
+    assert "unique symbol or address" in ambiguous.message
+    assert navigation.find_object(1, "dup_sem", layout) is None
+
+    monkeypatch.setattr(
+        navigation,
+        "_symbol_object_addresses",
+        lambda name: [0x1000, 0x2000] if name == "static_sem" else [],
+    )
+
+    ambiguous_sym = navigation.resolve_object(1, "static_sem", layout)
+    assert ambiguous_sym.status == "ambiguous"
+    assert ambiguous_sym.message is not None
+    assert "explicit address" in ambiguous_sym.message

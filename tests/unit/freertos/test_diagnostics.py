@@ -1192,3 +1192,33 @@ def test_heap_corrupt_reason_survives_cross_validation():
     free_list = heap.HeapWalk(corrupt=True, corrupt_reason="free-list cycle at 0x2000")
     result = heap.cross_validate(free_list, heap.HeapWalk(), 0, geom)
     assert "free-list cycle at 0x2000" in result
+
+
+def test_checks_task_accepts_symbol_and_warns_on_duplicate_name(monkeypatch):
+    captured = _selected(monkeypatch)
+    warnings: list[str] = []
+    monkeypatch.setattr(diagnostics, "warn", warnings.append)
+    t1, t2 = object(), object()
+    addrs = {id(t1): 0x2000, id(t2): 0x3000}
+    monkeypatch.setattr(
+        diagnostics,
+        "iter_tasks",
+        lambda _layout: [(t1, "Ready", None), (t2, "Blocked", None)],
+    )
+    monkeypatch.setattr(diagnostics, "value_address", lambda v: addrs[id(v)])
+    monkeypatch.setattr(diagnostics, "task_name_at", lambda *_args: "worker")
+    monkeypatch.setattr(
+        diagnostics,
+        "symbol_object_addresses",
+        lambda kind, name, _l: (
+            [0x3000] if (kind, name) == ("task", "g_worker2") else []
+        ),
+    )
+    monkeypatch.setattr(diagnostics, "task_checks", lambda *_args: [("SpBounds", "ok")])
+
+    diagnostics.render_checks(["task", "worker"])
+    assert not captured
+    assert len(warnings) == 1 and "ambiguous task name 'worker'" in warnings[0]
+
+    diagnostics.render_checks(["task", "g_worker2"])
+    assert captured[0][0] == [["worker@0x3000", "SpBounds", "ok", "-"]]

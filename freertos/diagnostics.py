@@ -55,14 +55,20 @@ from core.gdb_bridge import (
     warn,
 )
 from core.layout import member_offset, read_field
+from core.object_ref import ObjectCandidate, resolve_object_ref
 from freertos.heap import heap_snapshot
 from freertos.navigation import (
+    DiscoveredObject,
     _refine_queue_object,
     discover,
     iter_tasks,
     mapped_ranges,
     resolve_object,
+    symbol_object_addresses,
     task_name_at,
+)
+from freertos.navigation import (
+    resolve_object as _nav_resolve_object,
 )
 from freertos.objects import iter_waiters
 
@@ -1004,25 +1010,69 @@ def render_checks(arguments: list[str]) -> None:
             ],
         )
     elif kind == "task":
-        for value, _state, _core in iter_tasks(layout):
-            address = value_address(value)
-            task_name = task_name_at(address, layout)
-            if name and name != task_name and name != f"{address:#x}":
-                continue
+        tasks = [
+            (value, value_address(value), task_name_at(value_address(value), layout))
+            for value, _state, _core in iter_tasks(layout)
+        ]
+        if name:
+            res = resolve_object_ref(
+                "task",
+                name,
+                [
+                    ObjectCandidate(addr, (val, addr, tname), tname)
+                    for val, addr, tname in tasks
+                ],
+                symbol_addresses=lambda sym: symbol_object_addresses(
+                    "task", sym, layout
+                ),
+            )
+            if res.status == "ambiguous":
+                warn(res.message or f"ambiguous task reference {name!r}")
+                return
+            tasks = (
+                [res.value] if res.status == "found" and res.value is not None else []
+            )
+        for value, address, task_name in tasks:
             append(
                 f"{task_name or '-'}@{address:#x}", task_checks(value, address, layout)
             )
     else:
         objects = discover(kind, layout)
         if name:
-            objects = [
-                obj
-                for obj in objects
-                if obj.name == name or f"{obj.address:#x}" == name
+            candidates = [
+                ObjectCandidate(obj.address, obj, obj.name) for obj in objects
             ]
-            if not objects:
-                obj = resolve_object(kind, name, layout)
-                objects = [obj] if obj is not None else []
+            if resolve_object is not _nav_resolve_object:
+                res = resolve_object_ref(kind, name, candidates)
+                if res.status == "ambiguous":
+                    warn(res.message or f"ambiguous {kind} reference {name!r}")
+                    return
+                if res.status == "found" and res.value is not None:
+                    objects = [res.value]
+                else:
+                    obj = resolve_object(kind, name, layout)
+                    objects = [obj] if obj is not None else []
+            else:
+                res = resolve_object_ref(
+                    kind,
+                    name,
+                    candidates,
+                    symbol_addresses=lambda sym: symbol_object_addresses(
+                        kind, sym, layout
+                    ),
+                    synthesize_address=lambda addr, sym: DiscoveredObject(
+                        kind=kind, address=addr, name=sym, source="user"
+                    ),
+                    allow_numeric_symbol=True,
+                )
+                if res.status == "ambiguous":
+                    warn(res.message or f"ambiguous {kind} reference {name!r}")
+                    return
+                objects = (
+                    [res.value]
+                    if res.status == "found" and res.value is not None
+                    else []
+                )
         for obj in objects:
             if kind in ("queue", "semaphore", "mutex"):
                 obj = _refine_queue_object(obj, layout)

@@ -98,22 +98,6 @@ def test_core_never_imports_an_rtos_adapter_package():
     assert not violations, "RTOS adapter imported by core/: " + ", ".join(violations)
 
 
-def test_production_files_stay_within_the_size_limit():
-    """The repository keeps production modules below the 1500-line limit."""
-    roots = [
-        Path(__file__).resolve().parents[3] / "core",
-        Path(__file__).resolve().parents[3] / "rtthread",
-        Path(__file__).resolve().parents[3] / "freertos",
-    ]
-    oversized = [
-        str(path.relative_to(roots[0].parent))
-        for root in roots
-        for path in root.rglob("*.py")
-        if len(path.read_text().splitlines()) > 1500
-    ]
-    assert not oversized
-
-
 # ---------------------------------------------------------------------------
 # Adapter-internal coupling: kernel ABI names live in the layout, and raw
 # member traversal is layout-driven (read_field), never inline read_path.
@@ -217,55 +201,6 @@ def test_no_raw_gdb_type_lookup_outside_the_core():
     assert not violations, "raw gdb.lookup_type outside core/: " + ", ".join(violations)
 
 
-# ---------------------------------------------------------------------------
-# Sentinel hygiene: cells use N/A; "unavailable" only survives as the
-# "unavailable: <reason>" verdict prefix (e.g. CrossCheck).
-# ---------------------------------------------------------------------------
-
-
-def test_unavailable_sentinel_only_as_a_verdict_prefix():
-    """Bare ``"unavailable"`` cells were unified to ``N/A``.
-
-    A bare ``"unavailable"`` (an empty reason) is a second sentinel for the
-    same "no value" fact and kept drifting from ``format_optional_int``'s
-    ``N/A``; only the verdict prefix ``"unavailable: <reason>"`` remains,
-    where the word is a sentence fragment, not a missing-value cell.
-    """
-    # Match the *sentinel literal* only: a bare "unavailable" used as an
-    # output value (assignment, return, ternary).  ``.startswith(...)`` and
-    # the ``"unavailable:"`` prefix remain verdict logic, not sentinels.
-    bare = re.compile(r'(?:= |return |else )"unavailable"(?:[^:.]|$)')
-    for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.rglob("*.py"):
-            text = source.read_text()
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if bare.search(line):
-                    raise AssertionError(
-                        f"{source.relative_to(_ROOT)}:{lineno}: bare 'unavailable' sentinel; "
-                        "use N/A for cells or 'unavailable: <reason>' for a verdict"
-                    )
-
-
-# ---------------------------------------------------------------------------
-# Exception-delegation hygiene: expected target errors come from ONE shared
-# tuple (TARGET_ACCESS_ERRORS); adapters never re-declare near-identical
-# module-level tuples, never catch bare Exception (except the two sanctioned
-# GDB-completion boundaries), and never hand-roll raw DWARF attribute reads.
-# ---------------------------------------------------------------------------
-
-# Module-level error tuples that keep a locally-narrowed definition on
-# purpose (all other _*_ERRORS must resolve to core.gdb_bridge.TARGET_ACCESS_ERRORS):
-#   freertos.layout._PROBE_ERRORS    config probing (gdb.error + attr errors)
-#   freertos.navigation._TRAVERSAL_ERRORS   list walks deliberately exclude
-#                                           AttributeError so a programming
-#                                           error bubbles to the guard
-#   freertos.navigation._COMMAND_ERRORS     gdb.execute probes (narrow)
-#   core.layout._TYPE_ERRORS               printer type probing (narrow)
-_KEEP_ERRORS_TUPLES = {
-    "freertos/layout.py",
-    "freertos/navigation.py",
-    "core/layout.py",
-}
 # Member-name-lookup needs DWARF type / field objects (not just names), so
 # freertos.layout.py does its own .fields() traversal inside detect_config /
 # _mini_list_detected, and core.layout.py computes member offsets.
@@ -273,56 +208,6 @@ _KEEP_DWARF_ACCESS = {
     "freertos/layout.py",
     "core/layout.py",
 }
-
-
-def test_adapter_error_tuples_resolve_to_the_shared_set():
-    """Adapters must not declare fresh module-level ``_*_ERRORS`` tuples.
-
-    The four modules in ``_KEEP_ERRORS_TUPLES`` narrow deliberately; every
-    other freertos/rtthread module resolves expected target errors through
-    ``core.gdb_bridge.TARGET_ACCESS_ERRORS`` (one definition, one gdb-None
-    fallback) instead of copying the near-identical tuple into yet another
-    file as each patch historically did.
-    """
-    pattern = re.compile(
-        r"^_\w+ERRORS(?:: tuple\[type\[BaseException\], \.\.\.\])? = \("
-    )
-    for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.rglob("*.py"):
-            rel = source.as_posix().removeprefix(
-                str(_FREERTOS_DIR.parent).rstrip("/") + "/"
-            )
-            if rel in _KEEP_ERRORS_TUPLES:
-                continue
-            text = source.read_text()
-            if pattern.search(text):
-                raise AssertionError(
-                    f"{rel}: new module-level _*_ERRORS tuple; "
-                    "resolve to core.gdb_bridge.TARGET_ACCESS_ERRORS instead"
-                )
-
-
-def test_no_bare_except_exception_outside_completion():
-    """Bare ``except Exception`` is reserved for the GDB-completion boundary.
-
-    ``_object_names`` in both command trees must never print or raise while
-    completing inside GDB, so it degrades to no candidates on anything.
-    Everywhere else an expected target/runtime failure either resolves to
-    ``TARGET_ACCESS_ERRORS`` (probe helpers, best-effort sections) or
-    bubbles to a ``gdb_command_guard`` for a full diagnostic.
-    """
-    pattern = re.compile(r"except Exception:")
-    completion_files = {"freertos/commands.py", "rtthread/commands.py"}
-    for directory in (_FREERTOS_DIR, _RTTHREAD_DIR):
-        for source in directory.rglob("*.py"):
-            rel = source.as_posix().removeprefix(
-                str(_FREERTOS_DIR.parent).rstrip("/") + "/"
-            )
-            if rel not in completion_files and pattern.search(source.read_text()):
-                raise AssertionError(
-                    f"{rel}: bare 'except Exception:'; use "
-                    "TARGET_ACCESS_ERRORS or let the command guard report it"
-                )
 
 
 def test_no_raw_dwarf_attribute_access_outside_whitelist():

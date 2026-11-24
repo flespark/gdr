@@ -83,6 +83,65 @@ _TIMER_COMMAND_NAMES: dict[int, str] = {
 }
 
 
+@dataclass
+class FreeRtosTimerObject:
+    """Display model for one software timer (struct tmrTimerControl).
+
+    ``expiry`` is the list item's xItemValue (the absolute expiry tick); it
+    is only meaningful while the timer is linked into an active list -- a
+    dormant timer keeps a stale value, so the renderer shows ``N/A``.
+    ``container``/``owner`` are the list item's membership fields; the owner
+    is heap garbage on a never-linked timer, so the OwnerCheck is decided by
+    the container (freertos.timers.owner_check) and never by the owner value
+    itself.
+    """
+
+    name: str = "-"
+    address: int = 0
+    source: str = ""
+    extra_sources: tuple[str, ...] = ()
+    period: int | None = None
+    status: int | None = None
+    expiry: int | None = None
+    callback: int | None = None
+    id: int | None = None
+    timer_number: int | None = None
+    owner: int | None = None
+    container: int | None = None
+
+
+@dataclass
+class FreeRtosQueueObject:
+    """Display model for one queue-family object (queue/semaphore/mutex).
+
+    Scalar fields that are unreadable stay ``None`` and render as ``N/A``;
+    ``free`` is ``max(length - count, 0)`` and only set when both are known.
+    Mutex-only fields (``holder``/``recursive_count``) are decoded strictly
+    for ``kind == "mutex"`` -- a semaphore's ``u`` union member holds
+    QueuePointers_t and must never be read as SemaphoreData_t.
+    """
+
+    name: str = "-"
+    address: int = 0
+    kind: str = "queue"
+    inferred_kind: bool = False
+    type_code: int | None = None
+    source: str = ""
+    extra_sources: tuple[str, ...] = ()
+    length: int | None = None
+    item_size: int | None = None
+    count: int | None = None
+    free: int | None = None
+    send_waiters: list[str] | None = None
+    recv_waiters: list[str] | None = None
+    rx_lock: int | None = None
+    tx_lock: int | None = None
+    set_container: int | None = None
+    holder: str | None = None
+    holder_address: int | None = None
+    recursive_count: int | None = None
+
+
 @dataclass(frozen=True)
 class TimerCommand:
     """One decoded entry from the daemon command queue.
@@ -1098,4 +1157,42 @@ def stream_buffer_table(
         )
     return ObjectTable.from_specs(
         STREAM_BUFFER_SPECS, rows, messages=messages, id_key="Addr"
+    )
+
+
+def resolve_discovered_object(
+    kind: str,
+    target: str,
+    layout: FreeRtosLayout,
+    *,
+    discover_fn,
+    resolve_object_fn,
+    default_resolve_fn,
+):
+    """Resolve one non-task FreeRTOS object via discovery, symbols, and addresses."""
+    from core.object_ref import ObjectCandidate, ObjectResolution, resolve_object_ref
+    from freertos.navigation import DiscoveredObject, symbol_object_addresses
+
+    candidates = [
+        ObjectCandidate(obj.address, obj, obj.name) for obj in discover_fn(kind, layout)
+    ]
+    if resolve_object_fn is not default_resolve_fn:
+        res = resolve_object_ref(kind, target, candidates)
+        if res.status != "not_found":
+            return res
+        resolved = resolve_object_fn(kind, target, layout)
+        return (
+            ObjectResolution("found", resolved, resolved.address)
+            if resolved is not None
+            else ObjectResolution("not_found")
+        )
+    return resolve_object_ref(
+        kind,
+        target,
+        candidates,
+        symbol_addresses=lambda sym: symbol_object_addresses(kind, sym, layout),
+        synthesize_address=lambda addr, name: DiscoveredObject(
+            kind, addr, name, "user"
+        ),
+        allow_numeric_symbol=True,
     )
