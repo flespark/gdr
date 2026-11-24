@@ -1104,3 +1104,28 @@ def test_pc_cell_decodes_running_live_pc_and_fpu_saved_frame(monkeypatch):
     )
     cell_first = adapter._pc_cell(first_task)
     assert cell_first.value == 0x1000_0500 and cell_first.text == "<gdr_sched_first>"
+
+
+def test_find_task_matches_name_hex_and_decimal_tcb_address(monkeypatch):
+    layout = build_layout(FreeRtosConfig(), (11, 1, 0))
+    tcb_recm = {"pcTaskName": "gdr_recm", "_addr": 0x2800_2CC0}
+    tcb_fpu = {"pcTaskName": "gdr_fpu", "_addr": 0x2800_0F80}
+
+    monkeypatch.setattr(
+        adapter_module,
+        "iter_tasks",
+        lambda _layout: [(tcb_recm, "Running", 0), (tcb_fpu, "Blocked", None)],
+    )
+    monkeypatch.setattr(
+        adapter_module,
+        "read_field",
+        lambda value, _sl, _field: value["pcTaskName"],
+    )
+    monkeypatch.setattr(adapter_module, "read_cstring", lambda value: value)
+    monkeypatch.setattr(adapter_module, "value_address", lambda value: value["_addr"])
+
+    assert adapter_module.find_task("gdr_recm", layout) is tcb_recm
+    assert adapter_module.find_task("0x28002cc0", layout) is tcb_recm
+    assert adapter_module.find_task("0X28000F80", layout) is tcb_fpu
+    assert adapter_module.find_task(str(0x2800_0F80), layout) is tcb_fpu
+    assert adapter_module.find_task("0xdeadbeef", layout) is None

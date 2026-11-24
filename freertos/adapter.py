@@ -41,6 +41,7 @@ from core.gdb_bridge import (
     loaded_object_path,
     lookup_symbol_at,
     macro_definitions_from_elf,
+    parse_user_address,
     read_bytes,
     read_cstring,
     read_int,
@@ -340,12 +341,20 @@ def iter_task_names(layout: FreeRtosLayout):
 
 
 def find_task(name: str, layout: FreeRtosLayout):
-    """Return the TCB whose name matches, reading only the name field."""
+    """Return the TCB whose name or address matches across the scheduler lists."""
     sl = layout.structs["struct tskTaskControlBlock"]
-    for value, _state, _core in iter_tasks(layout):
-        task_name = read_cstring(read_field(value, sl, "name")) or ""
-        if task_name == name:
-            return value
+    target = name.strip()
+    tasks = list(iter_tasks(layout))
+    if target:
+        for value, _state, _core in tasks:
+            task_name = read_cstring(read_field(value, sl, "name")) or ""
+            if task_name == target:
+                return value
+    address = parse_user_address(target)
+    if address is not None:
+        for value, _state, _core in tasks:
+            if value_address(value) == address:
+                return value
     return None
 
 
