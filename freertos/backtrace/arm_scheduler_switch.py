@@ -74,6 +74,17 @@ _CALL_MNEMONICS = frozenset({"bl", "blx", "blx_reg", "bx"})
 _BRANCH_MNEMONICS = frozenset({"b", "b_cond", "cbz", "cbnz"})
 _MASK_PRIORITY_TOKEN = "mov_basepri_mask:r0"
 
+ARM_SCHEDULER_SYMBOLS = frozenset(
+    (
+        "PendSV_Handler",
+        "SVC_Handler",
+        "prvPortStartFirstTask",
+        "vStartFirstTask",
+        "vRestoreContextOfFirstTask",
+        "vTaskSwitchContext",
+    )
+)
+
 
 @dataclass(frozen=True)
 class SchedulerProfile:

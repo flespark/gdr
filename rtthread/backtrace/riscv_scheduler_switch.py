@@ -35,6 +35,15 @@ _SMP_OR_SIGNAL_SYMBOLS = (
     "rt_scheduler_do_irq_switch",
     "rt_signal_check",
 )
+RISCV_SCHEDULER_SYMBOLS = frozenset(
+    (
+        "rt_hw_context_switch_to",
+        "rt_hw_context_switch",
+        "rt_hw_context_switch_exit",
+        "trap_entry",
+        "spurious_interrupt",
+    )
+)
 
 
 @dataclass(frozen=True)

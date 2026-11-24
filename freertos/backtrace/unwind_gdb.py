@@ -56,8 +56,11 @@ from core.backtrace.unwind_arm import (
     armv7m_vector_entry as _core_armv7m_vector_entry,
 )
 from core.backtrace.unwind_gdb import (
+    SchedulerHandlerContext,
     arm_boot_state,
+    build_arm_scheduler_handler,
     cached_unwind_metadata,
+    unwind_task_or_scheduler_stage,
 )
 from core.backtrace.unwind_gdb import (
     live_seed_detail as _core_live_seed_detail,
@@ -97,15 +100,19 @@ from core.gdb_bridge import (
 from core.stack_frame_parser import StackContextSelection
 from freertos.adapter import FreeRtosTask, find_task, value_to_task
 from freertos.backtrace.arm_scheduler_switch import (
+    ARM_SCHEDULER_SYMBOLS,
+    classify_stage,
+)
+from freertos.backtrace.arm_scheduler_switch import (
     build_profile as build_scheduler_profile,
 )
-from freertos.backtrace.arm_scheduler_switch import classify_stage
 from freertos.backtrace.riscv_scheduler_switch import (
-    build_riscv_profile as build_riscv_scheduler_profile,
-)
-from freertos.backtrace.riscv_scheduler_switch import (
+    RISCV_SWITCH_RESTORE_STAGES,
     classify_riscv_stage,
     riscv_pc_in_scheduler_symbol,
+)
+from freertos.backtrace.riscv_scheduler_switch import (
+    build_riscv_profile as build_riscv_scheduler_profile,
 )
 from freertos.backtrace.scheduler_seed import (
     build_riscv_stage_seed,
@@ -310,18 +317,7 @@ class _SchedulerDecision:
     reason: str | None = None
     message: str = ""
     fault: FaultPrecision | None = None
-
-
-_SCHEDULER_SYMBOLS = frozenset(
-    (
-        "PendSV_Handler",
-        "SVC_Handler",
-        "prvPortStartFirstTask",
-        "vStartFirstTask",
-        "vRestoreContextOfFirstTask",
-        "vTaskSwitchContext",
-    )
-)
+    handler: SchedulerHandlerContext | None = None
 
 
 def _riscv_scheduler_live_decision(
@@ -463,7 +459,7 @@ def _scheduler_live_decision(
     profile, profile_reason = build_scheduler_profile(elf)
     if profile is None:
         symbol = elf.function_containing(pc)
-        if symbol is not None and symbol.name in _SCHEDULER_SYMBOLS:
+        if symbol is not None and symbol.name in ARM_SCHEDULER_SYMBOLS:
             return _SchedulerDecision(
                 reason=profile_reason,
                 message=(
@@ -586,6 +582,14 @@ def _scheduler_live_decision(
         seed=outcome.seed,
         message=outcome.evidence,
         fault=outcome.fault,
+        handler=build_arm_scheduler_handler(
+            snapshot,
+            stage_name=stage.name,
+            bounds=irq_bounds,
+            return_pc=profile.pendsv_after_switch & ~1
+            if stage.name.startswith("switch-")
+            else None,
+        ),
     )
 
 
@@ -610,19 +614,6 @@ def _task_value_by_address(adapter, address: int):
             if found is not None:
                 return found
     return find_task(f"{address:#x}", adapter.layout)
-
-
-_RISCV_SWITCH_RESTORE_STAGES = frozenset(
-    (
-        "switch-before-update",
-        "switch-after-update",
-        "restore-sp-loaded",
-        "restore-sp-popped",
-        "start-first-entry",
-        "start-first-sp-loaded",
-        "start-first-sp-popped",
-    )
-)
 
 
 def _resolve_riscv_interrupted_task(
@@ -753,7 +744,7 @@ def _riscv_active_isr_owner(
             not isinstance(stage, str)
             and stage is not None
             and (
-                stage.name in _RISCV_SWITCH_RESTORE_STAGES
+                stage.name in RISCV_SWITCH_RESTORE_STAGES
                 or stage.name.startswith(("trap-prologue-", "trap-sync-"))
             )
         ):
@@ -784,7 +775,7 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
         arm_boot_state(
             selection.isa,
             metadata=metadata,
-            scheduler_symbols=_SCHEDULER_SYMBOLS,
+            scheduler_symbols=ARM_SCHEDULER_SYMBOLS,
             snapshot_reader=_arm_snapshot,
         )
         if selection.family == "arm"
@@ -941,6 +932,7 @@ class _HandlerSetup:
     guard: TransitionGuard | None = None
     stkalign: bool = True
     metadata: UnwindMetadata | None = None
+    scheduler_handler: SchedulerHandlerContext | None = None
 
 
 def _stop_report(
@@ -975,7 +967,10 @@ def _stop_report(
 
 def _resolve_live_seed(
     ctx: _TargetContext,
-) -> tuple[SeedFrame, str | None, FaultPrecision | None] | BacktraceReport:
+) -> (
+    tuple[SeedFrame, str | None, FaultPrecision | None, SchedulerHandlerContext | None]
+    | BacktraceReport
+):
     selected = None
     if gdb is not None:
         try:
@@ -1024,6 +1019,7 @@ def _resolve_live_seed(
             ctx.high,
             isa=ctx.architecture,
         )
+    scheduler_handler: SchedulerHandlerContext | None = None
     if decision is not None:
         if decision.seed is None:
             return ctx.stop(
@@ -1034,6 +1030,7 @@ def _resolve_live_seed(
         seed = decision.seed
         scheduler_note = decision.message
         fault = decision.fault
+        scheduler_handler = decision.handler
     if seed is None:
         seed, live_reason = _live_seed_detail(ctx.selection.family, ctx.architecture)
         if seed is not None and ctx.architecture == "armv8-m.mainline":
@@ -1071,7 +1068,7 @@ def _resolve_live_seed(
             "consistent with the exception mode",
             source="current",
         )
-    return seed, scheduler_note, fault
+    return seed, scheduler_note, fault, scheduler_handler
 
 
 def _read_armv8m_regs() -> tuple[int | None, int | None]:
@@ -1137,17 +1134,23 @@ def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
 
 def _resolve_target_seed(
     ctx: _TargetContext,
-) -> tuple[SeedFrame, str | None, FaultPrecision | None] | BacktraceReport:
+) -> (
+    tuple[SeedFrame, str | None, FaultPrecision | None, SchedulerHandlerContext | None]
+    | BacktraceReport
+):
     if ctx.live_owner:
         return _resolve_live_seed(ctx)
     saved = _resolve_saved_seed(ctx)
     if isinstance(saved, BacktraceReport):
         return saved
-    return saved, None, None
+    return saved, None, None, None
 
 
 def _prepare_arm_handler(
-    ctx: _TargetContext, seed: SeedFrame, fault: FaultPrecision | None
+    ctx: _TargetContext,
+    seed: SeedFrame,
+    fault: FaultPrecision | None,
+    scheduler_handler: SchedulerHandlerContext | None = None,
 ) -> _HandlerSetup | BacktraceReport:
     task_segment = _task_segment(ctx.task, ctx.low, ctx.high)
     if not seed.exception_number:
@@ -1157,6 +1160,7 @@ def _prepare_arm_handler(
             segments=(task_segment,),
             current_segment=task_segment.ident,
             metadata=ctx.metadata,
+            scheduler_handler=scheduler_handler,
         )
     elf_image = ctx.metadata.elf if ctx.metadata is not None else None
     bounds_reader = (
@@ -1335,9 +1339,10 @@ def _prepare_handler_setup(
     fault: FaultPrecision | None,
     *,
     scheduler_note: str | None,
+    scheduler_handler: SchedulerHandlerContext | None = None,
 ) -> _HandlerSetup | BacktraceReport:
     if ctx.selection.family == "arm":
-        return _prepare_arm_handler(ctx, seed, fault)
+        return _prepare_arm_handler(ctx, seed, fault, scheduler_handler)
     if ctx.selection.family == "riscv":
         return _prepare_riscv_handler(ctx, seed, fault, scheduler_note=scheduler_note)
     return _HandlerSetup(
@@ -1430,8 +1435,14 @@ def _backtrace_task_value(
     resolved = _resolve_target_seed(ctx)
     if isinstance(resolved, BacktraceReport):
         return resolved
-    seed, scheduler_note, fault = resolved
-    handler = _prepare_handler_setup(ctx, seed, fault, scheduler_note=scheduler_note)
+    seed, scheduler_note, fault, scheduler_handler = resolved
+    handler = _prepare_handler_setup(
+        ctx,
+        seed,
+        fault,
+        scheduler_note=scheduler_note,
+        scheduler_handler=scheduler_handler,
+    )
     if isinstance(handler, BacktraceReport):
         return handler
     seed = handler.seed
@@ -1447,20 +1458,22 @@ def _backtrace_task_value(
     )
     if handler.metadata is None:
         messages.append("no ELF unwind metadata could be read")
-    result = unwind_chain(
+    result = unwind_task_or_scheduler_stage(
         seed,
         handler.metadata,
         read=read_bytes,
         max_depth=max_depth,
         stack_low=low,
         stack_high=high,
-        allow_frame_pointer=True,
+        scheduler_handler=handler.scheduler_handler,
         segments=handler.segments,
         current_segment=handler.current_segment,
         exception_detector=handler.detector,
         exception_hook=handler.hook,
         exception_guard=handler.guard,
         stkalign=handler.stkalign,
+        evidence=scheduler_note or "",
+        unwinder=unwind_chain,
     )
     return build_backtrace_report(
         task=task.name or target,

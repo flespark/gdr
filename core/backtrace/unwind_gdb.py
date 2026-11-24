@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ..adapter import BacktraceReport, live_boot_backtrace_report
@@ -21,7 +22,14 @@ from ..gdb_bridge import (
     read_bytes,
     source_location_at,
 )
-from .unwind import SeedFrame, UnwindMetadata, UnwindResult, unwind_chain
+from .unwind import (
+    SeedFrame,
+    UnwindFrame,
+    UnwindMetadata,
+    UnwindResult,
+    unwind_chain,
+)
+from .unwind_segments import SegmentTransition, StackSegment
 
 try:
     import gdb
@@ -158,6 +166,260 @@ def live_seed(
         gdb_module=gdb_module,
     )
     return seed
+
+
+@dataclass(frozen=True)
+class SchedulerHandlerContext:
+    """Live handler MSP frame context captured at a verified scheduler stage."""
+
+    pc: int
+    sp: int
+    registers: dict[int, int]
+    exception_number: int
+    exception_bounds: tuple[int, int]
+    return_pc: int | None
+    stage_name: str
+    transition_value: int
+
+
+def build_arm_scheduler_handler(
+    snapshot: Any,
+    *,
+    stage_name: str,
+    bounds: tuple[int, int],
+    return_pc: int | None = None,
+) -> SchedulerHandlerContext:
+    """Capture active M-profile handler MSP state for scheduler-stage unwinding."""
+    from .unwind_arm import XPSR_IPSR_MAX_MASK
+
+    lr_val = snapshot.registers.get(14, 0) & 0xFFFFFFFF
+    exc_value = (
+        lr_val
+        if lr_val
+        in (0xFFFFFFE1, 0xFFFFFFE9, 0xFFFFFFED, 0xFFFFFFF1, 0xFFFFFFF9, 0xFFFFFFFD)
+        else 0xFFFFFFFD
+    )
+    return SchedulerHandlerContext(
+        pc=snapshot.pc & ~1,
+        sp=snapshot.sp,
+        registers=dict(snapshot.registers),
+        exception_number=snapshot.xpsr & XPSR_IPSR_MAX_MASK,
+        exception_bounds=bounds,
+        return_pc=return_pc,
+        stage_name=stage_name,
+        transition_value=exc_value,
+    )
+
+
+def unwind_scheduler_stage(
+    handler: SchedulerHandlerContext,
+    *,
+    task_seed: SeedFrame,
+    task_segment: StackSegment,
+    metadata: UnwindMetadata | None,
+    read: Reader,
+    max_depth: int,
+    allow_frame_pointer: bool = True,
+    evidence: str = "",
+    unwinder: Callable[..., UnwindResult] = unwind_chain,
+) -> UnwindResult:
+    """Unwind active scheduler handler frame(s) and bridge into the task stack."""
+    exception_segment = StackSegment(
+        ident=f"exception:{handler.exception_number}",
+        owner=f"exception:{handler.exception_number}",
+        low=handler.exception_bounds[0],
+        high=handler.exception_bounds[1],
+        source="scheduler-msp",
+        stack="main",
+        kind="exception",
+    )
+    segments: tuple[StackSegment, ...] = (task_segment, exception_segment)
+    if max_depth <= 0:
+        return UnwindResult(
+            (),
+            "max-depth",
+            False,
+            True,
+            task_seed.source,
+            "seed",
+            segments=segments,
+        )
+    if handler.return_pc is None:
+        if (
+            handler.pc <= 0
+            or (metadata is not None and not metadata.elf.is_code(handler.pc))
+            or not exception_segment.contains(handler.sp, 0)
+        ):
+            return UnwindResult(
+                (),
+                "seed-pc-outside-code"
+                if handler.pc <= 0
+                or (metadata is not None and not metadata.elf.is_code(handler.pc))
+                else "seed-stack-underflow",
+                False,
+                False,
+                task_seed.source,
+                "seed",
+                segments=segments,
+            )
+        handler_frames: tuple[UnwindFrame, ...] = (
+            UnwindFrame(0, handler.pc, "seed", segment=exception_segment.ident),
+        )
+        handler_method = "seed"
+    else:
+        handler_seed = SeedFrame(
+            pc=handler.pc,
+            sp=handler.sp,
+            regs=dict(handler.registers),
+            source="current",
+            root_pc=handler.return_pc,
+            root_reason="scheduler-switch-return",
+        )
+        handler_result = unwinder(
+            handler_seed,
+            metadata,
+            read=read,
+            max_depth=max_depth,
+            stack_low=handler.exception_bounds[0],
+            stack_high=handler.exception_bounds[1],
+            allow_frame_pointer=allow_frame_pointer,
+            segments=(exception_segment,),
+            current_segment=exception_segment.ident,
+        )
+        if not handler_result.complete:
+            return UnwindResult(
+                frames=handler_result.frames,
+                stop_reason=handler_result.stop_reason,
+                complete=False,
+                truncated=handler_result.truncated,
+                seed_source=task_seed.source,
+                method=handler_result.method,
+                segments=segments,
+                transitions=handler_result.transitions,
+            )
+        handler_frames = handler_result.frames
+        handler_method = (
+            handler_result.frames[1].method
+            if len(handler_result.frames) > 1
+            else handler_result.method
+        )
+
+    remaining = max_depth - len(handler_frames)
+    if remaining <= 0:
+        return UnwindResult(
+            frames=handler_frames,
+            stop_reason="max-depth",
+            complete=False,
+            truncated=True,
+            seed_source=task_seed.source,
+            method=handler_method,
+            segments=segments,
+        )
+
+    task_result = unwinder(
+        task_seed,
+        metadata,
+        read=read,
+        max_depth=remaining,
+        stack_low=task_segment.low,
+        stack_high=task_segment.high,
+        allow_frame_pointer=allow_frame_pointer,
+        segments=(task_segment,),
+        current_segment=task_segment.ident,
+    )
+    if not task_result.frames:
+        return UnwindResult(
+            frames=handler_frames,
+            stop_reason=task_result.stop_reason,
+            complete=False,
+            truncated=task_result.truncated,
+            seed_source=task_seed.source,
+            method=handler_method,
+            segments=segments,
+        )
+    offset = len(handler_frames)
+    first_task = task_result.frames[0]
+    bridged_first = UnwindFrame(
+        index=offset,
+        pc=first_task.pc,
+        method="exception",
+        lookup_pc=first_task.pc,
+        segment=first_task.segment or task_segment.ident,
+        evidence=first_task.evidence,
+    )
+    tail_frames = tuple(
+        replace(frame, index=offset + frame.index) for frame in task_result.frames[1:]
+    )
+    transition = SegmentTransition(
+        from_segment=exception_segment.ident,
+        to_segment=task_segment.ident,
+        method="exception",
+        source=f"scheduler-{handler.stage_name}",
+        pc=first_task.pc,
+        sp=task_seed.sp,
+        value=handler.transition_value,
+        exact_pc=True,
+        evidence=evidence,
+    )
+    return UnwindResult(
+        frames=(*handler_frames, bridged_first, *tail_frames),
+        stop_reason=task_result.stop_reason,
+        complete=task_result.complete,
+        truncated=task_result.truncated,
+        seed_source=task_seed.source,
+        method="exception",
+        segments=segments,
+        transitions=(transition, *task_result.transitions),
+    )
+
+
+def unwind_task_or_scheduler_stage(
+    seed: SeedFrame,
+    metadata: UnwindMetadata | None,
+    *,
+    read: Reader,
+    max_depth: int,
+    stack_low: int,
+    stack_high: int,
+    scheduler_handler: SchedulerHandlerContext | None,
+    segments: tuple[StackSegment, ...] | None,
+    current_segment: str | None,
+    allow_frame_pointer: bool = True,
+    exception_detector: Any = None,
+    exception_hook: Any = None,
+    exception_guard: Any = None,
+    stkalign: bool = True,
+    evidence: str = "",
+    unwinder: Callable[..., UnwindResult] = unwind_chain,
+) -> UnwindResult:
+    """Dispatch task unwind either through a live scheduler handler bridge or directly."""
+    if scheduler_handler is not None and segments is not None:
+        return unwind_scheduler_stage(
+            scheduler_handler,
+            task_seed=seed,
+            task_segment=segments[0],
+            metadata=metadata,
+            read=read,
+            max_depth=max_depth,
+            allow_frame_pointer=allow_frame_pointer,
+            evidence=evidence,
+            unwinder=unwinder,
+        )
+    return unwinder(
+        seed,
+        metadata,
+        read=read,
+        max_depth=max_depth,
+        stack_low=stack_low,
+        stack_high=stack_high,
+        allow_frame_pointer=allow_frame_pointer,
+        segments=segments,
+        current_segment=current_segment,
+        exception_detector=exception_detector,
+        exception_hook=exception_hook,
+        exception_guard=exception_guard,
+        stkalign=stkalign,
+    )
 
 
 def arm_boot_state(

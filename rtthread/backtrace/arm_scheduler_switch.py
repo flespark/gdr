@@ -25,6 +25,17 @@ _PSPLIM_SYSM = 11
 _CONTROL_SYSM = 20
 _MSP_SYSM = 8
 
+ARM_SCHEDULER_SYMBOLS = frozenset(
+    (
+        "rt_hw_context_switch",
+        "rt_hw_context_switch_interrupt",
+        "PendSV_Handler",
+        "rt_hw_context_switch_to",
+        "switch_to_thread",
+        "pendsv_exit",
+    )
+)
+
 
 @dataclass(frozen=True)
 class SchedulerStage:

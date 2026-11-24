@@ -1567,3 +1567,196 @@ def test_current_pc_backtrace_delegates_to_running_task_and_handles_boot(monkeyp
     assert boot_before_svc.task == "<current>"
     assert [frame.pc for frame in boot_before_svc.frames] == [0x1004]
     assert boot_before_svc.stop_reason == "return-address-zero"
+
+
+def test_scheduler_switch_stages_include_pendsv_svc_and_switch_frames(monkeypatch):
+    from core.backtrace.unwind import UnwindFrame, UnwindResult
+
+    core = tuple(0x5000 + index for index in range(4, 12))
+    task_top = 0x2080
+    psp = task_top + 0x20
+    memory = _scheduler_frame_memory(task_top, xpsr=0x01000000, core=core)
+
+    def _run_stage(pc, *, xpsr=0x0100000E, lr=0xFFFFFFFD, mem=memory):
+        adapter, task = _session(monkeypatch)
+        task.top_of_stack = task_top
+        snapshot = _scheduler_snapshot(pc, xpsr=xpsr, lr=lr, psp=psp)
+        monkeypatch.setattr(
+            bridge, "current_tasks", lambda _layout: [(0, task.address)]
+        )
+        monkeypatch.setattr(
+            bridge, "build_scheduler_profile", lambda _elf: (_scheduler_profile(), "ok")
+        )
+        monkeypatch.setattr(bridge, "_arm_snapshot", lambda: (snapshot, "ok"))
+        monkeypatch.setattr(bridge, "_scheduler_running", lambda: True)
+        monkeypatch.setattr(
+            bridge, "_irq_stack_bounds", lambda: (0x203FC000, 0x20400000)
+        )
+        monkeypatch.setattr(bridge, "_ccr_stkalign", lambda: True)
+        monkeypatch.setattr(bridge, "read_bytes", mem.read)
+        monkeypatch.setattr(bridge, "eval_identifier", lambda _name: 1)
+        monkeypatch.setattr(bridge, "read_int", lambda _value: task.address)
+        monkeypatch.setattr(bridge, "_exit_pc", lambda: 0x1200)
+        symbols = {
+            0x1000: "worker",
+            0x1002: "worker_fn",
+            0x3000: "PendSV_Handler",
+            0x3014: "PendSV_Handler+0x14",
+            0x4000: "SVC_Handler",
+            0x6004: "vTaskSwitchContext+4",
+        }
+        monkeypatch.setattr(
+            bridge, "lookup_symbol_at", lambda addr: symbols.get(addr, f"fn_{addr:#x}")
+        )
+        monkeypatch.setattr(bridge, "source_location_at", lambda _addr: None)
+        elf = SimpleNamespace(
+            function_containing=lambda addr: (
+                SimpleNamespace(start=0x1000) if addr == 0x1000 else None
+            ),
+            is_code=lambda addr: (
+                addr in {0x1002, 0x1100, 0x3000, 0x3014, 0x4000, 0x6004}
+            ),
+        )
+        monkeypatch.setattr(
+            bridge, "_unwind_metadata", lambda _adapter: SimpleNamespace(elf=elf)
+        )
+
+        def _fake_unwind(seed, _meta, **_kwargs):
+            if seed.root_reason == "scheduler-switch-return":
+                return UnwindResult(
+                    (
+                        UnwindFrame(0, seed.pc, "seed", segment="exception:14"),
+                        UnwindFrame(
+                            1,
+                            0x3014,
+                            "cfi",
+                            lookup_pc=0x3013,
+                            segment="exception:14",
+                        ),
+                    ),
+                    "scheduler-switch-return",
+                    True,
+                    False,
+                    "current",
+                    "cfi",
+                )
+            if seed.source == "unstarted":
+                return UnwindResult(
+                    (UnwindFrame(0, seed.pc, "seed", segment="task:1"),),
+                    "task-entry",
+                    True,
+                    False,
+                    "unstarted",
+                    "unstarted",
+                )
+            return UnwindResult(
+                (
+                    UnwindFrame(0, seed.pc, "seed", segment="task:1"),
+                    UnwindFrame(1, 0x1100, "cfi", lookup_pc=0x10FF, segment="task:1"),
+                ),
+                "task-exit",
+                True,
+                False,
+                seed.source,
+                "cfi",
+            )
+
+        task_val = object()
+        monkeypatch.setattr(
+            bridge, "iter_tasks", lambda _layout: [(task_val, "Running", 0)]
+        )
+        monkeypatch.setattr(bridge, "value_address", lambda _val: task.address)
+        monkeypatch.setattr(bridge, "unwind_chain", _fake_unwind)
+        return bridge.backtrace(adapter)
+
+    # 1. PendSV_Handler entry -> PendSV_Handler (seed) -> task (exception) -> callers
+    pendsv_rep = _run_stage(0x3000)
+    assert pendsv_rep.complete and pendsv_rep.stop_reason == "task-exit"
+    assert pendsv_rep.source == "current" and pendsv_rep.method == "exception"
+    assert [(f.pc, f.method) for f in pendsv_rep.frames] == [
+        (0x3000, "seed"),
+        (0x1002, "exception"),
+        (0x1100, "cfi"),
+    ]
+    assert len(pendsv_rep.transitions) == 1
+    assert pendsv_rep.transitions[0].from_segment == "exception:14"
+
+    # 2. vTaskSwitchContext -> vTaskSwitchContext (seed) -> PendSV_Handler (cfi) -> task (exception)
+    sw_rep = _run_stage(0x6004)
+    assert sw_rep.complete and sw_rep.stop_reason == "task-exit"
+    assert sw_rep.source == "saved" and sw_rep.method == "cfi"
+    assert [(f.pc, f.method) for f in sw_rep.frames] == [
+        (0x6004, "seed"),
+        (0x3014, "cfi"),
+        (0x1002, "exception"),
+        (0x1100, "cfi"),
+    ]
+
+    # 3. SVC_Handler unstarted first-task -> SVC_Handler (seed) -> entry (exception), task-entry
+    svc_words = [0xA5A5A5A5] * 8 + [0, 0, 0, 0, 0, 0x1200, 0x1000, 0x01000000]
+    svc_mem = _WordMemory()
+    for idx, val in enumerate(svc_words):
+        svc_mem[task_top + idx * 4] = val
+    svc_rep = _run_stage(0x4000, xpsr=0x0100000B, lr=0xFFFFFFF9, mem=svc_mem)
+    assert svc_rep.complete and svc_rep.stop_reason == "task-entry"
+    assert svc_rep.source == "unstarted" and svc_rep.method == "exception"
+    assert [(f.pc, f.method) for f in svc_rep.frames] == [
+        (0x4000, "seed"),
+        (0x1000, "exception"),
+    ]
+
+
+def test_scheduler_switch_handler_unwind_failure_and_depth_limit():
+    from core.backtrace.unwind import UnwindFrame, UnwindResult
+    from core.backtrace.unwind_gdb import unwind_scheduler_stage
+    from core.backtrace.unwind_segments import StackSegment
+
+    handler = bridge.build_arm_scheduler_handler(
+        _scheduler_snapshot(0x6004),
+        stage_name="switch-before-update",
+        bounds=(0x203FC000, 0x20400000),
+        return_pc=0x3014,
+    )
+    task_seed = bridge.SeedFrame(
+        pc=0x1002, sp=0x20A0, regs={13: 0x20A0}, source="saved"
+    )
+    task_seg = StackSegment(
+        "task:1", "worker", 0x2000, 0x2200, "task-recorded", "process", "task"
+    )
+
+    failing = unwind_scheduler_stage(
+        handler,
+        task_seed=task_seed,
+        task_segment=task_seg,
+        metadata=None,
+        read=lambda *_args: None,
+        max_depth=8,
+        unwinder=lambda *_a, **_kw: UnwindResult(
+            (UnwindFrame(0, 0x6004, "seed", segment="exception:14"),),
+            "no-unwind-info",
+            False,
+            False,
+            "current",
+            "seed",
+        ),
+    )
+    assert not failing.complete and failing.stop_reason == "no-unwind-info"
+    assert len(failing.frames) == 1 and failing.transitions == ()
+
+    pendsv_handler = bridge.build_arm_scheduler_handler(
+        _scheduler_snapshot(0x3000),
+        stage_name="pendsv-entry",
+        bounds=(0x203FC000, 0x20400000),
+        return_pc=None,
+    )
+    truncated = unwind_scheduler_stage(
+        pendsv_handler,
+        task_seed=task_seed,
+        task_segment=task_seg,
+        metadata=None,
+        read=lambda *_args: None,
+        max_depth=1,
+    )
+    assert not truncated.complete and truncated.truncated
+    assert truncated.stop_reason == "max-depth"
+    assert [f.pc for f in truncated.frames] == [0x3000]

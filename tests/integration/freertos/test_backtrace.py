@@ -292,9 +292,6 @@ def _assert_no_cross_task(frames: list[dict], own: str, other: str) -> None:
     symbols = [frame["symbol"] or "" for frame in frames]
     assert any(own in name for name in symbols), symbols
     assert not any(other in name for name in symbols), symbols
-    assert not any(
-        "PendSV_Handler" in name or "SVC_Handler" in name for name in symbols
-    ), symbols
 
 
 def _assert_sched_task_frame(state: dict, tcb_name: str) -> None:
@@ -817,7 +814,9 @@ def test_cooperative_yield_marks_old_task_before_and_after_the_tcb_writeback(
 
         data = _backtrace(gdb_session, "gdr_sched")
         assert data["source"] == "current" and data["complete"], data
-        assert data["frames"][0]["pc"] == old_pc, data
+        assert data["frames"][0]["pc"] == prof.pendsv_entry, data
+        assert data["frames"][1]["pc"] == old_pc, data
+        assert data["frames"][1]["method"] == "exception", data
         _assert_no_cross_task(data["frames"], "gdr_sched_task", "gdr_sched_tick_hi")
         evidence = " ".join(data["messages"])
         assert "stage=pendsv-entry" in evidence and "owner=old" in evidence, data
@@ -859,7 +858,9 @@ def test_cooperative_yield_marks_old_task_before_and_after_the_tcb_writeback(
         ), state
         data = _backtrace(gdb_session, "gdr_sched")
         assert data["source"] == "saved" and data["complete"], data
-        assert data["frames"][0]["pc"] == old_pc, data
+        assert data["frames"][0]["pc"] == prof.pendsv_writeback, data
+        assert data["frames"][1]["pc"] == old_pc, data
+        assert data["frames"][1]["method"] == "exception", data
         evidence = " ".join(data["messages"])
         assert "stage=pendsv-writeback" in evidence and "owner=old" in evidence, data
         _finish_cycle(gdb_session)
@@ -942,7 +943,11 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
         _assert_sched_task_frame(after, "gdr_sched_tick_handle")
         data = _backtrace(gdb_session, "gdr_sched_tick")
         assert data["source"] == "saved", data
-        assert data["frames"][0]["pc"] == tick["frame"][6] & ~1, (data, after)
+        assert data["frames"][0]["pc"] == prof.switch_after_update, (data, after)
+        assert "vTaskSwitchContext" in (data["frames"][0]["symbol"] or ""), data
+        assert "PendSV_Handler" in (data["frames"][1]["symbol"] or ""), data
+        assert data["frames"][2]["pc"] == tick["frame"][6] & ~1, (data, after)
+        assert data["frames"][2]["method"] == "exception", data
         _assert_no_cross_task(
             data["frames"], "gdr_sched_tick_hi_task", "gdr_sched_task"
         )
@@ -1023,7 +1028,9 @@ def test_restore_window_distinguishes_restored_cores_from_the_old_psp(gdb_sessio
             ], state
         data = _backtrace(gdb_session, "gdr_sched_tick")
         assert data["source"] == "current", data
-        assert data["frames"][0]["pc"] == tick["frame"][6] & ~1, data
+        assert data["frames"][0]["pc"] == prof.pendsv_restored_pending_psp, data
+        assert data["frames"][1]["pc"] == tick["frame"][6] & ~1, data
+        assert data["frames"][1]["method"] == "exception", data
         _assert_no_cross_task(
             data["frames"], "gdr_sched_tick_hi_task", "gdr_sched_task"
         )
@@ -1039,7 +1046,9 @@ def test_restore_window_distinguishes_restored_cores_from_the_old_psp(gdb_sessio
             )
             data = _backtrace(gdb_session, "gdr_sched_tick")
             assert data["source"] == "current", data
-            assert data["frames"][0]["pc"] == tick["frame"][6] & ~1, data
+            assert data["frames"][0]["pc"] == prof.pendsv_psp_written, data
+            assert data["frames"][1]["pc"] == tick["frame"][6] & ~1, data
+            assert data["frames"][1]["method"] == "exception", data
             assert "stage=pendsv-psp-written" in " ".join(data["messages"]), data
 
         gdb_session.run(f"tbreak *{prof.pendsv_exception_return:#x}")
@@ -1269,7 +1278,9 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
     data = _backtrace(session, "gdr_sched_first")
     assert data["source"] == "unstarted", data
     assert data["complete"] and data["stop_reason"] == "task-entry", data
-    assert data["frames"][0]["pc"] == first["frame"][6] & ~1, data
+    assert data["frames"][0]["pc"] == prof.svc_entry, data
+    assert data["frames"][1]["pc"] == first["frame"][6] & ~1, data
+    assert data["frames"][1]["method"] == "exception", data
     assert "stage=svc-entry" in " ".join(data["messages"]), data
 
     for stage_name, addr, check in (
@@ -1336,7 +1347,9 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
         incoming_name,
         data,
     )
-    entry_pc = data["frames"][0]["pc"]
+    assert data["frames"][0]["pc"] == prof.pendsv_after_switch, data
+    assert data["frames"][1]["method"] == "exception", data
+    entry_pc = data["frames"][1]["pc"]
     assert "stage=pendsv-after-switch" in " ".join(data["messages"]), data
 
     pendsv_stages: list[tuple[str, int]] = []
@@ -1361,7 +1374,9 @@ def test_first_task_start_uses_the_independent_svc_restore_path(first_start_sess
             incoming_name,
             data,
         )
-        assert data["frames"][0]["pc"] == entry_pc, (stage_name, data)
+        assert data["frames"][0]["pc"] == addr, (stage_name, data)
+        assert data["frames"][1]["pc"] == entry_pc, (stage_name, data)
+        assert data["frames"][1]["method"] == "exception", (stage_name, data)
         assert f"stage={stage_name}" in " ".join(data["messages"]), (stage_name, data)
 
 

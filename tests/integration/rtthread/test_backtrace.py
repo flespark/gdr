@@ -365,6 +365,27 @@ def _wait_non_first_pendsv(session, address: int, attempts: int = 20) -> dict:
     raise AssertionError(f"no steady-state PendSV switch observed at {address:#x}")
 
 
+def _assert_pendsv_owner_frames(data: dict, pendsv_pc: int) -> None:
+    prof = _profile()
+    frames = data["frames"]
+    assert len(frames) >= 2, data
+    assert prof.pendsv_start <= pendsv_pc < prof.pendsv_end, data
+    assert frames[0]["pc"] == pendsv_pc, data
+    assert frames[0]["method"] == "seed", data
+    assert frames[0]["symbol"], data
+    assert frames[1]["method"] == "exception", data
+    assert (
+        len(_transitions(data)) == 1 and _transitions(data)[0]["pc"] == frames[1]["pc"]
+    ), data
+
+
+def _assert_no_pendsv_frame(data: dict) -> None:
+    prof = _profile()
+    assert not any(
+        prof.pendsv_start <= f["pc"] < prof.pendsv_end for f in data["frames"]
+    ), data
+
+
 def _assert_completed_owner(
     data: dict,
     *,
@@ -863,6 +884,7 @@ def test_first_thread_start_stages_on_real_boot(first_start_session):
     assert to_name in {"main", "timer", "tidle0"}, entry_state
     entry_data = _backtrace(session, to_name)
     _assert_completed_owner(entry_data, stage="pendsv-entry", sources={"unstarted"})
+    _assert_pendsv_owner_frames(entry_data, prof.pendsv_entry)
 
     for stage_name, addr, expected_sources in (
         ("pendsv-switch-to", prof.pendsv_switch_to, {"unstarted"}),
@@ -879,6 +901,7 @@ def test_first_thread_start_stages_on_real_boot(first_start_session):
         assert state["from_ptr"] == 0, state
         data = _backtrace(session, to_name)
         _assert_completed_owner(data, stage=stage_name, sources=expected_sources)
+        _assert_pendsv_owner_frames(data, addr)
 
 
 @_sched_skip()
@@ -892,15 +915,20 @@ def test_pendsv_stages_across_one_switch_cycle(gdb_session):
 
     old_entry = _backtrace(gdb_session, from_name)
     _assert_completed_owner(old_entry, stage="pendsv-entry", sources={"current"})
-    assert any(f["pc"] == entry["psp_pc"] for f in old_entry["frames"]), old_entry
+    _assert_pendsv_owner_frames(old_entry, prof.pendsv_entry)
+    assert old_entry["frames"][1]["pc"] == entry["psp_pc"], old_entry
+    cur_entry = _backtrace(gdb_session)
+    assert cur_entry["task"] == from_name and cur_entry["frames"] == old_entry["frames"]
     new_entry = _backtrace(gdb_session, to_name)
     _assert_completed_owner(
         new_entry, stage="pendsv-entry", sources={"saved", "unstarted"}
     )
+    _assert_no_pendsv_frame(new_entry)
     other_entry = _backtrace(gdb_session, other_name)
     _assert_completed_owner(
         other_entry, stage="pendsv-entry", sources={"saved", "unstarted"}
     )
+    _assert_no_pendsv_frame(other_entry)
 
     pending = _stop_at_addr(gdb_session, prof.pendsv_save_pending)
     assert pending["from_name"] == from_name and pending["to_name"] == to_name
@@ -908,10 +936,12 @@ def test_pendsv_stages_across_one_switch_cycle(gdb_session):
     _assert_completed_owner(
         old_pending, stage="pendsv-save-pending", sources={"current"}
     )
+    _assert_pendsv_owner_frames(old_pending, prof.pendsv_save_pending)
     new_pending = _backtrace(gdb_session, to_name)
     _assert_completed_owner(
         new_pending, stage="pendsv-save-pending", sources={"saved", "unstarted"}
     )
+    _assert_no_pendsv_frame(new_pending)
 
     if prof.pendsv_save_written is not None:
         written = _stop_at_addr(gdb_session, prof.pendsv_save_written)
@@ -920,10 +950,12 @@ def test_pendsv_stages_across_one_switch_cycle(gdb_session):
         _assert_completed_owner(
             old_written, stage="pendsv-save-written", sources={"saved-buffer"}
         )
+        _assert_pendsv_owner_frames(old_written, prof.pendsv_save_written)
         new_written = _backtrace(gdb_session, to_name)
         _assert_completed_owner(
             new_written, stage="pendsv-save-written", sources={"saved", "unstarted"}
         )
+        _assert_no_pendsv_frame(new_written)
 
     for stage_name, addr, old_sources, new_sources in (
         ("pendsv-switch-to", prof.pendsv_switch_to, {"saved"}, {"saved", "unstarted"}),
@@ -951,8 +983,10 @@ def test_pendsv_stages_across_one_switch_cycle(gdb_session):
         assert state["from_name"] == from_name and state["to_name"] == to_name
         old_data = _backtrace(gdb_session, from_name)
         _assert_completed_owner(old_data, stage=stage_name, sources=old_sources)
+        _assert_no_pendsv_frame(old_data)
         new_data = _backtrace(gdb_session, to_name)
         _assert_completed_owner(new_data, stage=stage_name, sources=new_sources)
+        _assert_pendsv_owner_frames(new_data, addr)
 
 
 @_sched_skip()

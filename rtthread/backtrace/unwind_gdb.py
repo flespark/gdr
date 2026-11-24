@@ -39,7 +39,10 @@ from core.backtrace.unwind_arm import (
 )
 from core.backtrace.unwind_cfi import CfaRule, CfiRow, CfiTable, RegisterRule
 from core.backtrace.unwind_gdb import (
+    SchedulerHandlerContext,
+    build_arm_scheduler_handler,
     cached_unwind_metadata,
+    unwind_task_or_scheduler_stage,
 )
 from core.backtrace.unwind_gdb import (
     live_seed as _core_live_seed,
@@ -77,16 +80,20 @@ from core.layout import member_offset
 from core.stack_frame_parser import StackContextSelection
 from rtthread.adapter import Thread, value_to_thread
 from rtthread.backtrace.arm_scheduler_switch import (
+    ARM_SCHEDULER_SYMBOLS,
+)
+from rtthread.backtrace.arm_scheduler_switch import (
     build_profile as build_scheduler_profile,
 )
 from rtthread.backtrace.arm_scheduler_switch import (
     classify_stage as classify_scheduler_stage,
 )
 from rtthread.backtrace.riscv_scheduler_switch import (
-    build_riscv_profile as build_riscv_scheduler_profile,
+    RISCV_SCHEDULER_SYMBOLS,
+    classify_riscv_stage,
 )
 from rtthread.backtrace.riscv_scheduler_switch import (
-    classify_riscv_stage,
+    build_riscv_profile as build_riscv_scheduler_profile,
 )
 from rtthread.backtrace.scheduler_seed import (
     SchedulerSeed,
@@ -379,27 +386,6 @@ def _live_seed_detail(
     return seed, reason
 
 
-_SCHEDULER_SYMBOLS = frozenset(
-    (
-        "rt_hw_context_switch",
-        "rt_hw_context_switch_interrupt",
-        "PendSV_Handler",
-        "rt_hw_context_switch_to",
-        "switch_to_thread",
-        "pendsv_exit",
-    )
-)
-_RISCV_SCHEDULER_SYMBOLS = frozenset(
-    (
-        "rt_hw_context_switch_to",
-        "rt_hw_context_switch",
-        "rt_hw_context_switch_exit",
-        "trap_entry",
-        "spurious_interrupt",
-    )
-)
-
-
 def _arm_snapshot() -> tuple[ArmSnapshot | None, str]:
     return _core_arm_snapshot(gdb_module=gdb)
 
@@ -426,7 +412,7 @@ def _riscv_pc_in_scheduler_symbol(elf: ElfImage | None, pc: int) -> bool:
     if elf is None:
         return False
     sym = elf.function_containing(pc)
-    if sym is not None and sym.name in _RISCV_SCHEDULER_SYMBOLS:
+    if sym is not None and sym.name in RISCV_SCHEDULER_SYMBOLS:
         return True
     trap_span = analyze_riscv_trap_profile(elf)
     return trap_span is not None and trap_span.entry <= pc < trap_span.exit_end
@@ -559,7 +545,12 @@ def _scheduler_decision(
     current,
     low: int,
     high: int,
-) -> SchedulerSeed | tuple[str, str] | None:
+) -> (
+    SchedulerSeed
+    | tuple[SchedulerSeed, SchedulerHandlerContext]
+    | tuple[str, str]
+    | None
+):
     """Resolve active M-profile or RISC-V scheduler transitions or fail closed."""
     if architecture in ("riscv32", "riscv64"):
         return _riscv_scheduler_decision(
@@ -596,7 +587,7 @@ def _scheduler_decision(
     if profile is None:
         pc = snapshot.pc & ~1
         sym = elf.function_containing(pc) if elf is not None else None
-        if sym is not None and sym.name in _SCHEDULER_SYMBOLS:
+        if sym is not None and sym.name in ARM_SCHEDULER_SYMBOLS:
             return (
                 "scheduler-profile-unverified",
                 "compiled M-profile switch handlers do not match a verified profile",
@@ -605,6 +596,7 @@ def _scheduler_decision(
     stage = classify_scheduler_stage(profile, snapshot.pc)
     if flag == 0 and stage is None:
         return None
+    irq_bounds: tuple[int, int] | None = None
     if (
         stage is not None
         and stage.function == "PendSV_Handler"
@@ -671,6 +663,26 @@ def _scheduler_decision(
     )
     if isinstance(outcome, str):
         return outcome, f"the pending switch state refused unwind ({outcome})"
+    if (
+        outcome is not None
+        and stage is not None
+        and stage.function == "PendSV_Handler"
+        and irq_bounds is not None
+    ):
+        active_owner = (
+            "old"
+            if stage.name
+            in ("pendsv-entry", "pendsv-save-pending", "pendsv-save-written")
+            and from_ptr
+            else "new"
+        )
+        if outcome.owner == active_owner:
+            return (
+                outcome,
+                build_arm_scheduler_handler(
+                    snapshot, stage_name=stage.name, bounds=irq_bounds
+                ),
+            )
     return outcome
 
 
@@ -720,6 +732,7 @@ class _HandlerSetup:
     guard: TransitionGuard | None = None
     stkalign: bool = True
     metadata: UnwindMetadata | None = None
+    scheduler_handler: SchedulerHandlerContext | None = None
 
 
 def _selected_core() -> int:
@@ -909,7 +922,7 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
             max_depth,
         )
 
-    if selection.context is None or not selection.context.verified:
+    def _boot_stop(reason: str, message: str) -> BacktraceReport:
         return BacktraceReport(
             task="<current>",
             address=0,
@@ -917,29 +930,24 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
             method="none",
             source="current",
             complete=False,
-            stop_reason=selection.reason,
+            stop_reason=reason,
             truncated=False,
             max_depth=max_depth,
             bounds="unknown",
             frames=[],
-            messages=["no verified libcpu save profile matches the image evidence"],
+            messages=[message],
             abi=selection.abi,
         )
+
+    if selection.context is None or not selection.context.verified:
+        return _boot_stop(
+            selection.reason,
+            "no verified libcpu save profile matches the image evidence",
+        )
     if flag:
-        return BacktraceReport(
-            task="<current>",
-            address=0,
-            architecture=architecture,
-            method="none",
-            source="current",
-            complete=False,
-            stop_reason="scheduler-current-tcb-unavailable",
-            truncated=False,
-            max_depth=max_depth,
-            bounds="unknown",
-            frames=[],
-            messages=["rt_current_thread is unavailable while a switch is pending"],
-            abi=selection.abi,
+        return _boot_stop(
+            "scheduler-current-tcb-unavailable",
+            "rt_current_thread is unavailable while a switch is pending",
         )
     if (
         selection.isa in ("armv6-m", "armv7-m", "armv7e-m", "armv8-m.mainline")
@@ -948,23 +956,10 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
         snapshot, _reason = _arm_snapshot()
         if snapshot is not None:
             sym = metadata.elf.function_containing(snapshot.pc & ~1)
-            if sym is not None and sym.name in _SCHEDULER_SYMBOLS:
-                return BacktraceReport(
-                    task="<current>",
-                    address=0,
-                    architecture=architecture,
-                    method="none",
-                    source="current",
-                    complete=False,
-                    stop_reason="scheduler-current-tcb-unavailable",
-                    truncated=False,
-                    max_depth=max_depth,
-                    bounds="unknown",
-                    frames=[],
-                    messages=[
-                        "rt_current_thread is unavailable inside a scheduler handler"
-                    ],
-                    abi=selection.abi,
+            if sym is not None and sym.name in ARM_SCHEDULER_SYMBOLS:
+                return _boot_stop(
+                    "scheduler-current-tcb-unavailable",
+                    "rt_current_thread is unavailable inside a scheduler handler",
                 )
     elif selection.family == "riscv" and metadata is not None:
         xlen = 64 if selection.isa == "riscv64" else 32
@@ -972,22 +967,9 @@ def _current_pc_backtrace(adapter, max_depth: int) -> BacktraceReport:
         if rv_snapshot is not None and _riscv_pc_in_scheduler_symbol(
             metadata.elf, rv_snapshot.pc
         ):
-            return BacktraceReport(
-                task="<current>",
-                address=0,
-                architecture=architecture,
-                method="none",
-                source="current",
-                complete=False,
-                stop_reason="scheduler-current-tcb-unavailable",
-                truncated=False,
-                max_depth=max_depth,
-                bounds="unknown",
-                frames=[],
-                messages=[
-                    "rt_current_thread is unavailable inside a RISC-V scheduler handler"
-                ],
-                abi=selection.abi,
+            return _boot_stop(
+                "scheduler-current-tcb-unavailable",
+                "rt_current_thread is unavailable inside a RISC-V scheduler handler",
             )
     return live_boot_backtrace_report(
         architecture=architecture,
@@ -1116,10 +1098,16 @@ def _resolve_saved_seed(ctx: _TargetContext) -> SeedFrame | BacktraceReport:
 def _resolve_target_seed(
     ctx: _TargetContext,
 ) -> (
-    tuple[SeedFrame, SchedulerSeed | None, str | None, FaultPrecision | None]
+    tuple[
+        SeedFrame,
+        SchedulerSeed | None,
+        str | None,
+        FaultPrecision | None,
+        SchedulerHandlerContext | None,
+    ]
     | BacktraceReport
 ):
-    scheduler_decision = _scheduler_decision(
+    raw_decision = _scheduler_decision(
         architecture=ctx.architecture,
         selection=ctx.selection,
         elf=ctx.metadata.elf if ctx.metadata is not None else None,
@@ -1128,8 +1116,15 @@ def _resolve_target_seed(
         low=ctx.low,
         high=ctx.high,
     )
-    if isinstance(scheduler_decision, tuple):
-        return ctx.stop(scheduler_decision[0], scheduler_decision[1], source="none")
+    scheduler_handler: SchedulerHandlerContext | None = None
+    if isinstance(raw_decision, tuple):
+        first, second = raw_decision
+        if isinstance(first, str) and isinstance(second, str):
+            return ctx.stop(first, second, source="none")
+        assert isinstance(first, SchedulerSeed) and not isinstance(second, str)
+        scheduler_decision, scheduler_handler = first, second
+    else:
+        scheduler_decision = raw_decision
     if scheduler_decision is not None:
         scheduler_note = (
             f"scheduler stage {scheduler_decision.stage} "
@@ -1140,19 +1135,32 @@ def _resolve_target_seed(
             scheduler_decision,
             scheduler_note,
             scheduler_decision.fault,
+            scheduler_handler,
         )
     seed_or_err = (
         _resolve_live_seed(ctx) if ctx.is_current else _resolve_saved_seed(ctx)
     )
     if isinstance(seed_or_err, BacktraceReport):
         return seed_or_err
-    return seed_or_err, None, None, None
+    return seed_or_err, None, None, None, None
+
+
+def _task_segment(ctx: _TargetContext) -> StackSegment:
+    """Build the process-stack segment for one target thread."""
+    return StackSegment(
+        ident=f"task:{ctx.thread.address:#x}",
+        owner=ctx.thread.name,
+        low=ctx.low,
+        high=ctx.high,
+        source="task-recorded",
+        stack="process",
+        kind="task",
+    )
 
 
 def _prepare_arm_handler(
     ctx: _TargetContext, seed: SeedFrame
 ) -> _HandlerSetup | BacktraceReport:
-    thread = ctx.thread
     if seed.process_sp is None or not ctx.low <= seed.process_sp <= ctx.high:
         return ctx.stop(
             "exception-task-context-conflict",
@@ -1200,15 +1208,7 @@ def _prepare_arm_handler(
     )
     if isinstance(setup, tuple):
         return ctx.stop(*setup)
-    task_segment = StackSegment(
-        ident=f"task:{thread.address:#x}",
-        owner=thread.name,
-        low=ctx.low,
-        high=ctx.high,
-        source="task-recorded",
-        stack="process",
-        kind="task",
-    )
+    task_segment = _task_segment(ctx)
     new_meta, hook = _apply_hardfault_trampoline(
         setup.seed, ctx.metadata, setup.exception_segment.ident, setup.exception_hook
     )
@@ -1277,15 +1277,7 @@ def _prepare_riscv_handler(
                     "exception-context-unproven",
                     "rt_interrupt_nest is unreadable with deferred mepc storage",
                 )
-            task_segment = StackSegment(
-                ident=f"task:{thread.address:#x}",
-                owner=thread.name,
-                low=ctx.low,
-                high=ctx.high,
-                source="task-recorded",
-                stack="process",
-                kind="task",
-            )
+            task_segment = _task_segment(ctx)
             mask = u_xlen_mask(xlen)
             endian = arch_or_default()[1]
 
@@ -1344,7 +1336,18 @@ def _prepare_handler_setup(
     *,
     scheduler_decision: SchedulerSeed | None,
     exit_pc: int | None,
+    scheduler_handler: SchedulerHandlerContext | None = None,
 ) -> _HandlerSetup | BacktraceReport:
+    if scheduler_handler is not None:
+        task_segment = _task_segment(ctx)
+        return _HandlerSetup(
+            seed=seed,
+            fault=fault,
+            segments=(task_segment,),
+            current_segment=task_segment.ident,
+            metadata=ctx.metadata,
+            scheduler_handler=scheduler_handler,
+        )
     if seed.exception_number:
         return _prepare_arm_handler(ctx, seed)
     if ctx.selection.family == "riscv":
@@ -1436,23 +1439,29 @@ def _backtrace_thread(
     resolved = _resolve_target_seed(ctx)
     if isinstance(resolved, BacktraceReport):
         return resolved
-    seed, scheduler_decision, scheduler_note, fault = resolved
+    seed, scheduler_decision, scheduler_note, fault, scheduler_handler = resolved
     exit_pc = _exit_pc()
     if seed.source != "unstarted" and exit_pc is not None:
         seed = replace(seed, root_pc=exit_pc, root_reason="task-exit")
     handler = _prepare_handler_setup(
-        ctx, seed, fault, scheduler_decision=scheduler_decision, exit_pc=exit_pc
+        ctx,
+        seed,
+        fault,
+        scheduler_decision=scheduler_decision,
+        exit_pc=exit_pc,
+        scheduler_handler=scheduler_handler,
     )
     if isinstance(handler, BacktraceReport):
         return handler
     meta = _apply_switch_return_cfi(handler.metadata, scheduler_decision)
-    result = unwind_chain(
+    result = unwind_task_or_scheduler_stage(
         handler.seed,
         meta,
         read=read_bytes,
         max_depth=max_depth,
         stack_low=low,
         stack_high=high,
+        scheduler_handler=handler.scheduler_handler,
         allow_frame_pointer=architecture != "armv7-a",
         segments=handler.segments,
         current_segment=handler.current_segment,
@@ -1460,6 +1469,8 @@ def _backtrace_thread(
         exception_hook=handler.hook,
         exception_guard=handler.guard,
         stkalign=handler.stkalign,
+        evidence=scheduler_note or "",
+        unwinder=unwind_chain,
     )
     initial_messages = [scheduler_note] if scheduler_note is not None else []
     return build_backtrace_report(

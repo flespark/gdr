@@ -42,6 +42,18 @@ _RISCV_CALLER_SAVED = frozenset(
 _BRANCH_MNEMONICS = frozenset({"beq", "bne", "blt", "bge", "bltu", "bgeu"})
 _MAX_SWITCH_INSTRUCTIONS = 512
 
+RISCV_SWITCH_RESTORE_STAGES = frozenset(
+    (
+        "switch-before-update",
+        "switch-after-update",
+        "restore-sp-loaded",
+        "restore-sp-popped",
+        "start-first-entry",
+        "start-first-sp-loaded",
+        "start-first-sp-popped",
+    )
+)
+
 
 @dataclass(frozen=True)
 class RiscvSchedulerStage:

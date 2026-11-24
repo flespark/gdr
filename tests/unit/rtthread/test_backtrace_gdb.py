@@ -1048,3 +1048,265 @@ def test_current_pc_backtrace_tracks_outgoing_pendsv_and_boot(monkeypatch):
     assert boot.task == "<current>"
     assert [frame.pc for frame in boot.frames] == [0x1004]
     assert boot.stop_reason == "return-address-zero"
+
+
+def test_pendsv_scheduler_stages_bridge_only_active_owner(monkeypatch):
+    from core.backtrace.unwind import UnwindFrame, UnwindResult
+    from core.backtrace.unwind_arm import ArmSnapshot
+    from core.elf import EM_ARM, CodeSymbol, ElfImage, ElfSection
+    from rtthread.backtrace.arm_scheduler_switch import (
+        SchedulerProfile,
+        SchedulerStage,
+    )
+
+    core = [0x5000 + i for i in range(4, 12)]
+    mem = _Words()
+
+    def _write_saved(sp: int, *, pc: int, lr: int = 0x1201, fill: int | None = None):
+        regs = [fill if fill is not None else v for v in core]
+        words = regs + [0, 0, 0, 0, 0, lr, pc, 0x01000000]
+        for idx, val in enumerate(words):
+            mem[sp + idx * 4] = val
+
+    _write_saved(0x2080, pc=0x1102)  # new saved (Thumb bit clear on hw PC)
+    _write_saved(0x2480, pc=0x1300)  # other saved
+    _write_saved(0x2880, pc=0x1020)  # old saved software+hw frame (0x28A0)
+
+    old_val, new_val, other_val = object(), object(), object()
+    old_t = Thread(
+        name="old",
+        address=0x4000,
+        entry=0x1000,
+        stack_addr=0x2800,
+        stack_size=0x400,
+        stack_grows_up=False,
+        sp=0x2880,
+    )
+    new_t = Thread(
+        name="new",
+        address=0x5000,
+        entry=0x1100,
+        stack_addr=0x2000,
+        stack_size=0x400,
+        stack_grows_up=False,
+        sp=0x2080,
+    )
+    other_t = Thread(
+        name="other",
+        address=0x6000,
+        entry=0x1300,
+        stack_addr=0x2400,
+        stack_size=0x400,
+        stack_grows_up=False,
+        sp=0x2480,
+    )
+    threads = {
+        "old": (old_val, old_t),
+        "new": (new_val, new_t),
+        "other": (other_val, other_t),
+    }
+    addr_map = {f"{t.address:#x}": val for val, t in threads.values()}
+
+    elf = ElfImage(
+        pointer_size=4,
+        endian="little",
+        machine=EM_ARM,
+        sections=(ElfSection(".text", 0x1000, b"\x00" * 0x2300, 0x6, 1),),
+        symbols=(
+            CodeSymbol("PendSV_Handler", 0x3100, 0x40),
+            CodeSymbol("old_fn", 0x1020, 0x20),
+            CodeSymbol("new_fn", 0x1100, 0x20),
+            CodeSymbol("other_fn", 0x1300, 0x20),
+        ),
+    )
+    meta = UnwindMetadata(
+        elf=elf,
+        arch="arm",
+        cfi_tables=(),
+        ehabi=None,
+        return_register=14,
+        frame_pointer_register=7,
+    )
+    profile = SchedulerProfile(
+        port="armv7-m",
+        isa="armv7-m",
+        fpu=False,
+        switch_start=0x3000,
+        switch_end=0x3010,
+        switch_return=0x300E,
+        pendsv_start=0x3100,
+        pendsv_end=0x3140,
+        switch_to_start=0x3140,
+        switch_to_end=0x3160,
+        pendsv_entry=0x3100,
+        pendsv_save_pending=0x3110,
+        pendsv_save_written=0x3120,
+        pendsv_switch_to=0x3124,
+        pendsv_saved_sp=0x3128,
+        pendsv_restored_pending_psp=0x3130,
+        pendsv_psp_written=0x3134,
+        pendsv_exception_return=0x313C,
+        flag_symbol=0x20000100,
+        from_symbol=0x20000104,
+        to_symbol=0x20000108,
+        trustzone_symbol=None,
+        stages={
+            0x3100: SchedulerStage("pendsv-entry", "PendSV_Handler", "entry"),
+            0x3134: SchedulerStage("pendsv-psp-written", "PendSV_Handler", "written"),
+        },
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_backtrace_context",
+        lambda: StackContextSelection("armv7-m", "arm", ARMV7M_INTEGER, "ok"),
+    )
+    monkeypatch.setattr(bridge, "get_current_thread", lambda: new_val)
+    monkeypatch.setattr(
+        bridge,
+        "value_address",
+        lambda v: (
+            v
+            if isinstance(v, int)
+            else next(t.address for val, t in threads.values() if val is v)
+        ),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "find_thread",
+        lambda target, _layout: (
+            threads[target][0] if target in threads else addr_map.get(target)
+        ),
+    )
+    monkeypatch.setattr(
+        bridge, "iter_threads", lambda _layout: [old_val, new_val, other_val]
+    )
+    monkeypatch.setattr(
+        bridge,
+        "value_to_thread",
+        lambda v, *_args, **_kwargs: next(t for val, t in threads.values() if val is v),
+    )
+    monkeypatch.setattr(bridge, "member_offset", lambda _t, _f: 8)
+    monkeypatch.setattr(bridge, "_unwind_metadata", lambda _adapter: meta)
+    monkeypatch.setattr(bridge, "build_scheduler_profile", lambda _elf: profile)
+    monkeypatch.setattr(
+        bridge,
+        "linker_symbol_address",
+        {"__StackLimit": 0x203FC000, "__StackTop": 0x20400000}.get,
+    )
+    monkeypatch.setattr(bridge, "arm_ccr_stkalign", lambda **_kw: True)
+    monkeypatch.setattr(bridge, "arch_or_default", lambda: (4, "little"))
+    monkeypatch.setattr(bridge, "read_bytes", mem.read)
+    monkeypatch.setattr(bridge, "read_int", lambda val: val)
+    monkeypatch.setattr(bridge, "lookup_symbol_at", lambda pc: f"sym_{pc:#x}")
+    monkeypatch.setattr(bridge, "source_location_at", lambda _pc: None)
+    monkeypatch.setattr(
+        bridge,
+        "unwind_chain",
+        lambda seed, _m, **_kw: UnwindResult(
+            (UnwindFrame(0, seed.pc, "seed"),)
+            if seed.source == "unstarted"
+            else (
+                UnwindFrame(0, seed.pc, "seed"),
+                UnwindFrame(1, 0x1200, "cfi", lookup_pc=0x11FF),
+            ),
+            "task-entry" if seed.source == "unstarted" else "task-exit",
+            True,
+            False,
+            seed.source,
+            seed.source if seed.source == "unstarted" else "cfi",
+        ),
+    )
+
+    # 1. pendsv-entry: current (old) bridges PendSV_Handler -> old_pc; new/other stay pure saved.
+    regs = {i: 0x5000 + i for i in range(4, 12)} | {
+        13: 0x203FF000,
+        14: 0xFFFFFFFD,
+        15: 0x3100,
+    }
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: {
+            "rt_thread_switch_interrupt_flag": 1,
+            "rt_interrupt_from_thread": old_t.address + 8,
+            "rt_interrupt_to_thread": new_t.address + 8,
+            "rt_thread_exit": 0x1200,
+        }.get(name),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x3100, 0x203FF000, 0x203FF000, 0x28A0, 0x0100000E, regs),
+            "ok",
+        ),
+    )
+    adapter = SimpleNamespace(layout=object())
+    cur = bridge.backtrace(adapter)
+    assert cur.task == "old" and cur.source == "current" and cur.complete
+    assert [(f.pc, f.method) for f in cur.frames] == [
+        (0x3100, "seed"),
+        (0x1020, "exception"),
+        (0x1200, "cfi"),
+    ]
+    assert [f.pc for f in bridge.backtrace(adapter, "new").frames] == [0x1102, 0x1200]
+    assert [f.pc for f in bridge.backtrace(adapter, "other").frames] == [0x1300, 0x1200]
+
+    # 2. pendsv-psp-written: current (new) bridges PendSV_Handler -> new_pc; old stays saved.
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: {
+            "rt_thread_switch_interrupt_flag": 0,
+            "rt_interrupt_from_thread": old_t.address + 8,
+            "rt_interrupt_to_thread": new_t.address + 8,
+            "rt_thread_exit": 0x1200,
+        }.get(name),
+    )
+    written_regs = dict(regs) | {15: 0x3134}
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(
+                0x3134, 0x203FF000, 0x203FF000, 0x20A0, 0x0100000E, written_regs
+            ),
+            "ok",
+        ),
+    )
+    cur_new = bridge.backtrace(adapter)
+    assert cur_new.task == "new" and cur_new.source == "current" and cur_new.complete
+    assert [(f.pc, f.method) for f in cur_new.frames] == [
+        (0x3134, "seed"),
+        (0x1102, "exception"),
+        (0x1200, "cfi"),
+    ]
+    assert [f.pc for f in bridge.backtrace(adapter, "old").frames] == [0x1020, 0x1200]
+
+    # 3. pendsv-entry first start (from_ptr == 0, unstarted new): bridges PendSV_Handler -> entry.
+    _write_saved(0x2080, pc=0x1100, fill=0xDEADBEEF)
+    monkeypatch.setattr(
+        bridge,
+        "eval_identifier",
+        lambda name: {
+            "rt_thread_switch_interrupt_flag": 1,
+            "rt_interrupt_from_thread": 0,
+            "rt_interrupt_to_thread": new_t.address + 8,
+            "rt_thread_exit": 0x1200,
+        }.get(name),
+    )
+    monkeypatch.setattr(
+        bridge,
+        "_arm_snapshot",
+        lambda: (
+            ArmSnapshot(0x3100, 0x203FF000, 0x203FF000, 0, 0x0100000E, regs),
+            "ok",
+        ),
+    )
+    first_rep = bridge.backtrace(adapter)
+    assert first_rep.task == "new" and first_rep.source == "unstarted"
+    assert first_rep.complete and first_rep.stop_reason == "task-entry"
+    assert [(f.pc, f.method) for f in first_rep.frames] == [
+        (0x3100, "seed"),
+        (0x1100, "exception"),
+    ]
