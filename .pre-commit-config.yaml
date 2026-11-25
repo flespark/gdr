@@ -37,6 +37,8 @@ repos:
     rev: v0.43.0
     hooks:
       - id: markdownlint
+        # NOTE: pin Node 24 LTS so nodeenv never resolves an unstable 27.x alpha.
+        language_version: "24.19.0"
         args: ["--disable=MD013", "--"]
         # Scraped upstream GDB manual; reference only, never edit by hand.
         exclude: ^docs/gdb_python_reference\.md$
