@@ -468,6 +468,25 @@ def _unwind_frame_pointer(
     return new_regs, caller_sp, caller_pc
 
 
+def _lookup_cfi_row(
+    cfi_tables: Sequence[CfiTable], lookup_pc: int
+) -> tuple[CfiRow | None, list[str], bool]:
+    """Return the first valid CFI row for *lookup_pc*, parse failures, and row-error flag."""
+    failures: list[str] = []
+    saw_row_error = False
+    for table in cfi_tables:
+        row = table.row_for(lookup_pc)
+        if row is not None:
+            if row.error is not None:
+                saw_row_error = True
+                failures.append(row.error)
+                continue
+            return row, failures, saw_row_error
+        if table.error is not None:
+            failures.append(table.error)
+    return None, failures, saw_row_error
+
+
 def unwind_chain(
     seed: SeedFrame,
     metadata: UnwindMetadata | None,
@@ -792,6 +811,32 @@ def unwind_chain(
                 elif isinstance(outcome, tuple):
                     new_regs, new_sp, new_pc = outcome
                     step_method: Method = "ehabi"
+                    # NOTE: Shrink-wrapped prologues/epilogues can place a
+                    # stack-neutral or partial-frame PC after symbol.start;
+                    # per-PC DWARF CFI is authoritative when it disagrees.
+                    if outcome[1] != sp and metadata.cfi_tables:
+                        cfi_row, _, _ = _lookup_cfi_row(metadata.cfi_tables, lookup_pc)
+                        if cfi_row is not None:
+                            cfi_outcome = _unwind_cfi(
+                                cfi_row,
+                                regs=regs,
+                                sp=sp,
+                                read=read,
+                                ptr_size=ptr_size,
+                                endian=endian,
+                                return_register=return_register,
+                                sp_register=sp_register,
+                                stack_low=low,
+                                stack_high=high,
+                            )
+                            if isinstance(cfi_outcome, tuple) and (
+                                cfi_outcome[1] != new_sp
+                                or convention.normalize_pc(cfi_outcome[2])
+                                != convention.normalize_pc(new_pc)
+                            ):
+                                new_regs, new_sp, new_pc = cfi_outcome
+                                step_method = "cfi"
+                                exact_caller_pc = cfi_row.signal_frame
                 else:
                     attempts.append(outcome)
                     outcome = None
@@ -802,18 +847,12 @@ def unwind_chain(
             outcome = None
             step_method = "cfi"
         if outcome is None and metadata is not None:
-            row = None
-            for table in metadata.cfi_tables:
-                row = table.row_for(lookup_pc)
-                if row is not None:
-                    if row.error is not None:
-                        has_metadata = True
-                        parse_failures.append(row.error)
-                        row = None
-                        continue
-                    break
-                if table.error is not None:
-                    parse_failures.append(table.error)
+            row, row_failures, saw_row_error = _lookup_cfi_row(
+                metadata.cfi_tables, lookup_pc
+            )
+            if saw_row_error:
+                has_metadata = True
+            parse_failures.extend(row_failures)
             if row is not None:
                 has_metadata = True
                 outcome = _unwind_cfi(

@@ -213,6 +213,34 @@ def test_matching_ehabi_frame_updates_sp_for_the_following_cfi_step():
     assert result.complete
 
 
+def test_shrink_wrapped_ehabi_defers_to_per_pc_cfi_when_sp_differs():
+    # Pre-prologue PC 0x1004 (after symbol.start 0x1000): CFI says CFA=r13+0
+    # while function-wide EHABI assumes a 4-byte pushed frame (vsp+=4).
+    metadata = _cfi_metadata(
+        _cfi_bytes(start=0x1000, instructions=b"")
+        + _cfi_bytes(start=0x1100, instructions=b"\x0e\x08\x8e\x01")
+    )
+    elf = replace(metadata.elf, symbols=(CodeSymbol("callee", 0x1000, 0x100),))
+    table = EhabiTable(
+        (_ExidxEntry(0x1000, None, False, 0x8000B0B0),), lambda _a, _n: None, 0x1100
+    )
+    metadata = replace(metadata, elf=elf, ehabi=table)
+    memory = _Memory({0x2044: (0x1200).to_bytes(4, "little")})
+    result = unwind_chain(
+        SeedFrame(0x1004, 0x2040, {13: 0x2040, 14: 0x1104}, root_pc=0x1200),
+        metadata,
+        read=memory,
+        stack_low=0x2000,
+        stack_high=0x2100,
+    )
+    assert [(frame.pc, frame.method) for frame in result.frames] == [
+        (0x1004, "seed"),
+        (0x1104, "cfi"),
+        (0x1200, "cfi"),
+    ]
+    assert result.complete
+
+
 @pytest.mark.parametrize(
     "address,size,low,high",
     [

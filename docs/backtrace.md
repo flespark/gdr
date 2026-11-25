@@ -64,7 +64,9 @@ unwinding mechanisms in strict priority order:
    - Marks `has_metadata = True`. Because EHABI encodes a single post-prologue
      program per function, if `lookup_pc == symbol.start` and EHABI computes
      `new_sp != sp`, it logs `ehabi-prologue-unexecuted` and defers to per-PC
-     DWARF CFI.
+     DWARF CFI; on shrink-wrapped or partial-frame PCs after `symbol.start`
+     where `new_sp != sp`, per-PC DWARF CFI overrides EHABI whenever it
+     resolves a different `(sp, pc)`.
 2. **DWARF CFI second**:
    - Evaluates `.debug_frame`/`.eh_frame` (CIE versions `1`, `3`, and `4`) with
      on-demand `PT_GNU_EH_FRAME`/`.eh_frame_hdr` binary search (falling back to
