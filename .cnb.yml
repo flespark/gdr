@@ -1,128 +1,135 @@
 # CNB pipeline for GDR.
 #
 # Pipelines:
-#  1. validate-py310 — ruff + unit coverage on Python 3.10
-#  2. validate-py314 — same checks on Python 3.14
-#  3. publish-qemu-matrix-image — timestamped QEMU matrix image (push only)
-#  4. publish-gdb12-compat-image — timestamped GDB 12 image (push only)
-#  5. gdb12-compat-a9 — Ubuntu 22.04 / GDB 12 / Python 3.10 smoke test
-#  6. rtthread-a9-target — RT-Thread Cortex-A9 closed-loop test
-#  7. rtthread-rv64-target — RT-Thread RISC-V RV64 closed-loop test
-#  8. freertos-kernel-scope — FreeRTOS closed loop from FreeRTOS-Kernel source
-#  9. release — source archives and a CNB Release on every pushed tag
+#  1. validate — ruff, pyright, pre-commit hooks, and unit coverage on Python 3.14 & 3.10
+#  2. extension — VSCode client vendor/schema check, type-check, tests, VSIX packaging (+ commit attachment on push)
+#  3. publish-qemu-matrix-image — re-tag cached QEMU matrix image under timestamped & latest tags (push only)
+#  4. publish-gdb12-compat-image — re-tag cached GDB 12 image under timestamped & latest tags (push only)
+#  5. compat-gdb12 — Ubuntu 22.04 / GDB 12 / Python 3.10 compatibility baseline (push, or PR touching core/ or Dockerfile.gdb12)
+#  6. bare-eh-frame — RTOS-independent RISC-V .eh_frame/.eh_frame_hdr CFI decoder suite
+#  7. rtthread — RT-Thread closed-loop suite (ARM Cortex-M ports -> ARM Cortex-A9 -> RISC-V RV32/RV64)
+#  8. freertos — FreeRTOS closed-loop suite (static snapshot -> ARM M3/M0/M4/M33/SMP+MPU -> RISC-V RV32/RV64)
+#  9. release — source archives, release VSIX, and CNB Release on every pushed tag
 #
-# One pipeline per verification axis, named `<rtos>-<axis>`, so a red badge
-# names the axis that broke without opening a log. RT-Thread splits by target
-# (Cortex-A9 / RV64) because a failure there is almost always ISA- or
-# port-specific. FreeRTOS builds every cell from FreeRTOS-Kernel at a tag with
-# one builder (see ci/fixture/freertos/README.md), so it runs as a single kernel-scope
-# pipeline whose stages split by what each one can falsify: the config variant
-# matrix on mps2-an385 at 10.3.1 (14 variants, `V10.3.1-kernel-only` tag),
-# the version sweep on mps2-an385 (10.4.6, 10.5.1, 11.1.0), dual-core SMP and
-# single-core MPU on mps2-an521 at 11.3.1, the 64-bit RISC-V lane, and the
-# static snapshot (mps2-an521 at 11.1.0) — a file-only ELF for the
-# data-corruption negatives a healthy kernel cannot produce, kept as its own
-# stage for at-a-glance failure attribution.
-#
-# The QEMU jobs use `docker.build` with their respective CI Dockerfiles; the
-# resulting images are cached by hash on the CNB artifact registry, so later
-# runs reuse them. Main-branch pushes also publish the same Dockerfiles under
-# human-readable artifact names with `YYYYMMDD-HHMMSS` and `latest` tags:
+# Closed-loop pipelines build their environments with `docker.build` keyed by
+# Dockerfile hash (`by` / `versionBy`), so unchanged Dockerfiles reuse the
+# cached registry image directly. Main-branch image publishers trigger only
+# when their Dockerfile changes and reuse the same `docker:cache` image before
+# tagging `YYYYMMDD-HHMMSS` and `latest`:
 #   docker.cnb.cool/flespark-2026/gdr/qemu-matrix:<tag>
 #   docker.cnb.cool/flespark-2026/gdr/gdb12-compat:<tag>
-# Pull requests never update those shared tags, which is the only difference
-# between the two event lists: every test pipeline is defined once as an anchor
-# and referenced from both `push:` and `pull_request:`, so the two can never
-# drift apart. (A PR-only SMP entry once went missing exactly that way.)
-# CNB's `pull_request` reads the configured pipeline from the *target* branch's
-# `.cnb.yml` (here: main) and checks out the pre-merged commit — so defining
-# both `push:` and `pull_request:` under `main:` is the canonical way to gate
-# every push and PR.
 #
-# Arch: `cnb:arch:amd64` runs both Cortex-A9 and RV64 QEMU targets under TCG.
-# An arm64 host gains nothing for either cross-ISA target, so amd64 is simplest.
+# Arch: `cnb:arch:amd64` runs ARM and RISC-V QEMU targets under TCG.
 # Ref: https://docs.cnb.cool/zh/build/build-node.html
 
-# Shared with GitHub `.github/workflows/ci.yml` validate: lockfile ruff +
-# `uv run pytest tests/unit -v --cov` on the 3.10/3.14 boundaries. GitHub
-# additionally runs non-ruff pre-commit hooks. Official `python:` images are
-# used because the CNB default image has no pip.
-.validate-stages: &validate-stages
-  - name: install
-    script: |
-      pip install --quiet uv
-      uv sync --locked --group dev
-  - name: ruff check
-    script: uv run ruff check .
-  - name: ruff format check
-    script: uv run ruff format --check .
-  - name: pyright check
-    script: uv run pyright
-  - name: unit test coverage
-    script: uv run pytest tests/unit -v --cov
+# ---------------------------------------------------------------------------
+# Host-side validation: lint, types, repository hooks, and Python 3.14 / 3.10
+# boundary coverage in one pipeline with isolated virtual environments.
+# ---------------------------------------------------------------------------
+.validate: &validate
+  name: validate
+  docker:
+    image: python:3.14
+  env:
+    UV_PROJECT_ENVIRONMENT: /tmp/venv-py314
+  stages:
+    - name: install (Python 3.14)
+      script: |
+        set -eu
+        pip install --quiet uv
+        uv sync --locked --group dev
+    - name: ruff check
+      script: uv run ruff check .
+    - name: ruff format check
+      script: uv run ruff format --check .
+    - name: pyright check
+      script: uv run pyright
+    - name: repository hooks
+      script: SKIP=ruff,ruff-format,pyright uv run pre-commit run --all-files
+    - name: unit test coverage (Python 3.14)
+      script: uv run pytest tests/unit -v --cov
+    - name: unit test coverage (Python 3.10)
+      image: python:3.10
+      env:
+        UV_PROJECT_ENVIRONMENT: /tmp/venv-py310
+      script: |
+        set -eu
+        pip install --quiet uv
+        uv sync --locked --group dev
+        uv run pytest tests/unit -v --cov
 
 # ---------------------------------------------------------------------------
-# Extension lane: the VSCode client under vscode/.  Node-only, no QEMU:
-# it regenerates the bundled runtime and checks the envelope schema the
-# client was built for, so a stale or tracked bundle cannot pass.  Node 24
-# is required for native TypeScript stripping (`node --test` runs sources).
+# Extension lane: the VSCode client under vscode/. Node 24 is required for
+# native TypeScript stripping (`node --test` runs sources directly).
 # ---------------------------------------------------------------------------
-.extension-stages: &extension-stages
-  - name: install
-    script: |
-      cd vscode
-      npm ci --no-audit --no-fund
-  - name: vendor the runtime and verify the schema handshake
-    # NOTE: CNB runs `script:` blocks with the image's POSIX shell (`sh`,
-    # dash on Debian), so only POSIX `set` flags are allowed: the bash-only
-    # pipeline-failure flag would abort the whole stage, and there is no
-    # pipeline here to guard. Fail-fast is `set -eu`.
-    script: |
-      set -eu
-      cd vscode
-      npm run vendor
-      python3 scripts/check-vendored-schema.py .
-      git check-ignore -q resources/gdr/VERSION || {
-        echo "vendored runtime is not ignored by git" >&2
-        exit 1
-      }
-  - name: type check
-    script: cd vscode && npm run check-types
-  - name: unit tests
-    script: cd vscode && npm test
-  - name: package the VSIX and attach it to this commit
-    # NOTE: a release-grade `.vsix` must be reproducible from a clean tree:
-    # `npm ci` + vendored runtime + `vsce package`, and the artifact goes out as
-    # a commit attachment for manual verification and manual marketplace
-    # upload -- CI holds no publishing credentials.  `npm test` runs the
-    # TypeScript sources directly, so `dist/extension.js` only exists after an
-    # explicit `npm run build`; without it vsce refuses the missing entrypoint.
-    script: |
-      set -eu
-      cd vscode
-      npm run build
-      npx vsce package --no-dependencies --out gdb-rtos-views.vsix
-      cd ..
-      mkdir -p /tmp/gdr-artifacts
-      cp vscode/gdb-rtos-views.vsix /tmp/gdr-artifacts/
+.ext-install: &ext-install
+  name: install
+  script: |
+    cd vscode
+    npm ci --no-audit --no-fund
+
+.ext-vendor: &ext-vendor
+  name: vendor the runtime and verify the schema handshake
+  # NOTE: CNB runs `script:` blocks with the image's POSIX shell (`sh`, dash on
+  # Debian), so only POSIX `set -eu` is used.
+  script: |
+    set -eu
+    cd vscode
+    npm run vendor
+    python3 scripts/check-vendored-schema.py .
+    git check-ignore -q resources/gdr/VERSION || {
+      echo "vendored runtime is not ignored by git" >&2
+      exit 1
+    }
+
+.ext-typecheck: &ext-typecheck
+  name: type check
+  script: cd vscode && npm run check-types
+
+.ext-test: &ext-test
+  name: unit tests
+  script: cd vscode && npm test
+
+.ext-package: &ext-package
+  name: package the VSIX
+  # NOTE: `npm test` executes TypeScript sources directly, so `dist/extension.js`
+  # exists only after `npm run build`; keep the packaged `.vsix` inside the
+  # workspace so `cnbcool/attachments` can upload it by relative path on push.
+  script: |
+    set -eu
+    cd vscode
+    npm run build
+    npx vsce package --no-dependencies --out gdb-rtos-views.vsix
+
+.ext-attach: &ext-attach
+  name: attach VSIX artifact
+  image: cnbcool/attachments:latest
+  settings:
+    attachments:
+      - "vscode/gdb-rtos-views.vsix"
 
 .extension: &extension
   name: extension
   docker:
     image: node:24
-  stages: *extension-stages
+  stages:
+    - *ext-install
+    - *ext-vendor
+    - *ext-typecheck
+    - *ext-test
+    - *ext-package
 
-.validate-py310: &validate-py310
-  name: validate-py310
+.extension-push: &extension-push
+  name: extension
   docker:
-    image: python:3.10
-  stages: *validate-stages
-
-.validate-py314: &validate-py314
-  name: validate-py314
-  docker:
-    image: python:3.14
-  stages: *validate-stages
+    image: node:24
+  stages:
+    - *ext-install
+    - *ext-vendor
+    - *ext-typecheck
+    - *ext-test
+    - *ext-package
+    - *ext-attach
 
 # ---------------------------------------------------------------------------
 # Shared building blocks for the closed-loop pipelines.
@@ -130,148 +137,118 @@
 
 .amd64-runner: &amd64-runner
   tags: cnb:arch:amd64
-  cpus: 8
+  cpus: 16
 
-# ci/containers/Dockerfile pins the shared integration build environment.
-# `by` lets CNB invalidate the cached image only when these inputs change;
-# rebuilds are otherwise read from the artifact registry.
+# `by` and `versionBy` scope the build context and cache hash strictly to the
+# Dockerfile so unchanged images are pulled directly from the CNB cache.
 .qemu-matrix-build: &qemu-matrix-build
   dockerfile: ci/containers/Dockerfile
   by:
+    - ci/containers/Dockerfile
+  versionBy:
     - ci/containers/Dockerfile
 
 .gdb12-build: &gdb12-build
   dockerfile: ci/containers/Dockerfile.gdb12
   by:
     - ci/containers/Dockerfile.gdb12
+  versionBy:
+    - ci/containers/Dockerfile.gdb12
 
 # ---------------------------------------------------------------------------
-# Closed-loop pipelines, each defined once and run on both push and PR.
+# Closed-loop pipelines, each defined once and referenced by push & PR.
 # ---------------------------------------------------------------------------
 
-.gdb12-compat-a9: &gdb12-compat-a9
-  name: gdb12-compat-a9
+.compat-gdb12: &compat-gdb12
+  name: compat-gdb12
   runner: *amd64-runner
   docker:
     build: *gdb12-build
   stages:
-    - name: GDB 12 / Python 3.10 Cortex-A9 smoke test
+    - name: GDB 12 / Python 3.10 Cortex-A9 compatibility baseline
       script: python3 ci/test.py matrix gdb12
 
-.rtthread-a9-target: &rtthread-a9-target
-  name: rtthread-a9-target
+.bare-eh-frame: &bare-eh-frame
+  name: bare-eh-frame
   runner: *amd64-runner
   docker:
     build: *qemu-matrix-build
   stages:
-    - name: pytest matrix (QEMU closed-loop)
+    - name: Bare RISC-V eh-frame (qemu-virt-rv64)
+      script: python3 ci/test.py matrix bare
+
+.rtthread: &rtthread
+  name: rtthread
+  runner: *amd64-runner
+  docker:
+    build: *qemu-matrix-build
+  stages:
+    - name: RT-Thread ARM Cortex-M ports (M0 / M3 / M4 / M33)
+      script: python3 ci/test.py matrix rtthread-arm-ports
+    - name: RT-Thread ARM Cortex-A9 (3.1.x–4.1.1)
       script: python3 ci/test.py matrix rtthread-a9
+    - name: RT-Thread RISC-V (RV32 / RV64)
+      script: python3 ci/test.py matrix rtthread-riscv
 
-.rtthread-rv64-target: &rtthread-rv64-target
-  name: rtthread-rv64-target
+.freertos: &freertos
+  name: freertos
   runner: *amd64-runner
   docker:
     build: *qemu-matrix-build
   stages:
-    - name: pytest RV64 matrix (QEMU closed-loop)
-      script: python3 ci/test.py matrix rtthread-rv64
-
-.rtthread-ports-target: &rtthread-ports-target
-  name: rtthread-ports-target
-  runner: *amd64-runner
-  docker:
-    build: *qemu-matrix-build
-  stages:
-    - name: RT-Thread port fixtures (QEMU closed-loop)
-      script: python3 ci/test.py matrix rtthread-ports
-
-# Every FreeRTOS matrix uses the same cache and lane runner.
-.freertos-kernel-scope: &freertos-kernel-scope
-  name: freertos-kernel-scope
-  runner: *amd64-runner
-  docker:
-    build: *qemu-matrix-build
-  stages:
-    - name: FreeRTOS config variant matrix (mps2-an385, kernel 10.3.1)
+    # Fast file-only negative checks first, then ARM from basic to complex,
+    # followed by RISC-V (32-bit then 64-bit).
+    - name: FreeRTOS static snapshot (mps2-an521, 11.1.0)
+      script: python3 ci/test.py matrix freertos-snapshot
+    - name: FreeRTOS ARM Cortex-M3 config matrix (mps2-an385, 10.3.1)
       script: python3 ci/test.py matrix freertos-config
-    # NOTE: the config axis pins 10.3.1 (the V10.3.1-kernel-only tag); the
-    # version axis sweeps the newer ABI generations on the same board.
-    - name: FreeRTOS kernel version matrix (mps2-an385)
-      script: python3 ci/test.py matrix freertos-version
-    # NOTE: kept a separate stage so a dual-core failure is attributable at a
-    # glance. ARMv8-M SMP exists only from 11.3.1, so this cannot fold into the
-    # single-core version sweep above. The SMP and MPU variants share the
-    # board's linker script, so either regression fails this stage.
-    - name: FreeRTOS dual-core SMP + MPU wrappers (mps2-an521, kernel 11.3.1)
-      script: |
-        python3 ci/test.py run freertos mps2-an521 11.3.1 smp
-        python3 ci/test.py run freertos mps2-an521 11.3.1 mpu
-    # NOTE: the 64-bit lane is a separate stage so a RISC-V failure is not
-    # conflated with the 32-bit sweep; gdb-multiarch speaks riscv:rv64 and the
-    # tool registration resolves the RISC-V compiler independently of ARM.
-    - name: FreeRTOS 64-bit RISC-V (qemu-virt-rv64, kernel 11.1.0)
-      script: |
-        python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 rv64
-        python3 ci/test.py run bare qemu-virt-rv64 none eh-frame
-    - name: FreeRTOS single-core Cortex-M33 (mps2-an505, kernel 11.3.1)
-      script: python3 ci/test.py run freertos mps2-an505 11.3.1 full
-    - name: FreeRTOS Cortex-M4 (mps2-an386, kernel 11.3.1)
-      script: |
-        python3 ci/test.py run freertos mps2-an386 11.3.1 fpu
-        python3 ci/test.py run freertos mps2-an386 11.3.1 softfp
-        python3 ci/test.py run freertos mps2-an386 11.3.1 soft
-    # NOTE: the first-version M0 and RV32 targets are separate stages so a
-    # 32-bit RISC-V or Thumb-1 port failure is distinguishable from the
-    # already-covered M3/M4F/M33/RV64 lanes.
-    - name: FreeRTOS Cortex-M0 (microbit, kernel 11.1.0)
-      script: python3 ci/test.py run freertos microbit 11.1.0 full
-    - name: FreeRTOS 32-bit RISC-V (qemu-virt-rv32, kernel 11.1.0)
-      script: python3 ci/test.py run freertos qemu-virt-rv32 11.1.0 base
-    # NOTE: the static snapshot (file-only ELF, no QEMU) is the
-    # negative-testing arm of the FreeRTOS matrix — the data-corruption
-    # states a healthy kernel cannot produce (corrupt scheduler lists, a
-    # timer on the overflow list, mismatched heap counters). It uses cached
-    # V11.1.0 headers and remains separately attributable.
-    - name: FreeRTOS snapshot (mps2-an521, 11.1.0)
-      script: python3 ci/test.py run freertos mps2-an521 11.1.0 snapshot
+    - name: FreeRTOS ARM Cortex-M3 version matrix (mps2-an385, 10.4.6–11.1.0)
+      script: python3 ci/test.py matrix freertos-arm-version
+    - name: FreeRTOS ARM Cortex-M0 (microbit, 11.1.0)
+      script: python3 ci/test.py matrix freertos-arm-m0
+    - name: FreeRTOS ARM Cortex-M4 soft/softfp/fpu (mps2-an386, 11.3.1)
+      script: python3 ci/test.py matrix freertos-arm-m4
+    - name: FreeRTOS ARM Cortex-M33 full + fpu (mps2-an505, 11.3.1)
+      script: python3 ci/test.py matrix freertos-arm-m33
+    - name: FreeRTOS ARM Cortex-M33 SMP + MPU (mps2-an521, 11.3.1)
+      script: python3 ci/test.py matrix freertos-arm-smp-mpu
+    - name: FreeRTOS RISC-V RV32 (qemu-virt-rv32, 10.3.1–11.3.1)
+      script: python3 ci/test.py matrix freertos-rv32
+    - name: FreeRTOS RISC-V RV64 (qemu-virt-rv64, 10.4.6–11.3.1)
+      script: python3 ci/test.py matrix freertos-rv64
 
 main: # branch: main
   push:
-    - <<: *validate-py310
-    - <<: *validate-py314
+    - <<: *validate
+    - <<: *extension-push
 
-    - <<: *extension
-
-    # The extension lane's VSIX: built in the extension stages, attached here so
-    # a maintainer can verify it and publish manually (no auto-release).
-    - name: attach VSIX artifact
-      image: cnbcool/attachments:latest
-      settings:
-        attachments: "/tmp/gdr-artifacts/gdb-rtos-views.vsix"
-
-    # `docker.build` cache tags are content hashes under `dockerfile-caches`.
-    # Publish stable aliases separately so the two large CI images have clear
-    # ownership and can be inspected or reused without resolving a hash tag.
-    # Push-only: a PR must never move a shared tag.
+    # Publish human-readable aliases only when a Dockerfile changes, reusing the
+    # `docker:cache` image shared with `docker.build` instead of rebuilding twice.
     - name: publish-qemu-matrix-image
       runner: *amd64-runner
       services:
         - docker
       ifModify:
         - ci/containers/Dockerfile
-        - .cnb.yml
       env:
         GDR_CI_IMAGE: docker.cnb.cool/flespark-2026/gdr/qemu-matrix
       stages:
-        - name: build and publish QEMU matrix image
+        - name: build or reuse cached QEMU matrix image
+          type: docker:cache
+          options:
+            <<: *qemu-matrix-build
+          exports:
+            name: CACHE_IMAGE
+        - name: tag and publish QEMU matrix image
           script: |
+            set -eu
             IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
             VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
             LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
-            echo "Publishing ${VERSIONED_IMAGE}"
-            docker pull "$LATEST_IMAGE" || true
-            docker build --cache-from "$LATEST_IMAGE" --file ci/containers/Dockerfile \
-              --tag "$VERSIONED_IMAGE" --tag "$LATEST_IMAGE" .
+            echo "Publishing ${CACHE_IMAGE} as ${VERSIONED_IMAGE} and ${LATEST_IMAGE}"
+            docker pull "$CACHE_IMAGE"
+            docker tag "$CACHE_IMAGE" "$VERSIONED_IMAGE"
+            docker tag "$CACHE_IMAGE" "$LATEST_IMAGE"
             docker push "$VERSIONED_IMAGE"
             docker push "$LATEST_IMAGE"
 
@@ -281,39 +258,43 @@ main: # branch: main
         - docker
       ifModify:
         - ci/containers/Dockerfile.gdb12
-        - .cnb.yml
       env:
         GDR_CI_IMAGE: docker.cnb.cool/flespark-2026/gdr/gdb12-compat
       stages:
-        - name: build and publish GDB 12 compatibility image
+        - name: build or reuse cached GDB 12 compatibility image
+          type: docker:cache
+          options:
+            <<: *gdb12-build
+          exports:
+            name: CACHE_IMAGE
+        - name: tag and publish GDB 12 compatibility image
           script: |
+            set -eu
             IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
             VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
             LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
-            echo "Publishing ${VERSIONED_IMAGE}"
-            docker pull "$LATEST_IMAGE" || true
-            docker build --cache-from "$LATEST_IMAGE" \
-              --file ci/containers/Dockerfile.gdb12 \
-              --tag "$VERSIONED_IMAGE" --tag "$LATEST_IMAGE" .
+            echo "Publishing ${CACHE_IMAGE} as ${VERSIONED_IMAGE} and ${LATEST_IMAGE}"
+            docker pull "$CACHE_IMAGE"
+            docker tag "$CACHE_IMAGE" "$VERSIONED_IMAGE"
+            docker tag "$CACHE_IMAGE" "$LATEST_IMAGE"
             docker push "$VERSIONED_IMAGE"
             docker push "$LATEST_IMAGE"
 
-    - <<: *gdb12-compat-a9
-    - <<: *rtthread-a9-target
-    - <<: *rtthread-rv64-target
-    - <<: *rtthread-ports-target
-    - <<: *freertos-kernel-scope
+    - <<: *compat-gdb12
+    - <<: *bare-eh-frame
+    - <<: *rtthread
+    - <<: *freertos
 
   pull_request:
-    # Same test pipelines as push, minus the two image publishers.
-    - <<: *validate-py310
-    - <<: *validate-py314
+    - <<: *validate
     - <<: *extension
-    - <<: *gdb12-compat-a9
-    - <<: *rtthread-a9-target
-    - <<: *rtthread-rv64-target
-    - <<: *rtthread-ports-target
-    - <<: *freertos-kernel-scope
+    - <<: *compat-gdb12
+      ifModify:
+        - "core/**"
+        - "ci/containers/Dockerfile.gdb12"
+    - <<: *bare-eh-frame
+    - <<: *rtthread
+    - <<: *freertos
 
 # `$` applies to every reference. CNB sets CNB_BRANCH to the pushed tag when
 # `tag_push` fires. The imported Secret repository file provides
@@ -325,7 +306,7 @@ $:
       imports: "https://cnb.cool/flespark-2026/ci-secrets/-/blob/main/gdr-\
         release.yml"
       docker:
-        image: node:22-bookworm
+        image: node:24-bookworm
       stages:
         - name: install release tools
           script: |

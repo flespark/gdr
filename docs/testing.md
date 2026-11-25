@@ -44,6 +44,13 @@ EHABI, DWARF-expression and Thumb/A32/RISC-V decoders against those two
 oracles. Deterministic in-memory corpora always run in CI; cached firmware ELFs
 under `ci/.cache/fixtures` are scanned only when the local cache is present.
 
+## CI coverage split
+
+Hosted verification splits responsibilities across two CI platforms:
+
+- **GitHub Actions** (`.github/workflows/ci.yml`): basic host-side validation only — Python lint/format/pyright, repository `pre-commit` hooks, unit-test branch coverage on Python 3.10 and 3.14 (`validate`), and VSCode extension vendor/schema/type/unit/VSIX checks (`extension`).
+- **CNB** (`.cnb.yml`): both basic validation (`validate`, `extension`) and all closed-loop QEMU/GDB integration suites — GDB 12 / Python 3.10 compatibility baseline (`compat-gdb12`, run on every push and on PRs touching `core/**` or `ci/containers/Dockerfile.gdb12`), bare RISC-V `.eh_frame` decoding (`bare-eh-frame`), RT-Thread (`rtthread`), and FreeRTOS (`freertos`).
+
 ## Shared closed-loop infrastructure
 
 Closed-loop tests guard against silent output drift where Python helpers run
@@ -325,8 +332,8 @@ CFI decoder, so one lane covers both adapters. The regular RV lanes
 `--gc-sections` does not discard it); the isolated fixture exists for the
 adversarial encodings normal compiler output never emits.
 
-The cell belongs to `bare` in the shared matrix, including CNB and
-GitHub RTOS verification. Additional exception modes and scheduler
+The cell belongs to `bare` in the shared matrix and runs as its own
+RTOS-independent `bare-eh-frame` pipeline in CNB. Additional exception modes and scheduler
 stages must add deterministic RTOS-owned fixture inputs and independent
 assertions through the [same lane extension contract](../ci/README.md#layering-and-new-lanes).
 

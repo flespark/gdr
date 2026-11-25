@@ -165,17 +165,14 @@ BSP/toolchain before sharing a patch.
 
 | Verification axis | CNB pipeline | CLI matrix / command |
 | --- | --- | --- |
-| Python lint, hooks, unit coverage | `validate-py310`, `validate-py314` | `uv run pytest tests/unit --cov` |
-| GDB 12 / Python 3.10 baseline | `gdb12-compat-a9` | `matrix gdb12` |
-| RT-Thread Cortex-A9 | `rtthread-a9-target` | `matrix rtthread-a9` |
-| RT-Thread RV64 | `rtthread-rv64-target` | `matrix rtthread-rv64` |
-| RT-Thread port fixtures | `rtthread-ports-target` | `matrix rtthread-ports` |
-| FreeRTOS config, version, ports and negative fixtures | `freertos-kernel-scope` | `matrix freertos` |
-| VSCode build and checks | `extension` | See `vscode/README.md`. |
+| Python lint, pyright, hooks, unit coverage (3.14 & 3.10) | `validate` | `uv run pytest tests/unit --cov` |
+| VSCode build, schema check, tests, VSIX | `extension` | See `vscode/README.md`. |
+| GDB 12 / Python 3.10 baseline | `compat-gdb12` | `matrix gdb12` |
+| Bare RISC-V `.eh_frame` CFI suite | `bare-eh-frame` | `matrix bare` |
+| RT-Thread (ARM Cortex-M, Cortex-A9, RISC-V RV32/RV64) | `rtthread` | `matrix rtthread` |
+| FreeRTOS (snapshot, ARM M3/M0/M4/M33/SMP+MPU, RISC-V RV32/RV64) | `freertos` | `matrix freertos` |
 
-CNB definitions live in `.cnb.yml`; test pipelines use shared YAML anchors
-for push and pull requests. Image publishers run only on push. GitHub
-Actions uses the same CLI in `.github/workflows/ci.yml`.
+CNB (`.cnb.yml`) runs both basic validation and all closed-loop QEMU/GDB integration suites; `compat-gdb12` runs on every push and on PRs touching `core/**` or `ci/containers/Dockerfile.gdb12`. Image publishers run only on push when their Dockerfile changes. GitHub Actions (`.github/workflows/ci.yml`) covers host-side basic validation (`validate` and `extension`) only; see [docs/testing.md](docs/testing.md#ci-coverage-split).
 
 ## Documentation map
 
