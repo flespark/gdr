@@ -24,7 +24,7 @@ function snapshot(pc: number = 0x1000, tick = '1'): PanelSnapshot {
 function html(data = snapshot(), changed?: Set<string>, id = 's1') {
  return renderApp({sessions:[{id,name:'GDB',status:'ok',message:null,snapshot:data}],activeId:id}, changed ? {changed} : {});
 }
-const client = ts.transpileModule(readFileSync('src/webview/client.ts','utf8'), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+const client = ts.transpileModule(readFileSync('src/webview/client.ts','utf8'), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None,alwaysStrict:false}}).outputText;
 function setup() {
  const dom = new JSDOM('<div id="gdr-root"></div>',{runScripts:'outside-only'});
  const messages: any[] = [];

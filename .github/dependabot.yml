@@ -37,3 +37,12 @@ updates:
       prefix: "ci"
     labels:
       - dependencies
+    ignore:
+      # NOTE: TypeScript 7 (tsgo) drops the JS compiler API (`ts.transpileModule`)
+      # required by `vscode/test/*.test.ts`.
+      - dependency-name: "typescript"
+        versions: [">= 7.0.0"]
+      # NOTE: `@types/vscode` must not exceed `engines.vscode` (`^1.85.0`) in
+      # package.json or `vsce package` rejects the manifest.
+      - dependency-name: "@types/vscode"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

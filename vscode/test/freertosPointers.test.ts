@@ -20,7 +20,7 @@ test('FreeRTOS symbolized queue pointers and items open raw memory addresses, no
  const dom = new JSDOM('<div id="gdr-root"></div>', {runScripts:'outside-only'});
  const messages: any[] = [];
  (dom.window as any).acquireVsCodeApi = () => ({postMessage:(message: unknown) => messages.push(JSON.parse(JSON.stringify(message)))});
- dom.window.eval(ts.transpileModule(readFileSync('src/webview/client.ts','utf8'), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText);
+ dom.window.eval(ts.transpileModule(readFileSync('src/webview/client.ts','utf8'), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None,alwaysStrict:false}}).outputText);
  (dom.window as any).markup = renderApp({sessions:[{id:'s1',name:'FRT',status:'ok',message:null,snapshot}],activeId:'s1'});
  dom.window.eval('applyTrustedHostMarkup(document.getElementById("gdr-root"),markup)');
  const links = [...dom.window.document.querySelectorAll<HTMLAnchorElement>('[data-kind="queue"] tbody a[data-address]')];

@@ -8,7 +8,7 @@ import { renderApp } from '../src/webview/render.ts';
 import type { PanelSnapshot } from '../src/snapshot.ts';
 
 const client = ts.transpileModule(readFileSync('src/webview/client.ts', 'utf8'), {
-	compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }
+	compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, alwaysStrict: false }
 }).outputText;
 
 const map = {

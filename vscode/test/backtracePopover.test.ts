@@ -22,7 +22,7 @@ import {
 } from '../src/webview/render.ts';
 
 const client = ts.transpileModule(readFileSync('src/webview/client.ts', 'utf8'), {
-	compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }
+	compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, alwaysStrict: false }
 }).outputText;
 
 const css = readFileSync('src/webview/style.css', 'utf8');

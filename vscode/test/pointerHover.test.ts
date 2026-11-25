@@ -6,7 +6,7 @@ import ts from 'typescript';
 import { renderAddress, renderSourceLink, renderWaiters } from '../src/webview/render.ts';
 
 const source = {file:'/src/tasks.c',name:'tasks.c',line:27};
-const client = ts.transpileModule(readFileSync('src/webview/client.ts','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+const client = ts.transpileModule(readFileSync('src/webview/client.ts','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None,alwaysStrict:false}}).outputText;
 function setup() {
  const dom = new JSDOM('<div id="gdr-root"></div>',{runScripts:'outside-only'});
  const messages: any[] = [];
