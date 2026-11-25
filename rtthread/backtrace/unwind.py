@@ -473,11 +473,12 @@ def apply_switch_return_cfi(
     metadata: UnwindMetadata | None,
     scheduler_decision,
 ) -> UnwindMetadata | None:
-    """Attach return-via-LR CFI for the proven ``rt_hw_context_switch`` exit."""
+    """Attach return-via-LR CFI for the outgoing ``rt_hw_context_switch`` exit."""
     if (
         metadata is None
         or scheduler_decision is None
         or scheduler_decision.stage != "switch-return"
+        or scheduler_decision.owner != "old"
     ):
         return metadata
     pc = scheduler_decision.seed.pc & ~1

@@ -849,14 +849,23 @@ def test_apply_switch_return_cfi_adds_lr_return_only_for_switch_return():
         frame_pointer_register=7,
     )
     seed = SeedFrame(0x5B2B, 0x20001000, {13: 0x20001000, 14: 0x1235}, source="current")
-    switch_dec = cast(SchedulerSeed, SimpleNamespace(stage="switch-return", seed=seed))
+    switch_dec = cast(
+        SchedulerSeed, SimpleNamespace(stage="switch-return", owner="old", seed=seed)
+    )
     updated = bridge._apply_switch_return_cfi(meta, switch_dec)
     assert updated is not None and len(updated.cfi_tables) == 1
     row = updated.cfi_tables[0].row_for(0x5B2A)
     assert row is not None and row.cfa.register == 13 and row.cfa.offset == 0
     assert row.return_register == 14
 
-    other_dec = cast(SchedulerSeed, SimpleNamespace(stage="pendsv-entry", seed=seed))
+    new_dec = cast(
+        SchedulerSeed, SimpleNamespace(stage="switch-return", owner="new", seed=seed)
+    )
+    assert bridge._apply_switch_return_cfi(meta, new_dec) is meta
+
+    other_dec = cast(
+        SchedulerSeed, SimpleNamespace(stage="pendsv-entry", owner="old", seed=seed)
+    )
     assert bridge._apply_switch_return_cfi(meta, other_dec) is meta
 
 
