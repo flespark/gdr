@@ -35,7 +35,7 @@ packages = ["core", "rtthread", "freertos"]
 [dependency-groups]
 dev = [
     "ruff>=0.11",
-    "pyright>=1.1",
+    "pyright[nodejs]>=1.1",
     "pytest>=8",
     "pytest-cov>=6",
     "pre-commit>=3.6",
