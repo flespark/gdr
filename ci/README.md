@@ -48,7 +48,7 @@ Use `--` to separate CLI options from pytest arguments:
 
 ```bash
 python3 ci/test.py run rtthread cortex-a9 4.0.5 -- tests/integration/rtthread/test_backtrace.py -x
-python3 ci/test.py run freertos qemu-virt-rv64 11.1.0 eh-frame
+python3 ci/test.py run bare qemu-virt-rv64 none eh-frame
 python3 ci/test.py run freertos mps2-an521 11.1.0 snapshot
 python3 ci/test.py matrix freertos-ports -- -k backtrace
 ```
@@ -60,9 +60,12 @@ pytest exit with no executed tests is an error, except for collection/help.
 Individual capability-specific skips remain valid. Direct pytest runs can
 skip absent tools/artifacts, but never build or fetch firmware.
 
-Matrix groups are defined in `testing/matrix.py`: `rtthread-a9`,
-`rtthread-rv64`, `rtthread-ports`, `freertos-config`, `freertos-version`,
-`freertos-ports`, `gdb12`, `rtthread`, `freertos`, `smoke`, and `all`. The A9 matrix builds
+Matrix groups are defined in `testing/matrix.py`: RT-Thread (`rtthread-arm-ports`,
+`rtthread-a9`, `rtthread-rv32`, `rtthread-rv64`, `rtthread-riscv`, `rtthread-ports`,
+`rtthread`), FreeRTOS (`freertos-snapshot`, `freertos-config`, `freertos-arm-version`,
+`freertos-arm-m0`, `freertos-arm-m4`, `freertos-arm-m33`, `freertos-arm-smp-mpu`,
+`freertos-rv32`, `freertos-rv64`, `freertos-version`, `freertos-ports`, `freertos`),
+`bare`, `gdb12`, `smoke`, and `all`. The A9 matrix builds
 3.1.1, 3.1.2, and 3.1.4 without running tests; explicit `run` or forwarded
 pytest arguments execute them. `list all` also lists supported releases
 outside the default matrix.

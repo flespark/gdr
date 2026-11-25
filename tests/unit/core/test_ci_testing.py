@@ -105,6 +105,34 @@ def test_lane_catalog_preserves_compile_only_policy():
     assert not matrix.matrix_build_only(matrix.select("rtthread", "rv64", "4.0.5"))
 
 
+def test_architecture_matrix_groups_partition_rtos_suites():
+    rtthread_parts = (
+        *matrix.GROUPS["rtthread-arm-ports"],
+        *matrix.GROUPS["rtthread-a9"],
+        *matrix.GROUPS["rtthread-riscv"],
+    )
+    assert rtthread_parts == matrix.GROUPS["rtthread"]
+    assert len(rtthread_parts) == len(set(rtthread_parts))
+
+    freertos_parts = (
+        *matrix.GROUPS["freertos-snapshot"],
+        *matrix.GROUPS["freertos-config"],
+        *matrix.GROUPS["freertos-arm-version"],
+        *matrix.GROUPS["freertos-arm-m0"],
+        *matrix.GROUPS["freertos-arm-m4"],
+        *matrix.GROUPS["freertos-arm-m33"],
+        *matrix.GROUPS["freertos-arm-smp-mpu"],
+        *matrix.GROUPS["freertos-rv32"],
+        *matrix.GROUPS["freertos-rv64"],
+    )
+    assert freertos_parts == matrix.GROUPS["freertos"]
+    assert len(freertos_parts) == len(set(freertos_parts))
+    assert (
+        matrix.select("freertos", "mps2-an505", "11.3.1", "fpu")
+        in matrix.GROUPS["freertos-arm-m33"]
+    )
+
+
 @pytest.mark.parametrize("target", ["mps2-an385", "mps2-an505", "rv32"])
 def test_rtthread_port_fixture_uses_the_shared_lane_contract(target):
     lane = matrix.select("rtthread", target, "v4.0.5")

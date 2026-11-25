@@ -93,6 +93,15 @@ FREERTOS_CONFIG_VARIANTS = (
     "streams",
     "tick16",
 )
+RTTHREAD_ARM_PORTS = (
+    Lane("rtthread", "microbit", "4.0.5"),
+    Lane("rtthread", "mps2-an385", "4.0.5"),
+    Lane("rtthread", "mps2-an386", "4.0.5", "soft"),
+    Lane("rtthread", "mps2-an386", "4.0.5", "softfp"),
+    Lane("rtthread", "mps2-an386", "4.0.5", "fpu"),
+    Lane("rtthread", "mps2-an505", "4.0.5"),
+    Lane("rtthread", "mps2-an505", "4.0.5", "fpu"),
+)
 RTTHREAD_A9 = tuple(
     Lane("rtthread", "cortex-a9", v)
     for v in (
@@ -107,29 +116,19 @@ RTTHREAD_A9 = tuple(
         "4.1.1",
     )
 )
+RTTHREAD_RV32 = (Lane("rtthread", "rv32", "4.0.5"),)
 RTTHREAD_RV64 = tuple(
     Lane("rtthread", "rv64", v) for v in ("4.0.4", "4.0.5", "4.1.0", "4.1.1")
 )
-RTTHREAD_PORTS = (
-    Lane("rtthread", "mps2-an385", "4.0.5"),
-    Lane("rtthread", "microbit", "4.0.5"),
-    Lane("rtthread", "mps2-an505", "4.0.5"),
-    Lane("rtthread", "mps2-an505", "4.0.5", "fpu"),
-    Lane("rtthread", "mps2-an386", "4.0.5", "fpu"),
-    Lane("rtthread", "mps2-an386", "4.0.5", "soft"),
-    Lane("rtthread", "mps2-an386", "4.0.5", "softfp"),
-    Lane("rtthread", "rv32", "4.0.5"),
-)
+RTTHREAD_RISCV = RTTHREAD_RV32 + RTTHREAD_RV64
+RTTHREAD_PORTS = RTTHREAD_ARM_PORTS + RTTHREAD_RV32
+
+FREERTOS_SNAPSHOT = (Lane("freertos", "mps2-an521", "11.1.0", "snapshot"),)
 FREERTOS_CONFIG = tuple(
     Lane("freertos", "mps2-an385", "10.3.1", v) for v in FREERTOS_CONFIG_VARIANTS
 )
-FREERTOS_VERSION = (
+FREERTOS_ARM_VERSION = (
     *(Lane("freertos", "mps2-an385", v, "base") for v in ("10.4.6", "10.5.1")),
-    Lane("freertos", "qemu-virt-rv32", "10.3.1", "base"),
-    Lane("freertos", "qemu-virt-rv32", "10.4.6", "base"),
-    Lane("freertos", "qemu-virt-rv64", "10.4.6", "rv64"),
-    Lane("freertos", "qemu-virt-rv32", "11.3.1", "base"),
-    Lane("freertos", "qemu-virt-rv64", "11.3.1", "rv64"),
     *(
         Lane("freertos", "mps2-an385", "11.1.0", v)
         for v in (
@@ -144,33 +143,84 @@ FREERTOS_VERSION = (
         )
     ),
 )
-FREERTOS_PORTS = (
-    Lane("freertos", "mps2-an521", "11.3.1", "smp"),
-    Lane("freertos", "mps2-an521", "11.3.1", "mpu"),
-    Lane("freertos", "mps2-an386", "11.3.1", "fpu"),
+FREERTOS_ARM_M0 = (Lane("freertos", "microbit", "11.1.0", "full"),)
+FREERTOS_ARM_M4 = (
     Lane("freertos", "mps2-an386", "11.3.1", "soft"),
     Lane("freertos", "mps2-an386", "11.3.1", "softfp"),
+    Lane("freertos", "mps2-an386", "11.3.1", "fpu"),
+)
+FREERTOS_ARM_M33 = (
     Lane("freertos", "mps2-an505", "11.3.1", "full"),
     Lane("freertos", "mps2-an505", "11.3.1", "fpu"),
-    Lane("freertos", "qemu-virt-rv64", "11.1.0", "rv64"),
-    Lane("freertos", "microbit", "11.1.0", "full"),
+)
+FREERTOS_ARM_SMP_MPU = (
+    Lane("freertos", "mps2-an521", "11.3.1", "smp"),
+    Lane("freertos", "mps2-an521", "11.3.1", "mpu"),
+)
+FREERTOS_RV32 = (
+    Lane("freertos", "qemu-virt-rv32", "10.3.1", "base"),
+    Lane("freertos", "qemu-virt-rv32", "10.4.6", "base"),
     Lane("freertos", "qemu-virt-rv32", "11.1.0", "base"),
-    Lane("freertos", "mps2-an521", "11.1.0", "snapshot"),
+    Lane("freertos", "qemu-virt-rv32", "11.3.1", "base"),
+)
+FREERTOS_RV64 = (
+    Lane("freertos", "qemu-virt-rv64", "10.4.6", "rv64"),
+    Lane("freertos", "qemu-virt-rv64", "11.1.0", "rv64"),
+    Lane("freertos", "qemu-virt-rv64", "11.3.1", "rv64"),
+)
+FREERTOS_VERSION = (
+    *FREERTOS_ARM_VERSION[:2],
+    Lane("freertos", "qemu-virt-rv32", "10.3.1", "base"),
+    Lane("freertos", "qemu-virt-rv32", "10.4.6", "base"),
+    Lane("freertos", "qemu-virt-rv64", "10.4.6", "rv64"),
+    Lane("freertos", "qemu-virt-rv32", "11.3.1", "base"),
+    Lane("freertos", "qemu-virt-rv64", "11.3.1", "rv64"),
+    *FREERTOS_ARM_VERSION[2:],
+)
+FREERTOS_PORTS = (
+    *FREERTOS_ARM_M0,
+    *FREERTOS_ARM_M4,
+    *FREERTOS_ARM_M33,
+    *FREERTOS_ARM_SMP_MPU,
+    Lane("freertos", "qemu-virt-rv32", "11.1.0", "base"),
+    Lane("freertos", "qemu-virt-rv64", "11.1.0", "rv64"),
+    *FREERTOS_SNAPSHOT,
 )
 BARE = (Lane("bare", "qemu-virt-rv64", "none", "eh-frame"),)
 
 GROUPS = {
+    "rtthread-arm-ports": RTTHREAD_ARM_PORTS,
     "rtthread-a9": RTTHREAD_A9,
+    "rtthread-rv32": RTTHREAD_RV32,
     "rtthread-rv64": RTTHREAD_RV64,
+    "rtthread-riscv": RTTHREAD_RISCV,
     "rtthread-ports": RTTHREAD_PORTS,
+    "freertos-snapshot": FREERTOS_SNAPSHOT,
     "freertos-config": FREERTOS_CONFIG,
+    "freertos-arm-version": FREERTOS_ARM_VERSION,
+    "freertos-arm-m0": FREERTOS_ARM_M0,
+    "freertos-arm-m4": FREERTOS_ARM_M4,
+    "freertos-arm-m33": FREERTOS_ARM_M33,
+    "freertos-arm-smp-mpu": FREERTOS_ARM_SMP_MPU,
+    "freertos-rv32": FREERTOS_RV32,
+    "freertos-rv64": FREERTOS_RV64,
     "freertos-version": FREERTOS_VERSION,
     "freertos-ports": FREERTOS_PORTS,
     "bare": BARE,
     "gdb12": (Lane("rtthread", "cortex-a9", "4.0.5"),),
 }
-GROUPS["rtthread"] = RTTHREAD_A9 + RTTHREAD_RV64 + RTTHREAD_PORTS
-GROUPS["freertos"] = FREERTOS_CONFIG + FREERTOS_VERSION + FREERTOS_PORTS
+GROUPS["rtthread"] = RTTHREAD_ARM_PORTS + RTTHREAD_A9 + RTTHREAD_RISCV
+GROUPS["freertos"] = (
+    FREERTOS_SNAPSHOT
+    + FREERTOS_CONFIG
+    + FREERTOS_ARM_VERSION
+    + FREERTOS_ARM_M0
+    + FREERTOS_ARM_M4
+    + FREERTOS_ARM_M33
+    + FREERTOS_ARM_SMP_MPU
+    + FREERTOS_RV32
+    + FREERTOS_RV64
+)
 GROUPS["all"] = GROUPS["rtthread"] + GROUPS["freertos"] + BARE
 GROUPS["smoke"] = (
     Lane("rtthread", "cortex-a9", "4.0.5"),
