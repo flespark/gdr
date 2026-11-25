@@ -19,6 +19,7 @@ from core.adapter import (
     HeapReport,
     ObjectDetail,
     ObjectTable,
+    RtosAdapter,
     active,
 )
 from core.gdb_bridge import (
@@ -525,19 +526,21 @@ def complete_command_tree(
 
 @dataclass(frozen=True)
 class Watch:
-    """One watched kind (``target`` is ``None``) or singleton object."""
+    """One watched kind (``target`` is ``None``), singleton object, or backtrace."""
 
     kind: str
     target: str | None
     label: str
+    max_depth: int | None = None
 
 
 @dataclass(frozen=True)
 class WatchSpec:
     """The watchable words of one RTOS command tree, for tab completion.
 
-    ``kind_words`` maps a plural command word to its canonical kind and
-    ``singular_kinds`` a singular detail word to its kind; both come from
+    ``kind_words`` maps a plural command word to its canonical kind,
+    ``singular_kinds`` a singular detail word to its kind, and
+    ``backtrace_word`` names the optional backtrace subcommand; all come from
     the tree's own help metadata so completion never drifts from routing.
     """
 
@@ -546,22 +549,59 @@ class WatchSpec:
     aliases: dict[str, str]
     object_names_fn: Callable[[str], list[str]]
     preserve_spaces: bool = False
+    backtrace_word: str | None = None
 
 
 def complete_watch(spec: WatchSpec, text: str, word: str | None) -> list[str]:
     """Tab-completion for the words after ``watch``/``unwatch``.
 
-    The first word completes against plural kinds and singular details; the
-    remainder of a singular detail completes against live object names.
+    The first word completes against plural kinds, singular details and the
+    optional backtrace command; the remainder of a singular detail or
+    backtrace completes against live object/task names (or ``--max-depth``).
     Shared by the RTOS command trees.
     """
+    top = [
+        *spec.kind_words,
+        *spec.singular_kinds,
+        *([spec.backtrace_word] if spec.backtrace_word else []),
+    ]
     parts = text.split()
     if len(parts) <= 1:
-        return prefix_candidates(word, [*spec.kind_words, *spec.singular_kinds])
+        return prefix_candidates(word, top)
     first = spec.aliases.get(parts[1].lower(), parts[1].lower())
+    if (
+        spec.backtrace_word
+        and first == spec.backtrace_word
+        and (len(parts) > 2 or text.endswith((" ", "\t")))
+    ):
+        if word and word.startswith("-"):
+            return prefix_candidates(word, ["--max-depth"])
+        if any(token.startswith("--max-depth") for token in parts[2:]):
+            return []
+        return prefix_candidates(word, spec.object_names_fn("task"))
     if first in spec.singular_kinds and (len(parts) > 2 or text.endswith((" ", "\t"))):
         return prefix_candidates(word, spec.object_names_fn(spec.singular_kinds[first]))
-    return prefix_candidates(word, [*spec.kind_words, *spec.singular_kinds])
+    return prefix_candidates(word, top)
+
+
+def format_backtrace_watch_label(
+    prefix: str, word: str, target: str | None, max_depth: int = 32
+) -> str:
+    """Format a compact, stable display label for a backtrace watch."""
+    parts = [prefix, word.lower()] if prefix else [word.lower()]
+    if target is not None:
+        parts.append(target)
+    if max_depth != 32:
+        parts.append(f"--max-depth {max_depth}")
+    return " ".join(parts)
+
+
+def _supports_backtrace(adapter: object) -> bool:
+    """Return whether *adapter* provides a concrete ``backtrace`` implementation."""
+    fn = getattr(adapter, "backtrace", None)
+    if not callable(fn):
+        return False
+    return getattr(type(adapter), "backtrace", None) is not RtosAdapter.backtrace
 
 
 _watches: list[Watch] = []
@@ -587,43 +627,73 @@ def _resolve_adapter_target(
     return cast(ObjectResolution[Any], resolver(kind, target))
 
 
-def add_watch(label: str, kind: str, target: str | None) -> str | None:
+def _validate_target(adapter: object, kind: str, target: str) -> str | None:
+    """Validate that a singleton *kind*/*target* resolves on the live target."""
+    try:
+        resolution = _resolve_adapter_target(adapter, kind, target)
+        if resolution is not None:
+            if resolution.status == "ambiguous":
+                return (
+                    resolution.message
+                    or f"{kind} {target!r}: ambiguous reference; specify a unique symbol or address"
+                )
+            if resolution.status != "found":
+                return f"{kind} {target!r}: not found or type not enabled"
+            return None
+        found = (
+            adapter.find_task(target)  # type: ignore[attr-defined]
+            if kind == "task"
+            else adapter.find_object(kind, target)  # type: ignore[attr-defined]
+        )
+        if found is None:
+            return f"{kind} {target!r}: not found or type not enabled"
+    except TARGET_ACCESS_ERRORS:
+        return f"{kind} {target!r}: unreadable (target halted?)"
+    return None
+
+
+def add_watch(
+    label: str,
+    kind: str,
+    target: str | None,
+    *,
+    max_depth: int | None = None,
+) -> str | None:
     """Record one watch after validating it against the live target.
 
     Returns ``None`` when the watch was added, else the reason it was
     refused (unknown kind, missing object, ambiguous target, unreadable
-    target). A singleton must exist now; it is re-resolved on every stop,
-    so a later detach renders as ``gone`` instead of a stale address.
+    target). A singleton or named backtrace target must exist now; it is
+    re-resolved on every stop, so a later detach renders as ``gone`` instead
+    of a stale address.
     """
     adapter = active()
     if adapter is None:
         return "run `gdr init <rtos> <version>` first"
-    if kind not in adapter.object_counts():
-        return f"object kind {kind!r} is not reliably enumerable"
-    if target is not None:
-        try:
-            resolution = _resolve_adapter_target(adapter, kind, target)
-            if resolution is not None:
-                if resolution.status == "ambiguous":
-                    return (
-                        resolution.message
-                        or f"{kind} {target!r}: ambiguous reference; specify a unique symbol or address"
-                    )
-                if resolution.status != "found":
-                    return f"{kind} {target!r}: not found or type not enabled"
-            else:
-                found = (
-                    adapter.find_task(target)
-                    if kind == "task"
-                    else adapter.find_object(kind, target)
-                )
-                if found is None:
-                    return f"{kind} {target!r}: not found or type not enabled"
-        except TARGET_ACCESS_ERRORS:
-            return f"{kind} {target!r}: unreadable (target halted?)"
-    if any(entry.kind == kind and entry.target == target for entry in _watches):
-        return f"already watching {label}"
-    _watches.append(Watch(kind=kind, target=target, label=label))
+    if kind == "backtrace":
+        if not _supports_backtrace(adapter):
+            return "this adapter cannot unwind task stacks"
+        if max_depth is not None and (max_depth < 1 or max_depth > 64):
+            return "--max-depth must be between 1 and 64"
+        if target is not None:
+            normalized = target.strip()
+            if not normalized:
+                return "task name or address must not be empty"
+            target = normalized
+            failure = _validate_target(adapter, "task", target)
+            if failure is not None:
+                return failure
+    else:
+        if kind not in adapter.object_counts():
+            return f"object kind {kind!r} is not reliably enumerable"
+        if target is not None:
+            failure = _validate_target(adapter, kind, target)
+            if failure is not None:
+                return failure
+    for existing in _watches:
+        if existing.kind == kind and existing.target == target:
+            return f"already watching {existing.label}"
+    _watches.append(Watch(kind=kind, target=target, label=label, max_depth=max_depth))
     return None
 
 
@@ -683,6 +753,31 @@ def _render_one(adapter, entry: Watch) -> None:
 
 def _render_entry(adapter, entry: Watch) -> None:
     """One watch entry's fresh snapshot; raises on unreadable target."""
+    if entry.kind == "backtrace":
+        if not _supports_backtrace(adapter):
+            info(
+                f"[gdr watch: {entry.label}] skipped: this adapter cannot unwind task stacks"
+            )
+            return
+        depth = entry.max_depth if entry.max_depth is not None else 32
+        report = adapter.backtrace(entry.target, depth)
+        if report is None:
+            info(
+                f"[gdr watch: {entry.label}] skipped: this adapter cannot unwind task stacks"
+            )
+            return
+        if report.stop_reason == "task-not-found" and not report.frames:
+            info(
+                f"[gdr watch: {entry.label}] "
+                f"{report.messages[0] if report.messages else 'gone (detached?)'}"
+            )
+            return
+        if report.stop_reason == "ambiguous-target" and report.messages:
+            info(f"[gdr watch: {entry.label}] {report.messages[0]}")
+            return
+        info(f"[gdr watch: {entry.label}]")
+        render_backtrace_report(report)
+        return
     if entry.kind not in adapter.object_counts():
         info(f"[gdr watch: {entry.label}] skipped: kind not enumerable now")
         return

@@ -151,14 +151,14 @@ mu0          0      1     10        tcpip  PRIO    0        0x600b9cdc
 | --------- | ------------- |
 | `gdr init <rtos> <version>` | Initialize the selected RTOS adapter |
 | `gdr reset` | Drop the active adapter and session caches |
-| `gdr backtrace [--max-depth N] [--json]` | Bare-metal unwind of the halted core via EHABI, DWARF CFI, proven leaves, or validated FP |
+| `gdr backtrace` | Adaptive stack backtrace for bare-metal targets |
 | `gdr help [topic]` | Show bootstrap or pretty-printer help |
 | `<rtos> help [topic]` | Browse the command tree; a topic documents fields, tips, configuration dependencies and limitations |
 | `<rtos> <objects>` | List the kernel object type collective status |
 | `<rtos> <object> <name-or-address>` | Show one object's details as a vertical `Key: Value` block |
-| `<rtos> backtrace [<task>] [--max-depth N]` | Unwind one task's (or the current PC's) saved or live stack through EHABI, DWARF CFI, instruction-proven leaf returns or a validated frame-pointer chain; prints frame PC, symbol/source, method, completeness and stop reason |
-| `<rtos> check [scope] [name]` | Run complete consistency checks (`rtt help check`) |
-| `<rtos> watch [<kind> \| <object> <target>]` / `<rtos> unwatch …` | Print watched kinds/objects on every stop |
+| `<rtos> backtrace [<task>]` | Unwind a task's or the current PC's stack; prints frame PC, symbol/source, method, completeness and stop reason |
+| `<rtos> check [scope] [name]` | Explicitly run complete consistency checks |
+| `<rtos> watch / unwatch …` | Print watched objects or backtraces on every stop |
 | `<rtos> heap dump [path]` | Draw the heap occupancy bitmap. Inline in iTerm2 or Kitty, otherwise written to a PNG |
 
 ## Convenience functions

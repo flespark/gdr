@@ -252,6 +252,57 @@ def test_watch_completion_delegates_after_watch_words(monkeypatch):
     assert commands._complete("watch ", "") == ["threads"]
     assert "threads" in seen[0][0] and "semaphores" in seen[0][0]
     assert commands._complete("watch semaphore ", "") == ["threads"]
+    assert commands._watch_spec().backtrace_word == "backtrace"
+
+
+def test_watch_backtrace_routes_add_drop_and_reject(monkeypatch):
+    """``rtt watch backtrace`` / ``bt`` forwards target and ``--max-depth``."""
+    calls: list = []
+    warnings: list[str] = []
+    infos: list[str] = []
+    monkeypatch.setattr(
+        commands,
+        "add_watch",
+        lambda label, kind, target, **kw: (
+            calls.append((label, kind, target, kw.get("max_depth"))) or None
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "remove_watch",
+        lambda kind, target: calls.append(("unwatch", kind, target)) or True,
+    )
+    from core import commands as core_commands
+
+    monkeypatch.setattr(commands, "warn", warnings.append)
+    monkeypatch.setattr(core_commands, "warn", warnings.append)
+    monkeypatch.setattr(commands, "info", infos.append)
+
+    commands._invoke_command("watch backtrace")
+    commands._invoke_command("watch bt worker1 --max-depth 8")
+    commands._invoke_command("watch bt --max-depth=12")
+    commands._invoke_command("unwatch backtrace")
+    commands._invoke_command("unwatch bt worker1")
+    commands._invoke_command("watch bt a b")
+    commands._invoke_command("watch bt --unknown")
+    commands._invoke_command("unwatch bt a b")
+
+    assert calls == [
+        ("rtt backtrace", "backtrace", None, 32),
+        ("rtt bt worker1 --max-depth 8", "backtrace", "worker1", 8),
+        ("rtt bt --max-depth 12", "backtrace", None, 12),
+        ("unwatch", "backtrace", None),
+        ("unwatch", "backtrace", "worker1"),
+    ]
+    assert infos[:3] == [
+        "watching backtrace",
+        "watching bt worker1 --max-depth 8",
+        "watching bt --max-depth 12",
+    ]
+    assert len(warnings) == 3
+    assert warnings[0].startswith("usage: rtthread watch")
+    assert warnings[1].startswith("usage: rtthread watch")
+    assert warnings[2].startswith("usage: rtthread unwatch")
 
 
 def test_singular_command_without_name_refers_to_help(monkeypatch):

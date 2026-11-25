@@ -14,7 +14,9 @@ from core.commands import (
     add_watch,
     complete_command_tree,
     complete_watch,
+    format_backtrace_watch_label,
     invoke_backtrace_command,
+    parse_backtrace_max_depth,
     remove_watch,
     render_heap,
     render_heap_dump,
@@ -230,20 +232,26 @@ def _check_command() -> CommandHelp:
 def _watch_command() -> CommandHelp:
     return CommandHelp(
         "watch",
-        "Print watched objects on every stop",
-        "Prints a watched kind's list table, or one object's Key: Value detail, each time the target stops. Like GDB display, not a watchpoint: it never stops the target itself.",
+        "Print watched objects or backtraces on every stop",
+        "Prints a watched kind's list table, one object's Key: Value detail, or a bounded backtrace each time the target stops. Like GDB display, not a watchpoint: it never stops the target itself.",
         usage=(
             "rtt watch",
             "rtt watch <kind>",
             "rtt watch <object> <name-or-address>",
+            "rtt watch backtrace [<thread>] [--max-depth N]",
         ),
         fields=_fields(
             ("Kind", "A plural list command (threads, semaphores, timers, ...)."),
             ("Target", "A singular detail selector: name, address or symbol."),
+            (
+                "Backtrace",
+                "Optional thread selector (default: current halted PC) plus optional --max-depth N (1-64).",
+            ),
             ("Output", "One [gdr watch: ...] block per watch, in the order added."),
         ),
         tips=(
-            "A singleton must exist when added; a later detach renders as gone instead of a stale address.",
+            "A singleton or named backtrace target must exist when added; a later detach renders as gone instead of a stale address.",
+            "The alias `bt` works after watch/unwatch, for example `rtt watch bt worker1 --max-depth 8`.",
         ),
         configuration=("Watchable kinds follow the enabled kernel components.",),
         limitations=(
@@ -261,7 +269,7 @@ def _unwatch_command() -> CommandHelp:
         "Drop stop-time watches",
         "Removes one watch, or every watch with --all.",
         usage=(
-            "rtt unwatch <kind> | <object> <target>",
+            "rtt unwatch <kind> | <object> <target> | backtrace [<thread>]",
             "rtt unwatch --all",
         ),
         tips=("Run bare `rtt watch` to list the set with its labels.",),
@@ -742,10 +750,10 @@ _WATCH_KINDS = {
     if topic.action == "tasks" or (topic.action == "objects" and topic.kind)
 }
 _WATCH_USAGE = (
-    "usage: rtthread watch [<kind> | <object> <target>] "
+    "usage: rtthread watch [<kind> | <object> <target> | backtrace [<thread>] [--max-depth N]] "
     "(run 'rtt help watch' for the kind list)"
 )
-_UNWATCH_USAGE = "usage: rtthread unwatch [<kind> | <object> <target> | --all]"
+_UNWATCH_USAGE = "usage: rtthread unwatch [<kind> | <object> <target> | backtrace [<thread>] | --all]"
 
 
 def _help_tree():
@@ -826,6 +834,7 @@ def _watch_spec() -> WatchSpec:
         singular_kinds=dict(_SINGULAR_COMMANDS),
         aliases=dict(_COMMAND_ALIASES),
         object_names_fn=_object_names,
+        backtrace_word="backtrace",
     )
 
 
@@ -835,26 +844,41 @@ def _invoke_watch(words: list[str]) -> None:
         render_watch_list()
         return
     first = _COMMAND_ALIASES.get(words[0].lower(), words[0].lower())
-    if first in _WATCH_KINDS:
+    if first == "backtrace":
+        parsed = parse_backtrace_max_depth(" ".join(words[1:]), _WATCH_USAGE)
+        if parsed is None:
+            return
+        target, max_depth = parsed
+        if target is not None and len(target.split()) != 1:
+            warn(_WATCH_USAGE)
+            return
+        label = format_backtrace_watch_label("", words[0], target, max_depth)
+        refusal = add_watch(
+            format_backtrace_watch_label("rtt", words[0], target, max_depth),
+            "backtrace",
+            target,
+            max_depth=max_depth,
+        )
+    elif first in _WATCH_KINDS:
         if len(words) != 1:
             warn(_WATCH_USAGE)
             return
-        refusal = add_watch(f"rtt {words[0].lower()}", _WATCH_KINDS[first], None)
+        label = words[0].lower()
+        refusal = add_watch(f"rtt {label}", _WATCH_KINDS[first], None)
     elif first in _SINGULAR_COMMANDS:
         if len(words) != 2:
             warn(_WATCH_USAGE)
             return
         kind = _SINGULAR_COMMANDS[first]
-        refusal = add_watch(f"rtt {words[0].lower()} {words[1]}", kind, words[1])
+        label = f"{words[0].lower()} {words[1]}"
+        refusal = add_watch(f"rtt {label}", kind, words[1])
     else:
         warn(_WATCH_USAGE)
         return
     if refusal is not None:
         warn(refusal)
     else:
-        info(
-            f"watching {words[0].lower()}" + (f" {words[1]}" if len(words) > 1 else "")
-        )
+        info(f"watching {label}")
 
 
 def _invoke_unwatch(words: list[str]) -> None:
@@ -867,7 +891,17 @@ def _invoke_unwatch(words: list[str]) -> None:
         info("all watches cleared")
         return
     first = _COMMAND_ALIASES.get(words[0].lower(), words[0].lower())
-    if first in _WATCH_KINDS and len(words) == 1:
+    if first == "backtrace":
+        parsed = parse_backtrace_max_depth(" ".join(words[1:]), _UNWATCH_USAGE)
+        if parsed is None:
+            return
+        target, _max_depth = parsed
+        if target is not None and len(target.split()) != 1:
+            warn(_UNWATCH_USAGE)
+            return
+        removed = remove_watch("backtrace", target)
+        label = format_backtrace_watch_label("", words[0], target)
+    elif first in _WATCH_KINDS and len(words) == 1:
         removed = remove_watch(_WATCH_KINDS[first], None)
         label = words[0].lower()
     elif first in _SINGULAR_COMMANDS and len(words) == 2:

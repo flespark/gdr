@@ -393,6 +393,56 @@ def test_watch_completion_delegates_after_watch_words(monkeypatch):
 
     assert commands._complete("watch ", "") == ["tasks"]
     assert "tasks" in seen[0][0] and "queues" in seen[0][0]
+    assert commands._watch_spec().backtrace_word == "backtrace"
+
+
+def test_watch_backtrace_routes_preserve_spaces_and_max_depth(monkeypatch):
+    """``frt watch backtrace`` / ``bt`` preserves multi-word task names."""
+    calls: list = []
+    warnings: list[str] = []
+    infos: list[str] = []
+    monkeypatch.setattr(
+        commands,
+        "add_watch",
+        lambda label, kind, target, **kw: (
+            calls.append((label, kind, target, kw.get("max_depth"))) or None
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "remove_watch",
+        lambda kind, target: calls.append(("unwatch", kind, target)) or True,
+    )
+    from core import commands as core_commands
+
+    monkeypatch.setattr(commands, "warn", warnings.append)
+    monkeypatch.setattr(core_commands, "warn", warnings.append)
+    monkeypatch.setattr(commands, "info", infos.append)
+
+    commands._invoke_command("watch backtrace")
+    commands._invoke_command("watch bt Tmr Svc --max-depth 8")
+    commands._invoke_command("watch bt --max-depth=12")
+    commands._invoke_command("unwatch backtrace")
+    commands._invoke_command("unwatch bt Tmr Svc")
+    commands._invoke_command("watch bt --unknown")
+    commands._invoke_command("watch bt Tmr Svc --max-depth abc")
+
+    assert calls == [
+        ("frt backtrace", "backtrace", None, 32),
+        ("frt bt Tmr Svc --max-depth 8", "backtrace", "Tmr Svc", 8),
+        ("frt bt --max-depth 12", "backtrace", None, 12),
+        ("unwatch", "backtrace", None),
+        ("unwatch", "backtrace", "Tmr Svc"),
+    ]
+    assert infos[:3] == [
+        "watching backtrace",
+        "watching bt Tmr Svc --max-depth 8",
+        "watching bt --max-depth 12",
+    ]
+    assert warnings == [
+        commands._WATCH_USAGE,
+        "invalid --max-depth: abc",
+    ]
 
 
 def test_plural_command_with_extra_words_still_rejected(monkeypatch):

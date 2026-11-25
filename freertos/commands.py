@@ -14,7 +14,9 @@ from core.commands import (
     add_watch,
     complete_command_tree,
     complete_watch,
+    format_backtrace_watch_label,
     invoke_backtrace_command,
+    parse_backtrace_max_depth,
     remove_watch,
     render_heap,
     render_heap_dump,
@@ -244,21 +246,26 @@ def _check_command_help() -> CommandHelp:
 def _watch_command_help() -> CommandHelp:
     return CommandHelp(
         "watch",
-        "Print watched objects on every stop",
-        "Prints a watched kind's list table, or one object's Key: Value detail, each time the target stops. Like GDB display, not a watchpoint: it never stops the target itself.",
+        "Print watched objects or backtraces on every stop",
+        "Prints a watched kind's list table, one object's Key: Value detail, or a bounded backtrace each time the target stops. Like GDB display, not a watchpoint: it never stops the target itself.",
         usage=(
             "frt watch",
             "frt watch <kind>",
             "frt watch <object> <name-or-address>",
+            "frt watch backtrace [<task>] [--max-depth N]",
         ),
         fields=_fields(
             ("Kind", "A plural list command (tasks, queues, timers, ...)."),
             ("Target", "A singular detail selector: name, address or symbol."),
+            (
+                "Backtrace",
+                "Optional task selector (default: current halted PC) plus optional --max-depth N (1-64).",
+            ),
             ("Output", "One [gdr watch: ...] block per watch, in the order added."),
         ),
         tips=(
-            "Names may contain spaces, for example `frt watch task Tmr Svc`.",
-            "A singleton must exist when added; a later detach renders as gone instead of a stale address.",
+            "Names may contain spaces, for example `frt watch task Tmr Svc` or `frt watch bt Tmr Svc --max-depth 8`.",
+            "A singleton or named backtrace target must exist when added; a later detach renders as gone instead of a stale address.",
         ),
         configuration=(
             "Watchable kinds follow the discovery channels available in this build.",
@@ -279,7 +286,7 @@ def _unwatch_command_help() -> CommandHelp:
         "Drop stop-time watches",
         "Removes one watch, or every watch with --all.",
         usage=(
-            "frt unwatch <kind> | <object> <name>",
+            "frt unwatch <kind> | <object> <name> | backtrace [<task>]",
             "frt unwatch --all",
         ),
         tips=("Run bare `frt watch` to list the set with its labels.",),
@@ -809,10 +816,12 @@ _WATCH_KINDS = {
     if topic.action == "tasks" or (topic.action == "objects" and topic.kind)
 }
 _WATCH_USAGE = (
-    "usage: freertos watch [<kind> | <object> <name>] "
+    "usage: freertos watch [<kind> | <object> <name> | backtrace [<task>] [--max-depth N]] "
     "(run 'frt help watch' for the kind list)"
 )
-_UNWATCH_USAGE = "usage: freertos unwatch [<kind> | <object> <name> | --all]"
+_UNWATCH_USAGE = (
+    "usage: freertos unwatch [<kind> | <object> <name> | backtrace [<task>] | --all]"
+)
 
 
 def _help_tree():
@@ -845,7 +854,7 @@ def _invoke_command(argument: str) -> None:
     elif command == "watch":
         _invoke_watch(argument)
     elif command == "unwatch":
-        _invoke_unwatch(args[1:])
+        _invoke_unwatch(argument)
     elif command == "heap" and len(args) >= 2 and args[1].lower() == "dump":
         options, error = render_heap_dump_options(args[2:], _USAGE)
         if error is not None:
@@ -901,6 +910,7 @@ def _watch_spec() -> WatchSpec:
         aliases=dict(_COMMAND_ALIASES),
         object_names_fn=_object_names,
         preserve_spaces=True,
+        backtrace_word="backtrace",
     )
 
 
@@ -909,12 +919,25 @@ def _invoke_watch(argument: str) -> None:
     # NOTE: names keep their inner spacing (see the detail dispatch
     # above), so the target is everything after the second word instead of
     # a single token.
-    words = argument.split(None, 2)[1:]
+    words = argument.strip().split(None, 2)[1:]
     if not words:
         render_watch_list()
         return
     first = _COMMAND_ALIASES.get(words[0].lower(), words[0].lower())
-    if first in _WATCH_KINDS:
+    if first == "backtrace":
+        tail = words[1] if len(words) == 2 else ""
+        parsed = parse_backtrace_max_depth(tail, _WATCH_USAGE)
+        if parsed is None:
+            return
+        target, max_depth = parsed
+        label = format_backtrace_watch_label("", words[0], target, max_depth)
+        refusal = add_watch(
+            format_backtrace_watch_label("frt", words[0], target, max_depth),
+            "backtrace",
+            target,
+            max_depth=max_depth,
+        )
+    elif first in _WATCH_KINDS:
         if len(words) != 1:
             warn(_WATCH_USAGE)
             return
@@ -936,8 +959,9 @@ def _invoke_watch(argument: str) -> None:
         info(f"watching {label}")
 
 
-def _invoke_unwatch(words: list[str]) -> None:
+def _invoke_unwatch(argument: str) -> None:
     """Drop one watch, or every watch with ``--all``."""
+    words = argument.strip().split(None, 2)[1:]
     if not words:
         warn(_UNWATCH_USAGE)
         return
@@ -946,14 +970,21 @@ def _invoke_unwatch(words: list[str]) -> None:
         info("all watches cleared")
         return
     first = _COMMAND_ALIASES.get(words[0].lower(), words[0].lower())
-    if first in _WATCH_KINDS and len(words) == 1:
+    if first == "backtrace":
+        tail = words[1] if len(words) == 2 else ""
+        parsed = parse_backtrace_max_depth(tail, _UNWATCH_USAGE)
+        if parsed is None:
+            return
+        target, _max_depth = parsed
+        removed = remove_watch("backtrace", target)
+        label = format_backtrace_watch_label("", words[0], target)
+    elif first in _WATCH_KINDS and len(words) == 1:
         removed = remove_watch(_WATCH_KINDS[first], None)
         label = words[0].lower()
-    elif first in _SINGULAR_COMMANDS and len(words) >= 2:
+    elif first in _SINGULAR_COMMANDS and len(words) == 2:
         # NOTE: same verbatim-name rule as _invoke_watch above.
-        target = " ".join(words[1:])
-        removed = remove_watch(_SINGULAR_COMMANDS[first], target)
-        label = f"{words[0].lower()} {target}"
+        removed = remove_watch(_SINGULAR_COMMANDS[first], words[1])
+        label = f"{words[0].lower()} {words[1]}"
     else:
         warn(_UNWATCH_USAGE)
         return

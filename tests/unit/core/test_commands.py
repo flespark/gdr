@@ -686,6 +686,194 @@ def test_complete_watch_offers_kinds_then_live_names():
     assert complete_watch(spec, "watch sem ", "") == ["work_sem"]
 
 
+def test_complete_watch_supports_backtrace_targets_and_max_depth():
+    spec = WatchSpec(
+        kind_words={"threads": "task"},
+        singular_kinds={"thread": "task"},
+        aliases={"bt": "backtrace"},
+        object_names_fn=lambda kind: ["worker1", "idle"] if kind == "task" else [],
+        backtrace_word="backtrace",
+    )
+    assert complete_watch(spec, "watch", None) == ["threads", "thread", "backtrace"]
+    assert complete_watch(spec, "watch back", "back") == ["backtrace"]
+    assert complete_watch(spec, "watch backtrace ", "") == ["worker1", "idle"]
+    assert complete_watch(spec, "watch bt w", "w") == ["worker1"]
+    assert complete_watch(spec, "watch bt --", "--") == ["--max-depth"]
+    assert complete_watch(spec, "watch bt --max-depth ", "") == []
+    assert complete_watch(spec, "watch bt worker1 --max-depth 8 ", "") == []
+
+
+def test_format_backtrace_watch_label():
+    assert commands.format_backtrace_watch_label("rtt", "bt", None) == "rtt bt"
+    assert (
+        commands.format_backtrace_watch_label("frt", "backtrace", "Tmr Svc", 8)
+        == "frt backtrace Tmr Svc --max-depth 8"
+    )
+    assert (
+        commands.format_backtrace_watch_label("", "BT", "worker1", 32) == "bt worker1"
+    )
+
+
+class _BacktraceWatchAdapter(_WatchAdapter):
+    """Watch adapter stand-in with concrete ``backtrace`` support."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bt_calls: list[tuple[str | None, int]] = []
+        self.bt_reports: dict[str | None, object] = {}
+
+    def backtrace(self, target: str | None = None, max_depth: int = 32):
+        self.bt_calls.append((target, max_depth))
+        return self.bt_reports.get(target)
+
+
+def test_add_backtrace_watch_validates_support_depth_and_target(adapter, monkeypatch):
+    _plain_adapter, _printed, _messages = adapter
+    assert (
+        watch_module.add_watch("rtt bt", "backtrace", None)
+        == "this adapter cannot unwind task stacks"
+    )
+
+    from core.adapter import RtosAdapter
+
+    class _BaseOnlyAdapter(_WatchAdapter):
+        backtrace = RtosAdapter.backtrace
+
+    monkeypatch.setattr(watch_module, "active", lambda: _BaseOnlyAdapter())
+    assert (
+        watch_module.add_watch("rtt bt", "backtrace", None)
+        == "this adapter cannot unwind task stacks"
+    )
+
+    bt_adapter = _BacktraceWatchAdapter()
+    bt_adapter.objects[("task", "worker")] = object()
+    monkeypatch.setattr(watch_module, "active", lambda: bt_adapter)
+
+    assert (
+        watch_module.add_watch("rtt bt --max-depth 0", "backtrace", None, max_depth=0)
+        == "--max-depth must be between 1 and 64"
+    )
+    assert (
+        watch_module.add_watch("rtt bt --max-depth 65", "backtrace", None, max_depth=65)
+        == "--max-depth must be between 1 and 64"
+    )
+    assert (
+        watch_module.add_watch("rtt bt", "backtrace", "   ")
+        == "task name or address must not be empty"
+    )
+    assert (
+        watch_module.add_watch("rtt bt missing", "backtrace", "missing")
+        == "task 'missing': not found or type not enabled"
+    )
+
+    assert watch_module.add_watch("rtt bt", "backtrace", None, max_depth=16) is None
+    assert (
+        watch_module.add_watch("rtt backtrace", "backtrace", None, max_depth=32)
+        == "already watching rtt bt"
+    )
+    assert (
+        watch_module.add_watch("rtt bt worker", "backtrace", "worker", max_depth=8)
+        is None
+    )
+    assert watch_module.list_watches() == [
+        watch_module.Watch(kind="backtrace", target=None, label="rtt bt", max_depth=16),
+        watch_module.Watch(
+            kind="backtrace", target="worker", label="rtt bt worker", max_depth=8
+        ),
+    ]
+    assert watch_module.remove_watch("backtrace", "worker") is True
+    assert watch_module.remove_watch("backtrace", "worker") is False
+    assert watch_module.remove_watch("backtrace", None) is True
+
+
+def test_render_backtrace_watches_covers_normal_gone_ambiguous_and_skipped(
+    adapter, monkeypatch
+):
+    from core.adapter import BacktraceFrame, BacktraceReport
+
+    _plain, _printed, messages = adapter
+    bt_adapter = _BacktraceWatchAdapter()
+    bt_adapter.objects[("task", "worker")] = object()
+    bt_adapter.objects[("task", "gone")] = object()
+    bt_adapter.objects[("task", "dup")] = object()
+    bt_adapter.objects[("task", "none")] = object()
+    monkeypatch.setattr(watch_module, "active", lambda: bt_adapter)
+
+    rendered_reports: list[BacktraceReport] = []
+    monkeypatch.setattr(
+        watch_module, "render_backtrace_report", rendered_reports.append
+    )
+
+    normal_report = BacktraceReport(
+        task="worker",
+        address=0x20001000,
+        architecture="armv7-m",
+        method="saved-context",
+        source="saved",
+        complete=True,
+        stop_reason="task-exit",
+        truncated=False,
+        max_depth=12,
+        bounds="recorded",
+        frames=[BacktraceFrame(index=0, pc=0x08001000, method="seed", symbol="work")],
+    )
+    bt_adapter.bt_reports[None] = normal_report
+    bt_adapter.bt_reports["gone"] = BacktraceReport(
+        task="gone",
+        address=0,
+        architecture="armv7-m",
+        method="unavailable",
+        source="saved",
+        complete=False,
+        stop_reason="task-not-found",
+        truncated=False,
+        max_depth=32,
+        bounds="none",
+        frames=[],
+        messages=[],
+    )
+    bt_adapter.bt_reports["dup"] = BacktraceReport(
+        task="dup",
+        address=0,
+        architecture="armv7-m",
+        method="unavailable",
+        source="saved",
+        complete=False,
+        stop_reason="ambiguous-target",
+        truncated=False,
+        max_depth=32,
+        bounds="none",
+        frames=[],
+        messages=["task 'dup': matches 2 objects"],
+    )
+    bt_adapter.bt_reports["none"] = None
+
+    assert (
+        watch_module.add_watch("rtt bt --max-depth 12", "backtrace", None, max_depth=12)
+        is None
+    )
+    assert watch_module.add_watch("rtt bt gone", "backtrace", "gone") is None
+    assert watch_module.add_watch("rtt bt dup", "backtrace", "dup") is None
+    assert watch_module.add_watch("rtt bt none", "backtrace", "none") is None
+
+    watch_module.render_watches()
+
+    assert bt_adapter.bt_calls == [
+        (None, 12),
+        ("gone", 32),
+        ("dup", 32),
+        ("none", 32),
+    ]
+    assert rendered_reports == [normal_report]
+    assert "[gdr watch: rtt bt --max-depth 12]" in messages
+    assert "[gdr watch: rtt bt gone] gone (detached?)" in messages
+    assert "[gdr watch: rtt bt dup] task 'dup': matches 2 objects" in messages
+    assert (
+        "[gdr watch: rtt bt none] skipped: this adapter cannot unwind task stacks"
+        in messages
+    )
+
+
 def test_invoke_backtrace_command_supports_omitted_and_explicit_targets(monkeypatch):
     calls: list[tuple[str | None, int]] = []
     warnings: list[str] = []
