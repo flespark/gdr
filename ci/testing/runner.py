@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -25,6 +26,8 @@ REPOSITORIES = {
 }
 
 _PROBED: set[tuple[str, ...]] = set()
+_CLONE_ATTEMPTS = 3
+_CLONE_BACKOFF_SECONDS = (2.0, 5.0)
 
 
 def _probe(args: list[str], *, env: dict[str, str]) -> None:
@@ -310,25 +313,42 @@ def _sources(lane: Lane) -> Path:
     source = CACHE / "sources" / lane.rtos / lane.tag
     if not source.exists():
         source.parent.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix="fetch-", dir=source.parent))
-        command(
-            [
-                "git",
-                "clone",
-                "--depth=1",
-                "--branch",
-                lane.tag,
-                REPOSITORIES[lane.rtos],
-                str(temporary),
-            ],
-            env=environment(),
-            log=CACHE
-            / "logs/sources"
-            / lane.rtos
-            / lane.tag
-            / (temporary.name + ".log"),
-        )
-        temporary.rename(source)
+        for attempt in range(1, _CLONE_ATTEMPTS + 1):
+            temporary = Path(tempfile.mkdtemp(prefix="fetch-", dir=source.parent))
+            try:
+                command(
+                    [
+                        "git",
+                        "clone",
+                        "--depth=1",
+                        "--branch",
+                        lane.tag,
+                        REPOSITORIES[lane.rtos],
+                        str(temporary),
+                    ],
+                    env=environment(),
+                    log=CACHE
+                    / "logs/sources"
+                    / lane.rtos
+                    / lane.tag
+                    / (temporary.name + ".log"),
+                )
+            except subprocess.CalledProcessError:
+                shutil.rmtree(temporary, ignore_errors=True)
+                if attempt == _CLONE_ATTEMPTS:
+                    raise
+                delay = _CLONE_BACKOFF_SECONDS[
+                    min(attempt - 1, len(_CLONE_BACKOFF_SECONDS) - 1)
+                ]
+                print(
+                    f"[gdr-ci] git clone failed (attempt {attempt}/{_CLONE_ATTEMPTS});"
+                    f" retrying in {delay:.0f}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+            else:
+                temporary.rename(source)
+                break
     expected = subprocess.check_output(
         ["git", "-C", str(source), "rev-parse", f"refs/tags/{lane.tag}^{{commit}}"],
         text=True,

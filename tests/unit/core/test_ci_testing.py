@@ -463,6 +463,54 @@ def test_source_cache_refuses_modified_checkout(
         runner.sources(lane)
 
 
+def test_source_cache_retries_transient_clone_failures(isolated_cache, monkeypatch):
+    lane = matrix.select("rtthread", "mps2-an385", "4.0.5")
+    sleeps: list[float] = []
+    attempts = 0
+    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
+
+    def flaky_clone(args, *, env, log):
+        nonlocal attempts
+        assert env and log.name.endswith(".log")
+        attempts += 1
+        target = Path(args[-1])
+        if attempts < 3:
+            (target / "partial").write_text("broken")
+            raise subprocess.CalledProcessError(128, args)
+        (target / "ok").write_text("clean")
+
+    monkeypatch.setattr(runner, "command", flaky_clone)
+    monkeypatch.setattr(
+        runner.subprocess,
+        "check_output",
+        Mock(side_effect=["deadbeef\n", "deadbeef\n", b""]),
+    )
+    source = runner.sources(lane)
+    assert source == isolated_cache / "sources" / lane.rtos / lane.tag
+    assert (source / "ok").read_text() == "clean"
+    assert attempts == 3
+    assert sleeps == [2.0, 5.0]
+    assert list(source.parent.glob("fetch-*")) == []
+
+
+def test_source_cache_raises_after_exhausting_clone_retries(
+    isolated_cache, monkeypatch
+):
+    lane = matrix.select("freertos", "mps2-an385", "11.1.0")
+    sleeps: list[float] = []
+    monkeypatch.setattr(runner.time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        runner,
+        "command",
+        Mock(side_effect=subprocess.CalledProcessError(128, ["git", "clone"])),
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        runner.sources(lane)
+    assert sleeps == [2.0, 5.0]
+    assert not (isolated_cache / "sources" / lane.rtos / lane.tag).exists()
+    assert list((isolated_cache / "sources" / lane.rtos).glob("fetch-*")) == []
+
+
 @pytest.mark.parametrize(
     "change",
     [
