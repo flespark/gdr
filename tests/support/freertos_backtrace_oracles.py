@@ -172,6 +172,14 @@ handles = {{
 tcbs = {{name: tcb(name) for name in handles}}
 current = int(gdb.parse_and_eval("pxCurrentTCB"))
 psp_val = int(gdb.parse_and_eval("$psp"))
+try:
+    tick_next = (
+        int(gdb.parse_and_eval("pxReadyTasksLists[4].uxNumberOfItems")) == 1
+        and int(gdb.parse_and_eval("pxReadyTasksLists[4].xListEnd.pxNext->pvOwner"))
+        == handles["gdr_sched_tick_handle"]
+    )
+except gdb.error:
+    tick_next = False
 print(json.dumps({{
     "pc": int(gdb.parse_and_eval("$pc")),
     "sp": int(gdb.parse_and_eval("$sp")),
@@ -186,6 +194,7 @@ print(json.dumps({{
     "current_symbol": symbol(current),
     "handles": handles,
     "tcbs": tcbs,
+    "tick_next": tick_next,
     "gate": int(gdb.parse_and_eval("gdr_sched_gate")),
     "phase": int(gdb.parse_and_eval("gdr_sched_phase")),
     "done": int(gdb.parse_and_eval("gdr_sched_done")),

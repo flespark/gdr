@@ -910,6 +910,7 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
             lambda item: (
                 item["current"] == item["handles"]["gdr_sched_task_handle"]
                 and item["phase"] == 2
+                and item["tick_next"]
             ),
         )
         assert state["tick_count"] > tick_before, (tick_before, state)
