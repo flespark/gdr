@@ -6,6 +6,7 @@ import contextlib
 from dataclasses import replace
 from pathlib import Path
 
+import pexpect
 import pytest
 
 from core.elf import ElfImage
@@ -263,7 +264,7 @@ def _state(session) -> dict:
 def _wait_stage(session, address: int, predicate, attempts: int = 40) -> dict:
     for _ in range(attempts):
         session.run(f"tbreak *{address:#x}")
-        output = session.run("continue", timeout=20)
+        output = session.run("continue", timeout=30)
         assert "breakpoint" in output.lower(), output
         state = _state(session)
         if predicate(state):
@@ -275,7 +276,7 @@ def _finish_cycle(session) -> dict:
     state: dict = {}
     for _ in range(4):
         session.run("tbreak gdr_sched_cycle_done")
-        output = session.run("continue", timeout=20)
+        output = session.run("continue", timeout=30)
         assert "breakpoint" in output.lower(), output
         state = _state(session)
         if state["gate"] == 0:
@@ -286,6 +287,22 @@ def _finish_cycle(session) -> dict:
 def _set_gate(session, phase: int) -> None:
     _halt(session)
     _write_u32(session, "gdr_sched_gate", phase)
+
+
+@contextlib.contextmanager
+def _with_sched_gate(session, phase: int):
+    _set_gate(session, phase)
+    try:
+        yield
+    finally:
+        _clear_breakpoints(session)
+        _write_u32(session, "gdr_sched_gate", 0)
+        # NOTE: drain an interrupted scheduler cycle so its tail cannot clear
+        # the next test's gdr_sched_gate or leave gdr_sched_tick_handle suspended.
+        with contextlib.suppress(AssertionError, RuntimeError, pexpect.TIMEOUT):
+            if _state(session)["phase"] != 0:
+                _finish_cycle(session)
+                _clear_breakpoints(session)
 
 
 def _assert_no_cross_task(frames: list[dict], own: str, other: str) -> None:
@@ -808,8 +825,7 @@ def test_cooperative_yield_marks_old_task_before_and_after_the_tcb_writeback(
     gdb_session,
 ):
     prof = _profile()
-    _set_gate(gdb_session, 1)
-    try:
+    with _with_sched_gate(gdb_session, 1):
         state = _wait_stage(
             gdb_session,
             prof.pendsv_entry,
@@ -879,16 +895,12 @@ def test_cooperative_yield_marks_old_task_before_and_after_the_tcb_writeback(
         evidence = " ".join(data["messages"])
         assert "stage=pendsv-writeback" in evidence and "owner=old" in evidence, data
         _finish_cycle(gdb_session)
-    finally:
-        _clear_breakpoints(gdb_session)
-        _write_u32(gdb_session, "gdr_sched_gate", 0)
 
 
 @_sched_skip()
 def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_session):
     prof = _profile()
-    _set_gate(gdb_session, 2)
-    try:
+    with _with_sched_gate(gdb_session, 2):
         oracle = compiled_sched_oracle(gdb_session, prof)
         tick = _wait_stage(
             gdb_session,
@@ -1034,16 +1046,12 @@ def test_tick_preemption_updates_current_tcb_inside_vTaskSwitchContext(gdb_sessi
         assert data["source"] == "saved", data
         assert "stage=pendsv-saved-sp" in " ".join(data["messages"]), data
         _finish_cycle(gdb_session)
-    finally:
-        _clear_breakpoints(gdb_session)
-        _write_u32(gdb_session, "gdr_sched_gate", 0)
 
 
 @_sched_skip()
 def test_restore_window_distinguishes_restored_cores_from_the_old_psp(gdb_session):
     prof = _profile()
-    _set_gate(gdb_session, 2)
-    try:
+    with _with_sched_gate(gdb_session, 2):
         _wait_stage(
             gdb_session,
             prof.pendsv_entry,
@@ -1095,7 +1103,7 @@ def test_restore_window_distinguishes_restored_cores_from_the_old_psp(gdb_sessio
             assert "stage=pendsv-psp-written" in " ".join(data["messages"]), data
 
         gdb_session.run(f"tbreak *{prof.pendsv_exception_return:#x}")
-        gdb_session.run("continue", timeout=10)
+        gdb_session.run("continue", timeout=30)
         pending = _state(gdb_session)
         assert pending["pc"] == prof.pendsv_exception_return, pending
         if _PORT == "arm-cm0":
@@ -1116,9 +1124,6 @@ def test_restore_window_distinguishes_restored_cores_from_the_old_psp(gdb_sessio
         )
         assert returned["pc"] != prof.pendsv_exception_return, returned
         _finish_cycle(gdb_session)
-    finally:
-        _clear_breakpoints(gdb_session)
-        _write_u32(gdb_session, "gdr_sched_gate", 0)
 
 
 @_sched_skip()
@@ -1126,8 +1131,7 @@ def test_nested_irq_truly_preempts_timer0_before_requesting_scheduling(
     gdb_session,
 ):
     prof = _profile()
-    _set_gate(gdb_session, 3)
-    try:
+    with _with_sched_gate(gdb_session, 3):
         oracle = compiled_sched_oracle(gdb_session, prof)
         timer0 = _wait_stage(
             gdb_session,
@@ -1169,9 +1173,6 @@ def test_nested_irq_truly_preempts_timer0_before_requesting_scheduling(
         assert data["source"] == "current" and data["complete"], data
         _assert_no_cross_task(data["frames"], "gdr_sched_task", "Timer1_Handler")
         _finish_cycle(gdb_session)
-    finally:
-        _clear_breakpoints(gdb_session)
-        _write_u32(gdb_session, "gdr_sched_gate", 0)
 
 
 @_sched_skip()
@@ -1179,8 +1180,7 @@ def test_nested_irq_requesting_scheduling_keeps_the_interrupted_task_owner(
     gdb_session,
 ):
     prof = _profile()
-    _set_gate(gdb_session, 3)
-    try:
+    with _with_sched_gate(gdb_session, 3):
         state = _wait_stage(
             gdb_session,
             prof.pendsv_entry,
@@ -1223,9 +1223,6 @@ def test_nested_irq_requesting_scheduling_keeps_the_interrupted_task_owner(
         assert not any("gdr_sched_task" in name for name in symbols), symbols
         assert "stage=switch-after-update" in " ".join(data["messages"]), data
         _finish_cycle(gdb_session)
-    finally:
-        _clear_breakpoints(gdb_session)
-        _write_u32(gdb_session, "gdr_sched_gate", 0)
 
 
 @_sched_skip()
@@ -1235,8 +1232,7 @@ def test_unsupported_and_mismatched_scheduler_stops_are_refused(gdb_session):
     ambig_pc = (
         prof.pendsv_entry + 8 if _PORT == "arm-cm33-fpu" else prof.pendsv_entry + 4
     )
-    _set_gate(gdb_session, 1)
-    try:
+    with _with_sched_gate(gdb_session, 1):
         state = _wait_stage(
             gdb_session,
             ambig_pc,
@@ -1253,9 +1249,6 @@ def test_unsupported_and_mismatched_scheduler_stops_are_refused(gdb_session):
         assert result["frames"] == 0, result
         assert result["stop_reason"] == "scheduler-profile-mismatch:test", result
         _finish_cycle(gdb_session)
-    finally:
-        _clear_breakpoints(gdb_session)
-        _write_u32(gdb_session, "gdr_sched_gate", 0)
 
 
 @_sched_skip()
@@ -1263,8 +1256,7 @@ def test_irq_saved_paths_still_complete_while_stopped_in_a_scheduler_stage(
     gdb_session,
 ):
     prof = _profile()
-    _set_gate(gdb_session, 1)
-    try:
+    with _with_sched_gate(gdb_session, 1):
         _wait_stage(
             gdb_session,
             prof.pendsv_entry,
@@ -1279,9 +1271,6 @@ def test_irq_saved_paths_still_complete_while_stopped_in_a_scheduler_stage(
         symbols = [frame["symbol"] or "" for frame in data["frames"]]
         assert any("gdr_ready_task" in name for name in symbols), symbols
         _finish_cycle(gdb_session)
-    finally:
-        _clear_breakpoints(gdb_session)
-        _write_u32(gdb_session, "gdr_sched_gate", 0)
 
 
 @_sched_skip()

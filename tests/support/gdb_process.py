@@ -83,6 +83,7 @@ class GdbProcess:
         )
         self._proc.expect(_GDB_PROMPT, timeout=10)
         self.run("set pagination off")
+        self.run("set confirm off")
         self.run("set style enabled off")
         self.run("set width 160")
         return self._proc
@@ -102,7 +103,16 @@ class GdbProcess:
         if self._proc is None:
             raise RuntimeError("GDB session not started")
         self._proc.sendline(command)
-        self._proc.expect(_GDB_PROMPT, timeout=timeout)
+        try:
+            self._proc.expect(_GDB_PROMPT, timeout=timeout)
+        except pexpect.TIMEOUT:
+            # NOTE: recover the GDB prompt with Ctrl-C so a timed-out
+            # ``continue`` does not leave the inferior running and cascade
+            # timeouts across every remaining test in the shared session.
+            with contextlib.suppress(pexpect.EOF, pexpect.TIMEOUT):
+                self._proc.sendintr()
+                self._proc.expect(_GDB_PROMPT, timeout=5)
+            raise
         raw = _ANSI_RE.sub("", self._proc.before or "").replace("\r", "")
         lines = raw.split("\n", 1)
         if len(lines) > 1 and command.strip() in lines[0]:

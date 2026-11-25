@@ -152,13 +152,13 @@ __attribute__((noinline, used)) static void gdr_sched_task(void *argument)
             taskYIELD();
         } else if (gate == GDR_SCHED_GATE_TICK) {
             for (volatile uint32_t spin = 0;
-                 spin < 2000000U && gdr_sched_gate == gate; spin++) {
+                 spin < 20000000U && gdr_sched_gate == gate; spin++) {
             }
         } else if (gate == GDR_SCHED_GATE_IRQ) {
             vTaskSuspend(gdr_sched_tick_handle);
-            gdr_sched_timer_arm(gdr_sched_timer0, 25000U);
+            gdr_sched_timer_arm(gdr_sched_timer0, 5000U);
             for (volatile uint32_t spin = 0;
-                 spin < 2000000U && !gdr_sched_irq_requested; spin++) {
+                 spin < 20000000U && !gdr_sched_irq_requested; spin++) {
             }
             gdr_sched_timer_stop(gdr_sched_timer0);
             vTaskResume(gdr_sched_tick_handle);

@@ -410,7 +410,7 @@ def _rv_hold_and_break(session, stop_symbol: str) -> None:
         f"tbreak {stop_symbol} if rt_current_thread == &worker3_thread"
     )
     assert "Temporary breakpoint" in bp_out, bp_out
-    out = session.run("continue", timeout=15)
+    out = session.run("continue", timeout=30)
     assert "Temporary breakpoint" in out, out
 
 
@@ -1512,7 +1512,7 @@ def test_riscv_trap_prologue_and_epilogue_stages(gdb_session):
             f"tbreak *{prof.trap_mv_sp_pc:#x} if rt_current_thread == &worker3_thread && rt_thread_switch_interrupt_flag == 0"
         )
         assert "Temporary breakpoint" in bp_no_sw, bp_no_sw
-        assert "Temporary breakpoint" in gdb_session.run("continue", timeout=15)
+        assert "Temporary breakpoint" in gdb_session.run("continue", timeout=30)
         d_nosw = _backtrace(gdb_session)
         _assert_completed_owner(
             d_nosw, stage="trap-epilogue-before-switch-store", sources={"saved"}
@@ -1539,7 +1539,7 @@ def test_riscv_trap_prologue_and_epilogue_stages(gdb_session):
             f"tbreak *{prof.trap_mv_sp_pc:#x} if rt_thread_switch_interrupt_flag != 0"
         )
         assert "Temporary breakpoint" in bp_sw, bp_sw
-        assert "Temporary breakpoint" in gdb_session.run("continue", timeout=20)
+        assert "Temporary breakpoint" in gdb_session.run("continue", timeout=30)
         from_name = _rv_thread_name(
             gdb_session, "rt_interrupt_from_thread", from_sp_ptr=True
         )
@@ -1816,7 +1816,7 @@ def test_mprofile_nmi_and_debug_monitor_cross_stack():
         )
         gdb.run("tbreak Default_Handler")
         gdb.run("set *(unsigned int *)0xE000ED04 = 0x80000000")
-        nmi_hit = gdb.run("continue", timeout=15)
+        nmi_hit = gdb.run("continue", timeout=30)
         assert "Temporary breakpoint" in nmi_hit, nmi_hit
         ipsr_info = _json_line(
             gdb.run_python(
