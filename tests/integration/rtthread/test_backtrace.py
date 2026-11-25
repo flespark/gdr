@@ -925,6 +925,13 @@ def test_first_thread_start_stages_on_real_boot(first_start_session):
 
 @_sched_skip()
 def test_pendsv_stages_across_one_switch_cycle(gdb_session):
+    try:
+        _run_pendsv_stages_across_one_switch_cycle(gdb_session)
+    finally:
+        _stop_symbol(gdb_session, "gdr_bt_live_stop")
+
+
+def _run_pendsv_stages_across_one_switch_cycle(gdb_session):
     prof = _profile()
     entry = _wait_non_first_pendsv(gdb_session, prof.pendsv_entry)
     from_name = entry["from_name"]
@@ -1010,6 +1017,13 @@ def test_pendsv_stages_across_one_switch_cycle(gdb_session):
 
 @_sched_skip()
 def test_switch_return_and_ambiguous_handler_stages(gdb_session):
+    try:
+        _run_switch_return_and_ambiguous_handler_stages(gdb_session)
+    finally:
+        _stop_symbol(gdb_session, "gdr_bt_live_stop")
+
+
+def _run_switch_return_and_ambiguous_handler_stages(gdb_session):
     prof = _profile()
 
     sw_ret = _wait_non_first_pendsv(gdb_session, prof.switch_return)
