@@ -118,7 +118,7 @@ void Timer0_Handler(void)
     if (gdr_sched_gate == 3U) {
         gdr_sched_timer0_begin();
         for (volatile uint32_t spin = 0;
-             !gdr_sched_timer1_done && spin < 2000000U; spin++) {
+             !gdr_sched_timer1_done && spin < 20000000U; spin++) {
         }
         gdr_sched_timer0_end();
         return;

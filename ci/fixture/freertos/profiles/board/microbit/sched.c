@@ -107,7 +107,7 @@ void gdr_sched_timer0_begin(void)
 {
     gdr_sched_timer_stop(GDR_SCHED_TIMER0_BASE);
     gdr_sched_timer1_done = 0;
-    gdr_sched_timer_arm(GDR_SCHED_TIMER1_BASE, 2500U);
+    gdr_sched_timer_arm(GDR_SCHED_TIMER1_BASE, 500U);
 }
 
 void gdr_sched_timer0_end(void)
@@ -138,13 +138,13 @@ __attribute__((noinline, used)) static void gdr_sched_task(void *argument)
             taskYIELD();
         } else if (gate == GDR_SCHED_GATE_TICK) {
             for (volatile uint32_t spin = 0;
-                 spin < 2000000U && gdr_sched_gate == gate; spin++) {
+                 spin < 20000000U && gdr_sched_gate == gate; spin++) {
             }
         } else if (gate == GDR_SCHED_GATE_IRQ) {
             vTaskSuspend(gdr_sched_tick_handle);
-            gdr_sched_timer_arm(GDR_SCHED_TIMER0_BASE, 12500U);
+            gdr_sched_timer_arm(GDR_SCHED_TIMER0_BASE, 2000U);
             for (volatile uint32_t spin = 0;
-                 spin < 2000000U && !gdr_sched_irq_requested; spin++) {
+                 spin < 20000000U && !gdr_sched_irq_requested; spin++) {
             }
             gdr_sched_timer_stop(GDR_SCHED_TIMER0_BASE);
             vTaskResume(gdr_sched_tick_handle);
