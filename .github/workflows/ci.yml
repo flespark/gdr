@@ -15,39 +15,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# GitHub Actions covers host-side basic validation (`validate` + `extension`).
+# Closed-loop QEMU/GDB integration suites run on CNB (see `.cnb.yml` and
+# `docs/testing.md`).
 jobs:
-
-  integration:
-    name: RTOS integration (${{ matrix.group }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        group:
-          - gdb12
-          - rtthread-a9
-          - rtthread-rv64
-          - rtthread-ports
-          - freertos-config
-          - freertos-version
-          - freertos-ports
-          - bare
-    steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
-        with:
-          persist-credentials: false
-      - name: Build the pinned QEMU and cross-toolchain image
-        run: |
-          dockerfile=ci/containers/Dockerfile
-          if [ "${{ matrix.group }}" = gdb12 ]; then
-            dockerfile=ci/containers/Dockerfile.gdb12
-          fi
-          docker build --file "$dockerfile" --tag gdr-ci ci/containers
-      - name: Run the selected RTOS matrix
-        run: |
-          docker run --rm --volume "$GITHUB_WORKSPACE:/workspace" \
-            --workdir /workspace gdr-ci python3 ci/test.py matrix "${{ matrix.group }}"
-
   extension:
     name: Extension (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -63,7 +34,8 @@ jobs:
         working-directory: vscode
     steps:
       # Actions are pinned to commit SHAs (see .github/dependabot.yml).
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -94,12 +66,13 @@ jobs:
           npm run build
           npx vsce package --no-dependencies --out gdb-rtos-views.vsix
       - name: Upload the VSIX as a build artifact
-        # v4.6.2
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: gdb-rtos-views-vsix
           path: vscode/gdb-rtos-views.vsix
           if-no-files-found: error
+
   validate:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
@@ -109,13 +82,16 @@ jobs:
         python: ["3.10", "3.14"]
     steps:
       # Actions are pinned to commit SHAs (see .github/dependabot.yml).
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d
+      # astral-sh/setup-uv v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           enable-cache: true
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python }}
       - name: Install development dependencies
@@ -134,5 +110,3 @@ jobs:
         run: uv run pre-commit run --all-files
       - name: Run unit tests with coverage
         run: uv run pytest tests/unit -v --cov
-      - name: Run integration tests when fixtures are available
-        run: uv run pytest tests/integration -v

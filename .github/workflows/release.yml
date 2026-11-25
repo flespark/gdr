@@ -18,7 +18,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           # NOTE: this job publishes through `gh release create` with
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
