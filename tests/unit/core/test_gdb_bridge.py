@@ -659,9 +659,10 @@ def test_read_bytes_preserves_target_memory_order(monkeypatch):
 class _Symbol:
     """Minimal ``gdb.Symbol`` that records whether ``value()`` was read."""
 
-    def __init__(self, value, *, fail: bool = False):
+    def __init__(self, value, *, fail: bool = False, needs_frame: bool = False):
         self._value = value
         self.fail = fail
+        self.needs_frame = needs_frame
         self.value_reads = 0
 
     def value(self):
@@ -828,6 +829,108 @@ def test_symbol_exists_does_not_read_function_values(monkeypatch):
     assert symbol.value_reads == 0
     assert bridge.lookup_symbol("rt_sem_init") is None
     assert symbol.value_reads == 1
+
+
+def test_lookup_symbol_caches_descriptor_but_reads_live_value(monkeypatch):
+    """Global/static descriptors are cached per session; values stay live."""
+    symbol = _Symbol(0)
+    fake = _LookupGdb(static={"g_sem": symbol})
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.lookup_symbol("g_sem") == 0
+    assert len(fake.lookups) == 3
+
+    # Target memory changes between stops: cached descriptor must read live RAM.
+    symbol._value = 0x20001000
+    assert bridge.lookup_symbol("g_sem") == 0x20001000
+    assert len(fake.lookups) == 3
+    assert symbol.value_reads == 2
+
+    # Missing symbols are also cached until reset.
+    assert bridge.lookup_symbol("absent_sym") is None
+    after_miss = len(fake.lookups)
+    assert bridge.lookup_symbol("absent_sym") is None
+    assert len(fake.lookups) == after_miss
+
+    bridge.reset_loadable_ranges()
+    assert bridge.lookup_symbol("g_sem") == 0x20001000
+    assert len(fake.lookups) == after_miss + 3
+
+
+def test_lookup_symbol_never_caches_frame_local_symbols(monkeypatch):
+    """Frame-dependent symbols bypass the session cache."""
+    local_sym = _Symbol(123, needs_frame=True)
+    fake = _LookupGdb(block={"tmp": local_sym})
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.lookup_symbol("tmp") == 123
+    assert bridge.lookup_symbol("tmp") == 123
+    assert fake.lookups == [("block", "tmp"), ("block", "tmp")]
+
+
+def test_lookup_symbols_caches_descriptors_and_reads_live_values(monkeypatch):
+    """lookup_symbols caches global/static symbols while rereading live values."""
+    s1 = _Symbol(0)
+    s2 = _Symbol(0x20002000)
+
+    class _MultiLookupGdb(_LookupGdb):
+        def lookup_static_symbols(self, name: str):
+            self.lookups.append(("static_all", name))
+            return [s1, s2] if name == "lock" else []
+
+    fake = _MultiLookupGdb()
+    monkeypatch.setattr(bridge, "gdb", fake)
+
+    assert bridge.lookup_symbols("lock") == [0, 0x20002000]
+    assert fake.lookups == [("global", "lock"), ("static_all", "lock")]
+
+    s1._value = 0x20001000
+    assert bridge.lookup_symbols("lock") == [0x20001000, 0x20002000]
+    assert fake.lookups == [("global", "lock"), ("static_all", "lock")]
+
+    bridge.reset_symbol_caches()
+    assert bridge.lookup_symbols("lock") == [0x20001000, 0x20002000]
+    assert len(fake.lookups) == 4
+
+
+def test_lookup_symbol_at_caches_hits_and_misses_but_not_errors(monkeypatch):
+    """lookup_symbol_at caches info-symbol responses and resets cleanly."""
+    responses = {
+        "info symbol 0x1000": "worker + 12 in section .text\n",
+        "info symbol 0x2000": "No symbol matches 0x2000.\n",
+        "info symbol 0x3000": "",
+    }
+    calls: list[str] = []
+
+    class _InfoSymGdb:
+        class error(Exception):
+            pass
+
+        def execute(self, command: str, *, to_string: bool):
+            assert to_string is True
+            calls.append(command)
+            return responses[command]
+
+    monkeypatch.setattr(bridge, "gdb", _InfoSymGdb())
+    monkeypatch.setattr(bridge, "_SYMBOL_AT_CACHE_LIMIT", 2)
+
+    assert bridge.lookup_symbol_at(0x1000) == "worker+12"
+    assert bridge.lookup_symbol_at(0x1000) == "worker+12"
+    assert bridge.lookup_symbol_at(0x2000) is None
+    assert bridge.lookup_symbol_at(0x2000) is None
+    assert calls == ["info symbol 0x1000", "info symbol 0x2000"]
+
+    # Empty output (transient failure) must not be cached.
+    assert bridge.lookup_symbol_at(0x3000) is None
+    responses["info symbol 0x3000"] = "late_sym in section .text\n"
+    assert bridge.lookup_symbol_at(0x3000) == "late_sym"
+    # Limit=2 evicted 0x1000 when 0x3000 was inserted.
+    assert bridge.lookup_symbol_at(0x1000) == "worker+12"
+    assert calls.count("info symbol 0x1000") == 2
+
+    bridge.reset_loadable_ranges()
+    assert bridge.lookup_symbol_at(0x2000) is None
+    assert calls.count("info symbol 0x2000") == 2
 
 
 class _StringGdb:

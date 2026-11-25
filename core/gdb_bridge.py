@@ -24,7 +24,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 try:
     import gdb
@@ -37,7 +37,18 @@ from core.constants import (
     GDR_MAX_CSTRING_LENGTH,
     GDR_PROPAGATE_EXCEPTION,
 )
-from core.elf import iter_elf_section_headers
+from core.elf import (
+    macro_definitions_from_elf as macro_definitions_from_elf,
+)
+from core.elf import (
+    parse_integer_literal as parse_integer_literal,
+)
+from core.elf import (
+    scan_definitions as scan_definitions,
+)
+from core.elf import (
+    section_payloads as section_payloads,
+)
 from core.formatting import ElasticMode, SourceLoc, format_table
 from core.source_paths import (
     ElfSourceInfo,
@@ -266,18 +277,51 @@ def parse_user_address(text: str) -> int | None:
     return address or None
 
 
+_SYMBOL_AT_CACHE_LIMIT = 4096
+_symbol_cache_owner: tuple[int, int] | None = None
+_symbol_cache: dict[str, Any] = {}
+_symbols_cache: dict[str, tuple[Any, ...]] = {}
+_symbol_at_cache: dict[int, str | None] = {}
+
+
+def reset_symbol_caches() -> None:
+    """Clear session-scoped GDB symbol descriptor and address caches."""
+    global _symbol_cache_owner
+    _symbol_cache_owner = None
+    _symbol_cache.clear()
+    _symbols_cache.clear()
+    _symbol_at_cache.clear()
+
+
+def _sync_symbol_cache_owner() -> None:
+    global _symbol_cache_owner
+    owner = (id(gdb), id(_gdb_execute))
+    if _symbol_cache_owner != owner:
+        _symbol_cache.clear()
+        _symbols_cache.clear()
+        _symbol_at_cache.clear()
+        _symbol_cache_owner = owner
+
+
 def _lookup_gdb_symbol(name: str):
     """Return a ``gdb.Symbol`` for *name*, or ``None``.
 
     Searches the selected block, then globals, then file-static symbols.
-    Does not evaluate expressions or call inferior functions.
+    Global/static descriptors (and misses) are cached per session; frame-local
+    symbols (``needs_frame``) bypass the cache so another stop's frame never
+    reuses them. Does not evaluate expressions or call inferior functions.
     """
+    _sync_symbol_cache_owner()
+    if name in _symbol_cache:
+        return _symbol_cache[name]
     symbol = None
     try:
         found, _is_field = gdb.lookup_symbol(name)
         symbol = found
     except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
         symbol = None
+    if symbol is not None and getattr(symbol, "needs_frame", False):
+        return symbol
     if symbol is None:
         try:
             symbol = gdb.lookup_global_symbol(name)
@@ -288,6 +332,7 @@ def _lookup_gdb_symbol(name: str):
             symbol = gdb.lookup_static_symbol(name)
         except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
             symbol = None
+    _symbol_cache[name] = symbol
     return symbol
 
 
@@ -308,29 +353,39 @@ def lookup_symbol(name: str) -> gdb.Value | None:
 
 
 def lookup_symbols(name: str, *, single_lookup=None) -> list[gdb.Value]:
-    """Return every global and file-static data symbol matching *name*."""
+    """Return every global and file-static data symbol matching *name*.
+
+    Global and file-static ``gdb.Symbol`` descriptors are cached per session;
+    each call still reads ``symbol.value()`` live so dynamic pointers stay
+    current across target stops.
+    """
     if single_lookup is not None and single_lookup is not lookup_symbol:
         value = single_lookup(name)
         return [value] if value is not None else []
     if not is_plain_identifier(name):
         return []
     _ensure_gdb()
-    symbols = []
-    try:
-        global_sym = gdb.lookup_global_symbol(name)
-    except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
-        global_sym = None
-    if global_sym is not None:
-        symbols.append(global_sym)
-    static_all = getattr(gdb, "lookup_static_symbols", None)
-    if callable(static_all):
+    _sync_symbol_cache_owner()
+    cached = _symbols_cache.get(name)
+    if cached is None:
+        found_syms: list[Any] = []
         try:
-            found = static_all(name)
+            global_sym = gdb.lookup_global_symbol(name)
         except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
-            found = None
-        if isinstance(found, Iterable):
-            symbols.extend(found)
-    values = [v for sym in symbols if (v := _read_symbol_value(sym)) is not None]
+            global_sym = None
+        if global_sym is not None:
+            found_syms.append(global_sym)
+        static_all = getattr(gdb, "lookup_static_symbols", None)
+        if callable(static_all):
+            try:
+                found = static_all(name)
+            except (gdb.error, *_SYMBOL_LOOKUP_ERRORS):
+                found = None
+            if isinstance(found, Iterable):
+                found_syms.extend(found)
+        cached = tuple(found_syms)
+        _symbols_cache[name] = cached
+    values = [v for sym in cached if (v := _read_symbol_value(sym)) is not None]
     if not values:
         fallback = _lookup_gdb_symbol(name)
         val = _read_symbol_value(fallback) if fallback is not None else None
@@ -343,17 +398,29 @@ def lookup_symbol_at(addr: int) -> str | None:
     """Look up the symbol and offset at a target address.
 
     Returns a display-ready ``"symbol+offset"`` string without enclosing
-    brackets, or ``None`` when no symbol covers ``addr``.
+    brackets, or ``None`` when no symbol covers ``addr``. Results are cached
+    per session (bounded) because symbol addresses are static for a loaded
+    objfile; transient GDB errors are never cached.
     """
     _ensure_gdb()
+    _sync_symbol_cache_owner()
+    if addr in _symbol_at_cache:
+        return _symbol_at_cache[addr]
     try:
         symbol = _gdb_execute(f"info symbol {addr:#x}").strip()
     except gdb.error:
         return None
-    if symbol.startswith("No symbol matches"):
+    if not symbol:
         return None
-    symbol = symbol.partition(" in section ")[0]
-    return symbol.replace(" + ", "+").replace(" - ", "-")
+    if symbol.startswith("No symbol matches"):
+        result: str | None = None
+    else:
+        cleaned = symbol.partition(" in section ")[0]
+        result = cleaned.replace(" + ", "+").replace(" - ", "-")
+    if len(_symbol_at_cache) >= _SYMBOL_AT_CACHE_LIMIT:
+        _symbol_at_cache.pop(next(iter(_symbol_at_cache)))
+    _symbol_at_cache[addr] = result
+    return result
 
 
 def source_location_at(addr: int) -> SourceLoc | None:
@@ -743,7 +810,7 @@ _source_resolver_cache: dict[
 
 
 def reset_loadable_ranges() -> None:
-    """Clear the cached loadable-section map (reconnect / new image)."""
+    """Clear session-scoped bridge caches (sections, macros, paths, symbols)."""
     global _loadable_ranges_cache
     _loadable_ranges_cache = None
     # NOTE: a new image means new macro definitions; the table is keyed by the
@@ -751,6 +818,7 @@ def reset_loadable_ranges() -> None:
     _elf_macro_cache.clear()
     _source_roots_cache.clear()
     _source_resolver_cache.clear()
+    reset_symbol_caches()
 
 
 def array_item(value, index):
@@ -1381,113 +1449,3 @@ def gdb_function_guard(func):
             raise user_error(f"{func.__name__}: {format_exception(e)}") from e
 
     return wrapper
-
-
-# ---------------------------------------------------------------------------
-# ELF debug-macro table walk (pure Python, stdlib only, no ``gdb`` import).
-# ---------------------------------------------------------------------------
-
-
-_SECTION_NAMES = (".debug_macro", ".debug_str", ".debug_line_str")
-
-# `NAME <integer literal>` with an optional unsigned/long suffix, as stored in
-# the debug strings (for example `NAME 4L` or `NAME 0x40005`).
-_DEFINITION_RE = re.compile(
-    rb"(?P<name>[A-Za-z_][A-Za-z0-9_]*) "
-    rb"(?P<value>(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*)"
-)
-_INTEGER_RE = re.compile(rb"^(?P<body>0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*$")
-
-
-def scan_definitions(blob: bytes) -> dict[str, str]:
-    """Collect ``{name: integer literal}`` from one debug string blob.
-
-    Strings are NUL-separated; anything whose text is not exactly a
-    ``NAME VALUE`` pair is ignored, which keeps ordinary debug strings (types,
-    file names, unit producers) out of the result.
-    """
-    found: dict[str, str] = {}
-    for chunk in blob.split(b"\x00"):
-        # NOTE: an inline definition is stored right after its opcode and line
-        # number, so the definition is the *trailing* `NAME VALUE` of the chunk,
-        # not necessarily the whole of it.
-        for match in _DEFINITION_RE.finditer(chunk.strip()):
-            if match.end() != len(chunk.strip()):
-                continue
-            name = match.group("name").decode("ascii")
-            value = match.group("value").decode("ascii")
-            found.setdefault(name, value)
-    return found
-
-
-def parse_integer_literal(text: str) -> int | None:
-    """Parse a C integer literal, accepting an unsigned/long suffix."""
-    try:
-        encoded = text.strip().encode("ascii")
-    except UnicodeEncodeError:
-        return None
-    match = _INTEGER_RE.match(encoded)
-    if match is None:
-        return None
-    try:
-        return int(match.group("body"), 0)
-    except ValueError:
-        return None
-
-
-def _read_cstring(data: bytes, offset: int) -> str | None:
-    """Return the NUL-terminated string at *offset*, or ``None`` when out of range."""
-    if offset < 0 or offset >= len(data):
-        return None
-    end = data.find(b"\x00", offset)
-    if end < 0:
-        return None
-    return data[offset:end].decode("utf-8", errors="replace")
-
-
-def section_payloads(
-    data: bytes, names: tuple[str, ...] = _SECTION_NAMES
-) -> dict[str, bytes]:
-    """Return ``{section name: payload}`` for the requested sections of an ELF.
-
-    An empty map means the input is not an ELF or carries none of them; callers
-    treat a missing section as "no macros here" rather than an error.
-    """
-    if len(data) < 0x40 or data[:4] != b"\x7fELF":
-        return {}
-    table = iter_elf_section_headers(data)
-    if table is None:
-        return {}
-    sections: dict[str, bytes] = {}
-    for header in table.headers:
-        name = _read_cstring(table.names, header.name_offset)
-        if name in names and header.offset and header.size:
-            sections[name] = data[header.offset : header.offset + header.size]
-    return sections
-
-
-def macro_definitions_from_elf(path: str | Path) -> dict[str, str]:
-    """Read ``{macro name: integer literal}`` from the ELF at *path*.
-
-    Returns an empty map rather than raising when the file is missing, is not an
-    ELF, or carries no macro strings: an absent macro and an unreadable image are
-    the same answer to the caller.
-    """
-    try:
-        data = Path(path).read_bytes()
-    except OSError:
-        return {}
-    sections = section_payloads(data)
-    if not sections:
-        return {}
-    found: dict[str, str] = {}
-    # NOTE: indirect definitions live in .debug_str while inline ones live in
-    # .debug_macro, so both are scanned; earlier sections win so a stable result
-    # does not depend on section order.
-    for name in (".debug_macro", ".debug_str", ".debug_line_str"):
-        payload = sections.get(name)
-        if not payload:
-            continue
-        for macro_name, value in scan_definitions(payload).items():
-            found.setdefault(macro_name, value)
-    return found

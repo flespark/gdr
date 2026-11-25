@@ -958,3 +958,113 @@ def cpu_of(elf: ElfImage) -> Cpu:
     return Cpu(
         isa, "riscv", "ok", ("ilp32" if xlen == 32 else "lp64") + float_abi, extensions
     )
+
+
+# ---------------------------------------------------------------------------
+# ELF debug-macro table walk (pure Python, stdlib only, no ``gdb`` import).
+# ---------------------------------------------------------------------------
+
+
+_SECTION_NAMES = (".debug_macro", ".debug_str", ".debug_line_str")
+
+# `NAME <integer literal>` with an optional unsigned/long suffix, as stored in
+# the debug strings (for example `NAME 4L` or `NAME 0x40005`).
+_DEFINITION_RE = re.compile(
+    rb"(?P<name>[A-Za-z_][A-Za-z0-9_]*) "
+    rb"(?P<value>(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*)"
+)
+_INTEGER_RE = re.compile(rb"^(?P<body>0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*$")
+
+
+def scan_definitions(blob: bytes) -> dict[str, str]:
+    """Collect ``{name: integer literal}`` from one debug string blob.
+
+    Strings are NUL-separated; anything whose text is not exactly a
+    ``NAME VALUE`` pair is ignored, which keeps ordinary debug strings (types,
+    file names, unit producers) out of the result.
+    """
+    found: dict[str, str] = {}
+    for chunk in blob.split(b"\x00"):
+        # NOTE: an inline definition is stored right after its opcode and line
+        # number, so the definition is the *trailing* `NAME VALUE` of the chunk,
+        # not necessarily the whole of it.
+        for match in _DEFINITION_RE.finditer(chunk.strip()):
+            if match.end() != len(chunk.strip()):
+                continue
+            name = match.group("name").decode("ascii")
+            value = match.group("value").decode("ascii")
+            found.setdefault(name, value)
+    return found
+
+
+def parse_integer_literal(text: str) -> int | None:
+    """Parse a C integer literal, accepting an unsigned/long suffix."""
+    try:
+        encoded = text.strip().encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    match = _INTEGER_RE.match(encoded)
+    if match is None:
+        return None
+    try:
+        return int(match.group("body"), 0)
+    except ValueError:
+        return None
+
+
+def _read_cstring(data: bytes, offset: int) -> str | None:
+    """Return the NUL-terminated string at *offset*, or ``None`` when out of range."""
+    if offset < 0 or offset >= len(data):
+        return None
+    end = data.find(b"\x00", offset)
+    if end < 0:
+        return None
+    return data[offset:end].decode("utf-8", errors="replace")
+
+
+def section_payloads(
+    data: bytes, names: tuple[str, ...] = _SECTION_NAMES
+) -> dict[str, bytes]:
+    """Return ``{section name: payload}`` for the requested sections of an ELF.
+
+    An empty map means the input is not an ELF or carries none of them; callers
+    treat a missing section as "no macros here" rather than an error.
+    """
+    if len(data) < 0x40 or data[:4] != b"\x7fELF":
+        return {}
+    table = iter_elf_section_headers(data)
+    if table is None:
+        return {}
+    sections: dict[str, bytes] = {}
+    for header in table.headers:
+        name = _read_cstring(table.names, header.name_offset)
+        if name in names and header.offset and header.size:
+            sections[name] = data[header.offset : header.offset + header.size]
+    return sections
+
+
+def macro_definitions_from_elf(path: str | Path) -> dict[str, str]:
+    """Read ``{macro name: integer literal}`` from the ELF at *path*.
+
+    Returns an empty map rather than raising when the file is missing, is not an
+    ELF, or carries no macro strings: an absent macro and an unreadable image are
+    the same answer to the caller.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return {}
+    sections = section_payloads(data)
+    if not sections:
+        return {}
+    found: dict[str, str] = {}
+    # NOTE: indirect definitions live in .debug_str while inline ones live in
+    # .debug_macro, so both are scanned; earlier sections win so a stable result
+    # does not depend on section order.
+    for name in (".debug_macro", ".debug_str", ".debug_line_str"):
+        payload = sections.get(name)
+        if not payload:
+            continue
+        for macro_name, value in scan_definitions(payload).items():
+            found.setdefault(macro_name, value)
+    return found

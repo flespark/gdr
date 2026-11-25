@@ -723,15 +723,27 @@ def _timer_name_at(address: int, layout: FreeRtosLayout) -> str | None:
     return read_cstring(read_field(value, sl, "name"))
 
 
-def _scan_symbol_objects(layout: FreeRtosLayout):
-    """One pass of the symbol channel; the caller caches its result."""
-    seen: set[tuple[str, int]] = set()
+def _scan_symbol_declarations() -> tuple[tuple[str, str, str], ...]:
+    """Scan ``info variables`` once and return ``(kind, type_name, symbol_name)``."""
+    decls: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for type_name, symbol_name in _iter_declared_variables(_info_variables_text()):
         kind = KIND_BY_STATIC_TYPE.get(type_name)
         if kind is None:
             kind = KIND_BY_HANDLE_TYPE.get(type_name)
-        if kind is None:
+        if kind is None or (type_name, symbol_name) in seen:
             continue
+        seen.add((type_name, symbol_name))
+        decls.append((kind, type_name, symbol_name))
+    return tuple(decls)
+
+
+def _resolve_symbol_objects(
+    decls: tuple[tuple[str, str, str], ...], layout: FreeRtosLayout
+) -> Iterator[DiscoveredObject]:
+    """Resolve cached symbol declarations against current target memory."""
+    seen: set[tuple[str, int]] = set()
+    for kind, type_name, symbol_name in decls:
         for value in lookup_symbols(symbol_name, single_lookup=lookup_symbol):
             if type_name in KIND_BY_STATIC_TYPE:
                 address = value_address(value)
@@ -756,27 +768,28 @@ def _scan_symbol_objects(layout: FreeRtosLayout):
             )
 
 
-_SYMBOL_OBJECT_CACHE: tuple[DiscoveredObject, ...] | None = None
+_SYMBOL_DECL_CACHE: tuple[tuple[str, str, str], ...] | None = None
 
 
 def reset_symbol_object_cache() -> None:
-    """Drop the cached symbol-channel scan (tests and repeated init)."""
-    global _SYMBOL_OBJECT_CACHE
-    _SYMBOL_OBJECT_CACHE = None
+    """Drop the cached symbol-channel declaration scan (tests and repeated init)."""
+    global _SYMBOL_DECL_CACHE
+    _SYMBOL_DECL_CACHE = None
 
 
 def iter_static_symbol_objects(layout: FreeRtosLayout) -> Iterator[DiscoveredObject]:
-    """Yield static-symbol objects, scanning DWARF once per session.
+    """Yield symbol-channel objects, scanning DWARF declarations once per session.
 
-    The first call runs ``info variables`` and caches the result; later
-    calls reuse it because the session's symbol table cannot change while
-    the target is attached and the scan is the most expensive channel on
-    large firmwares.  ``reset_symbol_object_cache()`` forces a fresh scan.
+    The first call runs ``info variables`` and caches the filtered FreeRTOS
+    variable declarations because the session's ELF symbol table cannot change
+    while attached. Each call still reads handle values from live memory so
+    dynamic handles created after the first stop are discovered without needing
+    ``gdr reset``. ``reset_symbol_object_cache()`` forces a fresh scan.
     """
-    global _SYMBOL_OBJECT_CACHE
-    if _SYMBOL_OBJECT_CACHE is None:
-        _SYMBOL_OBJECT_CACHE = tuple(_scan_symbol_objects(layout))
-    yield from _SYMBOL_OBJECT_CACHE
+    global _SYMBOL_DECL_CACHE
+    if _SYMBOL_DECL_CACHE is None:
+        _SYMBOL_DECL_CACHE = _scan_symbol_declarations()
+    yield from _resolve_symbol_objects(_SYMBOL_DECL_CACHE, layout)
 
 
 def _pointer_size() -> int:

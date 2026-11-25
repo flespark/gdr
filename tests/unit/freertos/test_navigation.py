@@ -475,6 +475,37 @@ def test_iter_static_symbol_objects_caches_scan(monkeypatch):
     assert calls["count"] == 2
 
 
+def test_iter_static_symbol_objects_refreshes_dynamic_handles_without_rescanning(
+    monkeypatch,
+):
+    """Dynamic handles initially NULL are discovered on later stops without re-running info variables."""
+    layout = build_layout(FreeRtosConfig())
+    scan_calls = {"count": 0}
+
+    def scan() -> str:
+        scan_calls["count"] += 1
+        return _INFO_VARIABLES_SAMPLE
+
+    monkeypatch.setattr(navigation, "_info_variables_text", scan)
+    mutex_handle = _FakeValue("SemaphoreHandle_t", 0x20001004, 0)
+    by_name = {
+        "gdr_idle_tcb": _FakeValue("StaticTask_t", 0x20001000, 0x20001000),
+        "gdr_mutex": mutex_handle,
+    }
+    monkeypatch.setattr(navigation, "lookup_symbol", by_name.get)
+
+    first = {obj.name: obj for obj in navigation.iter_static_symbol_objects(layout)}
+    assert set(first) == {"gdr_idle_tcb"}
+    assert scan_calls["count"] == 1
+
+    # Simulate xSemaphoreCreateMutex() populating the global handle before the next stop.
+    mutex_handle.value = 0x20002000
+    second = {obj.name: obj for obj in navigation.iter_static_symbol_objects(layout)}
+    assert set(second) == {"gdr_idle_tcb", "gdr_mutex"}
+    assert second["gdr_mutex"].address == 0x20002000
+    assert scan_calls["count"] == 1
+
+
 def test_iter_static_symbol_objects_degrades_on_scan_failure(monkeypatch):
     """An unusable scan caches an empty result instead of raising."""
     layout = build_layout(FreeRtosConfig())
