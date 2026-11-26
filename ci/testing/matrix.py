@@ -208,6 +208,7 @@ GROUPS = {
     "freertos-ports": FREERTOS_PORTS,
     "bare": BARE,
     "gdb12": (Lane("rtthread", "cortex-a9", "4.0.5"),),
+    "gdb-latest": (Lane("rtthread", "cortex-a9", "4.0.5"),),
 }
 GROUPS["rtthread"] = RTTHREAD_ARM_PORTS + RTTHREAD_A9 + RTTHREAD_RISCV
 GROUPS["freertos"] = (

@@ -5,11 +5,13 @@
 #  2. extension — VSCode client vendor/schema check, type-check, tests, VSIX packaging (+ commit attachment on push)
 #  3. publish-qemu-matrix-image — re-tag cached QEMU matrix image under timestamped & latest tags (push only)
 #  4. publish-gdb12-compat-image — re-tag cached GDB 12 image under timestamped & latest tags (push only)
-#  5. compat-gdb12 — Ubuntu 22.04 / GDB 12 / Python 3.10 compatibility baseline (push, or PR touching core/ or Dockerfile.gdb12)
-#  6. bare-eh-frame — RTOS-independent RISC-V .eh_frame/.eh_frame_hdr CFI decoder suite
-#  7. rtthread — RT-Thread closed-loop suite (ARM Cortex-M ports -> ARM Cortex-A9 -> RISC-V RV32/RV64)
-#  8. freertos — FreeRTOS closed-loop suite (static snapshot -> ARM M3/M0/M4/M33/SMP+MPU -> RISC-V RV32/RV64)
-#  9. release — source archives, release VSIX, and CNB Release on every pushed tag
+#  5. publish-gdb-latest-compat-image — re-tag cached latest-GDB image under timestamped & latest tags (push only)
+#  6. compat-gdb — GDB 12/13/14/16/latest API surface + GDB 12 / Python 3.10 Cortex-A9 closed-loop (push, or PR touching runtime/gdb_api/Dockerfile.gdb12)
+#  7. compat-gdb-latest — latest stable upstream GNU GDB (built from source on Debian trixie) API surface + Cortex-A9 closed-loop (monthly cron, 1st 03:00 Asia/Shanghai)
+#  8. bare-eh-frame — RTOS-independent RISC-V .eh_frame/.eh_frame_hdr CFI decoder suite
+#  9. rtthread — RT-Thread closed-loop suite (ARM Cortex-M ports -> ARM Cortex-A9 -> RISC-V RV32/RV64)
+# 10. freertos — FreeRTOS closed-loop suite (static snapshot -> ARM M3/M0/M4/M33/SMP+MPU -> RISC-V RV32/RV64)
+# 11. release — source archives, release VSIX, and CNB Release on every pushed tag
 #
 # Closed-loop pipelines build their environments with `docker.build` keyed by
 # Dockerfile hash (`by` / `versionBy`), so unchanged Dockerfiles reuse the
@@ -18,6 +20,7 @@
 # tagging `YYYYMMDD-HHMMSS` and `latest`:
 #   docker.cnb.cool/flespark-2026/gdr/qemu-matrix:<tag>
 #   docker.cnb.cool/flespark-2026/gdr/gdb12-compat:<tag>
+#   docker.cnb.cool/flespark-2026/gdr/gdb-latest-compat:<tag>
 #
 # Arch: `cnb:arch:amd64` runs ARM and RISC-V QEMU targets under TCG.
 # Ref: https://docs.cnb.cool/zh/build/build-node.html
@@ -155,18 +158,73 @@
   versionBy:
     - ci/containers/Dockerfile.gdb12
 
+.gdb-latest-build: &gdb-latest-build
+  dockerfile: ci/containers/Dockerfile.gdb-latest
+  by:
+    - ci/containers/Dockerfile.gdb-latest
+  versionBy:
+    - ci/containers/Dockerfile.gdb-latest
+
 # ---------------------------------------------------------------------------
 # Closed-loop pipelines, each defined once and referenced by push & PR.
 # ---------------------------------------------------------------------------
 
-.compat-gdb12: &compat-gdb12
-  name: compat-gdb12
+.compat-gdb: &compat-gdb
+  name: compat-gdb
   runner: *amd64-runner
   docker:
     build: *gdb12-build
   stages:
-    - name: GDB 12 / Python 3.10 Cortex-A9 compatibility baseline
+    - name: GDB 12 API surface (Ubuntu 22.04 / Py 3.10)
+      script: python3 ci/checks/gdb_api.py --gdb gdb-multiarch --expected-major 12
+    - name: GDB 13 API surface (Debian bookworm / Py 3.11)
+      image: debian:bookworm-slim
+      script: |
+        set -eu
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o Acquire::Retries=3 update -qq
+        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        python3 ci/checks/gdb_api.py --gdb gdb-multiarch --expected-major 13
+    - name: GDB 14 API surface (Ubuntu 24.04 / Py 3.12)
+      image: ubuntu:24.04
+      script: |
+        set -eu
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o Acquire::Retries=3 update -qq
+        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        python3 ci/checks/gdb_api.py --gdb gdb-multiarch --expected-major 14
+    - name: GDB 16 API surface (Debian trixie / Py 3.13)
+      image: debian:trixie-slim
+      script: |
+        set -eu
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o Acquire::Retries=3 update -qq
+        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        python3 ci/checks/gdb_api.py --gdb gdb-multiarch --expected-major 16
+    - name: GDB latest API surface (Debian sid)
+      image: debian:sid-slim
+      script: |
+        set -eu
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o Acquire::Retries=3 update -qq
+        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        python3 ci/checks/gdb_api.py --gdb gdb-multiarch --min-major 16
+    - name: GDB 12 / Python 3.10 Cortex-A9 closed-loop
       script: python3 ci/test.py matrix gdb12
+
+.compat-gdb-latest: &compat-gdb-latest
+  name: compat-gdb-latest
+  runner: *amd64-runner
+  docker:
+    build: *gdb-latest-build
+  stages:
+    - name: Build latest stable upstream GNU GDB and verify API surface
+      script: |
+        set -eu
+        python3 ci/checks/build_latest_gdb.py --prefix /opt/gdb-latest
+        python3 ci/checks/gdb_api.py --gdb /opt/gdb-latest/bin/gdb-multiarch --min-major 16
+    - name: Latest GNU GDB Cortex-A9 closed-loop
+      script: python3 ci/test.py matrix gdb-latest --gdb /opt/gdb-latest/bin/gdb-multiarch
 
 .bare-eh-frame: &bare-eh-frame
   name: bare-eh-frame
@@ -280,17 +338,54 @@ main: # branch: main
             docker push "$VERSIONED_IMAGE"
             docker push "$LATEST_IMAGE"
 
-    - <<: *compat-gdb12
+    - name: publish-gdb-latest-compat-image
+      runner: *amd64-runner
+      services:
+        - docker
+      ifModify:
+        - ci/containers/Dockerfile.gdb-latest
+      env:
+        GDR_CI_IMAGE: docker.cnb.cool/flespark-2026/gdr/gdb-latest-compat
+      stages:
+        - name: build or reuse cached latest-GDB compatibility image
+          type: docker:cache
+          options:
+            <<: *gdb-latest-build
+          exports:
+            name: CACHE_IMAGE
+        - name: tag and publish latest-GDB compatibility image
+          script: |
+            set -eu
+            IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
+            VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
+            LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
+            echo "Publishing ${CACHE_IMAGE} as ${VERSIONED_IMAGE} and ${LATEST_IMAGE}"
+            docker pull "$CACHE_IMAGE"
+            docker tag "$CACHE_IMAGE" "$VERSIONED_IMAGE"
+            docker tag "$CACHE_IMAGE" "$LATEST_IMAGE"
+            docker push "$VERSIONED_IMAGE"
+            docker push "$LATEST_IMAGE"
+
+    - <<: *compat-gdb
     - <<: *bare-eh-frame
     - <<: *rtthread
     - <<: *freertos
 
+  # Monthly upper-bound GDB check (1st of each month, 03:00 Asia/Shanghai)
+  # catches upstream GDB releases without adding push/PR churn.
+  "crontab: 0 3 1 * *":
+    - <<: *compat-gdb-latest
+
   pull_request:
     - <<: *validate
     - <<: *extension
-    - <<: *compat-gdb12
+    - <<: *compat-gdb
       ifModify:
+        - "gdr.py"
         - "core/**"
+        - "rtthread/**"
+        - "freertos/**"
+        - "ci/checks/gdb_api.py"
         - "ci/containers/Dockerfile.gdb12"
     - <<: *bare-eh-frame
     - <<: *rtthread

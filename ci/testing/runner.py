@@ -147,6 +147,8 @@ def _register_tools() -> None:
         "scons",
     ):
         link = tools / "bin" / name
+        if link.is_symlink() and not link.exists():
+            link.unlink()
         if (
             not link.exists()
             and not link.is_symlink()
@@ -174,7 +176,12 @@ def compiler(lane: Lane) -> tuple[Path, str]:
     return directory, prefix
 
 
-def gdb_for(lane: Lane) -> str:
+def gdb_for(lane: Lane, gdb: str | None = None) -> str:
+    if gdb:
+        resolved = shutil.which(gdb) or (gdb if Path(gdb).is_file() else None)
+        if not resolved:
+            raise ValueError(f"missing GDB executable: {gdb}")
+        return str(Path(resolved).resolve())
     tools = CACHE / "tools" / host_id() / "bin"
     specific = (
         "arm-none-eabi-gdb-py3"
@@ -187,7 +194,7 @@ def gdb_for(lane: Lane) -> str:
     raise ValueError("missing Python-enabled GDB; install it and run setup")
 
 
-def doctor(lane: Lane, *, compatibility: bool = False) -> None:
+def doctor(lane: Lane, *, compatibility: bool = False, gdb: str | None = None) -> None:
     """Fail before fetching sources when the selected lane lacks tools."""
     env = environment()
     _probe(["uv", "--version"], env=env)
@@ -201,7 +208,7 @@ def doctor(lane: Lane, *, compatibility: bool = False) -> None:
         "bash",
         str(ROOT / "ci/checks/gdb-python.sh"),
         "--gdb",
-        gdb_for(lane),
+        gdb_for(lane, gdb),
         "--architecture",
         lane.architecture,
     ]
@@ -232,9 +239,14 @@ def build_tools(lane: Lane) -> None:
             _probe(["scons", "--version"], env=env)
 
 
-def preflight(lanes: Iterable[Lane], *, compatibility: bool = False) -> None:
+def preflight(
+    lanes: Iterable[Lane],
+    *,
+    compatibility: bool = False,
+    gdb: str | None = None,
+) -> None:
     """Verify each distinct tool requirement before a matrix starts building."""
-    seen: set[tuple[str, str | None, str, str, str, bool]] = set()
+    seen: set[tuple[str, str | None, str, str, str, bool, str | None]] = set()
     for lane in lanes:
         key = (
             lane.architecture,
@@ -243,11 +255,15 @@ def preflight(lanes: Iterable[Lane], *, compatibility: bool = False) -> None:
             lane.version,
             lane.variant,
             compatibility,
+            gdb,
         )
         if key in seen:
             continue
         seen.add(key)
-        doctor(lane, compatibility=compatibility)
+        if gdb is not None:
+            doctor(lane, compatibility=compatibility, gdb=gdb)
+        else:
+            doctor(lane, compatibility=compatibility)
 
 
 def sources(lane: Lane) -> Path:
@@ -519,6 +535,7 @@ def run(
     rebuild: bool = False,
     compatibility: bool = False,
     check_tools: bool = True,
+    gdb: str | None = None,
 ) -> None:
     """Run a selected lane while its firmware cache cell is locked."""
     with lane_lock(lane):
@@ -528,6 +545,7 @@ def run(
             rebuild=rebuild,
             compatibility=compatibility,
             check_tools=check_tools,
+            gdb=gdb,
         )
 
 
@@ -538,16 +556,17 @@ def _run(
     rebuild: bool = False,
     compatibility: bool = False,
     check_tools: bool = True,
+    gdb: str | None = None,
 ) -> None:
     """Preflight, prepare firmware, and run pytest with isolated transport."""
     if check_tools:
-        doctor(lane, compatibility=compatibility)
+        doctor(lane, compatibility=compatibility, gdb=gdb)
     _build(lane, rebuild=rebuild)
     with cache_lock(f"env/{host_id()}/{environment_id()}", wait=True):
-        _pytest(lane, pytest_args)
+        _pytest(lane, pytest_args, gdb=gdb)
 
 
-def _pytest(lane: Lane, pytest_args: list[str]) -> None:
+def _pytest(lane: Lane, pytest_args: list[str], *, gdb: str | None = None) -> None:
     """Synchronize the host environment and retain one pytest run's outputs."""
     env = environment()
     env.update(
@@ -556,7 +575,7 @@ def _pytest(lane: Lane, pytest_args: list[str]) -> None:
             "GDR_QEMU_TARGET": lane.target,
             "GDR_VERSION": lane.version,
             "GDR_FIXTURE_VARIANT": lane.variant,
-            "GDR_GDB": gdb_for(lane),
+            "GDR_GDB": gdb_for(lane, gdb) if gdb else gdb_for(lane),
         }
     )
     command(

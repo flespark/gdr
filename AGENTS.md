@@ -167,12 +167,13 @@ BSP/toolchain before sharing a patch.
 | --- | --- | --- |
 | Python lint, pyright, hooks, unit coverage (3.14 & 3.10) | `validate` | `uv run pytest tests/unit --cov` |
 | VSCode build, schema check, tests, VSIX | `extension` | See `vscode/README.md`. |
-| GDB 12 / Python 3.10 baseline | `compat-gdb12` | `matrix gdb12` |
+| GDB version scope API surface + GDB 12 baseline | `compat-gdb` | `ci/checks/gdb_api.py`, `matrix gdb12` |
+| Latest stable upstream GNU GDB upper-bound closed-loop | `compat-gdb-latest` | `ci/checks/build_latest_gdb.py`, `matrix gdb-latest` |
 | Bare RISC-V `.eh_frame` CFI suite | `bare-eh-frame` | `matrix bare` |
 | RT-Thread (ARM Cortex-M, Cortex-A9, RISC-V RV32/RV64) | `rtthread` | `matrix rtthread` |
 | FreeRTOS (snapshot, ARM M3/M0/M4/M33/SMP+MPU, RISC-V RV32/RV64) | `freertos` | `matrix freertos` |
 
-CNB (`.cnb.yml`) runs both basic validation and all closed-loop QEMU/GDB integration suites; `compat-gdb12` runs on every push and on PRs touching `core/**` or `ci/containers/Dockerfile.gdb12`. Image publishers run only on push when their Dockerfile changes. GitHub Actions (`.github/workflows/ci.yml`) covers host-side basic validation (`validate` and `extension`) only; see [docs/testing.md](docs/testing.md#ci-coverage-split).
+Trigger rules, image publishers, and the CNB vs. GitHub Actions split are documented in [docs/testing.md](docs/testing.md#ci-coverage-split).
 
 ## Documentation map
 

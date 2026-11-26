@@ -326,6 +326,41 @@ def test_register_tools_links_without_copying_or_retargeting(
     assert link.resolve() == executable.parent
 
 
+def test_register_tools_heals_dangling_bin_symlink_and_explicit_gdb_override(
+    isolated_cache, monkeypatch, tmp_path
+):
+    bin_dir = isolated_cache / "tools" / cache.host_id() / "bin"
+    bin_dir.mkdir(parents=True)
+    stale = bin_dir / "gdb-multiarch"
+    stale.symlink_to(tmp_path / "missing-gdb")
+    real_gdb = tmp_path / "opt" / "gdb-latest" / "bin" / "gdb"
+    real_gdb.parent.mkdir(parents=True)
+    real_gdb.touch()
+    monkeypatch.setattr(
+        runner.shutil,
+        "which",
+        lambda name: str(real_gdb) if name == "gdb-multiarch" else None,
+    )
+    runner.register_tools()
+    assert stale.resolve() == real_gdb.resolve()
+
+    lane = matrix.select("rtthread", "cortex-a9", "4.0.5")
+    assert runner.gdb_for(lane, str(real_gdb)) == str(real_gdb.resolve())
+    with pytest.raises(ValueError, match="missing GDB executable"):
+        runner.gdb_for(lane, str(tmp_path / "nope"))
+
+
+def test_cli_forwards_explicit_gdb_override(monkeypatch):
+    monkeypatch.setattr(runner, "register_tools", Mock())
+    preflight = Mock()
+    run = Mock()
+    monkeypatch.setattr(runner, "preflight", preflight)
+    monkeypatch.setattr(runner, "run", run)
+    assert cli.main(["matrix", "gdb-latest", "--gdb", "/opt/gdb-latest/bin/gdb"]) == 0
+    assert preflight.call_args.kwargs["gdb"] == "/opt/gdb-latest/bin/gdb"
+    assert run.call_args.kwargs["gdb"] == "/opt/gdb-latest/bin/gdb"
+
+
 def test_doctor_fails_without_compiler_before_source_fetch(isolated_cache, monkeypatch):
     monkeypatch.setattr(runner, "command", Mock())
     lane = matrix.select("freertos", "qemu-virt-rv64", "11.1.0")
@@ -854,6 +889,10 @@ def test_container_preserves_external_cache_symlink_paths(tmp_path, monkeypatch)
 def test_container_gdb12_rejects_wrong_architecture_and_absent_images(monkeypatch):
     with pytest.raises(ValueError, match="amd64 only"):
         containers.build_arguments("gdb12", "linux/arm64")
+    with pytest.raises(ValueError, match="amd64 only"):
+        containers.build_arguments("gdb-latest", "linux/arm64")
+    assert containers.build_arguments("gdb-latest", "linux/amd64") == []
+    assert matrix.GROUPS["gdb-latest"] == matrix.GROUPS["gdb12"]
     monkeypatch.setattr(
         containers.subprocess,
         "run",

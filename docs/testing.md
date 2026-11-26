@@ -10,16 +10,17 @@ shared test infrastructure and the per-RTOS integration test coverage.
 ## Unit test coverage boundary
 
 `uv run pytest tests/unit --cov` enforces branch coverage (`fail_under = 85`)
-across the configured hardware-independent modules in `core/`, `rtthread/`, and
-`freertos/` (`adapter`, `api`, `commands`, `constants`, `formatting`,
-`heapmap`, `help`, `version`, `layout`, `stackpc`, `views`, `diagnostics`,
-`objects`, `heap`, `elf`, `stack_frame_parser`, and the `backtrace/`
-subpackages (`core/backtrace/`, `freertos/backtrace/`, `rtthread/backtrace/`)).
-Direct `gdb.Value` / DWARF / target-memory traversal modules
-(`core/gdb_bridge.py`, `core/layout.py`,
-`rtthread/navigation.py`, `freertos/navigation.py`) and all three
-`backtrace/unwind_gdb.py` orchestration modules are verified via focused
-orchestration unit tests and closed-loop QEMU suites.
+across the configured runtime modules in `core/`, `rtthread/`, and `freertos/`
+(listed in `[tool.coverage.run]` of `pyproject.toml`, covering the
+hardware-independent core, adapters, ELF/instruction/stack decoders, and
+`backtrace/` subpackages). Direct `gdb.Value` / DWARF / target-memory traversal
+modules (`core/gdb_bridge.py`, `core/layout.py`, `rtthread/navigation.py`,
+`freertos/navigation.py`) are verified via focused unit tests and closed-loop
+QEMU suites.
+
+Outside the GDR runtime packages, `tests/unit/ci/` covers only the shared
+integration test framework (`ci/testing/`); do not add unit tests for
+standalone CI scripts (such as `ci/checks/`).
 
 In addition to functional unit tests, two static-invariant test modules run on
 every unit suite invocation:
@@ -49,7 +50,7 @@ under `ci/.cache/fixtures` are scanned only when the local cache is present.
 Hosted verification splits responsibilities across two CI platforms:
 
 - **GitHub Actions** (`.github/workflows/ci.yml`): basic host-side validation only — Python lint/format/pyright, repository `pre-commit` hooks, unit-test branch coverage on Python 3.10 and 3.14 (`validate`), and VSCode extension vendor/schema/type/unit/VSIX checks (`extension`).
-- **CNB** (`.cnb.yml`): both basic validation (`validate`, `extension`) and all closed-loop QEMU/GDB integration suites — GDB 12 / Python 3.10 compatibility baseline (`compat-gdb12`, run on every push and on PRs touching `core/**` or `ci/containers/Dockerfile.gdb12`), bare RISC-V `.eh_frame` decoding (`bare-eh-frame`), RT-Thread (`rtthread`), and FreeRTOS (`freertos`).
+- **CNB** (`.cnb.yml`): both basic validation (`validate`, `extension`) and all closed-loop QEMU/GDB integration suites — GDB API surface across GDB 12/13/14/16/latest plus GDB 12 / Python 3.10 Cortex-A9 baseline (`compat-gdb`, run on every push and on PRs touching runtime modules, `ci/checks/gdb_api.py`, or `ci/containers/Dockerfile.gdb12`), latest stable upstream GNU GDB upper-bound Cortex-A9 baseline (`compat-gdb-latest`, built from GNU release source on `debian:trixie-slim` on a monthly cron `0 3 1 * *`, 1st at 03:00 Asia/Shanghai), bare RISC-V `.eh_frame` decoding (`bare-eh-frame`), RT-Thread (`rtthread`), and FreeRTOS (`freertos`). Image publishers (`publish-qemu-matrix-image`, `publish-gdb12-compat-image`, `publish-gdb-latest-compat-image`) run only on `main` push when their Dockerfile changes.
 
 ## Shared closed-loop infrastructure
 

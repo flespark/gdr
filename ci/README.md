@@ -65,7 +65,7 @@ Matrix groups are defined in `testing/matrix.py`: RT-Thread (`rtthread-arm-ports
 `rtthread`), FreeRTOS (`freertos-snapshot`, `freertos-config`, `freertos-arm-version`,
 `freertos-arm-m0`, `freertos-arm-m4`, `freertos-arm-m33`, `freertos-arm-smp-mpu`,
 `freertos-rv32`, `freertos-rv64`, `freertos-version`, `freertos-ports`, `freertos`),
-`bare`, `gdb12`, `smoke`, and `all`. The A9 matrix builds
+`bare`, `gdb12`, `gdb-latest`, `smoke`, and `all`. The A9 matrix builds
 3.1.1, 3.1.2, and 3.1.4 without running tests; explicit `run` or forwarded
 pytest arguments execute them. `list all` also lists supported releases
 outside the default matrix.
@@ -114,12 +114,15 @@ python3 ci/test.py container build
 python3 ci/test.py container run -- run freertos mps2-an385 11.1.0 full -- -k backtrace
 python3 ci/test.py container run --no-build -- matrix smoke
 python3 ci/test.py container run --profile gdb12 -- matrix gdb12
+python3 ci/test.py container run --profile gdb-latest -- matrix gdb-latest
+python3 ci/checks/gdb_api.py --gdb gdb-multiarch
+python3 ci/checks/build_latest_gdb.py --prefix /opt/gdb-latest
 ```
 
 Image builds download pinned toolchains and can be large. `--no-build`
 requires an existing image. The default QEMU image follows the host CPU;
-`--platform linux/amd64` or `linux/arm64` selects explicitly. The GDB 12
-baseline is amd64-only. Repository and external-cache mounts retain their
+`--platform linux/amd64` or `linux/arm64` selects explicitly. The `gdb12` and
+`gdb-latest` compatibility baselines are amd64-only. Repository and external-cache mounts retain their
 absolute paths, including symlink targets. Container internals such as
 `/opt` belong to the cache-owned image rather than the host filesystem.
 

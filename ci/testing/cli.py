@@ -52,17 +52,29 @@ def parser() -> argparse.ArgumentParser:
             action="store_true",
             help="require GDB 12 and embedded Python 3.10",
         )
+        cmd.add_argument(
+            "--gdb",
+            default=None,
+            help="override the GDB executable used by doctor and pytest",
+        )
     matrix = commands.add_parser(
         "matrix", help="run a named matrix using the same lane runner"
     )
     matrix.add_argument("group", choices=GROUPS)
     matrix.add_argument("--rebuild", action="store_true")
     matrix.add_argument("--gdb12", action="store_true")
+    matrix.add_argument(
+        "--gdb",
+        default=None,
+        help="override the GDB executable used by doctor and pytest",
+    )
     container = commands.add_parser(
         "container", help="manage cache-owned Podman environments"
     )
     container.add_argument("action", choices=("init", "build", "run", "stop"))
-    container.add_argument("--profile", choices=("qemu", "gdb12"), default="qemu")
+    container.add_argument(
+        "--profile", choices=("qemu", "gdb12", "gdb-latest"), default="qemu"
+    )
     container.add_argument("--platform", choices=("linux/amd64", "linux/arm64"))
     container.add_argument(
         "--no-build", action="store_true", help="require an existing image"
@@ -127,14 +139,16 @@ def main(argv: list[str] | None = None) -> int:
         initialize(prompt=True)
         register_tools()
         compatibility = options.gdb12 or getattr(options, "group", None) == "gdb12"
+        gdb_kw = {"gdb": options.gdb} if getattr(options, "gdb", None) else {}
         if options.command == "matrix":
             preflight(
                 [lane for lane in lanes if forwarded or not matrix_build_only(lane)],
                 compatibility=compatibility,
+                **gdb_kw,
             )
         for lane in lanes:
             if options.command == "doctor":
-                doctor(lane, compatibility=options.gdb12)
+                doctor(lane, compatibility=options.gdb12, **gdb_kw)
             elif options.command == "build" or (
                 options.command == "matrix"
                 and not forwarded
@@ -148,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
                     rebuild=options.rebuild,
                     compatibility=compatibility,
                     check_tools=options.command != "matrix",
+                    **gdb_kw,
                 )
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:

@@ -44,8 +44,8 @@ def container_environment() -> dict[str, str]:
 
 def build_arguments(profile: str, selected_platform: str) -> list[str]:
     """Select the pinned archive hashes matching the image architecture."""
-    if profile == "gdb12" and selected_platform != "linux/amd64":
-        raise ValueError("the GDB 12 baseline is linux/amd64 only")
+    if profile in ("gdb12", "gdb-latest") and selected_platform != "linux/amd64":
+        raise ValueError(f"the {profile} baseline is linux/amd64 only")
     if selected_platform == "linux/arm64":
         return [
             "--build-arg",
@@ -214,7 +214,7 @@ def container_command(
         return
     selected_platform = selected_platform or (
         "linux/amd64"
-        if profile == "gdb12"
+        if profile in ("gdb12", "gdb-latest")
         else "linux/arm64"
         if platform.machine() in ("arm64", "aarch64")
         else "linux/amd64"
@@ -224,11 +224,11 @@ def container_command(
         _ensure_machine(env, create=False)
     image = f"gdr-ci:{profile}-{selected_platform.rsplit('/', 1)[1]}"
     if not no_build:
-        dockerfile = (
-            ROOT
-            / "ci/containers"
-            / ("Dockerfile.gdb12" if profile == "gdb12" else "Dockerfile")
-        )
+        dockerfile_name = {
+            "gdb12": "Dockerfile.gdb12",
+            "gdb-latest": "Dockerfile.gdb-latest",
+        }.get(profile, "Dockerfile")
+        dockerfile = ROOT / "ci/containers" / dockerfile_name
         command(
             [
                 "podman",
@@ -250,7 +250,8 @@ def container_command(
         raise ValueError(f"image missing: {image}; run container build")
     if action == "build":
         return
-    inner = forwarded or ["matrix", "gdb12" if profile == "gdb12" else "smoke"]
+    default_group = profile if profile in ("gdb12", "gdb-latest") else "smoke"
+    inner = forwarded or ["matrix", default_group]
     mounts = ["--volume", f"{ROOT}:{ROOT}"]
     if not CACHE.resolve().is_relative_to(ROOT):
         mounts += ["--volume", f"{CACHE.resolve()}:{CACHE.resolve()}"]
