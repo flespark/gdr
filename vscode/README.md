@@ -1,9 +1,33 @@
 # GDB RTOS Views
 
 An RTOS view for embedded debugging, driven by [GDR (GDB enhance for RTOS)](https://github.com/flespark/gdr).
-Discovers task/timer/IPC/heap status, resource usage, corruption and potential bugs.
+Discovers task/timer/IPC/heap status, callstack, resource usage, corruption and potential bugs.
 
 ![GDR panel screenshot](https://raw.githubusercontent.com/flespark/gdr/main/vscode/media/screenshot.png)
+
+## Supported RTOS and ELF limit
+
+| RTOS      | Versions            | ISA (for backtrace & saved PC)                                                          |
+| --------- | ------------------- | --------------------------------------------------------------------------------------- |
+| RT-Thread | 3.1.x, 4.0.x, 4.1.x | Armv6-M/v7-M/v7E-M/v8-M Mainline (no SMP/MPU), Armv7-A, RV32/RV64 (no vendor extension) |
+| FreeRTOS  | V10.3.0–V11.3.x     | Armv6-M/v7-M/v7E-M/v8-M Mainline (SMP/MPU), RV32/RV64 (no vendor extension)             |
+
+`timer`, `IPC`, `heap`, and `task` struct inspection use DWARF symbols on any
+GDB target; only `backtrace` and saved-task `PC` decoding depend on the ISAs
+above.
+
+ELF / firmware build requirements:
+
+- Attach GDB to an **unstripped `.elf`** built with explicit target/ABI flags
+  (`-mcpu`/`-mfloat-abi` or `-march`/`-mabi`), `-g3 -gdwarf-4` (DWARF-4 macros
+  and `.debug_frame`), and `-funwind-tables` (retaining `.eh_frame` /
+  `.ARM.exidx*` under `--gc-sections`).
+- For FreeRTOS backtraces, enable `configRECORD_STACK_HIGH_ADDRESS=1` and export
+  MSP/ISR stack bounds for cross-stack IRQ/trap unwinding.
+
+See the [GDR README](https://github.com/flespark/gdr#status) and
+[build notes](https://github.com/flespark/gdr#note) for full details and
+verified ports.
 
 ## How it works
 
@@ -39,10 +63,6 @@ The probe answers with evidence and confidence (`exact`, `range`,
 `undetected`); the extension auto-initializes only on an unambiguous exact
 result, otherwise asks with the evidence attached. A resolved answer is
 cached per launch configuration.
-
-## Supported RTOS
-
-See [GDR readme](https://github.com/flespark/gdr#readme)
 
 ## Supported debug adapters
 
@@ -128,5 +148,3 @@ ST adapter configuration uses the explicit `GDR_STLINK_*` test settings.
 - The file route needs the extension to read the filesystem GDB writes to, so
   a GDB in a separate filesystem namespace (for example WSL) cannot use
   Cortex-Debug; the panel reports the failed bypass instead of showing nothing.
-- The probe reads versions from DWARF. A build without `-g3` exports no version
-  macro, so the extension asks the user instead of guessing.

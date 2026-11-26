@@ -8,89 +8,59 @@ All notable changes to GDR are documented in this file.
 
 ### Added
 
-- FreeRTOS `ARM_CM33_NTZ` (`mps2-an505`) backtraces support extended FPU saved
-  frames, `FPCA` lazy IRQ stacking, `arm-cm33-fpu` PendSV transitions, and
-  strict live/saved `PSPLIM` and `CONTROL` bounds checks across Armv8-M Mainline ports.
-- `gdr backtrace [--max-depth N] [--json]` and pre-init `gdr api backtrace`
-  unwind halted Arm and RISC-V targets using live registers and ELF metadata
-  without requiring `gdr init`.
-- `container stop` stops the CI Podman machine, leaving the image and fixture
-  caches intact.
-- `rtt backtrace`, `frt backtrace` and `gdr api backtrace` show bounded task
-  stacks with symbols, source locations, per-frame evidence and explicit
-  completeness/stop reasons; `--max-depth` limits the walk.
-- CFI backtraces evaluate bounded CFA, register-save-address and direct-value
-  expressions, with explicit stops for unsupported operations or exhausted budgets.
-- FreeRTOS AN385 backtraces cross verified basic IRQ24/25 and nested exception
-  frames with linker-owned MSP bounds; unverified exception modes stop explicitly.
-- FreeRTOS 11.1.0 Armv6-M (`ARM_CM0`) backtraces cross basic IRQ and nested
-  frames on the verified microbit port; Armv6-M scheduler transitions remain gated.
-- FreeRTOS (`ARM_CM0`, `ARM_CM3`, `ARM_CM4F`, single-core `ARM_CM33_NTZ`) and
-  RT-Thread (`armv6-m`, `armv7-m`, `armv7e-m-fpu`, single-Secure-state
-  `armv8m-integer`/`fpu`) scheduler backtraces resolve owner-consistent seeds across
-  proven PendSV/SVC and startup stages with a matching compiled profile; unproven
-  windows stay gated.
-- Single-core FreeRTOS Armv8-M Mainline (`mps2-an505/11.3.1`) and RT-Thread
-  (`mps2-an505/4.0.5`) handler backtraces cover external IRQs, SysTick, and
-  synchronous faults alongside `ARM_CM0`/`ARM_CM3`/`ARM_CM4F`.
-- Backtraces recover instruction-proven leaf returns without requiring added
-  firmware CFI; clobbered registers remain unavailable to later frames.
-- RT-Thread integer backtraces support verified Armv6-M, Armv7-M and Armv7-A
-  kernel contexts, with bounded saved/live chains and independent entry roots.
-- RT-Thread integer backtraces support RV32 and single-Secure-state Armv8-M
-  Mainline saved/current contexts; extended and cross-security contexts remain refused.
-- Synchronous Arm M-profile faults unwind with `stop_reason=synchronous-fault`
-  when `CFSR`/`HFSR`/`MMFAR`/`BFAR` prove a precise cause (including inside C
-  fault callees and RT-Thread's `HardFault_Handler` PSP software-frame
-  trampoline); imprecise faults stop as `fault-frame-imprecise`.
-- FreeRTOS and RT-Thread SysTick halts (at vector entry and inside
-  `xPortSysTickHandler`/`xTaskIncrementTick`/`rt_tick_increase`) cross to the
-  interrupted task as a proven periodic interrupt.
-- Non-secure FPU task and extended exception-frame backtraces (`0xFFFFFFE1/E9/ED`)
-  are supported on Armv7E-M (`softfp` and hard-float on FreeRTOS `ARM_CM4F`
-  and RT-Thread) and Armv8-M Mainline (RT-Thread), alongside integer
-  (`-mfloat-abi=soft`) Armv7E-M backtraces.
-- FreeRTOS RISC-V `10.3.x–11.3.x` backtraces unwind M-mode trap frames and
-  scheduler transition stages across differing `xCriticalNesting` and trap
-  stack layouts.
+- `<rtos> backtrace [<task>] [--max-depth N]` (alias `bt`) and `gdr api backtrace`
+  unwind saved or live task stacks (defaulting to the current halted PC), reporting
+  frame PC, symbol/source, unwind method, completeness, and stop reason.
+- Standalone `gdr backtrace [--max-depth N] [--json]` (and pre-init
+  `gdr api backtrace`) unwinds bare-metal Arm and RISC-V targets without `gdr init`;
+  it is refused once an RTOS adapter is active.
+- Arm M-profile (`Armv6-M`–`Armv8-M Mainline` integer/FPU with `PSPLIM`) and
+  Armv7-A backtraces cross nested IRQs, SysTick, NMI/DebugMonitor, precise faults,
+  and PendSV/SVC/boot-MSP switches via DWARF CFI, EHABI, and proven leaf returns.
+- RISC-V (`RV32`/`RV64`) backtraces unwind M-mode trap frames, precise synchronous
+  faults, and scheduler switch stages across FreeRTOS 10.3.x–11.3.x and RT-Thread
+  using `.debug_frame`/`.eh_frame`/`.eh_frame_hdr` CFI expressions and leaf proofs.
+- `<rtos> watch backtrace [<task>] [--max-depth N]` and `<rtos> unwatch backtrace [<task>]`
+  (alias `bt`) print task or current-PC backtraces automatically on every stop.
+- VSCode panel adds expandable per-task backtraces from the `PC` column and floating
+  detail popovers; GitHub and CNB releases now attach versioned `.vsix` packages.
+- `<rtos> heap dump` adds `--cell-pixel`, `--width`, and `--row-bytes` options, block
+  outlines, start/end address labels, `name: sizeB, start-end` legends, and automatic
+  free-span folding.
+- Terminal tables gain 3-mode elastic columns and shorten DWARF source paths relative
+  to the inferred project/SDK root.
 
 ### Changed
 
-- `matrix` preflights each distinct tool set once before any lane starts,
-  instead of repeating tool version probes for every lane.
-- `container build` and `container run` start the CI Podman machine when it is
-  stopped and restart it when its recorded state is stale; `--no-start` opts out.
-- improve heap dump CLI and bitmap render. CLI add `--cell-pixel`, `--width`,
-  `--row-bytes option`. Bitmap add outline for allocate blocks, add start/end
-  text label around bitmap, legend rows read `name: sizeB, start-end`, free
-  blocks span auto folds.
-- Out-of-GDB importers must use `core.*` and the consolidated adapter module
-  paths; loading GDR inside GDB is unchanged.
-- MPU task `Used` and `HighWater` use the task stack rather than TCB context
-  storage.
-- Backtrace JSON uses canonical `architecture` and `abi`, replacing `port`
-  and duplicate `isa` fields; the envelope schema is 3.
-- RT-Thread save-profile selection proves decoded register bitmaps, SP switch
-  and LWP header instead of fixed instruction-stream fingerprints; additional
-  Armv7-A LWP releases are accepted and pre-4.0 layouts remain refused.
+- Object resolution across `<rtos> <object>`, `$gdr_task`/`$gdr_object`, `watch`, and
+  `backtrace` uses one unified resolver accepting names, symbols, and hex/decimal
+  addresses with explicit ambiguity errors.
+- Backtrace JSON uses canonical `architecture` and `abi` fields (replacing `port` and
+  duplicate `isa`); the envelope schema version is `3`.
+- Out-of-GDB Python importers must use `core.*` and the reorganized `*/backtrace/`
+  package paths; loading GDR via `source gdr.py` inside GDB is unchanged.
+- FreeRTOS MPU task `Used` and `HighWater` measure the task stack rather than TCB
+  context storage.
+- Session symbol caches are shared across adapters and FreeRTOS handle scans refresh
+  incrementally, reducing stop-time overhead.
+- RT-Thread save-profile selection proves decoded register bitmaps, SP switch, and LWP
+  header rather than fixed instruction fingerprints, expanding supported Armv7-A LWP
+  releases while continuing to refuse pre-4.0 layouts.
 
 ### Fixed
 
-- FreeRTOS `static-only` fixtures compile without an unused FPU task; the task
-  and its handle exist only when dynamic allocation is enabled.
-- FreeRTOS heap_2 inspection accounts for the V10.3.x heap base alignment.
-- CFI unwinding honors extended offsets and CIE return-address columns
-  independently of SP; an undefined return column ends a partial chain.
-- Backtrace metadata, symbols and source locations distinguish ordinary
-  return addresses from exact seed/signal/root PCs while retaining resume PCs.
-- FreeRTOS RISC-V first-task chains without entry proof remain partial;
-  ordinary return-address lookup can stop at `cfi-stack-overflow`.
-- Backtraces discard undefined or unreadable register values and preserve
-  their failure reasons instead of reusing them in subsequent frames.
-- CFI parse failures cannot enable frame-pointer fallback; valid independent
-  metadata and clean uncovered-PC fallback remain available.
-- Armv8-M saved-context selection rejects missing required configuration
-  evidence instead of treating absent FPU or TrustZone macros as disabled.
+- Task tables accurately decode the live `PC` of running tasks and saved `PC`s across
+  Arm M-profile and FPU switch frames.
+- FreeRTOS `heap_2` inspection accounts for V10.3.x heap base alignment, and adapters
+  tolerate unreadable target fields without aborting table rendering.
+- Shrink-wrapped Arm functions defer to per-PC DWARF CFI instead of mis-unwinding via
+  EHABI, and RT-Thread switch-return CFI rows stay scoped to the outgoing owner.
+- CFI unwinding honors extended offsets and CIE return-address columns independently of
+  SP, discards undefined or unreadable registers, and refuses frame-pointer fallback on
+  CFI parse failures.
+- Backtrace symbols and source locations distinguish return addresses from exact
+  seed/exception PCs, and Armv8-M saved-context selection rejects missing FPU/TrustZone
+  config macros instead of assuming them disabled.
 
 ## [2026.04] - 2026-10-13
 
