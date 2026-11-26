@@ -183,7 +183,12 @@
         set -eu
         export DEBIAN_FRONTEND=noninteractive
         apt-get -o Acquire::Retries=3 update -qq
-        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        if ! apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3; then
+          grep -q ' /etc/localtime ' /proc/mounts
+          test -f /var/lib/dpkg/info/tzdata.postinst
+          printf '#!/bin/sh\nexit 0\n' > /var/lib/dpkg/info/tzdata.postinst
+          dpkg --configure -a
+        fi
         python3 ci/checks/gdb_api.py --gdb gdb-multiarch --expected-major 13
     - name: GDB 15 API surface (Ubuntu 24.04 / Py 3.12)
       image: ubuntu:24.04
@@ -191,7 +196,12 @@
         set -eu
         export DEBIAN_FRONTEND=noninteractive
         apt-get -o Acquire::Retries=3 update -qq
-        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        if ! apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3; then
+          grep -q ' /etc/localtime ' /proc/mounts
+          test -f /var/lib/dpkg/info/tzdata.postinst
+          printf '#!/bin/sh\nexit 0\n' > /var/lib/dpkg/info/tzdata.postinst
+          dpkg --configure -a
+        fi
         python3 ci/checks/gdb_api.py --gdb gdb-multiarch --expected-major 15
     - name: GDB 16 API surface (Debian trixie / Py 3.13)
       image: debian:trixie-slim
@@ -199,7 +209,12 @@
         set -eu
         export DEBIAN_FRONTEND=noninteractive
         apt-get -o Acquire::Retries=3 update -qq
-        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        if ! apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3; then
+          grep -q ' /etc/localtime ' /proc/mounts
+          test -f /var/lib/dpkg/info/tzdata.postinst
+          printf '#!/bin/sh\nexit 0\n' > /var/lib/dpkg/info/tzdata.postinst
+          dpkg --configure -a
+        fi
         python3 ci/checks/gdb_api.py --gdb gdb-multiarch --expected-major 16
     - name: GDB latest API surface (Debian sid)
       image: debian:sid-slim
@@ -207,7 +222,12 @@
         set -eu
         export DEBIAN_FRONTEND=noninteractive
         apt-get -o Acquire::Retries=3 update -qq
-        apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3
+        if ! apt-get -o Acquire::Retries=3 install -y --no-install-recommends gdb-multiarch python3; then
+          grep -q ' /etc/localtime ' /proc/mounts
+          test -f /var/lib/dpkg/info/tzdata.postinst
+          printf '#!/bin/sh\nexit 0\n' > /var/lib/dpkg/info/tzdata.postinst
+          dpkg --configure -a
+        fi
         python3 ci/checks/gdb_api.py --gdb gdb-multiarch --min-major 16
     - name: GDB 12 / Python 3.10 Cortex-A9 closed-loop
       script: python3 ci/test.py matrix gdb12
@@ -304,7 +324,15 @@ main: # branch: main
             VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
             LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
             echo "Publishing ${CACHE_IMAGE} as ${VERSIONED_IMAGE} and ${LATEST_IMAGE}"
-            docker pull "$CACHE_IMAGE"
+            attempt=0
+            until docker pull "$CACHE_IMAGE"; do
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge 18 ]; then
+                echo "Timed out waiting for cached image: $CACHE_IMAGE" >&2
+                exit 1
+              fi
+              sleep 5
+            done
             docker tag "$CACHE_IMAGE" "$VERSIONED_IMAGE"
             docker tag "$CACHE_IMAGE" "$LATEST_IMAGE"
             docker push "$VERSIONED_IMAGE"
@@ -332,7 +360,15 @@ main: # branch: main
             VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
             LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
             echo "Publishing ${CACHE_IMAGE} as ${VERSIONED_IMAGE} and ${LATEST_IMAGE}"
-            docker pull "$CACHE_IMAGE"
+            attempt=0
+            until docker pull "$CACHE_IMAGE"; do
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge 18 ]; then
+                echo "Timed out waiting for cached image: $CACHE_IMAGE" >&2
+                exit 1
+              fi
+              sleep 5
+            done
             docker tag "$CACHE_IMAGE" "$VERSIONED_IMAGE"
             docker tag "$CACHE_IMAGE" "$LATEST_IMAGE"
             docker push "$VERSIONED_IMAGE"
@@ -360,7 +396,15 @@ main: # branch: main
             VERSIONED_IMAGE="${GDR_CI_IMAGE}:${IMAGE_TAG}"
             LATEST_IMAGE="${GDR_CI_IMAGE}:latest"
             echo "Publishing ${CACHE_IMAGE} as ${VERSIONED_IMAGE} and ${LATEST_IMAGE}"
-            docker pull "$CACHE_IMAGE"
+            attempt=0
+            until docker pull "$CACHE_IMAGE"; do
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge 18 ]; then
+                echo "Timed out waiting for cached image: $CACHE_IMAGE" >&2
+                exit 1
+              fi
+              sleep 5
+            done
             docker tag "$CACHE_IMAGE" "$VERSIONED_IMAGE"
             docker tag "$CACHE_IMAGE" "$LATEST_IMAGE"
             docker push "$VERSIONED_IMAGE"
@@ -410,7 +454,11 @@ $:
               ca-certificates curl git python3
             rm -rf /var/lib/apt/lists/*
         - name: create source archives
-          script: bash ci/release/create-archives.sh "$CNB_BRANCH"
+          script: |
+            set -eu
+            git rev-parse --verify "${CNB_BRANCH}^{commit}" >/dev/null 2>&1 \
+              || git fetch --force origin "refs/tags/${CNB_BRANCH}:refs/tags/${CNB_BRANCH}"
+            bash ci/release/create-archives.sh "$CNB_BRANCH"
         - name: build the release VSIX
           # NOTE: same versioned `vscode/scripts/build-vsix.sh` the GitHub release
           # runs, so both forges attach the identical file name; the tag
