@@ -203,7 +203,7 @@ wheels = [
 
 [[package]]
 name = "gdr"
-version = "2026.4"
+version = "2026.5"
 source = { editable = "." }
 
 [package.dev-dependencies]

@@ -4,7 +4,7 @@
 
 All notable changes to GDR are documented in this file.
 
-## [Unreleased]
+## [2026.05] - 2026-11-26
 
 ### Added
 

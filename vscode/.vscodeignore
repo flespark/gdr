@@ -13,7 +13,9 @@ package-lock.json
 tsconfig.json
 tsconfig.test.json
 .gitignore
+.DS_Store
 **/*.map
+*.vsix
 
 # The vendored runtime is generated (git-ignored); carry it anyway.
 !resources/gdr/**

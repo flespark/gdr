@@ -3,7 +3,7 @@
   "displayName": "GDB RTOS Views",
   "description": "RTOS kernel state views for embedded debugging, driven by the GDR",
   "publisher": "flespark",
-  "version": "2026.4.7",
+  "version": "2026.5.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -92,7 +92,7 @@
         "gdr.runtimePath": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Directory holding `gdr.py` and the `gdr`/`rtthread`/`freertos` packages. Empty uses the copy bundled in this extension; set this to run the plugin against a development checkout."
+          "markdownDescription": "Directory holding `gdr.py` and the `core`/`rtthread`/`freertos` packages. Empty uses the copy bundled in this extension; set this to run the plugin against a development checkout."
         },
         "gdr.rtos": {
           "type": "string",
