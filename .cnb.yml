@@ -456,8 +456,9 @@ $:
         - name: create source archives
           script: |
             set -eu
-            git rev-parse --verify "${CNB_BRANCH}^{commit}" >/dev/null 2>&1 \
-              || git fetch --force origin "refs/tags/${CNB_BRANCH}:refs/tags/${CNB_BRANCH}"
+            if ! git rev-parse --verify "${CNB_BRANCH}^{commit}" >/dev/null 2>&1; then
+              git fetch --force origin "refs/tags/${CNB_BRANCH}:refs/tags/${CNB_BRANCH}"
+            fi
             bash ci/release/create-archives.sh "$CNB_BRANCH"
         - name: build the release VSIX
           # NOTE: same versioned `vscode/scripts/build-vsix.sh` the GitHub release
