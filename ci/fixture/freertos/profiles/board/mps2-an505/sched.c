@@ -49,6 +49,8 @@ volatile uint32_t gdr_sched_timer1_done;
 volatile uint32_t gdr_sched_first_started;
 volatile uint32_t gdr_sched_yield_count;
 
+extern TaskHandle_t volatile pxCurrentTCB;
+
 TaskHandle_t gdr_sched_first_handle;
 TaskHandle_t gdr_sched_task_handle;
 TaskHandle_t gdr_sched_tick_handle;
@@ -116,11 +118,16 @@ void gdr_sched_timer1_isr(void)
     portYIELD_FROM_ISR(woken);
 }
 
-void gdr_sched_timer0_begin(void)
+BaseType_t gdr_sched_timer0_begin(void)
 {
     gdr_sched_timer_stop(gdr_sched_timer0);
+    if (pxCurrentTCB != gdr_sched_task_handle) {
+        gdr_sched_timer_arm(gdr_sched_timer0, 4000U);
+        return pdFALSE;
+    }
     gdr_sched_timer1_done = 0;
     gdr_sched_timer_arm(gdr_sched_timer1, 2000U);
+    return pdTRUE;
 }
 
 void gdr_sched_timer0_end(void)
@@ -156,8 +163,8 @@ __attribute__((noinline, used)) static void gdr_sched_task(void *argument)
         } else if (gate == GDR_SCHED_GATE_IRQ) {
             vTaskSuspend(gdr_sched_tick_handle);
             gdr_sched_timer_arm(gdr_sched_timer0, 4000U);
-            for (volatile uint32_t spin = 0;
-                 spin < 20000000U && !gdr_sched_irq_requested; spin++) {
+            while (!gdr_sched_irq_requested && gdr_sched_gate == gate) {
+                __asm__ volatile("" ::: "memory");
             }
             gdr_sched_timer_stop(gdr_sched_timer0);
             vTaskResume(gdr_sched_tick_handle);

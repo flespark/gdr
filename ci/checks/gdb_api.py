@@ -56,7 +56,7 @@ REQUIRED_CLASS_MEMBERS: dict[str, tuple[str, ...]] = {
         "read_register",
     ),
     "gdb.Inferior": ("architecture", "is_valid", "read_memory"),
-    "gdb.Architecture": ("name", "void_type"),
+    "gdb.Architecture": ("name",),
     "gdb.Progspace": ("filename", "objfiles"),
     "gdb.Objfile": ("filename",),
     "gdb.Symtab": ("filename", "fullname"),

@@ -19,7 +19,7 @@ volatile uint32_t gdr_irq_gate;
 #if defined(GDR_FIXTURE_SCHED_TESTS) && (GDR_FIXTURE_SCHED_TESTS == 1)
 extern volatile uint32_t gdr_sched_gate;
 extern volatile uint32_t gdr_sched_timer1_done;
-extern void gdr_sched_timer0_begin(void);
+extern BaseType_t gdr_sched_timer0_begin(void);
 extern void gdr_sched_timer0_end(void);
 extern void gdr_sched_timer1_isr(void);
 #endif
@@ -116,11 +116,12 @@ void Timer0_Handler(void)
 {
 #if defined(GDR_FIXTURE_SCHED_TESTS) && (GDR_FIXTURE_SCHED_TESTS == 1)
     if (gdr_sched_gate == 3U) {
-        gdr_sched_timer0_begin();
-        for (volatile uint32_t spin = 0;
-             !gdr_sched_timer1_done && spin < 20000000U; spin++) {
+        if (gdr_sched_timer0_begin() != pdFALSE) {
+            while (!gdr_sched_timer1_done && gdr_sched_gate == 3U) {
+                __asm__ volatile("" ::: "memory");
+            }
+            gdr_sched_timer0_end();
         }
-        gdr_sched_timer0_end();
         return;
     }
 #endif
